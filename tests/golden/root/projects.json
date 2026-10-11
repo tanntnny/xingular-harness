@@ -1,0 +1,18 @@
+[
+  {
+    "autoMaintenance": true,
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "id": "p1",
+    "name": "Xingular Agent",
+    "rootPath": "/src/xingular-agent",
+    "slug": "xingular-agent"
+  },
+  {
+    "autoMaintenance": true,
+    "createdAt": "2026-01-02T00:00:00.000Z",
+    "id": "p2",
+    "name": "Site",
+    "rootPath": "/src/site",
+    "slug": "site"
+  }
+]

@@ -1,0 +1,43 @@
+{
+  "name": "@xingular/harness",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Xingular Harness \u2014 a Pi agent harness with multi-account sign-in, a compiled system prompt, a memory lifecycle (Wiki), tools, MCP, and skills",
+  "exports": {
+    ".": "./src/index.ts",
+    "./*": "./src/*"
+  },
+  "bin": {
+    "xingular-harness": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "esbuild src/cli.ts --bundle --platform=node --target=node22 --format=esm --packages=external --outfile=dist/cli.js && esbuild src/terminal/piExtension.ts --bundle --platform=node --target=node22 --format=esm --packages=external --outfile=dist/terminal-pi.js",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
+    "prove": "npm run build && node scripts/prove-standalone.mjs"
+  },
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "0.85.1",
+    "@modelcontextprotocol/client": "^2.2.0",
+    "@modelcontextprotocol/server": "^2.2.0",
+    "typebox": "^1.3.7",
+    "yaml": "^2.8.1",
+    "zod": "^4.1.11"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.1",
+    "esbuild": "^0.25.10",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  },
+  "engines": {
+    "node": ">=22.13"
+  },
+  "files": [
+    "src",
+    "dist",
+    "builtin",
+    "README.md"
+  ]
+}

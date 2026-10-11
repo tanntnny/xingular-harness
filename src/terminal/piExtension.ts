@@ -1,0 +1,192 @@
+// Loaded by the `pi` command in a terminal session (`--extension`). It reports what the native
+// session does to the harness, asks before each tool call, takes instructions the harness
+// queues for it, and gives the session the harness's own tools. It runs in the `pi` process,
+// so everything it knows about the harness comes through the session socket.
+import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent'
+import { Type } from 'typebox'
+
+import { connectionFromEnv, socketCall, terminalCall } from './client'
+
+interface SocketTool {
+  name: string
+  label: string
+  description: string
+  parameters: Record<string, unknown>
+}
+
+/** How much text a tool handed back to the model. */
+function resultSize(result: unknown): number | null {
+  const content = (result as { content?: unknown } | null | undefined)?.content
+  if (!Array.isArray(content)) return typeof result === 'string' ? result.length : null
+  return content.reduce((total: number, part: { type?: string; text?: unknown }) => total + (part?.type === 'text' && typeof part.text === 'string' ? part.text.length : 0), 0)
+}
+
+export default async function (pi: ExtensionAPI) {
+  await terminalCall('startup', { phase: 'Pi extension loaded' })
+  let context: ExtensionContext | null = null
+  let timer: ReturnType<typeof setInterval> | null = null
+  let polling = false
+  let failure: string | undefined
+  const emptyUsage = () => ({ inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, requests: 0, costUsd: 0 })
+  let usage = emptyUsage()
+  let reasoningTokens: number | undefined
+  let costReported = false
+  let requestStartedAt: number | null = null
+  const toolStartedAt = new Map<string, number>()
+  const fileTools = new Map<string, string>()
+
+  // The harness's own tools for this session (connected apps and what the application offers).
+  let stage = 'Tool discovery'
+  try {
+    await terminalCall('startup', { phase: stage })
+    const connection = connectionFromEnv()
+    const { tools } = await socketCall<{ tools: SocketTool[] }>(connection, 'tools.list', {}, 15_000)
+    stage = 'Tool registration'
+    for (const tool of tools) {
+      pi.registerTool({
+        name: tool.name,
+        label: tool.label,
+        description: tool.description,
+        parameters: Type.Unsafe(tool.parameters),
+        async execute(_id, input) {
+          const result = await socketCall<{ text: string }>(connection, 'tools.call', { name: tool.name, input: input as Record<string, unknown> }, 1_230_000)
+          return { content: [{ type: 'text', text: result.text }], details: undefined }
+        }
+      })
+    }
+  } catch (error) {
+    await terminalCall('startupFailed', { reason: `${stage} failed: ${error instanceof Error ? error.message : 'Unavailable'}` }).catch(() => {})
+    throw error
+  }
+
+  pi.on('session_start', async (_event, ctx) => {
+    context = ctx
+    await terminalCall('ready', { nativeSessionId: ctx.sessionManager.getSessionFile() })
+    timer = setInterval(() => {
+      if (polling || !context) return
+      polling = true
+      void terminalCall<{ command: { type: string; text?: string } | null }>('poll', {}, 5_000)
+        .then(({ command }) => {
+          if (command?.type === 'interrupt') context?.abort()
+          else if (command?.type === 'send') {
+            if (context?.ui.getEditorText().trim()) throw new Error('The terminal contains a user draft.')
+            pi.sendUserMessage(command.text!)
+          }
+        })
+        .catch(() => {
+          context?.abort()
+          if (timer) clearInterval(timer)
+        })
+        .finally(() => {
+          polling = false
+        })
+    }, 100)
+  })
+  pi.on('before_agent_start', async (event, ctx) => {
+    context = ctx
+    failure = undefined
+    usage = emptyUsage()
+    reasoningTokens = undefined
+    costReported = false
+    await terminalCall('begin', { text: event.prompt })
+  })
+  pi.on('message_end', async (event) => {
+    if (event.message.role !== 'assistant') return
+    if (event.message.stopReason === 'error' || event.message.stopReason === 'aborted') failure = event.message.errorMessage ?? `Pi stopped: ${event.message.stopReason}`
+    const text = event.message.content.filter((part) => part.type === 'text').map((part) => part.text).join('\n')
+    if (text) await terminalCall('message', { text })
+    if (event.message.usage) {
+      const reported = event.message.usage
+      usage.inputTokens += reported.input ?? 0
+      usage.outputTokens += reported.output ?? 0
+      usage.cacheReadTokens += reported.cacheRead ?? 0
+      usage.cacheWriteTokens += reported.cacheWrite ?? 0
+      usage.requests += 1
+      if (typeof reported.reasoning === 'number') reasoningTokens = (reasoningTokens ?? 0) + reported.reasoning
+      const cost = reported.cost?.total
+      if (typeof cost === 'number') {
+        usage.costUsd += cost
+        costReported = true
+      }
+      const identity = { model: event.message.model, provider: event.message.provider }
+      const { costUsd, ...tokens } = usage
+      await terminalCall('usage', {
+        ...tokens,
+        ...(costReported ? { costUsd, costSource: 'harness' } : {}),
+        ...(reasoningTokens === undefined ? {} : { reasoningTokens }),
+        contextTokens: (reported.input ?? 0) + (reported.cacheRead ?? 0) + (reported.cacheWrite ?? 0),
+        ...(context?.model?.contextWindow ? { contextWindow: context.model.contextWindow } : {}),
+        ...identity,
+        request: {
+          index: usage.requests,
+          ...identity,
+          responseId: event.message.responseId,
+          inputTokens: reported.input ?? 0,
+          cacheReadTokens: reported.cacheRead ?? 0,
+          cacheWriteTokens: reported.cacheWrite ?? 0,
+          outputTokens: reported.output ?? 0,
+          ...(typeof reported.reasoning === 'number' ? { reasoningTokens: reported.reasoning } : {}),
+          ...(typeof cost === 'number' ? { costUsd: cost, costSource: 'harness' } : {}),
+          ...(requestStartedAt === null ? {} : { durationMs: Date.now() - requestStartedAt }),
+          stopReason: event.message.stopReason
+        }
+      })
+      requestStartedAt = null
+    }
+  })
+  pi.on('turn_start', async () => {
+    requestStartedAt = Date.now()
+  })
+  pi.on('tool_call', async (event) => {
+    try {
+      const policy = await terminalCall<{ allowed: boolean; reason?: string; requiresApproval?: boolean }>('policy', { tool: event.toolName, args: event.input })
+      if (policy.requiresApproval) {
+        const approval = await terminalCall<{ decision: string }>('approval', { requestId: event.toolCallId, target: event.toolName, action: JSON.stringify(event.input), tool: event.toolName, args: event.input })
+        if (approval.decision === 'approved') return
+        return { block: true, reason: 'The user denied this action. Ask how they would like to proceed.' }
+      }
+      if (!policy.allowed) return { block: true, reason: policy.reason ?? 'Outside what this session may do.' }
+    } catch {
+      return { block: true, reason: 'The terminal controller is unavailable.' }
+    }
+  })
+  pi.on('tool_execution_start', async (event) => {
+    if (['edit', 'write'].includes(event.toolName) && typeof event.args.path === 'string') fileTools.set(event.toolCallId, event.args.path)
+    toolStartedAt.set(event.toolCallId, Date.now())
+    await terminalCall('tool', { phase: 'start', id: event.toolCallId, name: event.toolName, summary: JSON.stringify(event.args).slice(0, 200) })
+  })
+  pi.on('tool_execution_end', async (event) => {
+    const started = toolStartedAt.get(event.toolCallId)
+    toolStartedAt.delete(event.toolCallId)
+    const resultChars = resultSize(event.result)
+    await terminalCall('tool', { phase: 'end', id: event.toolCallId, name: event.toolName, ok: !event.isError, ...(started === undefined ? {} : { durationMs: Date.now() - started }), ...(resultChars === null ? {} : { resultChars }) })
+    const path = fileTools.get(event.toolCallId)
+    fileTools.delete(event.toolCallId)
+    if (!event.isError && path) await terminalCall('file', { path, change: 'modified' })
+  })
+  pi.on('agent_settled', async () => {
+    await terminalCall('settled', { error: failure })
+  })
+  pi.on('user_bash', async () => {
+    throw new Error('Use the bash tool so this action can be checked.')
+  })
+  pi.on('session_shutdown', async () => {
+    if (timer) clearInterval(timer)
+    await terminalCall('shutdown').catch(() => {})
+  })
+  pi.registerTool({
+    name: 'ask_user_question',
+    label: 'Ask a question',
+    description: 'Ask the user a question and wait for their answer.',
+    parameters: Type.Object({
+      question: Type.String(),
+      options: Type.Optional(Type.Array(Type.Object({ label: Type.String(), description: Type.Optional(Type.String()) }))),
+      multiSelect: Type.Optional(Type.Boolean())
+    }),
+    async execute(id, input) {
+      const answer = await terminalCall('question', { requestId: id, ...input })
+      return { content: [{ type: 'text', text: JSON.stringify(answer) }], details: undefined }
+    }
+  })
+  await terminalCall('startup', { phase: 'Pi hooks registered' })
+}

@@ -1,0 +1,16 @@
+{
+  "agentId": null,
+  "endedAt": "2026-10-01T10:01:00.000Z",
+  "goal": "Deploy the site with pnpm",
+  "harness": "pi",
+  "id": "run-code-2",
+  "mode": "code",
+  "nativeSessionId": null,
+  "projectId": "p2",
+  "sessionId": "pane-2",
+  "sessionType": "structured",
+  "startedAt": "2026-10-01T10:00:00.000Z",
+  "status": "completed",
+  "workingDirectory": null,
+  "worktreeId": null
+}

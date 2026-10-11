@@ -1,0 +1,11 @@
+{
+  "global": [
+    "rules/tests",
+    "rules/style",
+    "rules/long",
+    "skills/release-notes"
+  ],
+  "p1": [
+    "skills/review"
+  ]
+}

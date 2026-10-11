@@ -1,0 +1,2 @@
+{"id":"run-chat-1-e0","payload":{"name":"read","summary":"package.json","toolCallId":"t1"},"runId":"run-chat-1","sequence":0,"sessionId":"s","timestamp":"2026-10-01T10:00:10.000Z","type":"tool.started"}
+{"id":"run-chat-1-e1","payload":{"messageId":"m1","role":"assistant","text":"We use pnpm for every workspace.\nThe lockfile is pnpm-lock.yaml."},"runId":"run-chat-1","sequence":1,"sessionId":"s","timestamp":"2026-10-01T10:00:11.000Z","type":"message.completed"}

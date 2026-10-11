@@ -1,0 +1,16 @@
+{
+  "agentId": null,
+  "endedAt": "2026-10-01T10:01:00.000Z",
+  "goal": "Fix the pnpm lockfile",
+  "harness": "pi",
+  "id": "run-code-1",
+  "mode": "code",
+  "nativeSessionId": null,
+  "projectId": "p1",
+  "sessionId": "pane-1",
+  "sessionType": "structured",
+  "startedAt": "2026-10-01T10:00:00.000Z",
+  "status": "completed",
+  "workingDirectory": null,
+  "worktreeId": null
+}
