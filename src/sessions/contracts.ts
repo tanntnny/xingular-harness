@@ -43,6 +43,15 @@ const contextSnapshotPayload = z.object({
   contextUpdateTruncated: z.boolean().optional(),
   toolsTruncated: z.boolean().optional()
 })
+/** Generic reference to content a provider stores outside the run-event stream. */
+export const toolAttachmentRefSchema = z.object({
+  id: z.string().min(1).max(300),
+  name: z.string().min(1).max(500),
+  mimeType: z.string().min(1).max(100)
+}).strict()
+export const toolAttachmentRefsSchema = z.array(toolAttachmentRefSchema).max(16)
+export type ToolAttachmentRef = z.infer<typeof toolAttachmentRefSchema>
+
 const toolPayload = z.object({
   toolCallId: z.string(),
   name: z.string(),
@@ -54,7 +63,9 @@ const toolPayload = z.object({
   ok: z.boolean().optional(),
   /** On `tool.completed`: how long the call ran, and the size of what it returned to the model. */
   durationMs: z.number().optional(),
-  resultChars: z.number().optional()
+  resultChars: z.number().optional(),
+  /** Opaque attachment references. Content stays outside the run event stream. */
+  attachments: toolAttachmentRefsSchema.optional()
 })
 const retryStartedPayload = z.object({ attempt: z.number(), maxAttempts: z.number(), delayMs: z.number(), error: z.string().max(1_000).optional() })
 const retryEndedPayload = z.object({ attempt: z.number(), success: z.boolean(), error: z.string().max(1_000).optional() })

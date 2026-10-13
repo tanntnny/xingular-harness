@@ -58,6 +58,9 @@ An application adds what it knows through six points:
    updates.
 2. **Tool providers** (`harness.sessions.provide`). A provider returns `ToolSpec`s for a session;
    only the names in the session's `allow` list are registered, in that order.
+   A tool may return `attachments` as `{ id, name, mimeType }` references. The harness records
+   those references on `tool.completed`; attachment bytes remain with the provider and never enter
+   the run-event stream.
    The harness provides the web tools itself: `webTools({ secrets })` gives `web_search` (Brave Search,
    key read from the secret store) and `web_fetch` (checked reads of public pages). An application
    passes it to `harness.sessions.provide` and switches the names on for each agent.

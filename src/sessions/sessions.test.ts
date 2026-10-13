@@ -215,6 +215,27 @@ describe('session turns on Pi', () => {
     expect(completed.output.length).toBeLessThanOrEqual(24_000)
   })
 
+  it('records generic tool attachment references without storing their content bytes', async () => {
+    const { events, run } = setup(async ({ gate }) => fakeSession(async (emit) => {
+      emit({ type: 'tool_execution_end', toolCallId: 'image-1', toolName: 'capture', isError: false, result: {
+        content: [{ type: 'text', text: 'Captured screen.' }, { type: 'image', data: 'model-image-bytes' }],
+        details: { attachments: [{ id: 'attachment-1', name: 'Screen capture', mimeType: 'image/jpeg' }] }
+      } })
+      emit({ type: 'tool_execution_end', toolCallId: 'image-2', toolName: 'capture', isError: false, result: {
+        content: [{ type: 'text', text: 'Invalid attachment metadata was ignored.' }],
+        details: { attachments: [{ id: 'attachment-2', name: 'Capture', mimeType: 'image/jpeg', data: 'must-not-persist' }] }
+      } })
+    }, gate))
+
+    await run('attachments-run')
+    await tick()
+    const completed = events.filter((event) => event.type === 'tool.completed').map((event) => event.payload as Record<string, unknown>)
+    expect(completed[0]?.attachments).toEqual([{ id: 'attachment-1', name: 'Screen capture', mimeType: 'image/jpeg' }])
+    expect(completed[1]).not.toHaveProperty('attachments')
+    expect(JSON.stringify(events)).not.toContain('model-image-bytes')
+    expect(JSON.stringify(events)).not.toContain('must-not-persist')
+  })
+
   it('records bounded retry and compaction events without exposing thinking text', async () => {
     const { events, run } = setup(async ({ gate }) =>
       fakeSession(async (emit) => {

@@ -11,7 +11,7 @@ import type { Loading, Registered } from '../plugins/plugins'
 import { CONTEXT_MESSAGE_TYPE, CONTEXT_SNAPSHOT_KEY, type ContextUpdate } from '../prompt/compile'
 import type { RegistryResources } from '../skills/registry'
 import type { ToolSpec } from '../tools/types'
-import type { UsageRequest } from './contracts'
+import { toolAttachmentRefsSchema, type UsageRequest } from './contracts'
 import { completedReasoningSummary, REASONING_SUMMARY_APIS, requestConciseReasoningSummary } from './reasoningSummaries'
 import { extensionUi, type ExtensionHost } from './extensionUi'
 import { observeResources, registrationHash } from '../plugins/runtime'
@@ -160,6 +160,14 @@ function evidenceText(value: unknown): string | null {
   } catch {
     return String(value)
   }
+}
+
+/** Pi keeps provider-only metadata in `details`; only a bounded, generic reference enters the event. */
+function toolAttachmentRefs(result: unknown) {
+  const details = (result as { details?: unknown } | null | undefined)?.details
+  const refs = details && typeof details === 'object' ? (details as { attachments?: unknown }).attachments : undefined
+  const parsed = toolAttachmentRefsSchema.safeParse(refs)
+  return parsed.success && parsed.data.length ? parsed.data : undefined
 }
 
 function boundedSchema(value: unknown, budget: { remaining: number }, depth = 0): { value: unknown; truncated: boolean } {
@@ -355,12 +363,14 @@ export async function runTurn(run: ActiveRun, session: PiSessionLike, params: Tu
         const resultChars = resultSize(tool.result)
         const output = evidenceText(tool.result)
         const boundedOutput = output === null ? null : limitedText(output)
+        const attachments = toolAttachmentRefs(tool.result)
         run.emit('tool.completed', {
           toolCallId: tool.toolCallId,
           name: tool.toolName,
           ok: !tool.isError,
           ...(started === undefined ? {} : { durationMs: Date.now() - started }),
           ...(resultChars === null ? {} : { resultChars }),
+          ...(attachments ? { attachments } : {}),
           ...(boundedOutput ? { output: boundedOutput.text, ...(boundedOutput.truncated ? { outputTruncated: true } : {}) } : {})
         })
         break
@@ -511,7 +521,10 @@ export const piSessionFactory: SessionFactory = async ({ params, allow, gate, to
           const result = await spec.execute(input as Record<string, unknown>)
           const output = typeof result === 'string' ? { text: result } : result
           if (output.image && !supportsImageInput) throw new HarnessError('image_input_unsupported', 'This model cannot inspect images. Choose a model that supports image input.')
-          return { content: [{ type: 'text', text: output.text }, ...(output.image ? [{ type: 'image', data: output.image.data, mimeType: output.image.mimeType }] : [])] as never, details: {} }
+          return {
+            content: [{ type: 'text', text: output.text }, ...(output.image ? [{ type: 'image', data: output.image.data, mimeType: output.image.mimeType }] : [])] as never,
+            details: output.attachments?.length ? { attachments: output.attachments } : {}
+          }
         }
       })
     )

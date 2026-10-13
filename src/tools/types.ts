@@ -3,10 +3,13 @@
 import type { CallerContext } from '../memory/caller'
 import type { CapabilitySet } from '../capabilities/types'
 import type { ActiveRun } from '../sessions/registry'
+import type { ToolAttachmentRef } from '../sessions/contracts'
 
 export interface ToolResult {
   text: string
   image?: { data: string; mimeType: string }
+  /** References to content stored by the provider; bytes never enter the run-event stream. */
+  attachments?: ToolAttachmentRef[]
 }
 
 export interface ToolSpec {
