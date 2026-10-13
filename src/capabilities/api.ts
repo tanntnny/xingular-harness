@@ -50,11 +50,11 @@ export async function resolve(harness: Harness, params: ListParams & { tools?: r
   }
 }
 
-export function toolIntersection(parent: CapabilitySet, assignee: CapabilitySet, taskTools: readonly string[] = []): CapabilitySet {
-  const permitted = new Set(taskTools.length ? taskTools : assignee.tools)
+export function toolIntersection(parent: CapabilitySet, assignee: CapabilitySet, taskTools?: readonly string[]): CapabilitySet {
+  const permitted = taskTools === undefined ? null : new Set(taskTools)
   return {
     version: 1,
-    tools: parent.tools.filter((tool) => assignee.tools.includes(tool) && permitted.has(tool)),
+    tools: parent.tools.filter((tool) => assignee.tools.includes(tool) && (!permitted || permitted.has(tool))),
     connectors: parent.connectors.filter((id) => assignee.connectors.includes(id)),
     contributions: parent.contributions.filter((id) => assignee.contributions.includes(id))
   }

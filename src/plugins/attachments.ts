@@ -126,3 +126,16 @@ export function forget(attachments: Attachments, scope: AttachScope): void {
   if (scope.agentId) delete attachments.agents[scope.agentId]
   if (scope.projectId) delete attachments.projects[scope.projectId]
 }
+
+/** Removes one capability's choices without disturbing the other items in each scope. */
+export function forgetId(attachments: Attachments, id: string): void {
+  const forgetFrom = (item: Entries): void => {
+    item.on = item.on.filter((entry) => entry !== id)
+    item.off = item.off.filter((entry) => entry !== id)
+  }
+  forgetFrom(attachments.global)
+  for (const item of Object.values(attachments.agents)) forgetFrom(item)
+  for (const item of Object.values(attachments.projects)) forgetFrom(item)
+  attachments.agents = Object.fromEntries(Object.entries(attachments.agents).filter(([, item]) => item.on.length || item.off.length))
+  attachments.projects = Object.fromEntries(Object.entries(attachments.projects).filter(([, item]) => item.on.length || item.off.length))
+}

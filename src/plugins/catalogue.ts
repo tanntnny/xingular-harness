@@ -75,6 +75,7 @@ function fromDescriptor(descriptor: PluginDescriptor, source: PluginSource, atta
     required: descriptor.required ?? null,
     manage: descriptor.manage ?? (descriptor.tools?.length ? 'tools' : null),
     settings: (descriptor.settings ?? []).map((setting) => ({ ...setting, value: settingValue(setting, attachments?.settings[descriptor.id]) })),
+    connectorTemplates: descriptor.connectorTemplates ?? [],
     attachment: switchable ? describe(attachments!, descriptor.id, switchable.on) : null,
     contributions: [
       ...(descriptor.code ?? []).map((code) => contribution(descriptor.id, 'code', code.name, { description: code.description, state: on ? 'on' : 'off' })),
@@ -172,7 +173,7 @@ function foundContribution(plugin: string, item: Found, trusted: Trusted, input:
   return contribution(plugin, kind, name, { ...rest, description: description ?? '', path: item.path })
 }
 
-const empty = (id: string, title: string, description: string, source: PluginSource, path: string | null): Plugin => ({ id, title, description, version: null, source, path, runsCode: false, trust: 'none', code: null, install: null, extends: [], required: null, manage: 'files', settings: [], attachment: null, contributions: [] })
+const empty = (id: string, title: string, description: string, source: PluginSource, path: string | null): Plugin => ({ id, title, description, version: null, source, path, runsCode: false, trust: 'none', code: null, install: null, extends: [], required: null, manage: 'files', settings: [], connectorTemplates: [], attachment: null, contributions: [] })
 
 export function catalogue(input: CatalogueInput): Plugin[] {
   const plugins = new Map<string, Plugin>()
@@ -209,7 +210,7 @@ export function catalogue(input: CatalogueInput): Plugin[] {
         const install = item.project ? null : item.packageRoot.startsWith(`${input.packagesDir}/`) ? ({ kind: 'folder', source: item.packageRoot } as const) : item.source ? ({ kind: 'settings', source: item.source } as const) : null
         // Only parts that exist can be extended; a made-up name is dropped.
         const extended = manifest.extends.filter((part) => input.descriptors.some((descriptor) => descriptor.id === part))
-        plugin = { ...empty(id, manifest.name, manifest.description, item.project ? 'project' : 'package', item.packageRoot), version: manifest.version, install, extends: extended }
+        plugin = { ...empty(id, manifest.name, manifest.description, item.project ? 'project' : 'package', item.packageRoot), version: manifest.version, install, extends: extended, connectorTemplates: manifest.connectorTemplates }
       } else if (item.origin === 'home') plugin = empty(id, 'Home folder skills', 'Skills in the .agents folder of your home folder. Pi reads them for every account.', 'home', dirname(dirname(item.path)))
       else if (item.origin === 'project') plugin = empty(id, 'Project folder', 'Found in the working folder: its .pi and .agents folders, and the instruction files Pi reads on the way up from it.', 'project', input.cwd)
       else plugin = empty(id, 'Shared Pi folder', 'Extensions, skills, prompts and instruction files in the folder every account shares.', 'shared', input.sharedDir)

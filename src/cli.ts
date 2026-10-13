@@ -7,6 +7,8 @@
 //   xingular-harness wiki <command>     Memory and Wiki, from inside a terminal session.
 //   xingular-harness mcp <command>      Connected apps, from inside a terminal session.
 //   xingular-harness plugins <command>  List, install, switch and trust plugins.
+import { resolve } from 'node:path'
+
 import { log } from './core/bus'
 import { createHarness, type HarnessOptions } from './harness'
 import { runPluginsCli, terminalAsk } from './plugins/cli'
@@ -50,15 +52,17 @@ function flags(argv: string[]): { values: Record<string, string[]>; switches: Se
 
 function serveCommand(argv: string[]): Promise<number> {
   const { values, switches } = flags(argv)
-  const stateDir = values.state?.[0]
-  if (!stateDir) {
+  const stateArgument = values.state?.[0]
+  if (!stateArgument) {
     process.stderr.write('serve needs --state <dir>.\n')
     return Promise.resolve(2)
   }
+  // The socket path is built from this folder, so a relative one would depend on where the host ran.
+  const stateDir = resolve(stateArgument)
   const peer = new RpcPeer(stdioTransport())
   const options: HarnessOptions = {
     stateDir,
-    dataRoot: values.data?.[0] ?? null,
+    dataRoot: values.data?.[0] ? resolve(values.data[0]) : null,
     productName: values.name?.[0],
     builtins: values.builtins,
     ...(switches.has('host-secrets') ? { secrets: remoteSecrets(peer) } : {}),

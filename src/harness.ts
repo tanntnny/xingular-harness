@@ -15,6 +15,7 @@ import { readJsonOr } from './core/fs'
 import { closeIndex } from './core/index'
 import { projectsOrNone } from './core/projects'
 import { ConnectedApps } from './mcp/service'
+import { migrateConnectionScopes } from './mcp/scopeMigration'
 import type { MaintainerFactory } from './memory/maintainer'
 import { Maintenance } from './memory/maintenance'
 import * as migrate from './memory/migrate'
@@ -179,7 +180,7 @@ export class Harness {
       policy: this.policy,
       broker: this.apps,
       plugins: this.plugins,
-      resolveCapabilities: (caller, tools) => capabilities.resolve(this, { agentId: caller.agentId ?? null, projectId: caller.projectId ?? null, tools }),
+      resolveCapabilities: (caller, tools, cwd) => capabilities.resolve(this, { agentId: caller.agentId ?? null, projectId: caller.projectId ?? null, cwd, tools }),
       factory: options.sessionFactory
     })
     this.maintenance = new Maintenance({ env: this.env, bus: this.bus, accounts: this.accounts, factory: options.maintainerFactory, idleMs: options.idleMs })
@@ -221,13 +222,22 @@ export class Harness {
     void this.hooks.reload()
     for (const folder of ['registry/skills', 'registry/prompts', 'registry/rules', 'config', 'runs']) mkdirSync(join(root, folder), { recursive: true })
     let migrationError: string | null = null
+    let wikiMigrationError: string | null = null
     try {
       if (migrate.run(this.env, agentIds)) log(`started Wiki storage version ${migrate.WIKI_VERSION}; the earlier Wiki is kept as a backup in the data root`)
     } catch (error) {
       migrationError = error instanceof Error ? error.message : String(error)
+      wikiMigrationError = migrationError
       log('Wiki migration failed', migrationError)
     }
-    if (!migrationError) {
+    try {
+      migrateConnectionScopes(root, this.stateDir)
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error)
+      migrationError = migrationError ? `${migrationError}; connector scope migration: ${detail}` : detail
+      log('connector scope migration failed', detail)
+    }
+    if (!wikiMigrationError) {
       try {
         store.ensureLayout(root, this.env.productName)
         // Every project has its fixed pages, and the generated indexes match the files.

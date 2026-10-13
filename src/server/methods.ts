@@ -10,6 +10,7 @@ import { HarnessError, invalid } from '../core/errors'
 import { projectsOrNone } from '../core/projects'
 import * as capabilities from '../capabilities/api'
 import { loadRun as loadCapabilitySnapshot } from '../capabilities/runSnapshot'
+import { capabilitySet } from '../capabilities/runSnapshot'
 import type { Harness } from '../harness'
 import * as blocks from '../memory/blocks'
 import { validateScopeIds } from '../mcp/connections'
@@ -255,6 +256,11 @@ export function methods(harness: Harness): Record<string, Handler> {
     'capabilities.detach': (params: Params) => capabilities.switchCapability(harness, { ...pluginScope(params), id: text(params, 'id'), scope: params.scope ?? null }, false),
     'capabilities.resolve': (params: Params) => capabilities.resolve(harness, { ...pluginScope(params), tools: Array.isArray(params.tools) ? params.tools.filter((item: unknown): item is string => typeof item === 'string') : [] }),
     'capabilities.run': (params: Params) => loadCapabilitySnapshot(root(), text(params, 'runId')),
+    'capabilities.intersect': (params: Params) => capabilities.toolIntersection(
+      capabilitySet(params.parent),
+      capabilitySet(params.assignee),
+      params.tools === undefined ? undefined : Array.isArray(params.tools) ? params.tools.filter((item: unknown): item is string => typeof item === 'string') : []
+    ),
 
     // ---- Runs --------------------------------------------------------------------------------------
     'runs.load': (params: Params) => snapshot(root(), text(params, 'runId')),

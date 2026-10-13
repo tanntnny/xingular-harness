@@ -12,7 +12,7 @@ import { reindexQuietly } from './wikiIndex'
 export type DispatchEnv = HarnessEnv & { bus?: Bus }
 
 /** Runs one call and returns its reply as text for a model. */
-export function dispatch(env: DispatchEnv, context: CallerContext, call: string, params: api.Params): string {
+export function dispatch(env: DispatchEnv, context: CallerContext, call: string, params: api.Params, contributions?: readonly string[]): string {
   switch (call) {
     case 'wiki.entrypoint': {
       const recorded = context.runId ? safely(() => load(env.root, context.runId!)) : null
@@ -36,7 +36,7 @@ export function dispatch(env: DispatchEnv, context: CallerContext, call: string,
     case 'wiki.list':
       return api.list(env, params)
     case 'wiki.skill':
-      return api.skill(env, context, params)
+      return api.skill(env, context, params, contributions)
     case 'wiki.memory':
       return api.memories(env, context, params)
     case 'wiki.propose': {

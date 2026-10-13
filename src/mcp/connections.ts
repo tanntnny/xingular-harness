@@ -10,7 +10,9 @@ import { newId, readJson, safeId, writeJson } from '../core/fs'
 import { findBinary, searchPath } from '../core/path'
 import { isDir } from '../memory/store'
 import type { RunEvent } from '../sessions/contracts'
-import { connectionInputSchema, connectionSchema, type Connection, type ConnectionInput, type LaunchConfig, type Scope } from './types'
+import * as attachments from '../plugins/attachments'
+import { connectionScopeMigrationComplete } from './scopeMigration'
+import { connectionCapabilityId, connectionInputSchema, connectionSchema, type Connection, type ConnectionInput, type LaunchConfig, type Scope } from './types'
 
 const OAUTH_STATE = 'oauth'
 const OAUTH_CLIENT_ID = 'oauth_client_id'
@@ -144,6 +146,24 @@ export function revisionOf(all: readonly Connection[]): unknown[] {
   return all.map((item) => ({ id: item.id, enabled: item.enabled, global: item.global, agents: item.agentIds, projects: item.projectIds, excludedAgents: item.excludedAgentIds, excludedProjects: item.excludedProjectIds, checkedAt: item.checkedAt, error: item.error }))
 }
 
+function sameScope(left: Connection, right: Connection): boolean {
+  const ids = (values: string[]): string[] => [...values].sort()
+  return left.global === right.global
+    && JSON.stringify(ids(left.agentIds)) === JSON.stringify(ids(right.agentIds))
+    && JSON.stringify(ids(left.projectIds)) === JSON.stringify(ids(right.projectIds))
+    && JSON.stringify(ids(left.excludedAgentIds)) === JSON.stringify(ids(right.excludedAgentIds))
+    && JSON.stringify(ids(left.excludedProjectIds)) === JSON.stringify(ids(right.excludedProjectIds))
+}
+
+function hasScope(connection: Connection): boolean {
+  return connection.global || connection.agentIds.length > 0 || connection.projectIds.length > 0
+    || connection.excludedAgentIds.length > 0 || connection.excludedProjectIds.length > 0
+}
+
+function scopeMigrationError(): HarnessError {
+  return new HarnessError('connection_scope_migration_pending', 'Connector access settings cannot be changed until their scope migration succeeds. Reopen the data root to retry it.')
+}
+
 // ---- The store --------------------------------------------------------------------------------
 
 export class Connections {
@@ -154,13 +174,16 @@ export class Connections {
   constructor(
     stateDir: string,
     private readonly secrets: SecretStore,
-    private readonly bus: Bus
+    private readonly bus: Bus,
+    private readonly attachmentRoot: () => string | null = () => null
   ) {
     this.path = join(stateDir, 'connections.json')
   }
 
   list(): Connection[] {
     const stored = readJson<unknown[]>(this.path) ?? []
+    const root = this.attachmentRoot()
+    const choices = root ? attachments.load(root) : null
     return stored.flatMap((item) => {
       const parsed = connectionSchema.safeParse(item)
       if (!parsed.success) return []
@@ -169,6 +192,22 @@ export class Connections {
       if (!connection.auth) connection.auth = 'none'
       // The preset was saved as "X Workspace" before the product was renamed.
       if (connection.kind === 'workspace' && connection.name === 'X Workspace') connection.name = 'Xingular Workspace'
+      if (choices) {
+        const id = connectionCapabilityId(connection.id)
+        const hasChoice = choices.global.on.includes(id) || choices.global.off.includes(id)
+          || Object.values(choices.agents).some((entry) => entry.on.includes(id) || entry.off.includes(id))
+          || Object.values(choices.projects).some((entry) => entry.on.includes(id) || entry.off.includes(id))
+        // Before the first successful root open, keep old records readable. After migration the
+        // returned fields are a view over attachments; they are never written back to connections.json.
+        if (hasChoice || !(connection.global || connection.agentIds.length || connection.projectIds.length || connection.excludedAgentIds.length || connection.excludedProjectIds.length)) {
+          const attachment = attachments.describe(choices, id, connection.global)
+          connection.global = attachment.global
+          connection.agentIds = attachment.on.agentIds
+          connection.projectIds = attachment.on.projectIds
+          connection.excludedAgentIds = attachment.off.agentIds
+          connection.excludedProjectIds = attachment.off.projectIds
+        }
+      }
       return [connection]
     })
   }
@@ -188,12 +227,52 @@ export class Connections {
   }
 
   private write(all: Connection[]): void {
-    writeJson(this.path, all)
+    const root = this.attachmentRoot()
+    let stored: Connection[] | Omit<Connection, 'global' | 'agentIds' | 'projectIds' | 'excludedAgentIds' | 'excludedProjectIds'>[] = all
+    if (root && connectionScopeMigrationComplete(root)) {
+      stored = all.map(({ global: _global, agentIds: _agentIds, projectIds: _projectIds, excludedAgentIds: _excludedAgentIds, excludedProjectIds: _excludedProjectIds, ...connection }) => connection)
+    } else if (root) {
+      // A non-scope edit is allowed while migration is pending, but its legacy scopes must stay
+      // in connections.json until the attachment store has been verified.
+      const previous = new Map<string, Connection>()
+      for (const item of readJson<unknown[]>(this.path) ?? []) {
+        const parsed = connectionSchema.safeParse(item)
+        if (parsed.success) previous.set(parsed.data.id, parsed.data)
+      }
+      stored = all.map((connection) => {
+        const legacy = previous.get(connection.id)
+        return legacy ? {
+          ...connection,
+          global: legacy.global,
+          agentIds: legacy.agentIds,
+          projectIds: legacy.projectIds,
+          excludedAgentIds: legacy.excludedAgentIds,
+          excludedProjectIds: legacy.excludedProjectIds
+        } : connection
+      })
+    }
+    writeJson(this.path, stored)
     try {
       chmodSync(this.path, 0o600)
     } catch {
       // The file was written; a mode that cannot be set is not worth failing the change.
     }
+  }
+
+  private writeScope(root: string, connection: Connection): void {
+    const choices = attachments.load(root)
+    const id = connectionCapabilityId(connection.id)
+    attachments.forgetId(choices, id)
+    attachments.set(choices, [id], {}, connection.global, false)
+    for (const agentId of new Set([...connection.agentIds, ...connection.excludedAgentIds])) {
+      const on = connection.agentIds.includes(agentId) && !connection.excludedAgentIds.includes(agentId)
+      attachments.set(choices, [id], { agentId }, on, connection.global)
+    }
+    for (const projectId of new Set([...connection.projectIds, ...connection.excludedProjectIds])) {
+      const on = connection.projectIds.includes(projectId) && !connection.excludedProjectIds.includes(projectId)
+      attachments.set(choices, [id], { projectId }, on, connection.global)
+    }
+    attachments.save(root, choices)
   }
 
   changed(): void {
@@ -205,7 +284,10 @@ export class Connections {
     const all = this.list()
     const connection = all.find((item) => item.id === id)
     if (!connection) throw notFound('Connection')
+    const before = { ...connection, agentIds: [...connection.agentIds], projectIds: [...connection.projectIds], excludedAgentIds: [...connection.excludedAgentIds], excludedProjectIds: [...connection.excludedProjectIds] }
     change(connection)
+    const root = this.attachmentRoot()
+    if (root && !connectionScopeMigrationComplete(root) && !sameScope(before, connection)) throw scopeMigrationError()
     this.write(all)
     return connection
   }
@@ -213,8 +295,88 @@ export class Connections {
   /** Read-modify-write of every connection. */
   updateAll(change: (all: Connection[]) => void): void {
     const all = this.list()
+    const before = new Map<string, Connection>(all.map((connection): [string, Connection] => [connection.id, {
+      ...connection,
+      agentIds: [...connection.agentIds],
+      projectIds: [...connection.projectIds],
+      excludedAgentIds: [...connection.excludedAgentIds],
+      excludedProjectIds: [...connection.excludedProjectIds]
+    }]))
     change(all)
+    const root = this.attachmentRoot()
+    if (root && !connectionScopeMigrationComplete(root)) {
+      const remainingIds = new Set(all.map((connection) => connection.id))
+      const scopeChanged = all.some((connection) => {
+        const previous = before.get(connection.id)
+        return previous ? !sameScope(previous, connection) : hasScope(connection)
+      }) || [...before].some(([id, connection]) => !remainingIds.has(id) && hasScope(connection))
+      if (scopeChanged) throw scopeMigrationError()
+    }
     this.write(all)
+    this.changed()
+  }
+
+  /** Switches one connector in the shared attachment store, preserving all other scopes. */
+  setScope(connectionId: string, scope: Scope, on: boolean): Connection[] {
+    const connection = this.find(connectionId)
+    const root = this.attachmentRoot()
+    if (root && !connectionScopeMigrationComplete(root)) throw scopeMigrationError()
+    if (!root) {
+      this.update(connectionId, (item) => setScope(item, scope, on))
+      this.changed()
+      return this.forScope(scope)
+    }
+    const choices = attachments.load(root)
+    const fallback = connection.global
+    attachments.set(choices, [connectionCapabilityId(connectionId)], scope, on, fallback)
+    attachments.save(root, choices)
+    this.changed()
+    return this.forScope(scope)
+  }
+
+  /** Gives one agent an exact connector set without changing project or global choices. */
+  setAgentScope(agentId: string, ids: readonly string[]): Connection[] {
+    const all = this.list()
+    const root = this.attachmentRoot()
+    if (root && !connectionScopeMigrationComplete(root)) throw scopeMigrationError()
+    if (!root) {
+      setAgentScope(all, agentId, ids)
+      this.write(all)
+      this.changed()
+      return this.forScope({ agentId })
+    }
+    const choices = attachments.load(root)
+    for (const connection of all) {
+      attachments.set(choices, [connectionCapabilityId(connection.id)], { agentId }, ids.includes(connection.id), connection.global)
+    }
+    attachments.save(root, choices)
+    this.changed()
+    return this.forScope({ agentId })
+  }
+
+  /** Removes only connector choices when an agent is deleted; other capability choices are separate. */
+  removeAgentScope(agentId: string): void {
+    const root = this.attachmentRoot()
+    // This is cleanup for a deleted caller. Leave stale ids inert until migration can safely
+    // move the remaining scopes; failing helper cleanup must not leave an orphan agent behind.
+    if (root && !connectionScopeMigrationComplete(root)) return
+    if (!root) {
+      this.updateAll((all) => {
+        for (const connection of all) {
+          connection.agentIds = connection.agentIds.filter((id) => id !== agentId)
+          connection.excludedAgentIds = connection.excludedAgentIds.filter((id) => id !== agentId)
+        }
+      })
+      return
+    }
+    const choices = attachments.load(root)
+    const entry = choices.agents[agentId]
+    if (!entry) return
+    const isConnector = (id: string): boolean => id.startsWith('connected-apps/connection/')
+    entry.on = entry.on.filter((id) => !isConnector(id))
+    entry.off = entry.off.filter((id) => !isConnector(id))
+    if (!entry.on.length && !entry.off.length) delete choices.agents[agentId]
+    attachments.save(root, choices)
     this.changed()
   }
 
@@ -364,6 +526,10 @@ export class Connections {
 
     const all = this.list()
     const existing = all.find((item) => item.id === connection.id)
+    const root = this.attachmentRoot()
+    if (root && !connectionScopeMigrationComplete(root) && (existing ? !sameScope(existing, connection) : hasScope(connection))) {
+      throw scopeMigrationError()
+    }
     connection.envKeys = [...(existing?.envKeys ?? [])]
     connection.headerKeys = [...(existing?.headerKeys ?? [])]
     // A sign-in belongs to one server and one client; never carry it to another.
@@ -395,6 +561,7 @@ export class Connections {
       connection.envKeys = connection.envKeys.filter((value) => value !== key)
     }
     Object.assign(connection, { checkedAt: null, tools: [], serverName: null, error: null })
+    if (root && connectionScopeMigrationComplete(root)) this.writeScope(root, connection as Connection)
     this.write([...all.filter((item) => item.id !== connection.id), connection])
     await this.refreshSecrets()
     this.changed()
@@ -424,6 +591,12 @@ export class Connections {
       for (const name of [OAUTH_STATE, OAUTH_CLIENT_ID, OAUTH_CLIENT_SECRET]) await this.deleteSecret(connection.id, name)
     }
     this.write(all.filter((item) => item.id !== connectionId))
+    const root = this.attachmentRoot()
+    if (root) {
+      const choices = attachments.load(root)
+      attachments.forgetId(choices, connectionCapabilityId(connectionId))
+      attachments.save(root, choices)
+    }
     this.known.delete(connectionId)
     this.changed()
   }

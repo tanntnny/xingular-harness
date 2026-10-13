@@ -17,7 +17,7 @@ import type { ActiveRun, RunRegistry } from '../sessions/registry'
 import { findRun, runDir } from '../sessions/runStore'
 import type { SessionBroker } from '../sessions/sessions'
 import type { ToolSession, ToolSpec } from '../tools/types'
-import { allowed, Connections, setScope, webUrl } from './connections'
+import { allowed, Connections, webUrl } from './connections'
 import { isSignInRequired, McpManager, signInRequired } from './manager'
 import { signIn, type OAuthHost } from './oauth'
 import type { Connection, HttpConfig, LaunchConfig, McpSource, McpTrace } from './types'
@@ -134,7 +134,7 @@ export class ConnectedApps implements SessionBroker {
   private brokered: BrokeredTools | null = null
 
   constructor(private readonly options: ConnectedAppsOptions) {
-    this.connections = new Connections(options.stateDir, options.secrets, options.bus)
+    this.connections = new Connections(options.stateDir, options.secrets, options.bus, () => options.env.root)
     this.oauth = {
       clientName: options.env.productName,
       load: (id) => this.connections.oauthLoad(id),
@@ -235,7 +235,7 @@ export class ConnectedApps implements SessionBroker {
           return { tools, errors: [] }
         } catch (error) {
           const unauthorized = isSignInRequired(error)
-          const message = unauthorized ? signInRequired(connection).message : `${connection.name} could not load its tools. Check the connection in Settings → Connections.`
+          const message = unauthorized ? signInRequired(connection).message : `${connection.name} could not load its tools. Check its scope in Capability → Connectors.`
           if (unauthorized) await this.manager.close(connection.id, session.sessionId)
           this.connectionFailed(connection.id, unauthorized)
           return { tools: [], errors: [{ connection: connection.name, message }] }
@@ -393,8 +393,8 @@ export class ConnectedApps implements SessionBroker {
     return [
       {
         name: 'mcp_list_tools',
-        label: 'App and connected tools',
-        description: `Discover enabled ${this.options.env.productName} app operations and connected-app tools by name. Pass tool to get one tool with its input schema.${this.brokered?.discoveryNote ? ` ${this.brokered.discoveryNote}` : ''}`,
+        label: 'App and connector tools',
+        description: `Discover enabled ${this.options.env.productName} app operations and connector tools by name. Pass tool to get one tool with its input schema.${this.brokered?.discoveryNote ? ` ${this.brokered.discoveryNote}` : ''}`,
         parameters: (Type) =>
           Type.Object({
             tool: Type.Optional(Type.String({ description: 'One tool name, to get its input schema.' })),
@@ -411,8 +411,8 @@ export class ConnectedApps implements SessionBroker {
       },
       {
         name: 'mcp_call_tool',
-        label: 'Use connected app',
-        description: 'Invoke an enabled app or connected-app tool returned by mcp_list_tools. Current settings are checked on every call. Changes require approval.',
+        label: 'Use connector',
+        description: 'Invoke an enabled app or connector tool returned by mcp_list_tools. Current settings are checked on every call. Changes require approval.',
         parameters: (Type) => Type.Object({ name: Type.String(), arguments: Type.Record(Type.String(), Type.Unknown()) }),
         execute: async (input) => JSON.stringify(await this.invoke(session, String(input.name), (input.arguments ?? {}) as Record<string, unknown>))
       }
@@ -506,23 +506,13 @@ export class ConnectedApps implements SessionBroker {
 
   /** Gives one agent exactly these connections, if its creator may reach each of them. */
   setAgentScope(creator: { agentId?: string | null; projectId?: string | null }, agentId: string, ids: readonly string[]): Connection[] {
-    this.connections.updateAll((all) => {
-      for (const id of ids) {
-        const connection = all.find((item) => item.id === id)
-        if (!connection) throw notFound('Connection')
-        if (!allowed(connection, creator)) throw new HarnessError('required_connections_unavailable', `${connection.name} is disabled or outside your connection scope.`)
-      }
-      for (const connection of all) {
-        connection.agentIds = connection.agentIds.filter((id) => id !== agentId)
-        connection.excludedAgentIds = connection.excludedAgentIds.filter((id) => id !== agentId)
-        if (ids.includes(connection.id)) {
-          if (!connection.global) connection.agentIds.push(agentId)
-        } else if (connection.global) {
-          connection.excludedAgentIds.push(agentId)
-        }
-      }
-    })
-    return this.connections.forScope({ agentId })
+    const all = this.connections.list()
+    for (const id of ids) {
+      const connection = all.find((item) => item.id === id)
+      if (!connection) throw notFound('Connection')
+      if (!allowed(connection, creator)) throw new HarnessError('required_connections_unavailable', `${connection.name} is disabled or outside your connection scope.`)
+    }
+    return this.connections.setAgentScope(agentId, ids)
   }
 
   /**
@@ -542,22 +532,14 @@ export class ConnectedApps implements SessionBroker {
 
   /** Switches one saved connection on or off for everyone, one agent, or one project. */
   attach(connectionId: string, scope: { agentId?: string | null; projectId?: string | null }, on: boolean): void {
-    this.connections.updateAll((all) => {
-      const connection = all.find((item) => item.id === connectionId)
-      if (!connection) throw notFound('Connection')
-      if (!connection.enabled) throw invalid(`${connection.name} is switched off. Switch it on in its own settings first.`)
-      setScope(connection, scope, on)
-    })
+    const connection = this.connections.find(connectionId)
+    if (!connection.enabled) throw invalid(`${connection.name} is switched off. Switch it on in its own settings first.`)
+    this.connections.setScope(connectionId, scope, on)
   }
 
   /** Forgets an agent that no longer exists. */
   removeAgentScope(agentId: string): void {
-    this.connections.updateAll((all) => {
-      for (const connection of all) {
-        connection.agentIds = connection.agentIds.filter((id) => id !== agentId)
-        connection.excludedAgentIds = connection.excludedAgentIds.filter((id) => id !== agentId)
-      }
-    })
+    this.connections.removeAgentScope(agentId)
   }
 
   async close(): Promise<void> {

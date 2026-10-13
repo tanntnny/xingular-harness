@@ -405,10 +405,10 @@ function hostSection(host: HostSection, kept: boolean): Section | null {
 }
 
 /** Compiles the pack for a caller. It only reads the data root. */
-export function compile(env: HarnessEnv, context: CallerContext, launch: Launch = {}): ContextPack {
+export function compile(env: HarnessEnv, context: CallerContext, launch: Launch = {}, contributions?: readonly string[]): ContextPack {
   const { root } = env
   const wiki = store.wikiDir(root)
-  const active = registry.enabledFor(root, context.projectId ?? null, context.agentId ?? null)
+  const active = registry.enabledFor(root, context.projectId ?? null, context.agentId ?? null, contributions)
   const groups = toolGroups(context, launch)
   const contextProfile = profileFor(root, context)
   const keep = (id: string): boolean => id === 'references' || keeps(contextProfile, id)
@@ -573,8 +573,8 @@ function sameSection(left: Section | undefined, right: Section | undefined): boo
  * Recording the current pack does not mark an update delivered: the session saves that snapshot
  * only when it appends the corresponding context message.
  */
-export function sessionLaunch(env: HarnessEnv, context: CallerContext, launch: Launch, historyFile: string | null): { system: string; update: ContextUpdate | null } {
-  const pack = compile(env, context, launch)
+export function sessionLaunch(env: HarnessEnv, context: CallerContext, launch: Launch, historyFile: string | null, contributions?: readonly string[]): { system: string; update: ContextUpdate | null } {
+  const pack = compile(env, context, launch, contributions)
   const dynamic = [...BUILT_IN_DYNAMIC, ...(launch.sections ?? []).filter((host) => host.dynamic).map((host) => ({ id: host.id, order: host.order }))]
     .map((slot, index) => ({ ...slot, index }))
     .sort((left, right) => left.order - right.order || left.index - right.index)

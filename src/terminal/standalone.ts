@@ -3,7 +3,7 @@
 import { spawn as nodeSpawn } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
 import { homedir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { isAbsolute, join, resolve } from 'node:path'
 
 import { createHarness, type Harness, type HarnessOptions } from '../harness'
 import type { TerminalLaunch } from './terminals'
@@ -36,13 +36,21 @@ export function parseStandaloneOptions(argv: string[], home = homedir(), cwd = p
     stateDir: join(root, 'state')
   }
 
+  const given = new Set<string>()
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index]
     if (argument !== '--data' && argument !== '--state') throw new Error(`Unknown standalone option: ${argument}`)
     const value = argv[index + 1]
     if (!value || value.startsWith('--')) throw new Error(`${argument} needs a directory path.`)
     paths[argument === '--data' ? 'dataRoot' : 'stateDir'] = resolve(cwd, value)
+    given.add(argument)
     index += 1
+  }
+
+  // A home that is not a folder path (for example HOME set to the word "HOME") would put the
+  // defaults, and the session socket, in whatever folder the command was started from.
+  if (!isAbsolute(home) && !(given.has('--data') && given.has('--state'))) {
+    throw new Error(`The home folder "${home}" is not an absolute path, so the default data and state folders cannot be placed. Set HOME to your home folder, or pass --data and --state with absolute folders.`)
   }
 
   return paths

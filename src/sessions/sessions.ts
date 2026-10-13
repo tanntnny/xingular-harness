@@ -83,15 +83,15 @@ export interface SessionsOptions {
   /** Chooses what a session loads. Without it Pi discovers extensions and skills on its own. */
   plugins?: Plugins
   /** Resolves the caller's capability set from the harness's stores. */
-  resolveCapabilities?: (caller: CallerContext, tools: readonly string[]) => Promise<CapabilitySet>
+  resolveCapabilities?: (caller: CallerContext, tools: readonly string[], cwd: string) => Promise<CapabilitySet>
   factory?: SessionFactory
 }
 
 /** The harness's own plugins a person switched on for this caller, with the numbers they set. */
-function firstPartyFor(root: string, caller: CallerContext): InlineExtension[] {
+function firstPartyFor(root: string, contributions: readonly string[]): InlineExtension[] {
   const choices = attachments.load(root)
-  const scope = { agentId: caller.agentId ?? null, projectId: caller.projectId ?? null }
-  return firstPartyExtensions((id) => attachments.attached(choices, [id], scope, FIRST_PARTY_PLUGINS.find((plugin) => plugin.id === id)?.switchable?.on ?? false), choices.settings)
+  const allowed = new Set(contributions)
+  return firstPartyExtensions((id) => FIRST_PARTY_PLUGINS.find((plugin) => plugin.id === id)?.code?.some((code) => allowed.has(`${id}/code/${code.name}`)) ?? false, choices.settings)
 }
 
 export class Sessions {
@@ -161,7 +161,7 @@ export class Sessions {
       ...(broker?.toolNames ?? [])
     ])]
     const available = this.options.resolveCapabilities
-      ? await this.options.resolveCapabilities(caller, requestedTools)
+      ? await this.options.resolveCapabilities(caller, requestedTools, input.cwd)
       : { version: 1 as const, tools: requestedTools, connectors: [], contributions: [] }
     const requested = input.capabilities ? parseCapabilitySet(input.capabilities) : available
     const capabilities: CapabilitySet = {
@@ -222,7 +222,7 @@ export class Sessions {
         connectionTools: (launch.connectionTools ?? []).filter((name) => capabilities.tools.includes(name)),
         toolGroups: launch.toolGroups?.map((group) => ({ ...group, tools: group.tools.filter((name) => capabilities.tools.includes(name)) })).filter((group) => group.tools.length > 0)
       }
-      ;({ system, update } = sessionLaunch(this.env, caller, effectiveLaunch, historyFile))
+      ;({ system, update } = sessionLaunch(this.env, caller, effectiveLaunch, historyFile, capabilities.contributions))
     } catch (error) {
       fail(error)
       throw error
@@ -239,7 +239,7 @@ export class Sessions {
     try {
       const tools: ToolSpec[] = [
         ...(broker ? broker.tools(session, { readOnly: typeof input.connections === 'object' && input.connections.readOnly === true }) : []),
-        ...memoryTools(this.options.env, caller),
+        ...memoryTools(this.options.env, caller, capabilities.contributions),
         askUserTool(run),
         pluginProposeTool(this.options.env, caller)
       ]
@@ -257,9 +257,9 @@ export class Sessions {
         preamble: input.preamble ?? null,
         automatic: input.automatic,
         account: context,
-        resources: registry.resources(root, caller.projectId ?? null, caller.agentId ?? null),
-        inline: [...firstPartyFor(root, caller), runLineageJoin(root, runId)],
-        ...(plugins ? { plugins: { loading: () => plugins.loading({ cwd: input.cwd, agentDir: context.configDir, install: true, caller: { agentId: caller.agentId ?? null, projectId: caller.projectId ?? null } }), loaded: (extensions) => plugins.loaded(extensions) } } : {}),
+        resources: registry.resources(root, caller.projectId ?? null, caller.agentId ?? null, capabilities.contributions),
+        inline: [...firstPartyFor(root, capabilities.contributions), runLineageJoin(root, runId)],
+        ...(plugins ? { plugins: { loading: () => plugins.loading({ cwd: input.cwd, agentDir: context.configDir, install: true, caller: { agentId: caller.agentId ?? null, projectId: caller.projectId ?? null }, contributions: capabilities.contributions }), loaded: (extensions) => plugins.loaded(extensions) } } : {}),
         system,
         update
       }

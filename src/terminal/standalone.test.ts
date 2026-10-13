@@ -67,6 +67,11 @@ describe('standalone terminal startup', () => {
     expect(() => parseStandaloneOptions(['--model', 'unknown'])).toThrow('Unknown standalone option: --model')
   })
 
+  it('refuses default folders under a home that is not a folder path, and accepts explicit absolute folders', () => {
+    expect(() => parseStandaloneOptions([], 'HOME', '/work/project')).toThrow('is not an absolute path')
+    expect(parseStandaloneOptions(['--data', '/data', '--state', '/state'], 'HOME', '/work/project')).toEqual({ dataRoot: '/data', stateDir: '/state' })
+  })
+
   it('starts Pi in the current directory, creates the first isolated account, and cleans up on exit', async () => {
     const home = temporaryDirectory('harness-standalone-')
     const cwd = temporaryDirectory('harness-cwd-')

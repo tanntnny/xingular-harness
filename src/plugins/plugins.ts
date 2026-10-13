@@ -78,6 +78,8 @@ export function packageFolders(directory: string | null): string[] {
 export interface LoadingInput extends ResolveInput {
   /** Who the session is for. Something switched off for this agent or project does not load. */
   caller?: AttachScope
+  /** The contributions frozen for a run. When present, this snapshot governs loading. */
+  contributions?: readonly string[]
 }
 
 /** Which code a person trusted: the working folder's as a whole, and each installed package's. */
@@ -142,8 +144,11 @@ export class Plugins {
       if (item.kind === 'hook') return !attached(choices, [pluginIdOf(item)], {}, true)
       return !attached(choices, foundIds(item), input.caller ?? {}, true)
     }
-    const detached = found.filter(off).map((item) => item.path)
-    const chosen = found.filter((item) => loads(item, trusted) && !detached.includes(item.path))
+    const allowed = (item: Found): boolean => input.contributions === undefined
+      ? !off(item)
+      : input.contributions.includes(foundIds(item)[0])
+    const detached = found.filter((item) => !allowed(item)).map((item) => item.path)
+    const chosen = found.filter((item) => loads(item, trusted) && allowed(item))
     const paths = (kind: Found['kind'], builtin: boolean): string[] => chosen.filter((item) => item.kind === kind && (item.origin === 'builtin') === builtin).map((item) => item.path)
     return {
       extensionPaths: paths('extension', false),
@@ -154,7 +159,7 @@ export class Plugins {
       hooks: chosen.filter((item) => item.kind === 'hook' && item.packageRoot).map((item) => ({ path: item.path, packageRoot: item.packageRoot!, hash: packageCodeState[item.packageRoot!]?.hash ?? '' })),
       found,
       detached,
-      resourceAllowed: (item) => !off(item),
+      resourceAllowed: allowed,
       projectCode: projectCodeState,
       packageCode: packageCodeState
     }

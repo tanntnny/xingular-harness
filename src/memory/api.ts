@@ -183,13 +183,15 @@ export function list(env: HarnessEnv, params: Params): string {
 }
 
 /** One skill's instructions by name or id, or the skills index when no name is given. */
-export function skill(env: HarnessEnv, context: CallerContext, params: Params): string {
+export function skill(env: HarnessEnv, context: CallerContext, params: Params, contributions?: readonly string[]): string {
   const { root } = env
   const name = textParam(params, 'name').toLowerCase()
-  const items = registry.list(root).filter((item) => item.kind === 'skills')
+  const items = registry.limitToContributions(registry.list(root).filter((item) => item.kind === 'skills'), contributions)
   if (!name) {
     if (!items.length) return 'No skills yet.'
-    const active = registry.enabledFor(root, context.projectId ?? null, context.agentId ?? null).map((item) => item.id)
+    const active = (contributions === undefined
+      ? registry.enabledFor(root, context.projectId ?? null, context.agentId ?? null)
+      : items).map((item) => item.id)
     return items.map((item) => `- ${item.name} (${item.id})${active.includes(item.id) ? ' · active' : ''} — ${item.description}`).join('\n')
   }
   const found = items.find((item) => item.id.toLowerCase() === name || item.id.replace(/^skills\//, '').toLowerCase() === name || item.name.toLowerCase() === name)

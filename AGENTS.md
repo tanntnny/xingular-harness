@@ -9,7 +9,7 @@ This package is consumed as source by Xingular Agent's sidecar, and is meant to 
 other applications. A change here changes every application built on it.
 
 - Belongs here: Pi sessions and accounts, the prompt compiler and its delivery, memory and the
-  Wiki, recall, skills, the tool gate and standing approvals, connected apps (MCP), terminal
+  Wiki, recall, skills, the tool gate and standing approvals, connectors (MCP), terminal
   sessions for the `pi` command, and the server protocol.
 - Stays in the application: agents, groups, conversations, tasks and coordination, projects and
   worktrees, files, browser and computer use, windows, the PTY, the keychain, and all UI.
@@ -22,6 +22,12 @@ other applications. A change here changes every application built on it.
 - When an application needs the harness to do something new, add an extension point (a prompt
   section, a tool provider, a policy hook, a plugin description, an option). Do not add an application-name check or a
   branch for one application's concept.
+
+## RFC-0009 capability contract
+
+`capabilities.resolve` returns the versioned generic set of tools, connectors and contributions available to a caller. `capabilities.intersect` narrows a set for a child caller; it never adds access. `sessions.run` filters the requested set through current availability and freezes the result with its opaque caller metadata beside the run. The tool gate still decides whether a call needs approval. Do not introduce application-specific task, agent-role, or UI concepts into this contract.
+
+The capability snapshot and attachment-scope migration are being implemented in this source tree. They have not been verified as a release; preserve per-run immutability and the generic boundary while finishing them.
 
 ## Rules
 

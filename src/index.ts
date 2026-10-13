@@ -17,6 +17,7 @@ export { fileSecretStore, memorySecretStore, secretKey, type SecretStore } from 
 export type { Account, AccountsOverview, Pool } from './accounts/store'
 export type { ModelOption } from './accounts/accounts'
 export type { Capability, CapabilityCatalogue, CapabilityKind, CapabilityScope, CapabilitySet } from './capabilities/types'
+export type { RunCapabilitySnapshot } from './capabilities/runSnapshot'
 
 export type { CallerContext } from './memory/caller'
 export { dispatch as memoryCall } from './memory/dispatch'
@@ -61,7 +62,7 @@ export { HARNESS_PLUGINS } from './plugins/builtin'
 export { FIRST_PARTY_PLUGINS } from './plugins/firstParty'
 export type { Found, Resolver } from './plugins/discover'
 export type { Loading, Registered } from './plugins/plugins'
-export { CONTRIBUTION_KINDS, PLUGIN_SOURCES, type Contribution, type ContributionKind, type ContributionState, type Delivery, type Inventory, type InventoryItem, type Plugin, type PluginDescriptor, type PluginManage, type PluginSetting, type PluginSource } from './plugins/types'
+export { CONTRIBUTION_KINDS, PLUGIN_SOURCES, type ConnectorTemplate, type Contribution, type ContributionKind, type ContributionState, type Delivery, type Inventory, type InventoryItem, type Plugin, type PluginDescriptor, type PluginManage, type PluginSetting, type PluginSource } from './plugins/types'
 
 export { methods } from './server/methods'
 export { remoteDirectory, remotePolicy, remoteSecrets, remoteTools } from './server/remote'

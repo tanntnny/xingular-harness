@@ -7,6 +7,9 @@ import { z } from 'zod'
 export const MCP_OAUTH_PORT = 47823
 export const MCP_OAUTH_REDIRECT_URL = `http://127.0.0.1:${MCP_OAUTH_PORT}/oauth/callback`
 
+/** Stable attachment key for a connected app's capability switch. */
+export const connectionCapabilityId = (id: string): string => `connected-apps/connection/${id}`
+
 export const connectionSchema = z.object({
   id: z.string().default(''),
   name: z.string().default(''),

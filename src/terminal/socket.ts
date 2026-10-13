@@ -4,7 +4,7 @@
 // connection. Each terminal session holds a random token bound to its caller, its connected-apps
 // grant, and its controller; the token stops working when the terminal ends.
 import { createHash } from 'node:crypto'
-import { chmodSync, mkdirSync, rmSync } from 'node:fs'
+import { chmodSync, mkdirSync, rmSync, statSync } from 'node:fs'
 import { createServer, type Server, type Socket } from 'node:net'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -46,6 +46,25 @@ export function socketPath(stateDir: string): string {
   const path = join(stateDir, 'run', 'harness.sock')
   if (Buffer.byteLength(path) <= MAX_SOCKET_PATH) return path
   return join(tmpdir(), `xh-${createHash('sha256').update(path).digest('hex').slice(0, 16)}.sock`)
+}
+
+/** Names the folder and the user when the operating system refuses the socket, so the cause shows. */
+function refusedBind(path: string, error: unknown): unknown {
+  const code = (error as { code?: unknown } | null)?.code
+  if (code !== 'EACCES' && code !== 'EPERM') return error
+  let folder: string
+  try {
+    const stat = statSync(dirname(path))
+    folder = `${dirname(path)} is owned by uid ${stat.uid} with mode ${(stat.mode & 0o777).toString(8)}`
+  } catch {
+    folder = `${dirname(path)} could not be read`
+  }
+  const uid = process.getuid?.() ?? 'unknown'
+  return new HarnessError(
+    'session_socket_denied',
+    `The session socket ${path} could not be created (${code}). ${folder}; this process runs as uid ${uid}.`,
+    'Run the harness from your own terminal, as the user that owns its state folder, or choose a state folder you own with --state.'
+  )
 }
 
 export class SessionSocket {
@@ -155,7 +174,7 @@ export class SessionSocket {
       const server = createServer((client) => this.serve(client))
       server.once('error', (error) => {
         this.listening = null
-        reject(error)
+        reject(refusedBind(this.path, error))
       })
       server.listen(this.path, () => {
         try {

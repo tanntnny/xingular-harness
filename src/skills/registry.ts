@@ -31,6 +31,18 @@ export interface RegistryItem {
   builtin?: true
 }
 
+/** The capability id used when this registry item is shown in the plugin catalogue. */
+export function contributionId(item: Pick<RegistryItem, 'id' | 'builtin'>): string {
+  return `${item.builtin ? 'included' : 'yours'}/${item.id}`
+}
+
+/** Limits registry items to the contributions frozen for a run. `undefined` means no limit. */
+export function limitToContributions(items: readonly RegistryItem[], contributions?: readonly string[]): RegistryItem[] {
+  if (contributions === undefined) return [...items]
+  const allowed = new Set(contributions)
+  return items.filter((item) => allowed.has(contributionId(item)))
+}
+
 export interface SkillBundleInput {
   name: string
   files: { path: string; content: string; encoding: 'utf8' | 'base64' }[]
@@ -138,7 +150,8 @@ export const isItemId = (id: string): boolean => KINDS.some((kind) => id.startsW
  * Items active for a caller. A built-in is on until it is switched off; a person's own is off
  * until it is switched on, everywhere, for the caller's project, or for the calling agent.
  */
-export function enabledFor(root: string, projectId: string | null, agentId: string | null = null): RegistryItem[] {
+export function enabledFor(root: string, projectId: string | null, agentId: string | null = null, contributions?: readonly string[]): RegistryItem[] {
+  if (contributions !== undefined) return limitToContributions(list(root), contributions)
   const choices = attachments.load(root)
   return list(root).filter((item) => attachments.attached(choices, [item.id], { agentId, projectId }, !!item.builtin))
 }
@@ -160,8 +173,8 @@ export interface RegistryResources {
 }
 
 /** What a Pi session needs to load enabled items natively. Rule text reaches the model through the compiled prompt. */
-export function resources(root: string, projectId: string | null, agentId: string | null = null): RegistryResources {
-  const items = enabledFor(root, projectId, agentId)
+export function resources(root: string, projectId: string | null, agentId: string | null = null, contributions?: readonly string[]): RegistryResources {
+  const items = enabledFor(root, projectId, agentId, contributions)
   return {
     ids: items.map((item) => item.id),
     skillPaths: items.filter((item) => item.kind === 'skills').map((item) => item.path),

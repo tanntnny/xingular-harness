@@ -8,7 +8,7 @@
     "./*": "./src/*"
   },
   "bin": {
-    "xingular-harness": "./dist/cli.js"
+    "xingular-harness": "dist/cli.js"
   },
   "scripts": {
     "build": "esbuild src/cli.ts --bundle --platform=node --target=node22 --format=esm --packages=external --outfile=dist/cli.js && esbuild src/terminal/piExtension.ts --bundle --platform=node --target=node22 --format=esm --packages=external --outfile=dist/terminal-pi.js",

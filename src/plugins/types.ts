@@ -65,6 +65,8 @@ export interface Plugin {
   manage: PluginManage | null
   /** Numbers a person can set on it, each with its current value. */
   settings: (PluginSetting & { value: number })[]
+  /** Declarative connector setup templates; listing one never creates or enables a connection. */
+  connectorTemplates: ConnectorTemplate[]
   /** Where the whole plugin is switched on and off, or `null` when only its parts are, or nothing is. */
   attachment: Attachment | null
   contributions: Contribution[]
@@ -78,6 +80,21 @@ export interface PluginSetting {
   default: number
   min: number
   max: number
+}
+
+/** A remote connector setup form. It contains no endpoint credentials or saved connection state. */
+export interface ConnectorTemplate {
+  id: string
+  name: string
+  description: string
+  url: string
+  auth: 'none' | 'headers' | 'oauth'
+  oauthClient: 'dynamic' | 'user' | null
+  oauthScopes: string[]
+  docsUrl: string | null
+  fields: { header: string; label: string; prefix: string; help: string }[]
+  setup: string[]
+  notice: string | null
 }
 
 /** What a part of the harness, or the embedding application, says about itself. Data only. */
@@ -97,6 +114,8 @@ export interface PluginDescriptor {
   switchable?: { on: boolean }
   /** Numbers a person can set on it. */
   settings?: PluginSetting[]
+  /** Remote connector setup templates; users must add, configure and enable each connection. */
+  connectorTemplates?: ConnectorTemplate[]
   /** Code of its own that runs in a session. */
   code?: { name: string; description: string }[]
 }

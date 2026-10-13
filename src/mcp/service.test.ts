@@ -181,7 +181,7 @@ describe('connected apps for a session', () => {
     const saved = await harness.apps.save({ ...local, command: '/missing/mcp-fixture' })
     const result = await harness.apps.list(granted)
     expect(result.tools).toEqual([])
-    expect(result.errors[0].message).toContain('Settings')
+    expect(result.errors[0].message).toContain('Capability → Connectors')
     expect(harness.apps.connections.find(saved.id).error).toContain('executable and arguments')
   })
 
