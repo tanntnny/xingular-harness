@@ -1,16 +1,20 @@
 // A session turn on Pi. Pi owns the model loop, native history, and tool use; this module opens
 // the session with the compiled prompt and the session's tools, and maps Pi's events onto the
 // run-event contract. Gated tools pause for the user's approval before they run.
-import type { CreateAgentSessionOptions, ModelRuntime } from '@earendil-works/pi-coding-agent'
+import type { CreateAgentSessionOptions, ModelRuntime, SettingsManager } from '@earendil-works/pi-coding-agent'
 
 import { classifyMessage } from '../accounts/accounts'
 import type { AccountContext } from '../accounts/env'
 import { HarnessError } from '../core/errors'
+import type { InlineExtension } from '../plugins/firstParty'
+import type { Loading, Registered } from '../plugins/plugins'
 import { CONTEXT_MESSAGE_TYPE, CONTEXT_SNAPSHOT_KEY, type ContextUpdate } from '../prompt/compile'
 import type { RegistryResources } from '../skills/registry'
 import type { ToolSpec } from '../tools/types'
 import type { UsageRequest } from './contracts'
 import { completedReasoningSummary, REASONING_SUMMARY_APIS, requestConciseReasoningSummary } from './reasoningSummaries'
+import { extensionUi, type ExtensionHost } from './extensionUi'
+import { observeResources, registrationHash } from '../plugins/runtime'
 import type { ActiveRun } from './registry'
 
 export const EFFORTS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const
@@ -27,12 +31,20 @@ export interface TurnParams {
   effort?: Effort | null
   text: string
   images?: { mediaType: string; data: string }[]
+  requiresImageInput?: boolean
   /** App-origin notes placed before the text of the request. */
   preamble?: string | null
   /** Unattended: no project extensions, no context files, settings held in memory. */
   automatic?: boolean
   account: AccountContext
   resources?: RegistryResources
+  /**
+   * What the harness found for this session to load, and where it reports what loaded. Pi's own
+   * discovery is off whenever this is set, so only these paths and the registry's reach the session.
+   */
+  plugins?: { loading(): Promise<Loading>; loaded(extensions: Registered[]): void }
+  /** The harness's own switched-on extensions. They are code in this process, so they load in every kind of run. */
+  inline?: InlineExtension[]
   /** The stable part of the compiled prompt: the only text added to Pi's own. */
   system: string
   /** Changed state, saved as a hidden message in native history before the request. */
@@ -65,6 +77,8 @@ export type PiEvent =
 
 export interface PiSessionLike {
   sessionId: string
+  systemPrompt?: string
+  extensionCommands?: readonly string[]
   model?: { input: string[]; contextWindow?: number }
   getActiveToolNames?(): string[]
   getAllTools?(): Array<{ name: string; description?: string; parameters?: unknown }>
@@ -78,6 +92,8 @@ export interface PiSessionLike {
 export interface ToolGate {
   /** Resolves to a block reason, or null to let the call run. */
   check(toolName: string, input: unknown): Promise<string | null>
+  /** Makes these tools ask before each call. Used for tools an extension brought, which no one switched on by name. */
+  ask?(toolNames: readonly string[]): void
 }
 
 export type SessionFactory = (input: {
@@ -88,6 +104,8 @@ export type SessionFactory = (input: {
   /** Custom tools already bound to this run. */
   tools: ToolSpec[]
   runtime: () => Promise<ModelRuntime>
+  /** Where a loaded extension's dialogs and notices go. Without it extensions have no interface. */
+  extensions?: ExtensionHost
 }) => Promise<PiSessionLike>
 
 /** A one-line description of a tool call, for an approval request or the activity list. */
@@ -212,7 +230,7 @@ export async function runTurn(run: ActiveRun, session: PiSessionLike, params: Tu
   let costReported = false
   const toolStartedAt = new Map<string, number>()
 
-  const systemPrompt = limitedText(params.system, MAX_SYSTEM_PROMPT_CHARS)
+  const systemPrompt = limitedText(session.systemPrompt ?? params.system, MAX_SYSTEM_PROMPT_CHARS)
   const contextUpdate = limitedText(params.update?.content ?? '', MAX_SYSTEM_PROMPT_CHARS)
   const toolSpecs = contextToolSpecs(session)
   run.emit('context.snapshot', {
@@ -388,8 +406,14 @@ export async function runTurn(run: ActiveRun, session: PiSessionLike, params: Tu
       // The delivered snapshot is saved with the message, so the next turn compares against what Pi really holds.
       await session.sendCustomMessage({ customType: CONTEXT_MESSAGE_TYPE, content: params.update.content, display: false, details: { [CONTEXT_SNAPSHOT_KEY]: params.update.snapshot } }, { triggerTurn: false })
     }
-    const prompt = params.preamble ? `${params.preamble}\n\n${params.text}` : params.text
-    const images = (params.images ?? []).map((image) => ({ type: 'image', source: { type: 'base64', mediaType: image.mediaType, data: image.data } }))
+    const command = /^\/(\S+)/.exec(params.text)?.[1]
+    const extensionCommand = command && session.extensionCommands?.includes(command)
+    if (params.preamble && extensionCommand) {
+      if (!session.sendCustomMessage) throw new HarnessError('provider_error', 'The Pi session cannot receive the command context.')
+      await session.sendCustomMessage({ customType: 'xingular-preamble', content: params.preamble, display: false, details: {} }, { triggerTurn: false })
+    }
+    const prompt = params.preamble && !extensionCommand ? `${params.preamble}\n\n${params.text}` : params.text
+    const images = (params.images ?? []).map((image) => ({ type: 'image', mimeType: image.mediaType, data: image.data }))
     await session.prompt(prompt, images.length ? { images } : undefined)
     if (aborted) run.finish('interrupted')
     else if (lastError) run.finish('failed', { code: 'provider_error', message: lastError })
@@ -403,8 +427,48 @@ export async function runTurn(run: ActiveRun, session: PiSessionLike, params: Tu
   }
 }
 
+/**
+ * Loads what a session may use besides its tools: Pi's context files, the registry's skills and
+ * prompts, and what the harness found for it. `gate` is loaded after every extension on disk.
+ */
+export async function loadResources(pi: typeof import('@earendil-works/pi-coding-agent'), params: Pick<TurnParams, 'cwd' | 'account' | 'automatic' | 'resources' | 'plugins' | 'system' | 'inline'>, gate: unknown, automaticSettings?: SettingsManager) {
+  const loading = params.automatic ? null : ((await params.plugins?.loading()) ?? null)
+  const resourceLoader = new pi.DefaultResourceLoader({
+    ...(automaticSettings ? { settingsManager: automaticSettings, noExtensions: true, noContextFiles: true } : {}),
+    // The loader gets empty settings and no discovery of its own: it loads the paths below and
+    // nothing else. The session still reads the account's real settings for everything but resources.
+    ...(loading ? { settingsManager: pi.SettingsManager.inMemory({}), noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, additionalExtensionPaths: loading.extensionPaths } : {}),
+    cwd: params.cwd,
+    agentDir: params.account.configDir,
+    // Inline extensions load after the ones on disk, and the gate after all of them, so it sees
+    // what every plugin made of a call.
+    extensionFactories: [...(params.inline ?? []).map((extension) => ({ name: extension.name, factory: extension.factory as never, hidden: true })), { name: 'agent-x-approvals', factory: gate as never, hidden: true }],
+    additionalSkillPaths: [...(params.resources?.skillPaths ?? []), ...(loading?.skillPaths ?? [])],
+    additionalPromptTemplatePaths: [...(params.resources?.promptPaths ?? []), ...(loading?.promptPaths ?? [])],
+    // The compiler writes one prompt; nothing else is appended here.
+    appendSystemPromptOverride: (base) => [...base, ...(params.system.trim() ? [params.system] : [])]
+  })
+  await resourceLoader.reload()
+  if (loading) {
+    const records = registeredBy(resourceLoader).map((record) => ({ ...record, hash: registrationHash(loading, record.path) }))
+    const publish = () => params.plugins?.loaded(records)
+    observeResources(pi, resourceLoader, loading, records, publish)
+    publish()
+  }
+  return resourceLoader
+}
+
+/** What each extension on disk registered when it was loaded. The harness's own gate is not one of them. */
+export function registeredBy(loader: { getExtensions(): { extensions: readonly unknown[] } }): Registered[] {
+  const names = (map: { keys(): Iterable<unknown> } | undefined): string[] => (map ? [...map.keys()].map(String) : [])
+  type Loaded = { hidden?: boolean; path: string; resolvedPath?: string } & Record<'handlers' | 'tools' | 'commands' | 'flags' | 'shortcuts', { keys(): Iterable<unknown> } | undefined>
+  return (loader.getExtensions().extensions as Loaded[])
+    .filter((extension) => !extension.hidden)
+    .map((extension) => ({ path: extension.resolvedPath || extension.path, hooks: names(extension.handlers), tools: names(extension.tools), commands: names(extension.commands), flags: names(extension.flags), shortcuts: names(extension.shortcuts) }))
+}
+
 /** Opens a Pi session for one turn: the account's runtime, the compiled prompt, and the gated tools. */
-export const piSessionFactory: SessionFactory = async ({ params, allow, gate, tools, runtime: loadRuntime }) => {
+export const piSessionFactory: SessionFactory = async ({ params, allow, gate, tools, runtime: loadRuntime, extensions: host }) => {
   const pi = await import('@earendil-works/pi-coding-agent')
   const { Type } = await import('typebox')
   const runtime = await loadRuntime()
@@ -427,18 +491,14 @@ export const piSessionFactory: SessionFactory = async ({ params, allow, gate, to
 
   const agentDir = params.account.configDir
   const automaticSettings = params.automatic ? pi.SettingsManager.inMemory({}) : undefined
-  const resourceLoader = new pi.DefaultResourceLoader({
-    ...(automaticSettings ? { settingsManager: automaticSettings, noExtensions: true, noContextFiles: true } : {}),
-    cwd: params.cwd,
-    agentDir,
-    extensionFactories: [{ name: 'agent-x-approvals', factory: gatedExtension as never, hidden: true }],
-    additionalSkillPaths: params.resources?.skillPaths ?? [],
-    additionalPromptTemplatePaths: params.resources?.promptPaths ?? [],
-    // The compiler writes one prompt; nothing else is appended here.
-    appendSystemPromptOverride: (base) => [...base, ...(params.system.trim() ? [params.system] : [])]
-  })
-  await resourceLoader.reload()
+  const resourceLoader = await loadResources(pi, params, gatedExtension, automaticSettings)
+  const loaded = registeredBy(resourceLoader)
+  // A tool an extension brought is offered to the model, and asks before every call: the person
+  // trusted the code to load, and still decides each thing it does through a tool.
+  const extensionTools = [...new Set(loaded.flatMap((extension) => extension.tools))].filter((name) => !allow.includes(name))
+  gate.ask?.([...new Set(loaded.flatMap((extension) => extension.tools))])
 
+  let supportsImageInput = false
   const customTools = tools
     .filter((tool) => allow.includes(tool.name))
     .map((spec) =>
@@ -450,6 +510,7 @@ export const piSessionFactory: SessionFactory = async ({ params, allow, gate, to
         execute: async (_toolCallId, input) => {
           const result = await spec.execute(input as Record<string, unknown>)
           const output = typeof result === 'string' ? { text: result } : result
+          if (output.image && !supportsImageInput) throw new HarnessError('image_input_unsupported', 'This model cannot inspect images. Choose a model that supports image input.')
           return { content: [{ type: 'text', text: output.text }, ...(output.image ? [{ type: 'image', data: output.image.data, mimeType: output.image.mimeType }] : [])] as never, details: {} }
         }
       })
@@ -461,13 +522,23 @@ export const piSessionFactory: SessionFactory = async ({ params, allow, gate, to
     modelRuntime: runtime,
     ...(model ? { model: model as never } : {}),
     ...(thinkingLevel ? { thinkingLevel } : {}),
-    tools: allow,
+    tools: [...allow, ...extensionTools],
     customTools: customTools as never,
     resourceLoader,
     ...(automaticSettings ? { settingsManager: automaticSettings } : {}),
     sessionManager: params.historyFile ? pi.SessionManager.open(params.historyFile, params.sessionDir, params.cwd) : pi.SessionManager.continueRecent(params.cwd, params.sessionDir)
   })
+  if (loaded.length && host) {
+    // Without this an extension never hears that its session started and has nobody to ask.
+    await session.bindExtensions({
+      uiContext: extensionUi(host),
+      mode: 'rpc',
+      onError: (error) => host.notice({ kind: 'error', text: `${error.event}: ${error.error}`.slice(0, 1000), extension: error.extensionPath })
+    })
+  }
   const piSession = session as unknown as PiSessionLike & { agent: { streamFunction: typeof runtime.streamSimple } }
+  piSession.extensionCommands = loaded.flatMap((extension) => extension.commands)
+  supportsImageInput = piSession.model?.input.includes('image') ?? false
   const streamAgent = piSession.agent
   const originalStream = streamAgent.streamFunction
   streamAgent.streamFunction = (streamModel, context, options) => {

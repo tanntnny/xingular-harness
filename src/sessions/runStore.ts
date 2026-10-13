@@ -8,7 +8,7 @@ import { join } from 'node:path'
 import { notFound } from '../core/errors'
 import { newId, now, readJson, safeId, writeJson } from '../core/fs'
 import { compareText, lines } from '../core/text'
-import { isActiveStatus, runEventSchema, runRecordSchema, type RunEvent, type RunRecord } from './contracts'
+import { isActiveStatus, runEventSchema, runRecordSchema, usagePayloadSchema, type RunEvent, type RunRecord, type UsagePayload } from './contracts'
 import { readAllRuns, recordRun, runsForSession } from './runIndex'
 
 export function runDir(root: string, runId: string): string {
@@ -21,6 +21,8 @@ const recordPath = (root: string, runId: string): string => join(runDir(root, ru
 function ordered(record: RunRecord): RunRecord {
   return {
     resumedFromRunId: record.resumedFromRunId,
+    parentRunId: record.parentRunId,
+    relation: record.relation,
     terminalReason: record.terminalReason,
     id: record.id,
     projectId: record.projectId,
@@ -238,6 +240,65 @@ export interface RunSnapshot {
   run: RunRecord
   events: RunEvent[]
   lastSequence: number
+}
+
+export interface RunFamilySnapshot {
+  rootRunId: string
+  runs: { run: RunRecord; usage: UsagePayload | null }[]
+  usage: {
+    inputTokens: number | null
+    outputTokens: number | null
+    cacheReadTokens: number | null
+    cacheWriteTokens: number | null
+    reasoningTokens: number | null
+    costUsd: number | null
+    requests: number | null
+  }
+  settled: boolean
+}
+
+function belongsToRoot(record: RunRecord, rootRunId: string, records: Map<string, RunRecord>): boolean {
+  const visited = new Set<string>()
+  let current: RunRecord | undefined = record
+  while (current && !visited.has(current.id)) {
+    if (current.id === rootRunId) return true
+    visited.add(current.id)
+    current = current.parentRunId ? records.get(current.parentRunId) : undefined
+  }
+  return false
+}
+
+/** A root run and all descendants linked through opaque parent-run metadata. */
+export function runFamily(root: string, runId: string): RunFamilySnapshot {
+  const all = readAllRuns(root)
+  const byId = new Map(all.map((record) => [record.id, record]))
+  const target = byId.get(runId)
+  if (!target) throw notFound('Run')
+
+  let familyRoot = target
+  const ancestors = new Set<string>([target.id])
+  while (familyRoot.parentRunId) {
+    const parent = byId.get(familyRoot.parentRunId)
+    if (!parent || ancestors.has(parent.id)) break
+    ancestors.add(parent.id)
+    familyRoot = parent
+  }
+
+  const members = all.filter((record) => belongsToRoot(record, familyRoot.id, byId))
+    .sort((left, right) => compareText(left.startedAt, right.startedAt))
+  const runs = members.map((run) => {
+    const events = executionEvents(readEvents(root, run.id))
+    const lastUsage = events.filter((event) => event.type === 'usage.updated').at(-1)?.payload
+    const parsed = usagePayloadSchema.safeParse(lastUsage)
+    return { run, usage: parsed.success ? parsed.data : null }
+  })
+  const counters = ['inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheWriteTokens', 'reasoningTokens', 'costUsd', 'requests'] as const
+  const usage = Object.fromEntries(counters.map((counter) => {
+    const values = runs.map(({ usage: current }) => current?.[counter])
+    return [counter, values.every((value) => typeof value === 'number') ? values.reduce<number>((total, value) => total + (value as number), 0) : null]
+  })) as RunFamilySnapshot['usage']
+
+  return { rootRunId: familyRoot.id, runs, usage, settled: runs.every(({ run }) => !isActiveStatus(run.status)) }
 }
 
 export function snapshot(root: string, runId: string): RunSnapshot {

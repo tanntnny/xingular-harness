@@ -9,7 +9,8 @@ import { createHarness, type Harness } from '../harness'
 import type { RunEvent } from '../sessions/contracts'
 import type { ToolPolicy } from '../sessions/policy'
 import { loadRun } from '../sessions/runStore'
-import { rootWithProject } from '../../tests/helpers'
+import type { Found } from '../plugins/discover'
+import { rootWithProject, writeFile } from '../../tests/helpers'
 import { parseCli } from './cli'
 import { SOCKET_ENV, TOKEN_ENV, socketCall, type SocketConnection } from './client'
 import { SessionSocket } from './socket'
@@ -59,7 +60,12 @@ describe('a pi terminal session', () => {
     expect(launch.args[0]).toBe('--append-system-prompt')
     expect(launch.args[1]).toContain('# Xingular Harness context')
     expect(launch.args[1]).toContain('agentx-wiki')
-    expect(launch.args.slice(2)).toEqual(['--model', 'chosen-model', '--extension', '/opt/harness/terminal-pi.js', '--session-dir', join(sessionFolder, 'pi')])
+    // Pi's own discovery is off; its command's built-in extensions are named, and the harness's comes last.
+    expect(launch.args.slice(2)).toEqual([
+      '--model', 'chosen-model', '--no-extensions', '--no-skills', '--no-prompt-templates', '--no-themes',
+      '--extension', 'builtin:llama.cpp', '--extension', 'builtin:codemode', '--extension', 'builtin:tool-search', '--extension', 'builtin:mcp',
+      '--extension', '/opt/harness/terminal-pi.js', '--session-dir', join(sessionFolder, 'pi')
+    ])
     expect(launch.env.PI_CODING_AGENT_DIR).toBe(join(harness.accounts.dir, account.id, 'home', 'pi'))
     expect(String(launch.env.PATH).split(':')[0]).toBe(join(harness.stateDir, 'run', 'bin'))
     expect(readFileSync(join(harness.stateDir, 'run', 'bin', 'agentx-wiki'), 'utf8')).toBe("#!/bin/sh\nexec '/opt/node' '/opt/harness/cli.js' wiki \"$@\"\n")
@@ -67,6 +73,43 @@ describe('a pi terminal session', () => {
     // The session keeps the pack it started with.
     expect(JSON.parse(readFileSync(join(sessionFolder, 'context.json'), 'utf8')).profile).toBe('session')
     expect(root).toBeTruthy()
+  })
+
+  it('passes what the harness found as paths, the enabled registry items with them, and its own extension last', async () => {
+    const root = rootWithProject()
+    writeFile(join(root, 'registry/skills/release/SKILL.md'), '# Release\n')
+    writeFile(join(root, 'registry/prompts/review.md'), 'Review this.\n')
+    writeFile(join(root, 'config/registry-enabled.json'), JSON.stringify({ p1: ['skills/release', 'prompts/review'] }))
+    writeFile(join(root, '.pi/extensions/local.ts'), 'export default function () {}\n')
+    const item = (kind: Found['kind'], path: string, origin: Found['origin'], enabled = true): Found => ({ kind, path, origin, project: origin === 'project', packageRoot: null, source: null, enabled })
+    const found = [
+      item('extension', join(root, '.pi/extensions/local.ts'), 'project'),
+      item('extension', '/shared/extensions/mine.ts', 'shared'),
+      item('extension', '/shared/extensions/off.ts', 'shared', false),
+      item('extension', 'builtin:mcp', 'builtin'),
+      item('skill', '/shared/skills/alpha/SKILL.md', 'shared'),
+      item('prompt', '/shared/prompts/p.md', 'shared'),
+      item('theme', '/shared/themes/dark.json', 'shared')
+    ]
+    const harness = createHarness({ dataRoot: root, stateDir: mkdtempSync(join(tmpdir(), 'hs-')), secrets: memorySecretStore(), piProgram: () => '/opt/pi/bin/pi', assets: { node: '/opt/node', cli: '/opt/harness/cli.js', piExtension: '/opt/harness/terminal-pi.js' }, resolver: async () => found })
+    open.push(harness)
+    const account = harness.accounts.create('Main', 'apiKey').accounts[0]
+    const prepare = async () => (await harness.terminals.prepare({ sessionId: 'term-1', accountId: account.id, projectId: 'p1', cwd: root, sessionFolder: join(root, 'sessions', 'p1', 'term-1') })).args.slice(2)
+
+    const loaded = [
+      '--extension', '/shared/extensions/mine.ts', '--extension', 'builtin:mcp',
+      '--skill', join(root, 'registry/skills/release/SKILL.md'), '--skill', '/shared/skills/alpha/SKILL.md',
+      '--prompt-template', join(root, 'registry/prompts/review.md'), '--prompt-template', '/shared/prompts/p.md',
+      '--theme', '/shared/themes/dark.json',
+      '--extension', '/opt/harness/terminal-pi.js', '--session-dir', join(root, 'sessions', 'p1', 'term-1', 'pi')
+    ]
+    const flags = ['--no-extensions', '--no-skills', '--no-prompt-templates', '--no-themes']
+    expect(await prepare()).toEqual([...flags, ...loaded])
+
+    // The working folder's own code joins only once a person trusted it.
+    const code = (await harness.plugins.loading({ cwd: root, agentDir: join(harness.accounts.dir, account.id, 'home', 'pi') })).projectCode!
+    harness.plugins.trust.grant(code, root)
+    expect(await prepare()).toEqual([...flags, '--extension', join(root, '.pi/extensions/local.ts'), ...loaded])
   })
 
   it('refuses to launch without the pi command, and never on another account', async () => {

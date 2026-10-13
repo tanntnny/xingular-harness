@@ -67,7 +67,7 @@ describe('the harness served to a host', () => {
 
     const status = await request('harness.status')
     expect(status).toMatchObject({ dataRoot: harness.env.root, productName: 'Xingular Harness', activeRuns: [] })
-    expect(await request<string[]>('harness.methods')).toEqual(expect.arrayContaining(['accounts.list', 'sessions.run', 'wiki.pages', 'terminal.prepare', 'skills.list', 'connections.list', 'harness.shutdown']))
+    expect(await request<string[]>('harness.methods')).toEqual(expect.arrayContaining(['accounts.list', 'sessions.run', 'wiki.pages', 'terminal.prepare', 'skills.list', 'skills.import', 'connections.list', 'harness.shutdown']))
 
     const overview = await request('accounts.create', { label: 'Main', authKind: 'apiKey' })
     expect(overview.accounts).toHaveLength(1)

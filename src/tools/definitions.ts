@@ -20,7 +20,8 @@ export interface WikiToolDefinition {
   bootstrap?: boolean
 }
 
-export const WIKI_ENTRY_KINDS = ['page', 'memory', 'block', 'skill', 'rule', 'prompt'] as const
+/** The kinds of entry a model names. A fact was called `memory` before; that word is still accepted. */
+export const WIKI_ENTRY_KINDS = ['page', 'fact', 'block', 'skill', 'rule', 'prompt'] as const
 export const WIKI_PAGE_TYPES = ['project', 'person', 'concept', 'decision', 'summary', 'question', 'reference'] as const
 export const WIKI_MEMORY_KINDS = ['preference', 'fact', 'decision', 'feedback'] as const
 export const WIKI_LINK_TYPES = ['references', 'depends_on', 'supersedes', 'contradicts', 'produced_by', 'uses'] as const
@@ -54,10 +55,10 @@ export const MEMORY_TOOLS: WikiToolDefinition[] = [
   }
 ]
 
-/** Recall memory: what was said and done in earlier conversations and runs. */
+/** History: what was said and done in earlier conversations and runs. */
 export const RECALL_TOOLS: WikiToolDefinition[] = [
   {
-    name: 'recall_search',
+    name: 'history_search',
     call: 'recall.search',
     label: 'Search history',
     description:
@@ -75,10 +76,10 @@ export const RECALL_TOOLS: WikiToolDefinition[] = [
     }
   },
   {
-    name: 'recall_read',
+    name: 'history_read',
     call: 'recall.read',
     label: 'Read a run',
-    description: 'Read one earlier run in order: the request, the replies, and the tools used. Pass a run id from recall_search.',
+    description: 'Read one earlier run in order: the request, the replies, and the tools used. Pass a run id from history_search.',
     parameters: { type: 'object', properties: { run: text('Run id') }, required: ['run'] }
   }
 ]
@@ -99,7 +100,7 @@ export const WIKI_TOOLS: WikiToolDefinition[] = [
     call: 'wiki.search',
     label: 'Search Wiki',
     description:
-      'Search the whole {product} Wiki: the Library, every project namespace, Memory, Skills, Rules, and prompts. Results from the current project rank higher. Each hit has a path and an [id@revision] citation.',
+      'Search everything written down in {product}: the Library, every project namespace, facts, skills, rules, and prompts. Results from the current project rank higher. Each hit has a path and an [id@revision] citation.',
     parameters: {
       type: 'object',
       properties: {
@@ -115,30 +116,30 @@ export const WIKI_TOOLS: WikiToolDefinition[] = [
     name: 'wiki_read',
     call: 'wiki.read',
     label: 'Read Wiki entry',
-    description: 'Read one Wiki page, memory, skill, rule, or prompt in full, with its sources, links, and backlinks. Pass an id (arch, skills/review) or a Wiki path (/projects/agent-x/arch).',
+    description: 'Read one Wiki page, fact, skill, rule, or prompt in full, with its sources, links, and backlinks. Pass an id (arch, skills/review) or a Wiki path (/projects/agent-x/arch).',
     parameters: { type: 'object', properties: { id: text('Entry id or Wiki path'), revision: text('Optional pinned revision selected for this reply'), offset: { type: 'integer', minimum: 0, description: 'Character offset when reading a pinned revision; use nextOffset to continue.' } }, required: ['id'] }
   },
   {
     name: 'wiki_list',
     call: 'wiki.list',
     label: 'List Wiki',
-    description: 'List Wiki namespaces and pages (optionally in one namespace), or all memories, skills, rules, or prompts.',
+    description: 'List Wiki namespaces and pages (optionally in one namespace), or all facts, skills, rules, or prompts.',
     parameters: {
       type: 'object',
       properties: { namespace: text('A namespace such as /library or /projects/<name>'), kind: { type: 'string', enum: [...WIKI_ENTRY_KINDS] } }
     }
   },
   {
-    name: 'wiki_skill',
+    name: 'skill_load',
     call: 'wiki.skill',
     label: 'Load skill',
     description: "Load a skill's instructions by name, or list every skill (and which are active) when no name is given. Follow a skill's steps when the task matches it.",
     parameters: { type: 'object', properties: { name: text('Skill name or id, such as review or skills/review') } }
   },
   {
-    name: 'wiki_memory',
+    name: 'memory_facts',
     call: 'wiki.memory',
-    label: 'Recall memory',
+    label: 'Recall facts',
     description: 'Recall facts: short statements, preferences, decisions, and feedback. Without a query it returns the facts that apply to the current project.',
     parameters: { type: 'object', properties: { query: text('What to recall'), namespace: text('/ or a project namespace') } }
   },
@@ -147,7 +148,7 @@ export const WIKI_TOOLS: WikiToolDefinition[] = [
     call: 'wiki.propose',
     label: 'Propose Wiki update',
     description:
-      'Record durable knowledge. kind "memory" for a short fact, preference, decision, or piece of feedback, "page" to update an existing page or add one about an entity or concept (not about one run), or "skill"/"rule"/"prompt" to suggest a change to those. ' +
+      'Record durable knowledge. kind "fact" for a short fact, preference, decision, or piece of feedback, "page" to update an existing page or add one about an entity or concept (not about one run), or "skill"/"rule"/"prompt" to suggest a change to those. ' +
       'Cite evidence in sourceRefs: {"kind":"run","ref":"current","excerpt":"…"} with a passage copied exactly from this conversation or run (what the user wrote, or what you already said), a source id, or a URL. ' +
       'A run reference without an excerpt found in the run is not evidence. Cited pages and facts apply right away (with undo); uncited or low-confidence ones, and every skill, rule, or prompt change, wait in the Wiki Inbox for the user. Never include secrets.',
     parameters: {
@@ -155,14 +156,14 @@ export const WIKI_TOOLS: WikiToolDefinition[] = [
       properties: {
         kind: { type: 'string', enum: [...WIKI_ENTRY_KINDS] },
         title: text('Title (or the skill/rule/prompt name)'),
-        body: text('Markdown body. For a memory, a few lines.'),
+        body: text('Markdown body. For a fact, a few lines.'),
         id: text('Existing id to update'),
-        type: text(`Page type (${WIKI_PAGE_TYPES.join(', ')}) or memory kind (${WIKI_MEMORY_KINDS.join(', ')})`),
-        namespace: text('Where it belongs: /library, /projects/<name>, or / for a memory that applies everywhere. Defaults to the current project.'),
+        type: text(`Page type (${WIKI_PAGE_TYPES.join(', ')}) or what sort of fact (${WIKI_MEMORY_KINDS.join(', ')})`),
+        namespace: text('Where it belongs: /library, /projects/<name>, or / for a fact that applies everywhere. Defaults to the current project.'),
         confidence: { type: 'string', enum: ['high', 'medium', 'low'] },
         description: text('One line for a skill, rule, or prompt'),
-        supersedes: text('Id of a memory this one replaces'),
-        volatile: { type: 'boolean', description: 'For a memory: true when it describes current state that will change (an open issue list, who is on call)' },
+        supersedes: text('Id of a fact this one replaces'),
+        volatile: { type: 'boolean', description: 'For a fact: true when it describes current state that will change (an open issue list, who is on call)' },
         reason: text('Why this change is needed (skills, rules, prompts)'),
         sourceRefs: {
           type: 'array',

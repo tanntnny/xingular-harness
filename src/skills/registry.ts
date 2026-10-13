@@ -6,15 +6,16 @@
 // Built-in items ship with the harness or the application that embeds it, in folders laid out
 // like `registry/`. They are read-only and on everywhere until a person switches one off; an
 // item of the same id in the data root replaces the built-in one.
-import { lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, unlinkSync } from 'node:fs'
+import { lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 
 import { invalid } from '../core/errors'
 import * as frontmatter from '../core/frontmatter'
-import { atomicWrite, now, readJsonOr, writeJson } from '../core/fs'
+import { atomicWrite, now, readJsonOr, safeRelative } from '../core/fs'
 import { findProject } from '../core/projects'
 import { compareText, lines, takeChars } from '../core/text'
 import * as store from '../memory/store'
+import * as attachments from '../plugins/attachments'
 
 export const KINDS = ['skills', 'prompts', 'rules'] as const
 export type RegistryKind = (typeof KINDS)[number]
@@ -29,6 +30,15 @@ export interface RegistryItem {
   /** Set on an item that ships with the harness or the application, not on a person's own. */
   builtin?: true
 }
+
+export interface SkillBundleInput {
+  name: string
+  files: { path: string; content: string; encoding: 'utf8' | 'base64' }[]
+}
+
+const MAX_SKILL_BUNDLES = 20
+const MAX_SKILL_FILES = 100
+const MAX_SKILL_IMPORT_BYTES = 10 * 1024 * 1024
 
 let builtinDirs: string[] = []
 
@@ -60,6 +70,13 @@ function itemFrom(kind: string, stem: string, file: string): RegistryItem | null
 }
 
 const stemOf = (name: string): string => (name.lastIndexOf('.') > 0 ? name.slice(0, name.lastIndexOf('.')) : name)
+
+/** The name and description of a skill or prompt file anywhere on disk, read the way a registry item is. */
+export function describeFile(file: string): { name: string; description: string } | null {
+  const stem = basename(file) === 'SKILL.md' ? basename(dirname(file)) : stemOf(basename(file))
+  const item = itemFrom('', stem, file)
+  return item && { name: item.name, description: item.description }
+}
 
 function itemsIn(directory: string): RegistryItem[] {
   const items: RegistryItem[] = []
@@ -96,7 +113,11 @@ function enablementPath(root: string): string {
 /** Key for items enabled everywhere. Older data roots used `personal`, which is read the same way. */
 export const GLOBAL_KEY = 'global'
 
-/** Enabled item ids keyed by project id, or `global` for everyone. */
+/**
+ * The registry's earlier enablement file as it is on disk: ids keyed by project id, or `global`
+ * for everyone. The choices now live with every other plugin's (`plugins/attachments.ts`), which
+ * reads this file until the first change is saved.
+ */
 export function enablement(root: string): Record<string, unknown> {
   const map = readJsonOr<unknown>(enablementPath(root), {})
   return map && typeof map === 'object' && !Array.isArray(map) ? (map as Record<string, unknown>) : {}
@@ -110,12 +131,16 @@ export function enablementIds(map: Record<string, unknown>, key: string): string
 /** Built-in items a person switched off. Everything else built in is on everywhere. */
 export const BUILTIN_OFF_KEY = 'builtinOff'
 
-/** Items active for a caller: built-ins left on, everything enabled globally, and the current project's own. */
-export function enabledFor(root: string, projectId: string | null): RegistryItem[] {
-  const map = enablement(root)
-  const ids = [...enablementIds(map, GLOBAL_KEY), ...enablementIds(map, 'personal'), ...(projectId ? enablementIds(map, projectId) : [])]
-  const off = enablementIds(map, BUILTIN_OFF_KEY)
-  return list(root).filter((item) => (item.builtin ? !off.includes(item.id) : ids.includes(item.id)))
+/** Whether an id names a registry item, as `<kind>/<name>`. */
+export const isItemId = (id: string): boolean => KINDS.some((kind) => id.startsWith(`${kind}/`))
+
+/**
+ * Items active for a caller. A built-in is on until it is switched off; a person's own is off
+ * until it is switched on, everywhere, for the caller's project, or for the calling agent.
+ */
+export function enabledFor(root: string, projectId: string | null, agentId: string | null = null): RegistryItem[] {
+  const choices = attachments.load(root)
+  return list(root).filter((item) => attachments.attached(choices, [item.id], { agentId, projectId }, !!item.builtin))
 }
 
 /** An item's Markdown body without frontmatter. */
@@ -135,8 +160,8 @@ export interface RegistryResources {
 }
 
 /** What a Pi session needs to load enabled items natively. Rule text reaches the model through the compiled prompt. */
-export function resources(root: string, projectId: string | null): RegistryResources {
-  const items = enabledFor(root, projectId)
+export function resources(root: string, projectId: string | null, agentId: string | null = null): RegistryResources {
+  const items = enabledFor(root, projectId, agentId)
   return {
     ids: items.map((item) => item.id),
     skillPaths: items.filter((item) => item.kind === 'skills').map((item) => item.path),
@@ -144,7 +169,7 @@ export function resources(root: string, projectId: string | null): RegistryResou
   }
 }
 
-// Prefix of the entries the harness manages in a Pi agent folder's `skills/`.
+// Prefix of the entries an earlier version of the harness linked into a Pi agent folder's `skills/`.
 const LINKED_SKILL_PREFIX = 'agentx-'
 
 function isLinkedSkill(path: string): boolean {
@@ -156,7 +181,7 @@ function isLinkedSkill(path: string): boolean {
   }
   if (meta.isSymbolicLink()) return true
   if (!meta.isDirectory()) return false
-  // A single-file skill is linked as `agentx-<name>/SKILL.md` inside a folder the harness made.
+  // A single-file skill was linked as `agentx-<name>/SKILL.md` inside a folder the harness made.
   try {
     const entries = readdirSync(path)
     return entries.length === 1 && entries[0] === 'SKILL.md' && lstatSync(join(path, 'SKILL.md')).isSymbolicLink()
@@ -166,26 +191,21 @@ function isLinkedSkill(path: string): boolean {
 }
 
 /**
- * Links the project's enabled skills into a terminal session's `skills/` folder as
- * `agentx-<name>`, replacing earlier links and leaving the user's own skills alone. The folder
- * is shared by every account, so the links follow the project that launched most recently.
+ * Removes the `agentx-<name>` links an earlier version kept in a terminal session's `skills/`
+ * folder, leaving the user's own skills alone. Enabled skills now reach a session as paths.
  */
-export function linkSkills(skillsDir: string, root: string, projectId: string | null): void {
-  mkdirSync(skillsDir, { recursive: true })
-  for (const name of readdirSync(skillsDir)) {
+export function removeLinkedSkills(skillsDir: string): void {
+  let names: string[]
+  try {
+    names = readdirSync(skillsDir)
+  } catch {
+    return
+  }
+  for (const name of names) {
     const path = join(skillsDir, name)
     if (!name.startsWith(LINKED_SKILL_PREFIX) || !isLinkedSkill(path)) continue
     if (lstatSync(path).isSymbolicLink()) unlinkSync(path)
     else rmSync(path, { recursive: true, force: true })
-  }
-  for (const item of enabledFor(root, projectId).filter((entry) => entry.kind === 'skills')) {
-    const link = join(skillsDir, `${LINKED_SKILL_PREFIX}${item.id.replace(/^skills\//, '')}`)
-    if (basename(item.path) === 'SKILL.md') {
-      symlinkSync(dirname(item.path), link)
-    } else {
-      mkdirSync(link, { recursive: true })
-      symlinkSync(item.path, join(link, 'SKILL.md'))
-    }
   }
 }
 
@@ -194,18 +214,23 @@ export interface RegistryState {
   enabled: Record<string, unknown>
 }
 
-/** Enablement as a person sees it: built-ins that are on count as enabled everywhere. */
-function shown(items: readonly RegistryItem[], map: Record<string, unknown>): Record<string, unknown> {
-  const off = enablementIds(map, BUILTIN_OFF_KEY)
-  const on = items.filter((item) => item.builtin && !off.includes(item.id)).map((item) => item.id)
-  if (!on.length) return map
-  const global = [...enablementIds(map, GLOBAL_KEY), ...enablementIds(map, 'personal')]
-  return { ...map, [GLOBAL_KEY]: [...global, ...on.filter((id) => !global.includes(id))] }
+/**
+ * Enablement as a person sees it, in the earlier file's shape: ids keyed by project id, `global`
+ * for everyone (built-ins that are on count as enabled everywhere), and the built-ins switched off.
+ */
+function shown(items: readonly RegistryItem[], choices: attachments.Attachments): Record<string, unknown> {
+  const builtin = items.filter((item) => item.builtin).map((item) => item.id)
+  const off = choices.global.off.filter((id) => builtin.includes(id))
+  const global = choices.global.on.filter((id) => isItemId(id) && !builtin.includes(id))
+  const map: Record<string, unknown> = { [GLOBAL_KEY]: [...global, ...builtin.filter((id) => !off.includes(id))] }
+  for (const [projectId, entries] of Object.entries(choices.projects)) map[projectId] = entries.on.filter(isItemId)
+  if (off.length) map[BUILTIN_OFF_KEY] = off
+  return map
 }
 
 export function state(root: string): RegistryState {
   const items = list(root)
-  return { items, enabled: shown(items, enablement(root)) }
+  return { items, enabled: shown(items, attachments.load(root)) }
 }
 
 /** Sets enabled items for a project, or globally when `projectId` is `null`. */
@@ -215,17 +240,15 @@ export function setEnabled(root: string, projectId: string | null, ids: string[]
   const unknown = ids.find((id) => !items.some((item) => item.id === id))
   if (unknown !== undefined) throw invalid(`Unknown registry item ${unknown}.`)
   const builtin = items.filter((item) => item.builtin).map((item) => item.id)
-  const map = enablement(root)
-  if (!projectId) {
-    delete map.personal
-    // A built-in left out of the global list was switched off.
-    const off = builtin.filter((id) => !ids.includes(id))
-    if (off.length) map[BUILTIN_OFF_KEY] = off
-    else delete map[BUILTIN_OFF_KEY]
-  }
-  map[projectId ?? GLOBAL_KEY] = ids.filter((id) => !builtin.includes(id))
-  writeJson(enablementPath(root), map)
-  return { items, enabled: shown(items, map) }
+  const choices = attachments.load(root)
+  const entries = projectId ? (choices.projects[projectId] ??= { on: [], off: [] }) : choices.global
+  // Only the registry's own ids are replaced; other plugins' choices in the same scope stay.
+  entries.on = [...entries.on.filter((id) => !isItemId(id)), ...ids.filter((id) => !builtin.includes(id))]
+  entries.off = entries.off.filter((id) => !isItemId(id) || (!ids.includes(id) && !(!projectId && builtin.includes(id))))
+  // A built-in left out of the global list was switched off.
+  if (!projectId) entries.off.push(...builtin.filter((id) => !ids.includes(id)))
+  attachments.save(root, choices)
+  return { items, enabled: shown(items, choices) }
 }
 
 function kindDir(root: string, kind: string): string {
@@ -250,6 +273,96 @@ export function create(root: string, kind: string, rawName: string): RegistrySta
   if (exists) throw invalid('An item with that name already exists.')
   if (kind === 'skills') atomicWrite(join(target, 'SKILL.md'), `---\nname: ${slug}\ndescription: ${description}\n---\n\n# ${name}\n\nSteps the agent should follow.\n`)
   else atomicWrite(target, `---\nname: ${name}\ndescription: ${description}\n---\n\n`)
+  return state(root)
+}
+
+/** Imports complete user-owned skill folders without replacing existing or built-in items. */
+export function importSkills(root: string, bundles: SkillBundleInput[]): RegistryState {
+  if (!Array.isArray(bundles) || bundles.length === 0 || bundles.length > MAX_SKILL_BUNDLES) {
+    throw invalid(`Import between 1 and ${MAX_SKILL_BUNDLES} skills at a time.`)
+  }
+
+  const directory = kindDir(root, 'skills')
+  mkdirSync(directory, { recursive: true })
+  const existing = new Set(list(root).map((item) => item.id))
+  const seen = new Set<string>()
+  let totalBytes = 0
+  const prepared = bundles.map((bundle) => {
+    if (!bundle || typeof bundle.name !== 'string' || !Array.isArray(bundle.files) || bundle.files.length === 0 || bundle.files.length > MAX_SKILL_FILES) {
+      throw invalid('Each skill needs a name and a bounded list of files.')
+    }
+    const name = bundle.name.trim()
+    if (name.length > 64) throw invalid('Use a skill name with at most 64 letters or numbers.')
+    const slug = Array.from(name.toLowerCase(), (character) => (/^[a-z0-9]$/.test(character) ? character : '-')).join('').split('-').filter(Boolean).join('-')
+    if (!slug || slug.length > 64) throw invalid('Use a skill name with at most 64 letters or numbers.')
+    const id = `skills/${slug}`
+    if (existing.has(id) || seen.has(id)) throw invalid(`The skill “${name}” already exists.`)
+    try {
+      lstatSync(join(directory, slug))
+      throw invalid(`The skill “${name}” already exists.`)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    }
+    seen.add(id)
+
+    const files = new Map<string, Uint8Array>()
+    for (const file of bundle.files) {
+      if (!file || typeof file.path !== 'string' || file.path.length > 240 || typeof file.content !== 'string' || !['utf8', 'base64'].includes(file.encoding)) {
+        throw invalid(`The skill “${name}” contains an invalid file.`)
+      }
+      let relative: string
+      try {
+        relative = safeRelative(file.path)
+      } catch {
+        throw invalid(`The skill “${name}” contains a path outside its folder.`)
+      }
+      if (relative.includes('\0') || relative.split('/').some((part) => part.startsWith('.') || part.includes(':'))) {
+        throw invalid(`The skill “${name}” contains an unsupported file path.`)
+      }
+      const portablePath = relative.normalize('NFC').toLowerCase()
+      if ([...files.keys()].some((path) => path.normalize('NFC').toLowerCase() === portablePath)) throw invalid(`The skill “${name}” contains a duplicate file path.`)
+      let byteLength: number
+      if (file.encoding === 'base64') {
+        if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(file.content)) {
+          throw invalid(`The file “${relative}” is not valid base64.`)
+        }
+        if (file.content.length > Math.ceil(MAX_SKILL_IMPORT_BYTES / 3) * 4) throw invalid('The skill import is larger than 10 MiB.')
+        byteLength = Math.floor(file.content.length * 3 / 4) - (file.content.endsWith('==') ? 2 : file.content.endsWith('=') ? 1 : 0)
+      } else {
+        byteLength = Buffer.byteLength(file.content, 'utf8')
+      }
+      totalBytes += byteLength
+      if (totalBytes > MAX_SKILL_IMPORT_BYTES) throw invalid('The skill import is larger than 10 MiB.')
+      const bytes = file.encoding === 'base64' ? Buffer.from(file.content, 'base64') : Buffer.from(file.content, 'utf8')
+      if (file.encoding === 'base64' && bytes.toString('base64') !== file.content) throw invalid(`The file “${relative}” is not valid base64.`)
+      files.set(relative, bytes)
+    }
+    if (!files.has('SKILL.md')) throw invalid(`The skill “${name}” must include SKILL.md at its root.`)
+    return { name, slug, files }
+  })
+
+  const staging = mkdtempSync(join(directory, '.agent-template-import-'))
+  const installed: string[] = []
+  try {
+    for (const bundle of prepared) {
+      const target = join(staging, bundle.slug)
+      for (const [relative, bytes] of bundle.files) {
+        const path = join(target, ...relative.split('/'))
+        mkdirSync(dirname(path), { recursive: true })
+        writeFileSync(path, bytes, { flag: 'wx' })
+      }
+    }
+    for (const bundle of prepared) {
+      const target = join(directory, bundle.slug)
+      renameSync(join(staging, bundle.slug), target)
+      installed.push(target)
+    }
+  } catch (error) {
+    for (const target of installed) rmSync(target, { recursive: true, force: true })
+    throw error
+  } finally {
+    rmSync(staging, { recursive: true, force: true })
+  }
   return state(root)
 }
 

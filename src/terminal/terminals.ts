@@ -8,7 +8,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import type { Accounts } from '../accounts/accounts'
-import { launchEnv, sharedDir } from '../accounts/env'
+import { configDir, launchEnv } from '../accounts/env'
 import type { Account } from '../accounts/store'
 import type { Bus } from '../core/bus'
 import { log } from '../core/bus'
@@ -19,13 +19,16 @@ import { findBinary, searchPath } from '../core/path'
 import type { BrokerSession, ConnectedApps } from '../mcp/service'
 import type { CallerContext } from '../memory/caller'
 import { dispatch } from '../memory/dispatch'
+import type { AttachParams, PluginScope } from '../plugins/api'
+import type { Plugins } from '../plugins/plugins'
+import type { Plugin } from '../plugins/types'
 import { compile, copyToRun, memoryDelta, record, render, saveForSession, type Launch } from '../prompt/compile'
 import type { RunRecord } from '../sessions/contracts'
 import { isActiveStatus } from '../sessions/contracts'
 import type { ToolPolicy } from '../sessions/policy'
 import type { ActiveRun, RunRegistry } from '../sessions/registry'
 import { findRun, loadRun, saveRun, updateRun } from '../sessions/runStore'
-import { linkSkills } from '../skills/registry'
+import { resources } from '../skills/registry'
 import type { ToolSpec } from '../tools/types'
 import { APPS_COMMAND, WIKI_COMMAND } from './cli'
 import { SOCKET_ENV, TOKEN_ENV } from './client'
@@ -94,9 +97,21 @@ export interface TerminalsOptions {
   apps: ConnectedApps
   policy: ToolPolicy
   bus: Bus
+  /** Chooses what a terminal loads. Without it Pi discovers extensions and skills on its own. */
+  plugins?: Plugins
+  /** Lists plugins and applies a person's choices, for the session's `/plugins` command. */
+  pluginControl?: PluginControl
   assets?: TerminalAssets
   /** The `pi` executable. Defaults to the one on the search path. */
   program?: () => string | null
+}
+
+/** What `/plugins` in a terminal can do. Each takes the session's folder, account and project. */
+export interface PluginControl {
+  list(scope: PluginScope): Promise<Plugin[]>
+  attach(params: AttachParams, on: boolean): Promise<Plugin[]>
+  trust(scope: PluginScope & { hash: string }): Promise<Plugin[]>
+  untrust(scope: PluginScope & { hash: string }): Promise<Plugin[]>
 }
 
 const READ_ONLY_TOOLS = new Set(['read', 'grep', 'find', 'ls'])
@@ -110,7 +125,8 @@ export class Terminals {
     this.assets = options.assets ?? defaultAssets()
     this.socket = new SessionSocket(socketPath(options.stateDir), {
       memory: (caller, call, params) => dispatch(options.env, caller, call, params),
-      apps: (session, call, params) => this.appsCall(session, call, params)
+      apps: (session, call, params) => this.appsCall(session, call, params),
+      plugins: (grant, call, params, control) => this.pluginsCall(grant.sessionId, call, params, control)
     })
   }
 
@@ -164,6 +180,37 @@ export class Terminals {
     }
   }
 
+  /**
+   * `/plugins` in a terminal. Listing is open to the session. A change is taken only from the
+   * session's own extension, which asks the person in the terminal first: the model can reach
+   * this socket from a shell command, and must not be able to trust code or switch it on.
+   */
+  private async pluginsCall(sessionId: string, call: string, params: Record<string, unknown>, control: boolean): Promise<unknown> {
+    const api = this.options.pluginControl
+    const live = this.sessions.get(sessionId)
+    if (!api || !live) throw new HarnessError('unknown_method', `Unknown call ${call}.`)
+    const projectId = live.input.projectId ?? null
+    const scope = { cwd: live.input.cwd, accountId: live.account.id, projectId }
+    if (call === 'plugins.list') return api.list(scope)
+    if (call === 'plugins.session') return { projectId }
+    if (!control) throw new HarnessError('unauthorized', 'Only a person at this terminal can change plugins. Type /plugins.')
+    const text = (name: string): string => {
+      if (typeof params[name] !== 'string' || !params[name]) throw invalid(`${name} is required.`)
+      return params[name] as string
+    }
+    switch (call) {
+      case 'plugins.attach':
+      case 'plugins.detach':
+        return api.attach({ ...scope, id: text('id'), scope: params.everywhere === true || !projectId ? {} : { projectId } }, call === 'plugins.attach')
+      case 'plugins.trust':
+        return api.trust({ ...scope, hash: text('hash') })
+      case 'plugins.untrust':
+        return api.untrust({ ...scope, hash: text('hash') })
+      default:
+        throw new HarnessError('unknown_method', `Unknown call ${call}.`)
+    }
+  }
+
   private live(sessionId: string): Live {
     const live = this.sessions.get(sessionId)
     if (!live) throw new HarnessError('terminal_not_ready', 'The terminal controller is unavailable. Reopen this session.')
@@ -178,6 +225,8 @@ export class Terminals {
     const { input } = live
     return {
       resumedFromRunId: null,
+      parentRunId: null,
+      relation: null,
       terminalReason: null,
       agentId: null,
       trigger: null,
@@ -254,7 +303,7 @@ export class Terminals {
     // A pinned account is used as it is; it is never exchanged for another one.
     const account = input.accountId ? accounts.find(input.accountId) : accounts.resolve(null, null)
     const launch = launchEnv(accounts.dir, account)
-    linkSkills(join(sharedDir(accounts.dir), 'skills'), root, input.projectId ?? null)
+    const loading = (await this.options.plugins?.loading({ cwd: input.cwd, agentDir: configDir(accounts.dir, account), install: true, caller: { projectId: input.projectId ?? null } })) ?? null
     await this.socket.listen()
     await accounts.terminalBegin(account)
 
@@ -296,6 +345,16 @@ export class Terminals {
 
       const args = ['--append-system-prompt', render(env, pack)]
       if (input.model) args.push('--model', input.model)
+      if (loading) {
+        // Pi's own discovery is off: the terminal loads what the harness found and nothing else.
+        args.push('--no-extensions', '--no-skills', '--no-prompt-templates', '--no-themes')
+        const enabled = resources(root, input.projectId ?? null)
+        for (const path of [...loading.extensionPaths, ...loading.builtins]) args.push('--extension', path)
+        for (const path of [...enabled.skillPaths, ...loading.skillPaths]) args.push('--skill', path)
+        for (const path of [...enabled.promptPaths, ...loading.promptPaths]) args.push('--prompt-template', path)
+        for (const path of loading.themePaths) args.push('--theme', path)
+      }
+      // Last, so its gate sees a tool call as every other extension left it.
       args.push('--extension', this.assets.piExtension, '--session-dir', this.historyDir(input))
       if (input.nativeSessionId) args.push('--session', input.nativeSessionId)
       return {

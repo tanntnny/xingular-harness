@@ -49,6 +49,28 @@ export function setAgentScope(all: Connection[], agentId: string, ids: readonly 
   }
 }
 
+/**
+ * Switches one connection on or off for everyone, for one agent, or for one project, leaving
+ * every other agent's and project's access as it was.
+ */
+export function setScope(connection: Connection, scope: Scope, on: boolean): void {
+  const without = (ids: string[], id: string): string[] => ids.filter((item) => item !== id)
+  if (scope.agentId) {
+    connection.agentIds = without(connection.agentIds, scope.agentId)
+    connection.excludedAgentIds = without(connection.excludedAgentIds, scope.agentId)
+    if (on && !connection.global) connection.agentIds.push(scope.agentId)
+    // Off must hold in a project that has the connection too.
+    else if (!on && (connection.global || connection.projectIds.length)) connection.excludedAgentIds.push(scope.agentId)
+  } else if (scope.projectId) {
+    connection.projectIds = without(connection.projectIds, scope.projectId)
+    connection.excludedProjectIds = without(connection.excludedProjectIds, scope.projectId)
+    if (on && !connection.global) connection.projectIds.push(scope.projectId)
+    else if (!on && connection.global) connection.excludedProjectIds.push(scope.projectId)
+  } else {
+    connection.global = on
+  }
+}
+
 /** Why these connections cannot be given to a session with this scope, or nothing. */
 export function validateScopeIds(all: readonly Connection[], scope: Scope, ids: readonly string[]): void {
   for (const id of ids) {

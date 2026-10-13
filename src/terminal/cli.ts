@@ -10,19 +10,19 @@ export const USAGE = `Usage: ${WIKI_COMMAND} <command> [arguments]
 
   entrypoint                         Your context pack: memory blocks, rules, skills, project map
   search <query> [--kind K] [--namespace NS]
-                                     Search every namespace (K: page, memory, skill, rule, prompt)
-  read <id or path>                  Read one page, memory, skill, rule, or prompt
+                                     Search every namespace (K: page, fact, skill, rule, prompt)
+  read <id or path>                  Read one page, fact, skill, rule, or prompt
   list [namespace] [--kind K]        List namespaces and pages, or all entries of a kind
   skill [name]                       Load a skill, or list skills
-  memory [query] [--namespace NS]    Recall memories
-  recall <query> [--scope all] [--since YYYY-MM-DD]
-                                     Search earlier conversations and runs
-  recall-read <run id>               Read one earlier run
+  facts [query] [--namespace NS]     Recall facts (also: memory)
+  history <query> [--scope all] [--since YYYY-MM-DD]
+                                     Search earlier conversations and runs (also: recall)
+  history-read <run id>              Read one earlier run (also: recall-read)
   block append <label> <text>        Add to a memory block (user, project, or a shared block)
   block replace <label> --old <text> --new <text>
                                      Replace one exact passage in a memory block
   block rethink <label> <text>       Rewrite a whole memory block
-  propose <json | ->                 Record knowledge, e.g. {"kind":"memory","title":"…","body":"…",
+  propose <json | ->                 Record knowledge, e.g. {"kind":"fact","title":"…","body":"…",
                                      "type":"preference","sourceRefs":[{"kind":"run","ref":"current"}]}
 `
 
@@ -67,11 +67,14 @@ export function parseCli(argv: string[]): CliCommand {
       return { kind: 'call', call: 'wiki.list', params: { ...(joined ? { namespace: joined } : {}), ...(flags.kind ? { kind: flags.kind } : {}) } }
     case 'skill':
       return { kind: 'call', call: 'wiki.skill', params: joined ? { name: joined } : {} }
+    case 'facts':
     case 'memory':
       return { kind: 'call', call: 'wiki.memory', params: { ...(joined ? { query: joined } : {}), ...(flags.namespace ? { namespace: flags.namespace } : {}) } }
+    case 'history':
     case 'recall':
       if (!joined) return { kind: 'help' }
       return { kind: 'call', call: 'recall.search', params: { query: joined, ...(flags.scope ? { scope: flags.scope } : {}), ...(flags.since ? { since: flags.since } : {}) } }
+    case 'history-read':
     case 'recall-read':
       if (!joined) return { kind: 'help' }
       return { kind: 'call', call: 'recall.read', params: { run: joined } }

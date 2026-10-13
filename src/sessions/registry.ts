@@ -5,8 +5,8 @@ import { randomUUID } from 'node:crypto'
 import { log } from '../core/bus'
 import { HarnessError } from '../core/errors'
 import type { AutomaticReason } from './approvals'
-import { runEventSchema, type QuestionOption, type RunEvent, type RunEventType, type RunRecord } from './contracts'
-import { findRun, persistEvent, readEvents } from './runStore'
+import { isActiveStatus, runEventSchema, type QuestionOption, type RunEvent, type RunEventType, type RunRecord } from './contracts'
+import { findRun, persistEvent, readEvents, runFamily } from './runStore'
 
 export type ApprovalDecision = 'approved' | 'denied' | 'native'
 
@@ -71,6 +71,7 @@ export class RunRegistry {
   private readonly approvals = new Map<string, { runId: string; resolve: (decision: ApprovalDecision) => void }>()
   private readonly questions = new Map<string, { runId: string; input: QuestionInput; resolve: (answer: QuestionAnswer) => void }>()
   private readonly nativeCleared = new Map<string, string>()
+  private readonly stopping = new Set<string>()
   private readonly listeners: RunListener[] = []
 
   constructor(private readonly options: RegistryOptions) {}
@@ -198,7 +199,13 @@ export class RunRegistry {
         return finished
       },
       interrupt: async () => {
-        for (const handler of interruptHandlers) await handler()
+        for (const handler of interruptHandlers) {
+          try {
+            await handler()
+          } catch (error) {
+            log(`an interrupt handler failed for run ${runId}`, error instanceof Error ? error.message : String(error))
+          }
+        }
         run.finish('interrupted')
       }
     }
@@ -206,7 +213,23 @@ export class RunRegistry {
     this.runs.set(runId, run)
     emit('started', {})
     emit('status.changed', { status: 'running' })
+    const record = findRun(this.options.root(), runId)
+    if (record?.parentRunId && this.hasStoppedAncestor(record.parentRunId)) run.finish('interrupted')
     return run
+  }
+
+  private hasStoppedAncestor(runId: string): boolean {
+    const visited = new Set<string>()
+    let currentId: string | null = runId
+    while (currentId && !visited.has(currentId)) {
+      if (this.stopping.has(currentId)) return true
+      visited.add(currentId)
+      const record = findRun(this.options.root(), currentId)
+      if (!record) return false
+      if (!isActiveStatus(record.status)) return true
+      currentId = record.parentRunId
+    }
+    return false
   }
 
   /** The live run with this id, for a tool or broker that reports into it. */
@@ -223,7 +246,15 @@ export class RunRegistry {
   async interrupt(runId: string): Promise<void> {
     const run = this.runs.get(runId)
     if (!run) throw new HarnessError('run_not_active', 'This run is not active.')
-    await run.interrupt()
+    if (this.stopping.has(runId)) return
+    const family = runFamily(this.options.root(), runId)
+    const active = family.runs.map(({ run: member }) => member.id).filter((id) => this.runs.has(id))
+    for (const id of active) this.stopping.add(id)
+    try {
+      await Promise.allSettled(active.map((id) => this.runs.get(id)?.interrupt()))
+    } finally {
+      for (const id of active) this.stopping.delete(id)
+    }
   }
 
   /** Interrupts every live run, giving each a moment to stop cleanly. */

@@ -24,10 +24,12 @@ import { readRunContext } from '../memory/runContext'
 import * as store from '../memory/store'
 import * as wiki from '../memory/wiki'
 import { reindexQuietly, reindexWiki } from '../memory/wikiIndex'
+import * as plugins from '../plugins/api'
+import * as install from '../plugins/install'
 import { comparison, compile, CONTEXT_PROFILES, load, profiles, render, setProfile, type ContextProfile, type Launch } from '../prompt/compile'
 import { selectHistory } from '../sessions/history'
 import { runsSince } from '../sessions/runIndex'
-import { findRun, listRuns, loadRun, pendingDecisions, readEvents, snapshot } from '../sessions/runStore'
+import { findRun, listRuns, loadRun, pendingDecisions, readEvents, runFamily, snapshot } from '../sessions/runStore'
 import type { SessionRunInput } from '../sessions/sessions'
 import * as registry from '../skills/registry'
 import type { TerminalPrepareInput } from '../terminal/terminals'
@@ -41,6 +43,7 @@ const text = (params: Params, name: string): string => {
   return value
 }
 const optional = (params: Params, name: string): string | null => (typeof params[name] === 'string' && params[name] ? (params[name] as string) : null)
+const pluginScope = (params: Params): plugins.PluginScope => ({ cwd: optional(params, 'cwd'), accountId: optional(params, 'accountId'), agentId: optional(params, 'agentId'), projectId: optional(params, 'projectId') })
 
 /** Sources larger than this are not imported. */
 const MAX_SOURCE_BYTES = 50 * 1024 * 1024
@@ -153,7 +156,13 @@ export function methods(harness: Harness): Record<string, Handler> {
       dismissInboxItem(wikiDir(), text(params, 'itemId'))
       harness.bus.emit({ type: 'wiki.changed' })
     },
-    'wiki.inboxAccept': (params: Params) => maintenance.acceptInboxItem(text(params, 'itemId')),
+    'wiki.inboxAccept': async (params: Params) => {
+      // An accepted plugin must arrive untrusted: packages that loaded before are taken over first, never together with it.
+      await plugins.ensureAdopted(harness)
+      const message = maintenance.acceptInboxItem(text(params, 'itemId'))
+      harness.bus.emit({ type: 'plugins.changed' })
+      return message
+    },
     'wiki.undoOperation': (params: Params) => maintenance.undoOperation(text(params, 'operationId')),
     'wiki.runContext': (params: Params) => readRunContext(root(), text(params, 'runId')),
 
@@ -207,12 +216,39 @@ export function methods(harness: Harness): Record<string, Handler> {
 
     // ---- Skills, prompts, rules --------------------------------------------------------------------
     'skills.list': () => registry.state(root()),
-    'skills.setEnabled': (params: Params) => registry.setEnabled(root(), optional(params, 'projectId'), Array.isArray(params.ids) ? params.ids : []),
+    'skills.setEnabled': (params: Params) => {
+      const state = registry.setEnabled(root(), optional(params, 'projectId'), Array.isArray(params.ids) ? params.ids : [])
+      // The same choices are what the plugin list shows.
+      harness.bus.emit({ type: 'plugins.changed' })
+      return state
+    },
     'skills.create': (params: Params) => registry.create(root(), text(params, 'kind'), text(params, 'name')),
+    'skills.import': (params: Params) => registry.importSkills(root(), Array.isArray(params.skills) ? params.skills : []),
     'skills.enabledFor': (params: Params) => registry.enabledFor(root(), optional(params, 'projectId')),
+
+    // ---- Plugins: everything that shapes a session, and the trust a working folder's code needs ---
+    // A host that is not a Node program describes its own parts here instead of in the options.
+    'plugins.describe': (params: Params) => {
+      harness.describe(Array.isArray(params.plugins) ? params.plugins : [])
+      harness.bus.emit({ type: 'plugins.changed' })
+      return { described: [...harness.applicationPlugins] }
+    },
+    'plugins.list': (params: Params) => plugins.list(harness, pluginScope(params)),
+    'plugins.get': async (params: Params) => (await plugins.list(harness, pluginScope(params))).find((plugin) => plugin.id === text(params, 'pluginId')) ?? null,
+    'plugins.attach': (params: Params) => plugins.attach(harness, { ...pluginScope(params), id: text(params, 'id'), scope: params.scope ?? null }, true),
+    'plugins.detach': (params: Params) => plugins.attach(harness, { ...pluginScope(params), id: text(params, 'id'), scope: params.scope ?? null }, false),
+    'plugins.install': (params: Params) => install.install(harness, { ...pluginScope(params), source: text(params, 'source') }),
+    'plugins.remove': (params: Params) => install.remove(harness, { ...pluginScope(params), pluginId: text(params, 'pluginId') }),
+    'plugins.update': (params: Params) => install.update(harness, { ...pluginScope(params), pluginId: optional(params, 'pluginId') }),
+    'plugins.configure': (params: Params) => plugins.configure(harness, { ...pluginScope(params), pluginId: text(params, 'pluginId'), settings: (params.settings && typeof params.settings === 'object' ? params.settings : {}) as Record<string, unknown> }),
+    'plugins.forgetAgent': (params: Params) => plugins.forgetAgent(harness, text(params, 'agentId')),
+    'plugins.inventory': (params: Params) => plugins.inventoryFor(harness, { ...pluginScope(params), context: (params.context ?? {}) as CallerContext, launch: (params.launch ?? {}) as Launch, tools: params.tools, connections: params.connections }),
+    'plugins.trust': (params: Params) => plugins.trust(harness, { cwd: optional(params, 'cwd'), accountId: optional(params, 'accountId'), hash: text(params, 'hash') }),
+    'plugins.untrust': (params: Params) => plugins.untrust(harness, { cwd: optional(params, 'cwd'), accountId: optional(params, 'accountId'), hash: text(params, 'hash') }),
 
     // ---- Runs --------------------------------------------------------------------------------------
     'runs.load': (params: Params) => snapshot(root(), text(params, 'runId')),
+    'runs.family': (params: Params) => runFamily(root(), text(params, 'runId')),
     'runs.find': (params: Params) => findRun(root(), text(params, 'runId')),
     'runs.list': (params: Params) => listRuns(root(), params.filter ?? {}),
     // Ids of the runs one session, agent, or account made since an instant, oldest first.

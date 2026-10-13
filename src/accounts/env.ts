@@ -62,7 +62,10 @@ const SHARED_ENTRIES: readonly (readonly [string, boolean])[] = [
   ['skills', true],
   ['prompts', true],
   ['extensions', true],
-  ['themes', true]
+  ['themes', true],
+  // Where Pi keeps installed packages: one install serves every account.
+  ['npm', true],
+  ['git', true]
 ]
 
 export interface NativeConfig {

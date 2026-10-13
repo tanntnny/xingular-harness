@@ -91,11 +91,15 @@ function ownBlocksPrefix(env: HarnessEnv, context: CallerContext): string | null
   }
 }
 
+/** A fact is stored and indexed under the kind `memory`. A model says `fact`; `memory` is still understood. */
+const storedKind = (kind: string): string => (kind === 'fact' ? 'memory' : kind)
+const shownKind = (kind: string): string => (kind === 'memory' ? 'fact' : kind)
+
 export function search(env: HarnessEnv, context: CallerContext, params: Params): string {
   const { root } = env
   const query = textParam(params, 'query')
   if (!query) return 'Give a query.'
-  const kinds = Array.isArray(params?.kinds) ? params.kinds.filter((kind): kind is string => typeof kind === 'string') : []
+  const kinds = (Array.isArray(params?.kinds) ? params.kinds.filter((kind): kind is string => typeof kind === 'string') : []).map(storedKind)
   const limit = countParam(params, 'limit') ?? 8
   // Another agent's blocks never appear; a block of the caller's own does.
   const own = ownBlocksPrefix(env, context)
@@ -105,7 +109,7 @@ export function search(env: HarnessEnv, context: CallerContext, params: Params):
   if (!hits.length) return 'No matching Wiki entries.'
   const wiki = store.wikiDir(root)
   record(root, context, 'search', hits.map((hit) => [hit.id, hit.kind]))
-  return `${hits.map((hit, index) => `${index + 1}. [${hit.kind}] ${hit.title} — ${hit.path} ${cite(wiki, hit.id)}\n   ${hit.snippet}`).join('\n')}\n\nRead an entry with wiki_read and its id or path.`
+  return `${hits.map((hit, index) => `${index + 1}. [${shownKind(hit.kind)}] ${hit.title} — ${hit.path} ${cite(wiki, hit.id)}\n   ${hit.snippet}`).join('\n')}\n\nRead an entry with wiki_read and its id or path.`
 }
 
 export function read(env: HarnessEnv, context: CallerContext, params: Params): string {
@@ -135,7 +139,7 @@ export function read(env: HarnessEnv, context: CallerContext, params: Params): s
   } else if (entry.kind === 'memory') {
     const { front, body } = entry.memory
     kind = 'memory'
-    text = `# ${front.title} ${cite(wiki, front.id)}\nMemory · ${front.kind} · namespace ${front.namespace} · ${front.confidence} confidence · ${front.status}${front.supersedes ? ` · supersedes ${front.supersedes}` : ''}\nSources: ${front.sourceIds.length ? front.sourceIds.join(', ') : 'none'}\nBacklinks: ${linked}\n\n${body}`
+    text = `# ${front.title} ${cite(wiki, front.id)}\nFact · ${front.kind} · namespace ${front.namespace} · ${front.confidence} confidence · ${front.status}${front.supersedes ? ` · supersedes ${front.supersedes}` : ''}\nSources: ${front.sourceIds.length ? front.sourceIds.join(', ') : 'none'}\nBacklinks: ${linked}\n\n${body}`
   } else if (entry.kind === 'block') {
     const { block } = entry
     kind = 'block'
@@ -152,11 +156,11 @@ export function read(env: HarnessEnv, context: CallerContext, params: Params): s
 export function list(env: HarnessEnv, params: Params): string {
   const { root } = env
   const namespace = textParam(params, 'namespace')
-  const kind = textParam(params, 'kind')
+  const kind = storedKind(textParam(params, 'kind'))
   const wiki = store.wikiDir(root)
   if (kind === 'memory') {
     const memories = facts.loadMemories(wiki)
-    if (!memories.length) return 'No memories yet.'
+    if (!memories.length) return 'No facts yet.'
     return memories
       .filter((memory) => !namespace || memory.front.namespace === namespace)
       .map((memory) => `- ${memory.front.title} (${memory.front.id}) [${memory.front.kind}] ${memory.front.namespace} · ${memory.front.status}`)
@@ -185,11 +189,11 @@ export function skill(env: HarnessEnv, context: CallerContext, params: Params): 
   const items = registry.list(root).filter((item) => item.kind === 'skills')
   if (!name) {
     if (!items.length) return 'No skills yet.'
-    const active = registry.enabledFor(root, context.projectId ?? null).map((item) => item.id)
+    const active = registry.enabledFor(root, context.projectId ?? null, context.agentId ?? null).map((item) => item.id)
     return items.map((item) => `- ${item.name} (${item.id})${active.includes(item.id) ? ' · active' : ''} — ${item.description}`).join('\n')
   }
   const found = items.find((item) => item.id.toLowerCase() === name || item.id.replace(/^skills\//, '').toLowerCase() === name || item.name.toLowerCase() === name)
-  if (!found) return `There is no skill called "${name}". Call wiki_skill without a name to list them.`
+  if (!found) return `There is no skill called "${name}". Call skill_load without a name to list them.`
   record(root, context, 'skill', [[found.id, 'skill']])
   const folder = found.path.endsWith('SKILL.md') ? `\nSupporting files are in ${dirname(found.path)}.` : ''
   return `# ${found.name} ${cite(store.wikiDir(root), found.id)}\n${found.description}${folder}\n\n${clip(registry.itemBody(found), READ_LIMIT)}`
@@ -219,7 +223,7 @@ export function memories(env: HarnessEnv, context: CallerContext, params: Params
       }
     })
   }
-  if (!selected.length) return 'No memories match.'
+  if (!selected.length) return 'No facts match.'
   const shown = selected.slice(0, 30)
   record(root, context, 'memory', shown.map((memory) => [memory.front.id, 'memory']))
   return shown
@@ -254,7 +258,7 @@ const optional = (params: Params, key: string): string | null => textParam(param
 export function propose(env: HarnessEnv, context: CallerContext, params: Params): string {
   const { root } = env
   const wiki = store.wikiDir(root)
-  const kind = textParam(params, 'kind')
+  const kind = storedKind(textParam(params, 'kind'))
   const trigger: Trigger = { kind: 'agent', runId: context.runId ?? null, actor: actorOf(context) }
   const defaultNamespace = projectOf(root, context)?.wikiNamespace ?? store.LIBRARY_NAMESPACE
   const title = textParam(params, 'title')
@@ -270,7 +274,7 @@ export function propose(env: HarnessEnv, context: CallerContext, params: Params)
     const id = parkRegistryProposal(wiki, trigger, { kind, name: optional(params, 'id') ?? title, description: textParam(params, 'description'), body, reason: textParam(params, 'reason') })
     return `The ${kind} change (${id}) is waiting in the Wiki Inbox. Skills, prompts, and rules change only after the user accepts them.`
   } else {
-    throw invalid('kind must be page, memory, skill, rule, or prompt.')
+    throw invalid('kind must be page, fact, skill, rule, or prompt.')
   }
   // The caller's own run is evidence only for what it can quote from it.
   const outcome = apply(wiki, defaultNamespace, trigger, parseProposalSet(proposals), captureHashes(wiki), { runText: context.runId ? evidenceText(root, context.runId) : null })

@@ -62,9 +62,30 @@ function normalize(value: unknown): unknown {
   return value
 }
 
+// When text a model reads is meant to change, the fixture is rewritten on purpose:
+// `UPDATE_GOLDEN=1 npx vitest run tests/golden.test.ts`. Only cases that differ are replaced, the
+// change is reviewed as a diff of `expected.json`, and the commit says why.
+const updating = process.env.UPDATE_GOLDEN === '1'
+const updated: string[] = []
+
+/** A value as it is recorded: this run's folder written as the recorded one, so later runs compare equal. */
+function recorded(value: unknown): unknown {
+  if (typeof value === 'string') return value.replaceAll(root, golden.root)
+  if (Array.isArray(value)) return value.map(recorded)
+  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, entry]) => [key, recorded(entry)]))
+  return value
+}
+
 function check(name: string, actual: unknown): void {
   expect(expected.has(name), `no recorded case ${name}`).toBe(true)
   seen.push(name)
+  if (updating) {
+    if (JSON.stringify(normalize(actual)) !== JSON.stringify(normalize(expected.get(name)))) {
+      golden.cases.find((entry) => entry.name === name)!.value = recorded(JSON.parse(JSON.stringify(actual)))
+      updated.push(name)
+    }
+    return
+  }
   expect(normalize(actual), name).toEqual(normalize(expected.get(name)))
 }
 
@@ -212,4 +233,11 @@ test('reproduces what the Rust host compiled and answered', () => {
   packCase('compile.agent.after', chat, hosted('compile.agent.after', { input, tools: reading }))
 
   expect(seen).toEqual(golden.cases.map((entry) => entry.name))
+  if (updating && updated.length) {
+    // Keys in the order the file already has them (sorted), so the diff shows only what changed.
+    const sorted = (value: unknown): unknown =>
+      Array.isArray(value) ? value.map(sorted) : value && typeof value === 'object' ? Object.fromEntries(Object.keys(value as object).sort().map((key) => [key, sorted((value as Record<string, unknown>)[key])])) : value
+    writeFileSync(join(here, 'golden/expected.json'), `${JSON.stringify(sorted(golden), null, 2)}\n`)
+    console.log(`Rewrote ${updated.length} recorded cases: ${updated.join(', ')}`)
+  }
 })

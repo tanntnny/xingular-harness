@@ -12,21 +12,26 @@ import { now, writeJson } from '../core/fs'
 import { takeChars } from '../core/text'
 import type { CallerContext } from '../memory/caller'
 import type { DispatchEnv } from '../memory/dispatch'
+import type { Plugins } from '../plugins/plugins'
 import { sessionLaunch, type Launch } from '../prompt/compile'
+import * as attachments from '../plugins/attachments'
+import { FIRST_PARTY_PLUGINS, firstPartyExtensions, type InlineExtension } from '../plugins/firstParty'
 import * as registry from '../skills/registry'
 import { ASK_USER, askUserTool } from '../tools/askUser'
+import { PLUGIN_PROPOSE, pluginProposeTool } from '../tools/pluginPropose'
 import { WIKI_TOOL_NAMES } from '../tools/definitions'
 import { memoryTools } from '../tools/memoryTools'
 import type { ToolProvider, ToolSession, ToolSpec } from '../tools/types'
 import type { RunRecord } from './contracts'
 import { selectHistory } from './history'
+import { runLineageJoin } from './lineageJoin'
 import type { ToolPolicy } from './policy'
 import type { ActiveRun, RunRegistry } from './registry'
 import { piSessionFactory, runTurn, summarize, type Effort, type PiSessionLike, type SessionFactory, type ToolGate, type TurnParams } from './runner'
 import { loadRun, runDir, saveRun, updateRun } from './runStore'
 
 /** The fields of a run record the caller decides; the harness fills in the rest. */
-export type RunFields = Pick<RunRecord, 'id' | 'sessionId'> & Partial<Pick<RunRecord, 'mode' | 'harness' | 'sessionType' | 'projectId' | 'agentId' | 'trigger' | 'goal' | 'attachmentCount' | 'resumedFromRunId' | 'worktreeId' | 'handoffId'>>
+export type RunFields = Pick<RunRecord, 'id' | 'sessionId'> & Partial<Pick<RunRecord, 'mode' | 'harness' | 'sessionType' | 'projectId' | 'agentId' | 'trigger' | 'goal' | 'attachmentCount' | 'resumedFromRunId' | 'parentRunId' | 'relation' | 'worktreeId' | 'handoffId'>>
 
 export interface SessionRunInput {
   run: RunFields
@@ -42,6 +47,8 @@ export interface SessionRunInput {
   resume?: { sessionFile?: string | null; nativeSessionId?: string | null } | null
   text: string
   images?: { mediaType: string; data: string }[]
+  /** Reject a resolved model that cannot inspect image content. */
+  requiresImageInput?: boolean
   preamble?: string | null
   /** Unattended: no project extensions, no context files, nothing may ask a person. */
   automatic?: boolean
@@ -69,7 +76,16 @@ export interface SessionsOptions {
   runs: RunRegistry
   policy: ToolPolicy
   broker?: SessionBroker | null
+  /** Chooses what a session loads. Without it Pi discovers extensions and skills on its own. */
+  plugins?: Plugins
   factory?: SessionFactory
+}
+
+/** The harness's own plugins a person switched on for this caller, with the numbers they set. */
+function firstPartyFor(root: string, caller: CallerContext): InlineExtension[] {
+  const choices = attachments.load(root)
+  const scope = { agentId: caller.agentId ?? null, projectId: caller.projectId ?? null }
+  return firstPartyExtensions((id) => attachments.attached(choices, [id], scope, FIRST_PARTY_PLUGINS.find((plugin) => plugin.id === id)?.switchable?.on ?? false), choices.settings)
 }
 
 export class Sessions {
@@ -89,9 +105,12 @@ export class Sessions {
     this.providers.push(provider)
   }
 
-  private gate(run: ActiveRun, caller: CallerContext, gated: ReadonlySet<string>): ToolGate {
+  private gate(run: ActiveRun, caller: CallerContext, gated: Set<string>): ToolGate {
     const { policy } = this.options
     return {
+      ask: (names) => {
+        for (const name of names) gated.add(name)
+      },
       check: async (tool, args) => {
         const call = { run: loadRun(this.env.root, run.runId), caller, tool, args }
         const scope = (await policy.scope?.(call)) ?? { allowed: true }
@@ -130,6 +149,8 @@ export class Sessions {
 
     saveRun(root, {
       resumedFromRunId: input.run.resumedFromRunId ?? null,
+      parentRunId: input.run.parentRunId ?? null,
+      relation: input.run.relation ?? null,
       terminalReason: null,
       id: runId,
       projectId: input.run.projectId ?? caller.projectId ?? null,
@@ -176,18 +197,22 @@ export class Sessions {
     }
 
     const run = this.options.runs.start(input.run.sessionId, runId)
+    if (run.finished) return { runId, nativeSessionId: null }
     const broker = input.connections ? this.options.broker : null
     // What every session has, after the tools the caller switched on and in a fixed order.
     const allow = [...input.tools.allow]
-    for (const name of [ASK_USER, ...WIKI_TOOL_NAMES, ...(broker?.toolNames ?? [])]) if (!allow.includes(name)) allow.push(name)
+    // An unattended run has nobody reading its Inbox proposals as they come, so it proposes no plugin.
+    for (const name of [ASK_USER, ...(input.automatic ? [] : [PLUGIN_PROPOSE]), ...WIKI_TOOL_NAMES, ...(broker?.toolNames ?? [])]) if (!allow.includes(name)) allow.push(name)
     const session: ToolSession = { run, caller, allow, depth: input.depth ?? 0, cwd: input.cwd }
+    const { plugins } = this.options
 
     let pi: PiSessionLike
     try {
       const tools: ToolSpec[] = [
         ...(broker ? broker.tools(session, { readOnly: typeof input.connections === 'object' && input.connections.readOnly === true }) : []),
         ...memoryTools(this.options.env, caller),
-        askUserTool(run)
+        askUserTool(run),
+        pluginProposeTool(this.options.env, caller)
       ]
       for (const provider of this.providers) tools.push(...(await provider(session)))
       const params: TurnParams = {
@@ -199,14 +224,29 @@ export class Sessions {
         effort: input.effort ?? null,
         text: input.text,
         images: input.images,
+        requiresImageInput: input.requiresImageInput,
         preamble: input.preamble ?? null,
         automatic: input.automatic,
         account: context,
-        resources: registry.resources(root, caller.projectId ?? null),
+        resources: registry.resources(root, caller.projectId ?? null, caller.agentId ?? null),
+        inline: [...firstPartyFor(root, caller), runLineageJoin(root, runId)],
+        ...(plugins ? { plugins: { loading: () => plugins.loading({ cwd: input.cwd, agentDir: context.configDir, install: true, caller: { agentId: caller.agentId ?? null, projectId: caller.projectId ?? null } }), loaded: (extensions) => plugins.loaded(extensions) } } : {}),
         system,
         update
       }
-      pi = await this.factory({ params, allow, gate: this.gate(run, caller, new Set(input.tools.gated ?? [])), tools, runtime: () => this.options.accounts.runtime(context) })
+      pi = await this.factory({
+        params,
+        allow,
+        gate: this.gate(run, caller, new Set(input.tools.gated ?? [])),
+        tools,
+        runtime: () => this.options.accounts.runtime(context),
+        // An unattended run loads no extension, so it has nobody to relay for.
+        ...(input.automatic ? {} : { extensions: { ask: (question) => run.requestAnswer(question), notice: (notice) => run.emit('extension.notice', notice) } })
+      })
+      if ((input.requiresImageInput || input.images?.length) && !pi.model?.input.includes('image')) {
+        pi.dispose()
+        throw new HarnessError('image_input_unsupported', 'Choose a model that supports images, or remove the image attachments and send again.')
+      }
       if (input.resume?.nativeSessionId && pi.sessionId !== input.resume.nativeSessionId) {
         pi.dispose()
         run.finish('failed', { code: 'native_resume_unavailable', message: 'The saved conversation could not be restored.' })

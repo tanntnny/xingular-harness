@@ -3,6 +3,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync } from 'node:fs'
 import { join } from 'node:path'
 
+import { noteChange } from '../core/changes'
 import { invalid, notFound } from '../core/errors'
 import { atomicWrite, newId, now, readJson, safeId, writeJson } from '../core/fs'
 import { compareText } from '../core/text'
@@ -119,6 +120,7 @@ export function undo(wiki: string, operationId: string): Operation {
       store.snapshot(wiki, page.pageId, current, 'user', `Before undo of ${short}`)
       atomicWrite(page.path, previous)
       store.snapshot(wiki, page.pageId, previous, 'user', `Undo of update ${short}`)
+      noteChange({ wiki, id: page.pageId, path: page.path, text: previous, actor: 'user', reason: 'Undid an update' })
     } else {
       const trash = join(wiki, 'trash')
       mkdirSync(trash, { recursive: true })

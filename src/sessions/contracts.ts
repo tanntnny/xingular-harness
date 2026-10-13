@@ -20,6 +20,7 @@ export const runEventTypeSchema = z.enum([
   'approval.resolved',
   'question.requested',
   'question.answered',
+  'extension.notice',
   'reaction.added',
   'agent.message',
   'artifact.added',
@@ -97,6 +98,14 @@ const questionAnsweredPayload = z.object({ questionId: z.string(), selected: z.a
 const reactionAddedPayload = z.object({ emoji: z.string().min(1).refine((text) => Buffer.byteLength(text) <= 16 && !/[A-Za-z0-9\s]/.test(text)) })
 /** A message this run's agent sent to (`to`) or received back from (`from`) another agent. */
 const agentMessagePayload = z.object({ direction: z.enum(['to', 'from']), agentId: z.string(), agentName: z.string(), text: z.string() })
+/** A status line, a notification or an error from a Pi extension loaded in the session. */
+const extensionNoticePayload = z.object({
+  kind: z.enum(['notify', 'status', 'widget', 'title', 'error']),
+  level: z.enum(['info', 'warning', 'error']).optional(),
+  key: z.string().optional(),
+  text: z.string(),
+  extension: z.string().optional()
+})
 const artifactPayload = z.object({ artifactId: z.string(), name: z.string(), file: z.unknown().optional() })
 const fileChangedPayload = z.object({ path: z.string(), change: z.enum(['added', 'modified', 'deleted']) })
 /** Where a cost figure comes from: Pi reported it, or the tokens were priced at list rates. */
@@ -186,6 +195,7 @@ export const runEventPayloadSchemas = {
   'approval.resolved': approvalResolvedPayload,
   'question.requested': questionRequestedPayload,
   'question.answered': questionAnsweredPayload,
+  'extension.notice': extensionNoticePayload,
   'reaction.added': reactionAddedPayload,
   'agent.message': agentMessagePayload,
   'artifact.added': artifactPayload,
@@ -226,6 +236,9 @@ export type RunEvent = z.infer<typeof runEventSchema>
  */
 export interface RunRecord {
   resumedFromRunId: string | null
+  /** Opaque run lineage supplied by the embedding application. */
+  parentRunId: string | null
+  relation: string | null
   terminalReason: string | null
   id: string
   projectId: string | null
@@ -255,6 +268,8 @@ const text = z.string().nullish().transform((value) => value ?? null)
 
 export const runRecordSchema = z.object({
   resumedFromRunId: text,
+  parentRunId: text,
+  relation: text,
   terminalReason: text,
   id: z.string(),
   projectId: text,

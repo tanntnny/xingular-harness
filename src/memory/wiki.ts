@@ -5,6 +5,7 @@
 import { readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
+import { noteChange } from '../core/changes'
 import { HarnessError, notFound } from '../core/errors'
 import * as frontmatter from '../core/frontmatter'
 import { atomicWrite, now } from '../core/fs'
@@ -328,6 +329,7 @@ export function restore(root: string, id: string, revisionId: string): void {
   store.snapshot(wiki, resolved, currentText, 'user', 'Before restore')
   atomicWrite(file, nextText)
   const revision = store.snapshot(wiki, resolved, nextText, 'user', `Restored revision ${revisionId.slice(0, 8)}`)
+  noteChange({ wiki, id: resolved, path: file, text: nextText, actor: 'user', reason: 'Restored an earlier revision' })
   store.log(wiki, `- ${now()} · user · restore · \`${resolved}\` · revision \`${revision.id}\``)
 }
 

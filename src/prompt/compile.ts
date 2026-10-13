@@ -158,10 +158,10 @@ export interface Launch {
   profile?: string
 }
 
-const MEMORY_GROUP = ['memory_append', 'memory_replace', 'memory_rethink', 'recall_search', 'recall_read']
-const KNOWLEDGE_GROUP = ['wiki_search', 'wiki_read', 'wiki_list', 'wiki_skill', 'wiki_propose']
-const NATIVE_GROUP = ['read', 'grep', 'find', 'ls', 'edit', 'write', 'bash']
-const CONNECTION_TOOLS = ['mcp_list_tools', 'mcp_call_tool']
+const MEMORY_GROUP = ['memory_append', 'memory_replace', 'memory_rethink', 'memory_facts', 'history_search', 'history_read']
+const KNOWLEDGE_GROUP = ['wiki_search', 'wiki_read', 'wiki_list', 'skill_load', 'wiki_propose']
+export const NATIVE_GROUP = ['read', 'grep', 'find', 'ls', 'edit', 'write', 'bash']
+export const CONNECTION_TOOLS = ['mcp_list_tools', 'mcp_call_tool']
 const GROUP_ORDER = { Memory: 10, Knowledge: 20, Native: 60, Connections: 70, placeholder: 90 } as const
 
 /** Cuts `text` to `budget` characters at a paragraph (or line) boundary and appends `pointer`. */
@@ -213,10 +213,10 @@ function skills(root: string, wiki: string, active: readonly registry.RegistryIt
   if (!all) return null
   const enabled = active.filter((item) => item.kind === 'skills')
   const listed = enabled.slice(0, SKILLS_LISTED)
-  let text = "Load a skill's steps with wiki_skill when the task matches it.\n"
+  let text = "Load a skill's steps with skill_load when the task matches it.\n"
   for (const skill of listed) text += `- ${skill.name} (${skill.id}) — ${clip(skill.description, 140)}\n`
-  if (all > Math.min(enabled.length, SKILLS_LISTED)) text += '- More skills exist: call wiki_skill without a name to list them.\n'
-  return section('skills', 'Skills', text, SKILLS_BUDGET, '(More skills exist: call wiki_skill without a name to list them.)', listed.map((skill) => source(wiki, skill.id, 'skill')))
+  if (all > Math.min(enabled.length, SKILLS_LISTED)) text += '- More skills exist: call skill_load without a name to list them.\n'
+  return section('skills', 'Skills', text, SKILLS_BUDGET, '(More skills exist: call skill_load without a name to list them.)', listed.map((skill) => source(wiki, skill.id, 'skill')))
 }
 
 /** Words of the incoming text worth matching facts against. */
@@ -301,7 +301,7 @@ function knowledge(root: string, wiki: string, context: CallerContext, input: st
   return section('knowledge', 'Knowledge', text, KNOWLEDGE_BUDGET, '(More is in the Wiki: wiki_list and wiki_search.)', sources)
 }
 
-interface OrderedGroup extends ToolGroup {
+export interface OrderedGroup extends ToolGroup {
   order: number
   guidance: string | null
 }
@@ -310,7 +310,7 @@ interface OrderedGroup extends ToolGroup {
  * The caller's tools by group, in a fixed order. Memory and Knowledge are always there; the
  * rest follows the switches in `launch.tools` and what the application provides.
  */
-function toolGroups(context: CallerContext, launch: Launch): OrderedGroup[] {
+export function toolGroups(context: CallerContext, launch: Launch): OrderedGroup[] {
   const enabled = launch.tools ?? []
   const cli = usesCli(context)
   const session = isSession(context)
@@ -321,16 +321,16 @@ function toolGroups(context: CallerContext, launch: Launch): OrderedGroup[] {
       tools: MEMORY_GROUP,
       order: GROUP_ORDER.Memory,
       guidance: cli
-        ? 'Memory: `agentx-wiki block append <label> <text>`, `block replace <label> --old <text> --new <text>`, and `block rethink <label> <text>` edit your memory blocks. `agentx-wiki recall <query>` searches earlier runs and `agentx-wiki recall-read <run id>` returns one.'
-        : 'Memory: memory_append, memory_replace, and memory_rethink edit your memory blocks. recall_search finds what was said and done in earlier conversations and runs, including a chat that was cleared; recall_read returns one run.'
+        ? 'Memory: `agentx-wiki block append <label> <text>`, `block replace <label> --old <text> --new <text>`, and `block rethink <label> <text>` edit your memory blocks. `agentx-wiki facts [query]` recalls saved facts. `agentx-wiki history <query>` searches earlier runs and `agentx-wiki history-read <run id>` returns one.'
+        : 'Memory: memory_append, memory_replace, and memory_rethink edit your memory blocks; memory_facts recalls saved facts. history_search finds what was said and done in earlier conversations and runs, including a chat that was cleared; history_read returns one run.'
     },
     {
       group: 'Knowledge',
       tools: KNOWLEDGE_GROUP,
       order: GROUP_ORDER.Knowledge,
       guidance: cli
-        ? 'Knowledge: `agentx-wiki search <query>`, `read <id or path>`, `list [namespace]`, `skill [name]`, `memory [query]`, and `propose <json>` to record durable knowledge. Cite what you use as [id@revision].'
-        : 'Knowledge: wiki_search, wiki_read, wiki_list, and wiki_skill read the Wiki; wiki_memory recalls facts; wiki_propose records durable knowledge, quoting its evidence (the Wiki validates it and may send it to the Inbox). Cite what you use as [id@revision].'
+        ? 'Knowledge: `agentx-wiki search <query>`, `read <id or path>`, `list [namespace]`, `skill [name]`, and `propose <json>` to record durable knowledge. Cite what you use as [id@revision].'
+        : 'Knowledge: wiki_search, wiki_read, and wiki_list read the Wiki; skill_load loads a skill\'s steps; wiki_propose records durable knowledge, quoting its evidence (the Wiki validates it and may send it to the Inbox). Cite what you use as [id@revision].'
     },
     {
       group: 'Native',
@@ -408,7 +408,7 @@ function hostSection(host: HostSection, kept: boolean): Section | null {
 export function compile(env: HarnessEnv, context: CallerContext, launch: Launch = {}): ContextPack {
   const { root } = env
   const wiki = store.wikiDir(root)
-  const active = registry.enabledFor(root, context.projectId ?? null)
+  const active = registry.enabledFor(root, context.projectId ?? null, context.agentId ?? null)
   const groups = toolGroups(context, launch)
   const contextProfile = profileFor(root, context)
   const keep = (id: string): boolean => id === 'references' || keeps(contextProfile, id)
@@ -474,7 +474,7 @@ export function launchText(env: HarnessEnv, context: CallerContext, launch: Laun
 
 // ---- Stable prefix and context updates -------------------------------------------------------
 
-const BUILT_IN_DYNAMIC: readonly { id: string; order: number }[] = [
+export const BUILT_IN_DYNAMIC: readonly { id: string; order: number }[] = [
   { id: 'blocks', order: SECTION_ORDER.blocks },
   { id: 'references', order: SECTION_ORDER.references },
   { id: 'knowledge', order: SECTION_ORDER.knowledge }

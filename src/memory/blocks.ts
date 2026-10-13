@@ -6,6 +6,7 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { join, relative } from 'node:path'
 
+import { noteChange } from '../core/changes'
 import { HarnessError, invalid, notFound } from '../core/errors'
 import * as frontmatter from '../core/frontmatter'
 import { atomicWrite, newId, now, safeId, writeJson } from '../core/fs'
@@ -283,6 +284,7 @@ function write(wiki: string, block: Block, front: BlockFront, body: string, acto
   before ??= store.snapshot(wiki, block.id, current, actor, 'Before edit').id
   atomicWrite(block.path, next)
   const after = store.snapshot(wiki, block.id, next, actor, reason)
+  noteChange({ wiki, id: block.id, path: block.path, text: next, actor, reason })
   const operation: Operation = {
     id: newId(),
     createdAt: now(),

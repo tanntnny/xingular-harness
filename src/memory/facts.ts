@@ -4,6 +4,7 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
+import { noteChange } from '../core/changes'
 import { HarnessError, invalid, notFound } from '../core/errors'
 import * as frontmatter from '../core/frontmatter'
 import { atomicWrite, now, safeId } from '../core/fs'
@@ -66,11 +67,11 @@ export function validate(front: MemoryFront, body: string): string | null {
   try {
     safeId(front.id)
   } catch {
-    return 'The memory id must be letters, numbers, - or _.'
+    return 'The fact id must be letters, numbers, - or _.'
   }
-  if (!front.title.trim() || !body.trim()) return 'A memory needs a title and a body.'
+  if (!front.title.trim() || !body.trim()) return 'A fact needs a title and a body.'
   if (Buffer.byteLength(body) > MAX_BODY) return `A memory is a short fact; keep the body under ${MAX_BODY} characters and put longer material in a Wiki page.`
-  if (!(MEMORY_KINDS as readonly string[]).includes(front.kind)) return `Memory kind must be one of ${MEMORY_KINDS.join(', ')}.`
+  if (!(MEMORY_KINDS as readonly string[]).includes(front.kind)) return `A fact must be one of ${MEMORY_KINDS.join(', ')}.`
   if (!(CONFIDENCE as readonly string[]).includes(front.confidence) || !(STATUSES as readonly string[]).includes(front.status)) return 'Unknown confidence or status.'
   if (front.namespace !== ROOT_NAMESPACE && store.projectNamespaceOf(front.namespace) !== front.namespace && front.namespace !== LIBRARY_NAMESPACE) {
     return "A memory's namespace is / or a project namespace (/projects/<slug>)."
@@ -227,7 +228,7 @@ export function saveAsUser(wiki: string, input: MemoryInput): WikiMemory {
   }
   const problem = validate(front, input.body)
   if (problem) throw invalid(problem)
-  if (looksSecret(input.body)) throw invalid('The memory contains text that looks like a credential.')
+  if (looksSecret(input.body)) throw invalid('The fact contains text that looks like a credential.')
   const path = existing?.path ?? pathFor(wiki, id)
   if (existing) {
     let before: string
@@ -241,6 +242,7 @@ export function saveAsUser(wiki: string, input: MemoryInput): WikiMemory {
   const text = serialize(front, input.body)
   atomicWrite(path, text)
   store.snapshot(wiki, id, text, 'user', existing ? 'Edited' : 'Created')
+  noteChange({ wiki, id, path, text, actor: 'user', reason: existing ? 'Edited' : 'Created' })
   store.log(wiki, `- ${now()} · user · memory · \`${id}\` ${existing ? 'edited' : 'created'}`)
   return response(wiki, findMemory(wiki, id))
 }

@@ -4,8 +4,8 @@
 // skills (a person's own and built-in).
 //
 // An application embeds it with `createHarness` and extends it through prompt sections, tool
-// providers, a tool policy, a secret store, and a directory of its own names. Everything else
-// is reachable by path, e.g. `@xingular/harness/memory/wiki`.
+// providers, a tool policy, a secret store, a directory of its own names, and a description of
+// its own parts as plugins. Everything else is reachable by path, e.g. `@xingular/harness/memory/wiki`.
 export { createHarness, Harness, type HarnessOptions, type Recovery } from './harness'
 
 export { Bus, log, type Notice } from './core/bus'
@@ -44,13 +44,23 @@ export type { Effort } from './sessions/runner'
 
 export { describeTool, WIKI_TOOLS, WIKI_TOOL_NAMES, type WikiCall, type WikiToolDefinition } from './tools/definitions'
 export type { ToolProvider, ToolResult, ToolSession, ToolSpec } from './tools/types'
+export { webTools, WEB_PLUGIN, WEB_SEARCH_KEY, type WebToolOptions } from './web/tools'
+export { safeRequest, type WebRequest, type WebResponse } from './web/safeRequest'
 
 export type { BrokeredTools, BrokerSession, BrokerTool } from './mcp/service'
 export type { Connection, ConnectionInput } from './mcp/types'
 
-export { configureBuiltins, type RegistryItem, type RegistryState } from './skills/registry'
+export { configureBuiltins, type RegistryItem, type RegistryState, type SkillBundleInput } from './skills/registry'
 
 export type { TerminalAssets, TerminalLaunch, TerminalPrepareInput } from './terminal/terminals'
+
+export { attach as attachPlugin, inventoryFor as pluginInventory, list as listPlugins, type AttachParams, type InventoryParams, type PluginScope } from './plugins/api'
+export type { Attachment, AttachScope } from './plugins/attachments'
+export { HARNESS_PLUGINS } from './plugins/builtin'
+export { FIRST_PARTY_PLUGINS } from './plugins/firstParty'
+export type { Found, Resolver } from './plugins/discover'
+export type { Loading, Registered } from './plugins/plugins'
+export { CONTRIBUTION_KINDS, PLUGIN_SOURCES, type Contribution, type ContributionKind, type ContributionState, type Delivery, type Inventory, type InventoryItem, type Plugin, type PluginDescriptor, type PluginManage, type PluginSetting, type PluginSource } from './plugins/types'
 
 export { methods } from './server/methods'
 export { remoteDirectory, remotePolicy, remoteSecrets, remoteTools } from './server/remote'

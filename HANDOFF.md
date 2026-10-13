@@ -1,8 +1,8 @@
 # Handoff — 2026-10-11
 
-The shared Pi harness is committed on `main`: initial checkpoint `cf1af75`. It is consumed by the current application at `../Xingular Agent/App-harness-split` on branch `harness-split`. The old `App` application remains on a separate branch. No package publication or release has occurred.
+The shared Pi harness is committed on `main`: initial checkpoint `cf1af75`. It is consumed by the current application at `../App` on branch `harness-split`. The v1 application is archived at `../App-archive-v1` on a separate branch. No package publication or release has occurred.
 
-The full application handoff is `../Xingular Agent/App-harness-split/docs/guides/harness-split-handoff.md`; ADR-0004 and RFC-0005 there record the architecture and decision. Its stabilization log and retained QA evidence cover application recovery, final relay occupancy, explicit legacy Pi setup and native walkthroughs.
+The full application handoff is `../App/docs/guides/harness-split-handoff.md`; ADR-0004 and RFC-0005 there record the architecture and decision. Its stabilization log and retained QA evidence cover application recovery, final relay occupancy, explicit legacy Pi setup and native walkthroughs.
 
 ## Verified locally
 

@@ -64,8 +64,8 @@ function request<T>(connection: SocketConnection, body: Record<string, unknown>,
 }
 
 /** A memory, Wiki, recall, or connected-app call made on behalf of the session that owns the token. */
-export function socketCall<T = unknown>(connection: SocketConnection, call: string, params: Record<string, unknown> = {}, timeoutMs = 120_000): Promise<T> {
-  return request<T>(connection, { call, params }, call, timeoutMs)
+export function socketCall<T = unknown>(connection: SocketConnection, call: string, params: Record<string, unknown> = {}, timeoutMs = 120_000, control?: string): Promise<T> {
+  return request<T>(connection, { call, params, ...(control ? { control } : {}) }, call, timeoutMs)
 }
 
 /** Telemetry and decisions from the native `pi` process. Approvals may wait on a person, so the default wait is long. */

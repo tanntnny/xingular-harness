@@ -233,7 +233,7 @@ export function searchTool(env: HarnessEnv, context: CallerContext, params: Para
   if (!hits.length) {
     return scope.sessionId && !isSession(context) ? 'Nothing in your own conversations matches. Pass scope "all" to search every conversation and Harness run.' : 'Nothing in the recorded history matches.'
   }
-  return `${hits.map((hit) => `- [run ${hit.runId} · ${hit.at.slice(0, 10)} · ${sourceLabel(env, hit.mode, hit.sessionId, hit.projectId)}] ${hit.role}: ${hit.snippet.replaceAll('\n', ' ')}`).join('\n')}\n\nRead a whole run with recall_read and its run id.`
+  return `${hits.map((hit) => `- [run ${hit.runId} · ${hit.at.slice(0, 10)} · ${sourceLabel(env, hit.mode, hit.sessionId, hit.projectId)}] ${hit.role}: ${hit.snippet.replaceAll('\n', ' ')}`).join('\n')}\n\nRead a whole run with history_read and its run id.`
 }
 
 /** `recall.read` as text for a model. */

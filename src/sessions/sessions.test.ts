@@ -51,6 +51,32 @@ function fakeSession(script: (emit: (event: PiEvent) => void, gateCheck: () => P
 }
 
 describe('session turns on Pi', () => {
+  it('rejects image-required turns before any prompt reaches a text-only model', async () => {
+    let requested = false
+    let disposed = false
+    const { run, harness } = setup(async ({ gate }) => ({
+      ...fakeSession(async () => { requested = true }, gate),
+      model: { input: ['text'] },
+      dispose: () => { disposed = true }
+    }))
+    expect(await run('image-unsupported', { requiresImageInput: true })).toEqual({ runId: 'image-unsupported', nativeSessionId: null })
+    expect(requested).toBe(false)
+    expect(disposed).toBe(true)
+    expect(loadRun(harness.env.root, 'image-unsupported')).toMatchObject({ status: 'failed', terminalReason: expect.stringContaining('supports images') })
+  })
+
+  it('passes image pixels using Pi image content fields with the existing stable prefix', async () => {
+    let observed: unknown
+    const { run } = setup(async ({ gate }) => ({
+      ...fakeSession(async () => undefined, gate),
+      model: { input: ['text', 'image'] },
+      prompt: async (_text, options) => { observed = options }
+    }))
+    await run('image-supported', { requiresImageInput: true, images: [{ mediaType: 'image/png', data: 'cGl4ZWxz' }] })
+    await tick()
+    expect(observed).toEqual({ images: [{ type: 'image', mimeType: 'image/png', data: 'cGl4ZWxz' }] })
+  })
+
   it('saves the context update in native history before the request, without another model turn', async () => {
     const delivered: unknown[] = []
     const { run, events, harness } = setup(async ({ gate, params }) => ({
@@ -227,6 +253,45 @@ describe('session turns on Pi', () => {
     expect(events.some((event) => event.type === 'approval.resolved')).toBe(true)
   })
 
+  it("asks before a tool an extension brought, and relays the extension's question and notice as run events", async () => {
+    let blockReason: string | null | undefined
+    let answered: unknown
+    const { events, run, harness } = setup(async ({ gate, extensions }) => ({
+      ...fakeSession(async () => undefined, gate),
+      prompt: async () => {
+        // What a loaded extension does: registers a tool nobody switched on by name, shows a line, and asks.
+        gate.ask?.(['kit_scan'])
+        extensions!.notice({ kind: 'status', key: 'kit', text: 'Scanning' })
+        answered = await extensions!.ask({ question: 'Scan the whole folder?', options: [{ label: 'Yes' }, { label: 'No' }], multiSelect: false, allowText: false })
+        blockReason = await gate.check('kit_scan', { path: '.' })
+      }
+    }))
+    await run('run-ext', { text: 'scan' })
+    await tick()
+    expect(events.find((event) => event.type === 'extension.notice')?.payload).toEqual({ kind: 'status', key: 'kit', text: 'Scanning' })
+    const question = events.find((event) => event.type === 'question.requested')!.payload as { questionId: string }
+    expect(question).toMatchObject({ question: 'Scan the whole folder?' })
+    harness.runs.answerQuestion('run-ext', question.questionId, { selected: ['Yes'] })
+    await tick()
+    expect(answered).toEqual({ selected: ['Yes'] })
+    const approval = events.find((event) => event.type === 'approval.requested')!.payload as { approvalId: string }
+    expect(approval).toMatchObject({ target: 'kit_scan' })
+    harness.runs.resolveApproval('run-ext', approval.approvalId, 'approved')
+    await tick()
+    expect(blockReason).toBeNull()
+  })
+
+  it('gives an unattended run no extension interface', async () => {
+    let offered: unknown = 'unset'
+    const { run } = setup(async ({ gate, extensions }) => {
+      offered = extensions
+      return fakeSession(async () => undefined, gate)
+    })
+    await run('run-auto-ext', { text: 'tidy', automatic: true })
+    await tick()
+    expect(offered).toBeUndefined()
+  })
+
   it('skips the prompt for a tool the user already allowed in this session', async () => {
     let blockReason: string | null | undefined
     const { events, run, harness } = setup(async ({ gate }) => fakeSession(async (_emit, check) => void (blockReason = await check()), gate))
@@ -287,9 +352,9 @@ describe('session turns on Pi', () => {
     harness.sessions.provide(() => [{ name: 'react', label: 'React', description: 'React', parameters: (Type) => Type.Object({}), execute: async () => 'ok' }])
     await run('run-5', { tools: { allow: ['react'] } })
     await tick()
-    expect(received!.allow.slice(0, 2)).toEqual(['react', 'ask_user'])
-    expect(received!.allow).toEqual(expect.arrayContaining(['memory_append', 'recall_search', 'wiki_search', 'wiki_read', 'wiki_propose']))
-    expect(received!.tools.map((tool) => tool.name)).toEqual(['memory_append', 'memory_replace', 'memory_rethink', 'recall_search', 'recall_read', 'wiki_search', 'wiki_read', 'wiki_list', 'wiki_skill', 'wiki_memory', 'wiki_propose', 'ask_user', 'react'])
+    expect(received!.allow.slice(0, 3)).toEqual(['react', 'ask_user', 'plugin_propose'])
+    expect(received!.allow).toEqual(expect.arrayContaining(['memory_append', 'history_search', 'wiki_search', 'wiki_read', 'wiki_propose']))
+    expect(received!.tools.map((tool) => tool.name)).toEqual(['memory_append', 'memory_replace', 'memory_rethink', 'history_search', 'history_read', 'wiki_search', 'wiki_read', 'wiki_list', 'skill_load', 'memory_facts', 'wiki_propose', 'ask_user', 'plugin_propose', 'react'])
     expect(await received!.tools[0].execute({ block: 'notes', text: 'Remember this.' })).toContain('Updated the notes block')
     expect(received!.params.system).toContain('# Xingular Harness context')
   })

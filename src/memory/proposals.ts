@@ -10,9 +10,11 @@ import { mkdirSync, readFileSync, renameSync, rmSync } from 'node:fs'
 import { dirname, join, relative } from 'node:path'
 import { z } from 'zod'
 
+import { noteChange } from '../core/changes'
 import { HarnessError, invalid, notFound } from '../core/errors'
 import { atomicWrite, newId, now, readJson, safeId, writeJson } from '../core/fs'
 import { charCount, compareText, takeChars } from '../core/text'
+import { acceptPluginProposal, pluginProposalSchema } from '../plugins/proposal'
 import * as registry from '../skills/registry'
 import * as blocks from './blocks'
 import * as facts from './facts'
@@ -344,12 +346,12 @@ export function apply(wiki: string, defaultNamespace: string, trigger: Trigger, 
     const memoryId = store.slug(proposal.id ?? proposal.title)
     const current = existingMemories.find((memory) => memory.front.id === memoryId)
     const payload = { kind: 'memory', proposal, trigger: described }
-    const label = `Memory "${proposal.title}"`
-    const title = `Memory "${proposal.title}" needs review`
+    const label = `Fact "${proposal.title}"`
+    const title = `Fact "${proposal.title}" needs review`
     if (looksSecret(proposal.body) || looksSecret(proposal.title)) {
       outcome.parked += 1
-      outcome.notes.push(`Memory "${proposal.title}" was rejected: it contains text that looks like a credential.`)
-      inbox(wiki, 'blocked', `Memory "${proposal.title}" was not saved`, 'The proposal contained text that looks like a credential, so it was not written.', [])
+      outcome.notes.push(`Fact "${proposal.title}" was rejected: it contains text that looks like a credential.`)
+      inbox(wiki, 'blocked', `Fact "${proposal.title}" was not saved`, 'The proposal contained text that looks like a credential, so it was not written.', [])
       continue
     }
     const front: facts.MemoryFront = {
@@ -378,11 +380,11 @@ export function apply(wiki: string, defaultNamespace: string, trigger: Trigger, 
       continue
     }
     if (front.confidence === 'low' && !fromUser) {
-      park('unresolved', title, label, 'Low-confidence memories wait for review.', proposal.body, memoryId, payload)
+      park('unresolved', title, label, 'Low-confidence facts wait for review.', proposal.body, memoryId, payload)
       continue
     }
     if (current && changedSince(memoryId, current.path)) {
-      park('blocked', title, label, 'The memory changed while the update was running, so the proposal was parked.', proposal.body, memoryId, payload)
+      park('blocked', title, label, 'The fact changed while the update was running, so the proposal was parked.', proposal.body, memoryId, payload)
       continue
     }
     for (const id of found) if (!front.sourceIds.includes(id)) front.sourceIds.push(id)
@@ -392,7 +394,7 @@ export function apply(wiki: string, defaultNamespace: string, trigger: Trigger, 
       writes.push({ entryId: old.front.id, path: old.path, oldText: readOrNull(old.path), newText: facts.serialize({ ...old.front, status: 'superseded', updatedAt: now() }, old.body) })
     }
     const path = current?.path ?? facts.pathFor(wiki, memoryId)
-    outcome.notes.push(`Memory "${proposal.title}" (${memoryId}) ${current ? 'updated' : 'saved'}.`)
+    outcome.notes.push(`Fact "${proposal.title}" (${memoryId}) ${current ? 'updated' : 'saved'}.`)
     writes.push({ entryId: memoryId, oldText: current ? readOrNull(current.path) : null, newText: facts.serialize(front, proposal.body), path })
   }
 
@@ -472,6 +474,7 @@ export function apply(wiki: string, defaultNamespace: string, trigger: Trigger, 
   }))
   const operation: Operation = { id: operationId, createdAt: now(), trigger: described, pages, undone: false }
   writeJson(join(operationsDir(wiki), `${operationId}.json`), operation)
+  for (const write of writes) noteChange({ wiki, id: write.entryId, path: write.path, text: write.newText, actor, reason: described })
   writeIndex(wiki)
   store.log(
     wiki,
@@ -561,6 +564,8 @@ export function accept(root: string, itemId: string): string {
   } else if (kind === 'skill' || kind === 'prompt' || kind === 'rule') {
     const proposal = parsed(registryProposalSchema, payload.proposal)
     message = `Saved ${registry.writeItem(root, proposal.kind, proposal.name, proposal.description, proposal.body, `Accepted ${describeTrigger(trigger)}`)}.`
+  } else if (kind === 'plugin') {
+    message = acceptPluginProposal(root, parsed(pluginProposalSchema, payload.proposal))
   } else {
     throw invalid('Unknown proposal kind.')
   }

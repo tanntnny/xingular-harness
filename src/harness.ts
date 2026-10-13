@@ -5,11 +5,12 @@ import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { Accounts } from './accounts/accounts'
-import { isolateProcess } from './accounts/env'
+import { ensureSharedDir, isolateProcess } from './accounts/env'
 import { fileSecretStore, type SecretStore } from './accounts/secrets'
 import { Bus, log } from './core/bus'
 import { DEFAULT_PRODUCT_NAME, EMPTY_DIRECTORY, type Directory, type HarnessEnv } from './core/env'
 import { HarnessError } from './core/errors'
+import { readJsonOr } from './core/fs'
 import { closeIndex } from './core/index'
 import { projectsOrNone } from './core/projects'
 import { ConnectedApps } from './mcp/service'
@@ -21,6 +22,13 @@ import * as recall from './memory/recall'
 import * as store from './memory/store'
 import { countPages } from './memory/wiki'
 import * as wikiIndex from './memory/wikiIndex'
+import * as pluginApi from './plugins/api'
+import * as attachments from './plugins/attachments'
+import { HARNESS_PLUGINS } from './plugins/builtin'
+import type { Resolver } from './plugins/discover'
+import { Hooks } from './plugins/hooks'
+import { packageFolders, Plugins } from './plugins/plugins'
+import type { PluginDescriptor } from './plugins/types'
 import { approvalKey, Approvals } from './sessions/approvals'
 import type { ToolPolicy } from './sessions/policy'
 import { RunRegistry } from './sessions/registry'
@@ -52,6 +60,15 @@ export interface HarnessOptions {
   piProgram?: () => string | null
   /** Folders of built-in skills, prompts, and rules, each laid out like `registry/`. */
   builtins?: string[]
+  /**
+   * The application's own parts, described as plugins: which tools, prompt sections and tool
+   * groups each one provides. Data only; it changes what is listed, never what runs.
+   */
+  plugins?: PluginDescriptor[]
+  /** Replaces Pi's own search for extensions, skills, prompts and themes, for tests. */
+  resolver?: Resolver
+  /** Replaces how a plugin's hooks file is read as a module, for tests. */
+  hookImporter?: (address: string) => Promise<unknown>
 }
 
 /** What starting on a data root found and repaired. */
@@ -91,6 +108,12 @@ export class Harness {
   readonly approvals: Approvals
   readonly runs: RunRegistry
   readonly apps: ConnectedApps
+  readonly plugins: Plugins
+  /** Code plugins gave the harness to run after memory, the Wiki or history changed. */
+  readonly hooks: Hooks
+  /** Every part described as a plugin: the harness's own, then the application's. */
+  descriptors: readonly PluginDescriptor[] = HARNESS_PLUGINS
+  applicationPlugins: ReadonlySet<string> = new Set()
   readonly sessions: Sessions
   readonly maintenance: Maintenance
   readonly terminals: Terminals
@@ -119,20 +142,60 @@ export class Harness {
       ended: (runId, sessionId) => this.apps.revokeRun(runId, sessionId)
     })
     this.apps = new ConnectedApps({ env: this.env, stateDir: this.stateDir, secrets, bus: this.bus, runs: this.runs, policy: this.policy })
-    this.sessions = new Sessions({ env: this.env, accounts: this.accounts, runs: this.runs, policy: this.policy, broker: this.apps, factory: options.sessionFactory })
+    this.plugins = new Plugins({ stateDir: this.stateDir, bus: this.bus, resolver: options.resolver, attachments: () => (this.env.dataRoot ? attachments.load(this.env.dataRoot) : null), packagesDir: () => (this.env.dataRoot ? join(this.env.dataRoot, 'plugins') : null) })
+    this.hooks = new Hooks({
+      stateDir: this.stateDir,
+      bus: this.bus,
+      // A hook runs for everyone or not at all, so only what is on everywhere and trusted counts.
+      // The shared folder stands in for an account: packages are the same for all of them.
+      wanted: async () => {
+        if (!this.env.dataRoot) return []
+        const shared = ensureSharedDir(join(this.stateDir, 'accounts'))
+        // A hook comes only with a package: one kept beside the data, or one the shared settings
+        // name. With neither there is nothing to look for, and Pi is not loaded to find that out.
+        const named = readJsonOr<{ packages?: unknown }>(join(shared, 'settings.json'), {}).packages
+        if (!packageFolders(join(this.env.dataRoot, 'plugins')).length && !(Array.isArray(named) && named.length)) return []
+        return (await this.plugins.loading({ cwd: this.stateDir, agentDir: shared, caller: {} })).hooks
+      },
+      call: (connection, tool, args) => this.apps.callUnattended(connection, tool, args ?? {}),
+      importFile: options.hookImporter
+    })
+    let reloadTimer: ReturnType<typeof setTimeout> | null = null
+    this.bus.on((notice) => {
+      if (notice.type !== 'plugins.changed' || reloadTimer) return
+      // Several changes arrive together when a plugin is installed or switched; one reload covers them.
+      reloadTimer = setTimeout(() => {
+        reloadTimer = null
+        void this.hooks.reload()
+      }, 50)
+      reloadTimer.unref?.()
+    })
+    this.describe(options.plugins ?? [])
+    this.sessions = new Sessions({ env: this.env, accounts: this.accounts, runs: this.runs, policy: this.policy, broker: this.apps, plugins: this.plugins, factory: options.sessionFactory })
     this.maintenance = new Maintenance({ env: this.env, bus: this.bus, accounts: this.accounts, factory: options.maintainerFactory, idleMs: options.idleMs })
-    this.terminals = new Terminals({ env: this.env, stateDir: this.stateDir, accounts: this.accounts, runs: this.runs, apps: this.apps, policy: this.policy, bus: this.bus, assets: options.assets, program: options.piProgram })
+    this.terminals = new Terminals({ env: this.env, stateDir: this.stateDir, accounts: this.accounts, runs: this.runs, apps: this.apps, policy: this.policy, bus: this.bus, plugins: this.plugins, pluginControl: { list: (scope) => pluginApi.list(this, scope), attach: (params, on) => pluginApi.attach(this, params, on), trust: (scope) => pluginApi.trust(this, scope), untrust: (scope) => pluginApi.untrust(this, scope) }, assets: options.assets, program: options.piProgram })
     this.ready = this.apps.start().catch((error) => log('connected apps', error instanceof Error ? error.message : String(error)))
     this.runs.listen((event, run) => {
       this.accounts.onRunEvent(event, run)
       // Each run is indexed when it ends, so the next turn can already recall it.
       if (event.type === 'completed' || event.type === 'failed') recall.indexRun(this.env.root, event.runId)
+      if ((event.type === 'completed' || event.type === 'failed') && run) {
+        this.hooks.emit({ type: 'history.run.ended', runId: run.id, sessionId: run.sessionId, status: run.status, goal: run.goal ?? null, agentId: run.agentId ?? null, projectId: run.projectId ?? null, startedAt: run.startedAt, endedAt: run.endedAt ?? null, at: event.timestamp })
+      }
       this.maintenance.onRunEvent(event)
     })
   }
 
   get dataRoot(): string | null {
     return this.env.dataRoot
+  }
+
+  /** Sets the application's own parts, described as plugins. One with a harness plugin's id is ignored. */
+  describe(plugins: readonly PluginDescriptor[]): void {
+    const own = new Set(HARNESS_PLUGINS.map((plugin) => plugin.id))
+    const supplied = plugins.filter((plugin) => plugin && typeof plugin.id === 'string' && !own.has(plugin.id))
+    this.descriptors = [...HARNESS_PLUGINS, ...supplied]
+    this.applicationPlugins = new Set(supplied.map((plugin) => plugin.id))
   }
 
   /**
@@ -144,6 +207,8 @@ export class Harness {
     if (this.env.dataRoot && this.env.dataRoot !== dataRoot) closeIndex(this.env.dataRoot)
     this.env.dataRoot = dataRoot
     const root = dataRoot
+    this.hooks.watch(store.wikiDir(root))
+    void this.hooks.reload()
     for (const folder of ['registry/skills', 'registry/prompts', 'registry/rules', 'config', 'runs']) mkdirSync(join(root, folder), { recursive: true })
     let migrationError: string | null = null
     try {
@@ -200,6 +265,8 @@ export class Harness {
     await this.terminals.close()
     await this.runs.interruptAll()
     await this.maintenance.settled()
+    await this.hooks.settled().catch(() => undefined)
+    this.hooks.close()
     await this.apps.close()
     if (this.env.dataRoot) closeIndex(this.env.dataRoot)
   }

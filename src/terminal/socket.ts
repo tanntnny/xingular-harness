@@ -31,6 +31,11 @@ export interface SocketHandlers {
   memory(caller: CallerContext, call: string, params: Record<string, unknown>): string
   /** `mcp.list`, `mcp.call`, `mcp.revision`, `tools.list`, `tools.call`. */
   apps(session: BrokerSession, call: string, params: Record<string, unknown>): Promise<unknown>
+  /**
+   * `plugins.*`. `control` is true only for the session's own extension, which holds a key the
+   * session's shell never sees; anything that changes what loads needs it.
+   */
+  plugins?(grant: SocketGrant, call: string, params: Record<string, unknown>, control: boolean): Promise<unknown>
 }
 
 const MAX_REQUEST_BYTES = 1024 * 1024
@@ -47,6 +52,12 @@ export class SessionSocket {
   private server: Server | null = null
   private listening: Promise<void> | null = null
   private readonly grants = new Map<string, SocketGrant>()
+  /**
+   * A second key per token, handed out once. The token is in the session's environment, where a
+   * command the model runs can read it; this key is claimed by the session's extension as it
+   * loads, before any model turn, and kept in its memory only.
+   */
+  private readonly controls = new Map<string, string>()
   private readonly clients = new Set<Socket>()
 
   constructor(
@@ -62,10 +73,11 @@ export class SessionSocket {
 
   revoke(token: string): void {
     this.grants.delete(token)
+    this.controls.delete(token)
   }
 
   revokeSession(sessionId: string): void {
-    for (const [token, grant] of this.grants) if (grant.sessionId === sessionId) this.grants.delete(token)
+    for (const [token, grant] of this.grants) if (grant.sessionId === sessionId) this.revoke(token)
   }
 
   /** Runs one request line and returns the reply line's object. */
@@ -77,7 +89,8 @@ export class SessionSocket {
       } catch {
         throw new HarnessError('invalid_request', 'The request is not JSON.')
       }
-      const grant = this.grants.get(typeof request.token === 'string' ? request.token : '')
+      const token = typeof request.token === 'string' ? request.token : ''
+      const grant = this.grants.get(token)
       if (!grant) throw new HarnessError('unauthorized', 'This session token is not valid. It ends when its terminal session ends.')
       if (typeof request.event === 'string') {
         if (!grant.terminal) throw new HarnessError('unknown_method', 'This session has no terminal controller.')
@@ -94,6 +107,16 @@ export class SessionSocket {
       if (['mcp.', 'tools.'].some((prefix) => call.startsWith(prefix))) {
         if (!grant.broker) throw new HarnessError('mcp_unauthorized', 'Connected apps are not available to this session.')
         return { result: await this.handlers.apps(grant.broker, call, params) }
+      }
+      if (call === 'control.claim') {
+        if (this.controls.has(token)) throw new HarnessError('unauthorized', "This session's control key was already claimed.")
+        const key = `${newId()}${newId()}`.replaceAll('-', '')
+        this.controls.set(token, key)
+        return { result: { key } }
+      }
+      if (call.startsWith('plugins.') && this.handlers.plugins) {
+        const key = this.controls.get(token)
+        return { result: await this.handlers.plugins(grant, call, params, key !== undefined && request.control === key) }
       }
       throw new HarnessError('unknown_method', `Unknown call ${call}.`)
     } catch (error) {

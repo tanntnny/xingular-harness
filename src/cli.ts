@@ -6,19 +6,31 @@
 //       Serves the harness to a host process over stdin/stdout (newline-delimited JSON).
 //   xingular-harness wiki <command>     Memory and Wiki, from inside a terminal session.
 //   xingular-harness mcp <command>      Connected apps, from inside a terminal session.
+//   xingular-harness plugins <command>  List, install, switch and trust plugins.
 import { log } from './core/bus'
 import { createHarness, type HarnessOptions } from './harness'
+import { runPluginsCli, terminalAsk } from './plugins/cli'
 import { remoteDirectory, remotePolicy, remoteSecrets, remoteTools } from './server/remote'
 import { RpcPeer, stdioTransport } from './server/rpc'
 import { attach } from './server/serve'
 import { runAppsCli, runWikiCli } from './terminal/cli'
+import { runStandaloneTerminal, standaloneArguments } from './terminal/standalone'
 
-const USAGE = `Usage: xingular-harness <serve | wiki | mcp> [arguments]
+const USAGE = `Usage: xingular-harness [--data <dir>] [--state <dir>]
+       xingular-harness <terminal | serve | wiki | mcp | plugins> [arguments]
 
+  (no command)       Start the interactive Pi terminal
+  terminal           Start the interactive Pi terminal
   serve --state <dir> [--data <dir>] [--name <product>] [--builtins <dir>]
         [--host-secrets] [--host-policy] [--host-tools] [--host-directory]
+                     Serve the harness over newline-delimited JSON
   wiki <command>     Memory and Wiki commands for a terminal session
   mcp <command>      Connected-app commands for a terminal session
+  plugins <command>  List, install, switch and trust plugins (plugins help)
+
+Standalone terminal options:
+  --data <dir>       Data directory (default: ~/.xingular-harness/data)
+  --state <dir>      State directory (default: ~/.xingular-harness/state)
 `
 
 function flags(argv: string[]): { values: Record<string, string[]>; switches: Set<string> } {
@@ -73,10 +85,18 @@ function serveCommand(argv: string[]): Promise<number> {
 }
 
 async function main(): Promise<number> {
-  const [command, ...rest] = process.argv.slice(2)
+  const argv = process.argv.slice(2)
+  const [command, ...rest] = argv
+  if (argv.includes('--help') || argv.includes('-h')) {
+    process.stdout.write(USAGE)
+    return 0
+  }
+  const terminalArgs = standaloneArguments(argv)
+  if (terminalArgs !== null) return runStandaloneTerminal(terminalArgs)
   if (command === 'serve') return serveCommand(rest)
   if (command === 'wiki') return runWikiCli(rest)
   if (command === 'mcp') return runAppsCli(rest)
+  if (command === 'plugins') return runPluginsCli(rest, { ask: terminalAsk() })
   process.stdout.write(USAGE)
   return command ? 2 : 0
 }

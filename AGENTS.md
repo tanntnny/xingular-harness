@@ -1,7 +1,7 @@
 # Xingular Harness — notes for coding agents
 
 Read [`README.md`](README.md) first: it has the parts, the extension points, and the storage
-layout. The family-level guide is [`../AGENTS.md`](../AGENTS.md).
+layout. The family-level guide is [`../../AGENTS.md`](../../AGENTS.md).
 
 ## What belongs here
 
@@ -20,7 +20,7 @@ other applications. A change here changes every application built on it.
   group is, or what a task is. `agentId` is an opaque id that owns memory blocks; names come in
   through `Directory` or `CallerContext.agentName`.
 - When an application needs the harness to do something new, add an extension point (a prompt
-  section, a tool provider, a policy hook, an option). Do not add an application-name check or a
+  section, a tool provider, a policy hook, a plugin description, an option). Do not add an application-name check or a
   branch for one application's concept.
 
 ## Rules
@@ -40,6 +40,22 @@ other applications. A change here changes every application built on it.
 - **Golden fixtures guard the bytes.** `tests/golden/` holds what the compiler and the memory
   tools produced before the split. `tests/golden.test.ts` must keep passing; change a fixture
   only when the text is meant to change, and say so.
+- **The harness is the only loader.** A session or terminal loads the extensions, skills, prompts
+  and themes that `Plugins.loading` (`src/plugins/`) chose, with Pi's own discovery switched off.
+  Do not pass a session a loader that discovers on its own, and do not load a working folder's
+  code that was not trusted. The approval gate stays the last extension to see a tool call.
+- **Everything model-visible belongs to a plugin.** A new prompt section, tool group or tool is
+  declared by a `PluginDescriptor` (`src/plugins/builtin.ts` for the harness's own), or
+  `plugins.inventory` reports it as unattributed.
+- **A hook is told, never asked.** `src/plugins/hooks.ts` runs a plugin's hooks after a write,
+  in the background. Memory code only calls `noteChange` once the file is in place; it never
+  waits for a hook, and a hook's failure never reaches it. A new write point that should be
+  heard calls `noteChange` too. Do not add a hook that can stop or change a write.
+- **No tool installs, switches on or trusts a plugin.** `plugin_propose` parks a proposal; a
+  person does the rest. Keep it that way.
+- **One store says what is switched on.** `src/plugins/attachments.ts` holds every choice about
+  a plugin or a contribution, per scope (everywhere, an agent, a project). Do not add a second
+  enablement file for a new kind of thing; give it a default and read it with `attached`.
 - **Accounts are isolated.** A session runs in its account's own Pi agent folder, never in
   `~/.pi`. An account is never exchanged for another: a pinned session that cannot use its
   account fails.
@@ -63,7 +79,7 @@ npm run prove     # after changing the server, the CLI, or startup
 ```
 
 After a change, also run the checks of Xingular Agent (`npm run typecheck`, `npm test`,
-`npm run check:layers`, `cd src-tauri && cargo test` in `../Xingular Agent/App`). Its sidecar
+`npm run check:layers`, `cd src-tauri && cargo test` in `../App`). Its sidecar
 tests include one that parses every reply of this package with the interface's schemas, and one
 that compares the tool table in `src/tools/definitions.ts` with the copy its interface shows.
 

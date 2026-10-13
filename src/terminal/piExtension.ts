@@ -6,6 +6,7 @@ import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-a
 import { Type } from 'typebox'
 
 import { connectionFromEnv, socketCall, terminalCall } from './client'
+import { runPluginsMenu } from './pluginMenu'
 
 interface SocketTool {
   name: string
@@ -40,6 +41,21 @@ export default async function (pi: ExtensionAPI) {
   try {
     await terminalCall('startup', { phase: stage })
     const connection = connectionFromEnv()
+    // Claimed here, before the model has run anything, and kept in this process's memory: a
+    // command the model runs can read the session token from its environment, never this key.
+    const control = await socketCall<{ key: string }>(connection, 'control.claim', {}, 15_000).then((claimed) => claimed.key).catch(() => null)
+    pi.registerCommand('plugins', {
+      description: 'See what this session loads, and switch a plugin on or off or trust its code',
+      handler: async (_args, ctx) => {
+        if (!control) return ctx.ui.notify('This session cannot change plugins.', 'warning')
+        const { projectId } = await socketCall<{ projectId: string | null }>(connection, 'plugins.session', {}, 15_000, control).catch(() => ({ projectId: null }))
+        await runPluginsMenu(
+          { select: (title, options) => ctx.ui.select(title, options), confirm: (title, message) => ctx.ui.confirm(title, message), notify: (message, level) => ctx.ui.notify(message, level) },
+          (method, params) => socketCall(connection, method, params ?? {}, 60_000, control),
+          projectId
+        )
+      }
+    })
     const { tools } = await socketCall<{ tools: SocketTool[] }>(connection, 'tools.list', {}, 15_000)
     stage = 'Tool registration'
     for (const tool of tools) {

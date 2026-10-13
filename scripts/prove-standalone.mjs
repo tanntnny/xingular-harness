@@ -4,7 +4,7 @@
 // in any language would. No model request is made: the scripted session has no credentials,
 // so the proof is that it is recorded and fails cleanly.
 import { spawn } from 'node:child_process'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { createInterface } from 'node:readline'
@@ -86,6 +86,35 @@ try {
   }
   check('records a scripted session as a run with events (no credentials, so it fails cleanly)', run.status === 'failed' && events.some((event) => event.runId === 'proof-run'), `status ${run.status}; ${events.length} events relayed`)
   check('tells the host when state changes', ['accounts.changed', 'wiki.changed'].every((type) => notices.some((notice) => notice.type === type)))
+
+  // A plugin that extends memory with a hook: installed from a folder, it hears nothing until it
+  // is switched on and trusted, then every saved fact; changed code is read again once trusted.
+  const pluginDir = join(scratch, 'mirror')
+  const heard = join(scratch, 'heard.log')
+  const hooksFile = (label) => `import { appendFileSync } from 'node:fs'\nexport default function (harness) { harness.on('memory.saved', (event) => appendFileSync(${JSON.stringify(heard)}, '${label}:' + event.title + '\\n')) }\n`
+  mkdirSync(pluginDir, { recursive: true })
+  writeFileSync(join(pluginDir, 'package.json'), JSON.stringify({ name: 'mirror', version: '1.0.0', description: 'Copies each saved fact.', harness: { extends: ['memory'], hooks: './hooks.mjs' } }))
+  writeFileSync(join(pluginDir, 'hooks.mjs'), hooksFile('v1'))
+  const toldSoFar = () => (existsSync(heard) ? readFileSync(heard, 'utf8').trim().split('\n').filter(Boolean) : [])
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 400))
+  const mirror = (plugins) => plugins.find((plugin) => plugin.id === 'package:mirror')
+  const installed = mirror(await request('plugins.install', { source: pluginDir }))
+  await request('facts.save', { input: { title: 'Before', kind: 'fact', body: 'Not heard.' } })
+  await settle()
+  const quiet = toldSoFar().length === 0
+  await request('plugins.attach', { id: 'package:mirror' })
+  await request('plugins.trust', { hash: installed.code.hash })
+  await settle()
+  await request('facts.save', { input: { title: 'First', kind: 'fact', body: 'Heard by version one.' } })
+  await settle()
+  writeFileSync(join(pluginDir, 'hooks.mjs'), hooksFile('v2'))
+  await request('facts.save', { input: { title: 'While changed', kind: 'fact', body: 'Changed code is not trusted.' } })
+  await settle()
+  await request('plugins.trust', { hash: mirror(await request('plugins.list')).code.hash })
+  await settle()
+  await request('facts.save', { input: { title: 'Second', kind: 'fact', body: 'Heard by version two.' } })
+  await settle()
+  check('runs a plugin hook after memory is saved, only while it is switched on and its code is trusted', quiet && installed.extends.join() === 'memory' && toldSoFar().join() === 'v1:First,v2:Second', toldSoFar().join(', ') || 'nothing heard')
 
   await request('harness.shutdown')
 } catch (error) {

@@ -16,7 +16,7 @@ import type { ActiveRun, RunRegistry } from '../sessions/registry'
 import { findRun, runDir } from '../sessions/runStore'
 import type { SessionBroker } from '../sessions/sessions'
 import type { ToolSession, ToolSpec } from '../tools/types'
-import { allowed, Connections, webUrl } from './connections'
+import { allowed, Connections, setScope, webUrl } from './connections'
 import { isSignInRequired, McpManager, signInRequired } from './manager'
 import { signIn, type OAuthHost } from './oauth'
 import type { Connection, HttpConfig, LaunchConfig, McpSource, McpTrace } from './types'
@@ -116,6 +116,9 @@ export interface ConnectedAppsOptions {
   runs: RunRegistry
   policy: ToolPolicy
 }
+
+/** The scope a plugin hook's connections are opened under: they belong to no session. */
+const UNATTENDED_SCOPE = 'plugin-hooks'
 
 export class ConnectedApps implements SessionBroker {
   readonly toolNames = ['mcp_list_tools', 'mcp_call_tool'] as const
@@ -518,6 +521,31 @@ export class ConnectedApps implements SessionBroker {
     return this.connections.forScope({ agentId })
   }
 
+  /**
+   * A call with no session and nobody to ask, made by a plugin's hook. It reaches a connection
+   * only when it is on for everyone, and a tool only when a person marked it to run without asking.
+   */
+  async callUnattended(reference: string, tool: string, args: Record<string, unknown> = {}): Promise<unknown> {
+    const connection = this.connections.list().find((item) => item.id === reference || item.name === reference)
+    if (!connection || !allowed(connection, {})) throw new HarnessError('mcp_access_denied', `There is no connected app called "${reference}" that is on for everyone.`)
+    // A change to the first-party workspace is previewed and approved by a person, never run from a hook.
+    if (!connection.readTools.includes(tool) || tool.startsWith('x_workspace_mutation')) {
+      throw new HarnessError('mcp_denied', `${connection.name} asks before running "${tool}". Mark it to run without asking in the connection's settings to let a plugin use it.`)
+    }
+    const client = await this.manager.client(UNATTENDED_SCOPE, await this.connections.launch(connection))
+    return client.callTool({ name: tool, arguments: args }, { timeout: 60000 })
+  }
+
+  /** Switches one saved connection on or off for everyone, one agent, or one project. */
+  attach(connectionId: string, scope: { agentId?: string | null; projectId?: string | null }, on: boolean): void {
+    this.connections.updateAll((all) => {
+      const connection = all.find((item) => item.id === connectionId)
+      if (!connection) throw notFound('Connection')
+      if (!connection.enabled) throw invalid(`${connection.name} is switched off. Switch it on in its own settings first.`)
+      setScope(connection, scope, on)
+    })
+  }
+
   /** Forgets an agent that no longer exists. */
   removeAgentScope(agentId: string): void {
     this.connections.updateAll((all) => {
@@ -529,6 +557,7 @@ export class ConnectedApps implements SessionBroker {
   }
 
   async close(): Promise<void> {
+    await this.manager.close(undefined, UNATTENDED_SCOPE).catch(() => undefined)
     await this.manager.close()
   }
 }
