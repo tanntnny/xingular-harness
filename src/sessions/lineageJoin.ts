@@ -54,8 +54,8 @@ async function waitForChildren(root: string, runId: string, signal?: AbortSignal
 function install(pi: ExtensionAPI, root: string, runId: string): void {
   pi.on('agent_before_settle', async (event, context: ExtensionContext): Promise<BoundaryResult | undefined> => {
     if (event.outcome !== 'completed' || settled(root, runId)) return undefined
-    const completed = await waitForChildren(root, runId, context.getSignal())
-    if (!completed || context.getSignal()?.aborted) return undefined
+    const completed = await waitForChildren(root, runId, context.signal)
+    if (!completed || context.signal?.aborted) return undefined
 
     const unreported = directChildren(root, runId).filter((child) => !alreadyIncluded(event, child.id))
     if (!unreported.length) return undefined
