@@ -3,6 +3,13 @@
   "version": "0.1.2",
   "type": "module",
   "description": "Xingular Harness — a Pi agent harness with multi-account sign-in, a compiled system prompt, a memory lifecycle (Wiki), tools, MCP, and skills",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tanntnny/xingular-harness.git"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "exports": {
     ".": "./src/index.ts",
     "./*": "./src/*"
