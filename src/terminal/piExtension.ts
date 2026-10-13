@@ -86,7 +86,8 @@ export default async function (pi: ExtensionAPI) {
           if (command?.type === 'interrupt') context?.abort()
           else if (command?.type === 'send') {
             if (context?.ui.getEditorText().trim()) throw new Error('The terminal contains a user draft.')
-            pi.sendUserMessage(command.text!)
+            // Pi 1.2 needs deliverAs while a run is busy; a message sent then waits for that run to finish.
+            pi.sendUserMessage(command.text!, context?.isIdle() === false ? { deliverAs: 'followUp' } : undefined)
           }
         })
         .catch(() => {
@@ -104,7 +105,8 @@ export default async function (pi: ExtensionAPI) {
     usage = emptyUsage()
     reasoningTokens = undefined
     costReported = false
-    await terminalCall('begin', { text: event.prompt })
+    // A run a plugin starts with a custom message has no user prompt to record; it still begins a turn.
+    await terminalCall('begin', { text: event.messageType === 'user' ? event.prompt : '' })
   })
   pi.on('message_end', async (event) => {
     if (event.message.role !== 'assistant') return
