@@ -200,7 +200,17 @@ exercises accounts, memory, skills, the prompt, connected apps, and a recorded s
 
 ## Run it as a standalone Pi terminal
 
-Install dependencies and build the CLI, then run it without a command:
+After the CLI package is published to npm or your company's npm registry, install and launch it:
+
+```sh
+npm install --global @xingular/harness
+xingular-harness
+```
+
+The machine needs Node 22.13 or newer and the `pi` command on `PATH`. On first launch, the
+harness creates a `Default` Pi account; Pi handles provider sign-in.
+
+To build and run from a source checkout instead:
 
 ```sh
 npm install
@@ -210,8 +220,7 @@ node dist/cli.js
 
 This opens Pi's interactive terminal in the current working directory. The harness adds its
 compiled context, isolated account, approval gate, Wiki commands, and terminal extension while
-Pi provides the interface. On first launch the harness creates a `Default` Pi account; Pi's own
-terminal handles provider sign-in. Install the `pi` command and make sure it is on `PATH`.
+Pi provides the interface.
 
 The default data and device state directories are `~/.xingular-harness/data` and
 `~/.xingular-harness/state`. Override them with `--data <dir>` and `--state <dir>`. Session

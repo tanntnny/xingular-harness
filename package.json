@@ -1,7 +1,6 @@
 {
   "name": "@xingular/harness",
   "version": "0.1.0",
-  "private": true,
   "type": "module",
   "description": "Xingular Harness \u2014 a Pi agent harness with multi-account sign-in, a compiled system prompt, a memory lifecycle (Wiki), tools, MCP, and skills",
   "exports": {
@@ -13,6 +12,7 @@
   },
   "scripts": {
     "build": "esbuild src/cli.ts --bundle --platform=node --target=node22 --format=esm --packages=external --outfile=dist/cli.js && esbuild src/terminal/piExtension.ts --bundle --platform=node --target=node22 --format=esm --packages=external --outfile=dist/terminal-pi.js",
+    "prepack": "npm run build",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run",
     "prove": "npm run build && node scripts/prove-standalone.mjs"
