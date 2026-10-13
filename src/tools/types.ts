@@ -1,6 +1,7 @@
 // A tool as the harness holds it: described without Pi imports, so a provider can be written
 // against this package alone. The session turns each one into a Pi tool.
 import type { CallerContext } from '../memory/caller'
+import type { CapabilitySet } from '../capabilities/types'
 import type { ActiveRun } from '../sessions/registry'
 
 export interface ToolResult {
@@ -27,6 +28,8 @@ export interface ToolSession {
   depth: number
   /** The session's working folder. */
   cwd: string
+  /** The capability set frozen when this run started. */
+  capabilities: CapabilitySet
 }
 
 /** Builds the tools a session may be given. Only those named in `allow` are registered. */

@@ -8,6 +8,8 @@ import { ensureSharedDir, nativeConfig } from '../accounts/env'
 import { audit, readAudit, summaryAuthentication } from '../accounts/store'
 import { HarnessError, invalid } from '../core/errors'
 import { projectsOrNone } from '../core/projects'
+import * as capabilities from '../capabilities/api'
+import { loadRun as loadCapabilitySnapshot } from '../capabilities/runSnapshot'
 import type { Harness } from '../harness'
 import * as blocks from '../memory/blocks'
 import { validateScopeIds } from '../mcp/connections'
@@ -245,6 +247,14 @@ export function methods(harness: Harness): Record<string, Handler> {
     'plugins.inventory': (params: Params) => plugins.inventoryFor(harness, { ...pluginScope(params), context: (params.context ?? {}) as CallerContext, launch: (params.launch ?? {}) as Launch, tools: params.tools, connections: params.connections }),
     'plugins.trust': (params: Params) => plugins.trust(harness, { cwd: optional(params, 'cwd'), accountId: optional(params, 'accountId'), hash: text(params, 'hash') }),
     'plugins.untrust': (params: Params) => plugins.untrust(harness, { cwd: optional(params, 'cwd'), accountId: optional(params, 'accountId'), hash: text(params, 'hash') }),
+
+    // ---- Capabilities: the caller-facing view over the existing stores -------------------------
+    'capabilities.list': (params: Params) => capabilities.list(harness, pluginScope(params)),
+    'capabilities.inventory': (params: Params) => capabilities.inventory(harness, { ...pluginScope(params), context: (params.context ?? {}) as CallerContext, launch: (params.launch ?? {}) as Launch, tools: Array.isArray(params.tools) ? params.tools : [], connections: params.connections }),
+    'capabilities.attach': (params: Params) => capabilities.switchCapability(harness, { ...pluginScope(params), id: text(params, 'id'), scope: params.scope ?? null }, true),
+    'capabilities.detach': (params: Params) => capabilities.switchCapability(harness, { ...pluginScope(params), id: text(params, 'id'), scope: params.scope ?? null }, false),
+    'capabilities.resolve': (params: Params) => capabilities.resolve(harness, { ...pluginScope(params), tools: Array.isArray(params.tools) ? params.tools.filter((item: unknown): item is string => typeof item === 'string') : [] }),
+    'capabilities.run': (params: Params) => loadCapabilitySnapshot(root(), text(params, 'runId')),
 
     // ---- Runs --------------------------------------------------------------------------------------
     'runs.load': (params: Params) => snapshot(root(), text(params, 'runId')),

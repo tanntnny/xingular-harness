@@ -5,6 +5,7 @@ import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { Accounts } from './accounts/accounts'
+import * as capabilities from './capabilities/api'
 import { ensureSharedDir, isolateProcess } from './accounts/env'
 import { fileSecretStore, type SecretStore } from './accounts/secrets'
 import { Bus, log } from './core/bus'
@@ -171,7 +172,16 @@ export class Harness {
       reloadTimer.unref?.()
     })
     this.describe(options.plugins ?? [])
-    this.sessions = new Sessions({ env: this.env, accounts: this.accounts, runs: this.runs, policy: this.policy, broker: this.apps, plugins: this.plugins, factory: options.sessionFactory })
+    this.sessions = new Sessions({
+      env: this.env,
+      accounts: this.accounts,
+      runs: this.runs,
+      policy: this.policy,
+      broker: this.apps,
+      plugins: this.plugins,
+      resolveCapabilities: (caller, tools) => capabilities.resolve(this, { agentId: caller.agentId ?? null, projectId: caller.projectId ?? null, tools }),
+      factory: options.sessionFactory
+    })
     this.maintenance = new Maintenance({ env: this.env, bus: this.bus, accounts: this.accounts, factory: options.maintainerFactory, idleMs: options.idleMs })
     this.terminals = new Terminals({ env: this.env, stateDir: this.stateDir, accounts: this.accounts, runs: this.runs, apps: this.apps, policy: this.policy, bus: this.bus, plugins: this.plugins, pluginControl: { list: (scope) => pluginApi.list(this, scope), attach: (params, on) => pluginApi.attach(this, params, on), trust: (scope) => pluginApi.trust(this, scope), untrust: (scope) => pluginApi.untrust(this, scope) }, assets: options.assets, program: options.piProgram })
     this.ready = this.apps.start().catch((error) => log('connected apps', error instanceof Error ? error.message : String(error)))

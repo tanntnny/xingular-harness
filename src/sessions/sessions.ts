@@ -8,6 +8,8 @@ import type { Accounts } from '../accounts/accounts'
 import { log } from '../core/bus'
 import type { HarnessEnv } from '../core/env'
 import { HarnessError, invalid } from '../core/errors'
+import { capabilitySet as parseCapabilitySet, freezeRun } from '../capabilities/runSnapshot'
+import type { CapabilitySet } from '../capabilities/types'
 import { now, writeJson } from '../core/fs'
 import { takeChars } from '../core/text'
 import type { CallerContext } from '../memory/caller'
@@ -60,6 +62,8 @@ export interface SessionRunInput {
   tools: { allow: string[]; gated?: string[] }
   /** Give the session the connected-apps broker. */
   connections?: boolean | { readOnly?: boolean }
+  /** Optional narrower set for a child run; the harness intersects it with current availability. */
+  capabilities?: CapabilitySet
   /** Hops from the user to this session (0 when the user started it). */
   depth?: number
 }
@@ -78,6 +82,8 @@ export interface SessionsOptions {
   broker?: SessionBroker | null
   /** Chooses what a session loads. Without it Pi discovers extensions and skills on its own. */
   plugins?: Plugins
+  /** Resolves the caller's capability set from the harness's stores. */
+  resolveCapabilities?: (caller: CallerContext, tools: readonly string[]) => Promise<CapabilitySet>
   factory?: SessionFactory
 }
 
@@ -146,6 +152,25 @@ export class Sessions {
     const context = this.options.accounts.context(account)
     const runId = input.run.id
     const caller: CallerContext = { ...input.caller, runId, sessionId: input.caller.sessionId ?? input.run.sessionId }
+    const broker = input.connections ? this.options.broker : null
+    const requestedTools = [...new Set([
+      ...input.tools.allow,
+      ASK_USER,
+      ...(input.automatic ? [] : [PLUGIN_PROPOSE]),
+      ...WIKI_TOOL_NAMES,
+      ...(broker?.toolNames ?? [])
+    ])]
+    const available = this.options.resolveCapabilities
+      ? await this.options.resolveCapabilities(caller, requestedTools)
+      : { version: 1 as const, tools: requestedTools, connectors: [], contributions: [] }
+    const requested = input.capabilities ? parseCapabilitySet(input.capabilities) : available
+    const capabilities: CapabilitySet = {
+      version: 1,
+      tools: available.tools.filter((tool) => requested.tools.includes(tool)),
+      connectors: available.connectors.filter((id) => requested.connectors.includes(id)),
+      contributions: available.contributions.filter((id) => requested.contributions.includes(id))
+    }
+    freezeRun(root, runId, caller, capabilities)
 
     saveRun(root, {
       resumedFromRunId: input.run.resumedFromRunId ?? null,
@@ -190,7 +215,14 @@ export class Sessions {
     let update: TurnParams['update']
     try {
       if (!existsSync(input.sessionDir)) mkdirSync(input.sessionDir, { recursive: true })
-      ;({ system, update } = sessionLaunch(this.env, caller, input.launch ?? {}, historyFile))
+      const launch = input.launch ?? {}
+      const effectiveLaunch = {
+        ...launch,
+        tools: capabilities.tools,
+        connectionTools: (launch.connectionTools ?? []).filter((name) => capabilities.tools.includes(name)),
+        toolGroups: launch.toolGroups?.map((group) => ({ ...group, tools: group.tools.filter((name) => capabilities.tools.includes(name)) })).filter((group) => group.tools.length > 0)
+      }
+      ;({ system, update } = sessionLaunch(this.env, caller, effectiveLaunch, historyFile))
     } catch (error) {
       fail(error)
       throw error
@@ -198,12 +230,9 @@ export class Sessions {
 
     const run = this.options.runs.start(input.run.sessionId, runId)
     if (run.finished) return { runId, nativeSessionId: null }
-    const broker = input.connections ? this.options.broker : null
     // What every session has, after the tools the caller switched on and in a fixed order.
-    const allow = [...input.tools.allow]
-    // An unattended run has nobody reading its Inbox proposals as they come, so it proposes no plugin.
-    for (const name of [ASK_USER, ...(input.automatic ? [] : [PLUGIN_PROPOSE]), ...WIKI_TOOL_NAMES, ...(broker?.toolNames ?? [])]) if (!allow.includes(name)) allow.push(name)
-    const session: ToolSession = { run, caller, allow, depth: input.depth ?? 0, cwd: input.cwd }
+    const allow = capabilities.tools
+    const session: ToolSession = { run, caller, allow, depth: input.depth ?? 0, cwd: input.cwd, capabilities }
     const { plugins } = this.options
 
     let pi: PiSessionLike
@@ -237,7 +266,7 @@ export class Sessions {
       pi = await this.factory({
         params,
         allow,
-        gate: this.gate(run, caller, new Set(input.tools.gated ?? [])),
+        gate: this.gate(run, caller, new Set((input.tools.gated ?? []).filter((name) => capabilities.tools.includes(name)))),
         tools,
         runtime: () => this.options.accounts.runtime(context),
         // An unattended run loads no extension, so it has nobody to relay for.

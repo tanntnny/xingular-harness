@@ -10,6 +10,7 @@ import type { HarnessEnv } from '../core/env'
 import { HarnessError, invalid, notFound } from '../core/errors'
 import { newId, now, readJson, writeJson } from '../core/fs'
 import { charCount, takeChars } from '../core/text'
+import type { CapabilitySet } from '../capabilities/types'
 import type { CallerContext } from '../memory/caller'
 import type { ToolPolicy } from '../sessions/policy'
 import type { ActiveRun, RunRegistry } from '../sessions/registry'
@@ -30,6 +31,8 @@ export interface BrokerSession {
   /** Only reads are permitted. */
   readOnly: boolean
   depth: number
+  /** The run's immutable tool and connector set. */
+  capabilities?: CapabilitySet
 }
 
 export interface BrokerTool {
@@ -196,11 +199,12 @@ export class ConnectedApps implements SessionBroker {
 
   private async reachable(session: BrokerSession): Promise<Connection[]> {
     const scoped = this.connections.forScope({ agentId: session.caller.agentId, projectId: session.caller.projectId })
+    const frozen = session.capabilities ? scoped.filter((connection) => session.capabilities!.connectors.includes(connection.id)) : scoped
     const policy = this.options.policy.connections
     // Nothing to narrow: the application is not asked.
-    if (!policy || !scoped.length) return scoped
-    const ids = await policy({ sessionId: session.sessionId, runId: session.runId, caller: session.caller, connectionIds: scoped.map((connection) => connection.id) })
-    return scoped.filter((connection) => ids.includes(connection.id))
+    if (!policy || !frozen.length) return frozen
+    const ids = await policy({ sessionId: session.sessionId, runId: session.runId, caller: session.caller, connectionIds: frozen.map((connection) => connection.id) })
+    return frozen.filter((connection) => ids.includes(connection.id))
   }
 
   /** The application's tools and every reachable connection's tools, with the connections that could not be read. */
@@ -380,7 +384,7 @@ export class ConnectedApps implements SessionBroker {
   // ---- The two tools a session gets -------------------------------------------------------------
 
   tools(session: ToolSession, options: { readOnly: boolean }): ToolSpec[] {
-    const granted = this.grant({ sessionId: session.run.sessionId, runId: session.run.runId, caller: session.caller, readOnly: options.readOnly, depth: session.depth })
+    const granted = this.grant({ sessionId: session.run.sessionId, runId: session.run.runId, caller: session.caller, readOnly: options.readOnly, depth: session.depth, capabilities: session.capabilities })
     return this.brokerTools(granted)
   }
 

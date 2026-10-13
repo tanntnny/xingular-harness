@@ -16,6 +16,7 @@ export { findBinary, searchPath } from './core/path'
 export { fileSecretStore, memorySecretStore, secretKey, type SecretStore } from './accounts/secrets'
 export type { Account, AccountsOverview, Pool } from './accounts/store'
 export type { ModelOption } from './accounts/accounts'
+export type { Capability, CapabilityCatalogue, CapabilityKind, CapabilityScope, CapabilitySet } from './capabilities/types'
 
 export type { CallerContext } from './memory/caller'
 export { dispatch as memoryCall } from './memory/dispatch'
