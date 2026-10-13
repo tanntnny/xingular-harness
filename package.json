@@ -1,6 +1,6 @@
 {
   "name": "@xingular/harness",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "description": "Xingular Harness \u2014 a Pi agent harness with multi-account sign-in, a compiled system prompt, a memory lifecycle (Wiki), tools, MCP, and skills",
   "exports": {

@@ -16,7 +16,7 @@ import { listInbox } from './operations'
 import { wikiDir } from './store'
 
 const request: MaintenanceRequest = { jobId: 'job-1', namespace: '/library', trigger: { kind: 'ingest', sourceId: 'src-1', sourceName: 'notes.md', text: 'We chose Tauri.' }, pages: [], index: '# Index' }
-const input = { cwd: '/tmp', product: 'Xingular Agent', account: { id: 'a', provider: 'pi' as const, label: 'A', env: {}, configDir: '/tmp' }, runtime: async () => ({}) as never }
+const input = { cwd: '/tmp', product: 'Xingular Agent', account: { id: 'a', provider: 'pi' as const, label: 'A', env: {}, configDir: '/tmp', sharing: [] }, runtime: async () => ({}) as never }
 
 describe('the maintainer session', () => {
   it('collects proposals and flags without writing anything itself', async () => {
