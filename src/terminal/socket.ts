@@ -1,9 +1,9 @@
 // The session socket: how a process the harness did not start in-process (the `pi` command in
 // a terminal, with its extension and the `agentx-wiki` / `agentx-mcp` commands) reaches the
-// session it belongs to. Owner-only Unix socket, newline-delimited JSON, one request per
-// connection. Each terminal session holds a random token bound to its caller, its connected-apps
-// grant, and its controller; the token stops working when the terminal ends.
-import { createHash } from 'node:crypto'
+// session it belongs to. Owner-only Unix socket (a named pipe on Windows), newline-delimited JSON,
+// one request per connection. Each terminal session holds a random token bound to its caller, its
+// connected-apps grant, and its controller; the token stops working when the terminal ends.
+import { createHash, randomBytes } from 'node:crypto'
 import { chmodSync, mkdirSync, rmSync, statSync } from 'node:fs'
 import { createServer, type Server, type Socket } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -42,16 +42,32 @@ const MAX_REQUEST_BYTES = 1024 * 1024
 /** macOS refuses a socket path longer than 103 bytes. */
 const MAX_SOCKET_PATH = 100
 
+/**
+ * Windows has no socket files for Node's `net`: it listens on a named pipe, which lives in a
+ * machine-wide namespace. A random name keeps another local process from guessing it and standing
+ * in front of the session; the token still decides what a caller may do.
+ */
 export function socketPath(stateDir: string): string {
+  if (process.platform === 'win32') return `\\\\.\\pipe\\xingular-harness-${randomBytes(12).toString('hex')}`
   const path = join(stateDir, 'run', 'harness.sock')
   if (Buffer.byteLength(path) <= MAX_SOCKET_PATH) return path
   return join(tmpdir(), `xh-${createHash('sha256').update(path).digest('hex').slice(0, 16)}.sock`)
 }
 
+/** A named pipe has no folder, file mode, or owner to check or clean up. */
+const isPipePath = (path: string): boolean => path.startsWith('\\\\.\\pipe\\')
+
 /** Names the folder and the user when the operating system refuses the socket, so the cause shows. */
 function refusedBind(path: string, error: unknown): unknown {
   const code = (error as { code?: unknown } | null)?.code
   if (code !== 'EACCES' && code !== 'EPERM') return error
+  if (isPipePath(path)) {
+    return new HarnessError(
+      'session_socket_denied',
+      `The session pipe ${path} could not be created (${code}).`,
+      'Start the harness again from your own user session. If it keeps failing, report this code and the Windows version.'
+    )
+  }
   let folder: string
   try {
     const stat = statSync(dirname(path))
@@ -169,18 +185,22 @@ export class SessionSocket {
   /** Binds the socket once; later calls wait for the same bind. */
   listen(): Promise<void> {
     this.listening ??= new Promise<void>((resolve, reject) => {
-      mkdirSync(dirname(this.path), { recursive: true, mode: 0o700 })
-      rmSync(this.path, { force: true })
+      if (!isPipePath(this.path)) {
+        mkdirSync(dirname(this.path), { recursive: true, mode: 0o700 })
+        rmSync(this.path, { force: true })
+      }
       const server = createServer((client) => this.serve(client))
       server.once('error', (error) => {
         this.listening = null
         reject(refusedBind(this.path, error))
       })
       server.listen(this.path, () => {
-        try {
-          chmodSync(this.path, 0o600)
-        } catch (error) {
-          log('session socket permissions', error instanceof Error ? error.message : String(error))
+        if (!isPipePath(this.path)) {
+          try {
+            chmodSync(this.path, 0o600)
+          } catch (error) {
+            log('session socket permissions', error instanceof Error ? error.message : String(error))
+          }
         }
         this.server = server
         resolve()
@@ -196,6 +216,6 @@ export class SessionSocket {
     this.listening = null
     for (const client of this.clients) client.destroy()
     if (server) await new Promise<void>((resolve) => server.close(() => resolve()))
-    rmSync(this.path, { force: true })
+    if (!isPipePath(this.path)) rmSync(this.path, { force: true })
   }
 }
