@@ -45,8 +45,26 @@ function validProvider(provider: string): string {
 
 interface PendingLogin {
   accountId: string
+  provider: string
+  method: 'oauth' | 'api_key'
   cancel: () => void
   prompts: Map<string, { resolve: (value: string) => void; reject: (error: Error) => void }>
+  revision: number
+  events: Record<string, unknown>[]
+  prompt: Record<string, unknown> | null
+}
+
+export interface AccountLoginSnapshot {
+  accountId: string
+  loginId: string
+  provider: string
+  method: string
+  revision: number
+  status: 'running' | 'completed' | 'failed' | 'cancelled'
+  events: Record<string, unknown>[]
+  prompt: Record<string, unknown> | null
+  success: boolean | null
+  error: string | null
 }
 
 interface Probe {
@@ -71,6 +89,7 @@ export class Accounts {
   private readonly bus: Bus
   private readonly runtimes = new Map<string, Promise<ModelRuntime>>()
   private readonly logins = new Map<string, PendingLogin>()
+  private readonly latestLogins = new Map<string, AccountLoginSnapshot>()
   private readonly terminals = new Map<string, number>()
 
   constructor(options: AccountsOptions) {
@@ -295,6 +314,8 @@ export class Accounts {
   /** Deletes the account: removes its stored credentials and its runtime folder. Sessions pinned to it ask for another account next time they start. */
   async remove(accountId: string): Promise<AccountsOverview> {
     const account = this.find(accountId)
+    for (const login of this.logins.values()) if (login.accountId === accountId) login.cancel()
+    this.latestLogins.delete(accountId)
     await this.forgetCredentials(account).catch(() => undefined)
     await this.secrets.delete(secretKey(account.id, 'apiKey')).catch(() => undefined)
     store.forgetAccount(this.dir, account)
@@ -354,7 +375,7 @@ export class Accounts {
     return this.overview()
   }
 
-  private finishLogin(loginId: string, success: boolean, error: string | null): void {
+  private finishLogin(loginId: string, success: boolean, error: string | null, cancelled = false): void {
     const login = this.logins.get(loginId)
     if (!login) return
     this.logins.delete(loginId)
@@ -363,7 +384,25 @@ export class Accounts {
     store.audit(this.dir, login.accountId, success ? 'login.completed' : 'login.failed', error ?? '')
     // A fresh sign-in starts clean; a limit that still applies is reported again by the next run.
     if (success) store.updateState(this.dir, login.accountId, (current) => void (current.lastError = null))
-    this.bus.emit({ type: 'accounts.login', accountId: login.accountId, loginId, success, error })
+    login.revision += 1
+    const status: AccountLoginSnapshot['status'] = success ? 'completed' : cancelled ? 'cancelled' : 'failed'
+    if (this.latestLogins.get(login.accountId)?.loginId === loginId) {
+      this.latestLogins.set(login.accountId, {
+        accountId: login.accountId,
+        loginId,
+        provider: login.provider,
+        method: login.method,
+        revision: login.revision,
+        status,
+        // A terminal result is enough to reconcile the client. In particular, do not retain a
+        // device code after the attempt ends.
+        events: [],
+        prompt: null,
+        success,
+        error
+      })
+    }
+    this.bus.emit({ type: 'accounts.login', accountId: login.accountId, loginId, revision: login.revision, success, error })
     try {
       void this.refreshOne(this.find(login.accountId)).catch(() => undefined)
     } catch {
@@ -379,12 +418,55 @@ export class Accounts {
     const account = this.find(accountId)
     if (!provider) throw invalid('Choose which Pi provider to sign in to.')
     store.audit(this.dir, account.id, 'login.started', `${method ?? 'oauth'} · ${provider}`)
-    const runtime = await this.runtime(account)
     const loginId = randomUUID()
     const controller = new AbortController()
-    const login: PendingLogin = { accountId: account.id, prompts: new Map(), cancel: () => controller.abort() }
+    const login: PendingLogin = {
+      accountId: account.id,
+      provider,
+      method: method === 'api_key' ? 'api_key' : 'oauth',
+      prompts: new Map(),
+      cancel: () => controller.abort(),
+      revision: 0,
+      events: [],
+      prompt: null
+    }
     this.logins.set(loginId, login)
-    const event = (payload: Record<string, unknown>): void => this.bus.emit({ type: 'accounts.loginEvent', accountId: account.id, loginId, event: payload })
+    this.latestLogins.set(account.id, {
+      accountId: account.id,
+      loginId,
+      provider: login.provider,
+      method: login.method,
+      revision: 0,
+      status: 'running',
+      events: [],
+      prompt: null,
+      success: null,
+      error: null
+    })
+    const event = (payload: Record<string, unknown>): void => {
+      login.revision += 1
+      if (payload.type === 'prompt') login.prompt = payload
+      else if (payload.type === 'promptClosed' && login.prompt?.promptId === payload.promptId) login.prompt = null
+      else {
+        login.events.push(payload)
+        if (login.events.length > 50) login.events.shift()
+      }
+      if (this.latestLogins.get(account.id)?.loginId === loginId) {
+        this.latestLogins.set(account.id, {
+          accountId: account.id,
+          loginId,
+          provider: login.provider,
+          method: login.method,
+          revision: login.revision,
+          status: 'running',
+          events: login.events.map((step) => ({ ...step })),
+          prompt: login.prompt ? { ...login.prompt } : null,
+          success: null,
+          error: null
+        })
+      }
+      this.bus.emit({ type: 'accounts.loginEvent', accountId: account.id, loginId, revision: login.revision, event: payload })
+    }
     const interaction = {
       signal: controller.signal,
       notify: (notification: Record<string, unknown>) => event(notification),
@@ -400,11 +482,23 @@ export class Accounts {
           event({ type: 'prompt', promptId, prompt: { type: prompt.type, message: prompt.message, placeholder: prompt.placeholder ?? null, options: prompt.options ?? null } })
         })
     }
-    runtime
-      .login(provider, method === 'api_key' ? 'api_key' : 'oauth', interaction as never)
+    void this.runtime(account)
+      .then((runtime) => runtime.login(provider, login.method, interaction as never))
       .then(() => this.finishLogin(loginId, true, null))
-      .catch((error: unknown) => this.finishLogin(loginId, false, controller.signal.aborted ? 'Sign-in was cancelled.' : error instanceof Error ? error.message : String(error)))
+      .catch((error: unknown) => this.finishLogin(
+        loginId,
+        false,
+        controller.signal.aborted ? 'Sign-in was cancelled.' : error instanceof Error ? error.message : String(error),
+        controller.signal.aborted
+      ))
     return { loginId }
+  }
+
+  /** Current in-memory sign-in progress for one account; codes and prompts are never written to disk. */
+  loginStatus(accountId: string): AccountLoginSnapshot | null {
+    this.find(accountId)
+    const snapshot = this.latestLogins.get(accountId)
+    return snapshot ? structuredClone(snapshot) : null
   }
 
   loginRespond(loginId: string, promptId: string, value: string | null): void {
@@ -412,12 +506,25 @@ export class Accounts {
     const prompt = login?.prompts.get(promptId)
     if (!login || !prompt) throw new HarnessError('not_found', 'That sign-in step is no longer waiting.')
     login.prompts.delete(promptId)
+    // The renderer's recoverable snapshot must stop presenting a prompt as soon as it is answered.
+    const current = this.latestLogins.get(login.accountId)
+    if (current?.loginId === loginId && current.prompt?.promptId === promptId) {
+      login.prompt = null
+      current.revision += 1
+      login.revision = current.revision
+      current.prompt = null
+      this.latestLogins.set(login.accountId, current)
+      this.bus.emit({ type: 'accounts.loginEvent', accountId: login.accountId, loginId, revision: current.revision, event: { type: 'promptClosed', promptId } })
+    }
     if (value === null) prompt.reject(new Error('Cancelled.'))
     else prompt.resolve(value)
   }
 
   loginCancel(accountId: string, loginId?: string | null): void {
-    if (loginId) this.logins.get(loginId)?.cancel()
+    if (loginId) {
+      const login = this.logins.get(loginId)
+      if (login?.accountId === accountId) login.cancel()
+    } else for (const login of this.logins.values()) if (login.accountId === accountId) login.cancel()
     store.audit(this.dir, accountId, 'login.cancelled', '')
   }
 

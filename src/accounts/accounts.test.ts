@@ -2,6 +2,7 @@ import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSyn
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { expect, test } from 'vitest'
+import type { ModelRuntime } from '@earendil-works/pi-coding-agent'
 
 import { Bus, type Notice } from '../core/bus'
 import { Accounts, classifyMessage } from './accounts'
@@ -20,6 +21,72 @@ function service(dir = temp()) {
   bus.on((notice) => void notices.push(notice))
   return { dir, secrets, notices, accounts: new Accounts({ dir, secrets, bus }) }
 }
+
+function loginService(login: (interaction: {
+  signal: AbortSignal
+  notify: (notification: Record<string, unknown>) => void
+  prompt: (prompt: { type: string; message: string; placeholder?: string; options?: unknown; signal?: AbortSignal }) => Promise<string>
+}) => Promise<void>) {
+  const dir = temp()
+  const secrets = memorySecretStore()
+  const notices: Notice[] = []
+  const bus = new Bus()
+  bus.on((notice) => void notices.push(notice))
+  const runtime = {
+    login: (_provider: string, _method: string, interaction: Parameters<typeof login>[0]) => login(interaction)
+  }
+  class LoginAccounts extends Accounts {
+    override runtime(account: Parameters<Accounts['runtime']>[0]): Promise<ModelRuntime> {
+      void account
+      return Promise.resolve(runtime as unknown as ModelRuntime)
+    }
+  }
+  const accounts = new LoginAccounts({ dir, secrets, bus })
+  const account = accounts.create('Login test', 'subscription').accounts[0]
+  return { accounts, account, notices }
+}
+
+const turn = () => new Promise<void>((resolve) => setImmediate(resolve))
+
+test('device-code sign-in progress survives listener detachment and is available from status', async () => {
+  const { accounts, account, notices } = loginService((interaction) => new Promise<void>((_resolve, reject) => {
+    interaction.notify({ type: 'device_code', userCode: 'ABCD-EFGH', verificationUri: 'https://example.test/device' })
+    interaction.signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true })
+  }))
+
+  const { loginId } = await accounts.loginStart(account.id, 'openai-codex', 'oauth')
+  await turn()
+  const detached = accounts.loginStatus(account.id)
+  expect(detached).toMatchObject({ loginId, status: 'running', events: [{ type: 'device_code', userCode: 'ABCD-EFGH' }] })
+  expect(notices.find((notice) => notice.type === 'accounts.loginEvent')).toMatchObject({ revision: 1, loginId })
+
+  // Asking again models a renderer returning to Accounts while the Harness stays alive.
+  expect(accounts.loginStatus(account.id)).toEqual(detached)
+  accounts.loginCancel(account.id, loginId)
+  await turn()
+  const ended = accounts.loginStatus(account.id)
+  expect(ended).toMatchObject({ loginId, status: 'cancelled', events: [], prompt: null, success: false })
+  expect(JSON.stringify(ended)).not.toContain('ABCD-EFGH')
+})
+
+test('login status exposes the active prompt but never retains its response after completion', async () => {
+  const { accounts, account, notices } = loginService(async (interaction) => {
+    const value = await interaction.prompt({ type: 'secret', message: 'Enter the one-time value' })
+    expect(value).toBe('private-response')
+  })
+
+  const { loginId } = await accounts.loginStart(account.id, 'provider-with-prompt', 'oauth')
+  await turn()
+  const waiting = accounts.loginStatus(account.id)
+  expect(waiting).toMatchObject({ loginId, status: 'running', prompt: { type: 'prompt', prompt: { type: 'secret' } } })
+  const promptId = String(waiting?.prompt?.promptId)
+  accounts.loginRespond(loginId, promptId, 'private-response')
+  await turn()
+  const ended = accounts.loginStatus(account.id)
+  expect(ended).toMatchObject({ loginId, status: 'completed', success: true, events: [], prompt: null })
+  expect(JSON.stringify(ended)).not.toContain('private-response')
+  expect(notices.filter((notice) => notice.type === 'accounts.loginEvent' || notice.type === 'accounts.login').map((notice) => notice.revision)).toEqual([1, 2, 3])
+})
 
 test('health reflects sign-in, errors and limits', () => {
   const state = { ...emptyState(), signedIn: true }

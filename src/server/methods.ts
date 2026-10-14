@@ -88,6 +88,7 @@ export function methods(harness: Harness): Record<string, Handler> {
     'accounts.sharedDir': () => ensureSharedDir(accounts.dir),
     'accounts.refresh': (params: Params) => accounts.refresh(optional(params, 'accountId')),
     'accounts.loginStart': (params: Params) => accounts.loginStart(text(params, 'accountId'), text(params, 'provider'), optional(params, 'method')),
+    'accounts.loginStatus': (params: Params) => accounts.loginStatus(text(params, 'accountId')),
     'accounts.loginRespond': (params: Params) => accounts.loginRespond(text(params, 'loginId'), text(params, 'promptId'), typeof params.value === 'string' ? params.value : null),
     'accounts.loginCancel': (params: Params) => accounts.loginCancel(text(params, 'accountId'), optional(params, 'loginId')),
     'accounts.setApiKey': (params: Params) => accounts.setApiKey(text(params, 'accountId'), text(params, 'key'), text(params, 'provider')),

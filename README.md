@@ -214,6 +214,11 @@ The machine needs Node 22.19 or newer. On macOS and Linux, the `pi` command must
 on Windows, Harness runs the pinned Pi CLI package through the active Node runtime. On first
 launch, the harness creates a `Default` Pi account; Pi handles provider sign-in.
 
+Provider sign-in progress lives in the running Harness process. An embedding application can call
+`accounts.loginStatus` after reconnecting to recover the current device code or prompt by account;
+the status carries a revision so it can be safely merged with streamed login events. Progress is
+never written to account files, and a completed or cancelled attempt no longer exposes its code.
+
 To build and run from a source checkout instead:
 
 ```sh
