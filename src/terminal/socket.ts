@@ -1,5 +1,5 @@
 // The session socket: how a process the harness did not start in-process (the `pi` command in
-// a terminal, with its extension and the `agentx-wiki` / `agentx-mcp` commands) reaches the
+// a terminal, with its extension and the `xagent-wiki` / `xagent-mcp` commands) reaches the
 // session it belongs to. Owner-only Unix socket (a named pipe on Windows), newline-delimited JSON,
 // one request per connection. Each terminal session holds a random token bound to its caller, its
 // connected-apps grant, and its controller; the token stops working when the terminal ends.

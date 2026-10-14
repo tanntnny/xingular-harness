@@ -1,10 +1,10 @@
-// `agentx-wiki` and `agentx-mcp`: the harness's memory, Wiki, and connected apps as commands,
+// `xagent-wiki` and `xagent-mcp`: the harness's memory, Wiki, and connected apps as commands,
 // for a `pi` terminal session's shell. Each command maps onto one call to the session socket.
 import type { WikiCall } from '../tools/definitions'
 import { connectionFromEnv, socketCall } from './client'
 
-export const WIKI_COMMAND = 'agentx-wiki'
-export const APPS_COMMAND = 'agentx-mcp'
+export const WIKI_COMMAND = 'xagent-wiki'
+export const APPS_COMMAND = 'xagent-mcp'
 
 export const USAGE = `Usage: ${WIKI_COMMAND} <command> [arguments]
 
@@ -109,7 +109,7 @@ async function readStdin(): Promise<string> {
 
 const errorText = (error: unknown): string => (error instanceof Error ? error.message : String(error))
 
-/** Runs `agentx-wiki <argv>`; returns the exit code. */
+/** Runs `xagent-wiki <argv>`; returns the exit code. */
 export async function runWikiCli(argv: string[]): Promise<number> {
   const command = parseCli(argv)
   if (command.kind === 'help') {
@@ -130,7 +130,7 @@ export async function runWikiCli(argv: string[]): Promise<number> {
   }
 }
 
-/** Runs `agentx-mcp <argv>`; returns the exit code. */
+/** Runs `xagent-mcp <argv>`; returns the exit code. */
 export async function runAppsCli(argv: string[]): Promise<number> {
   const [command, name, args] = argv
   if (command !== 'list' && !(command === 'call' && name)) {

@@ -107,7 +107,7 @@ const modified = (path: string): number => {
 
 /** Moves a real file or folder aside so the shared link can take its place; returns where it went. */
 function backUp(path: string): string {
-  const backup = join(dirname(path), `${basename(path)}.agentx-backup-${Math.floor(Date.now() / 1000)}`)
+  const backup = join(dirname(path), `${basename(path)}.xagent-backup-${Math.floor(Date.now() / 1000)}`)
   renameSync(path, backup)
   return backup
 }

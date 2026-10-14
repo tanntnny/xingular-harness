@@ -1,5 +1,5 @@
 // The memory and Wiki tools a session gets, defined once. An SDK session gets them as Pi tools;
-// a terminal session gets them from the `agentx-wiki` command or the bundled MCP server. All of
+// a terminal session gets them from the `xagent-wiki` command or the bundled MCP server. All of
 // them reach the same calls.
 
 export type WikiCall =
@@ -116,7 +116,7 @@ export const WIKI_TOOLS: WikiToolDefinition[] = [
     name: 'wiki_read',
     call: 'wiki.read',
     label: 'Read Wiki entry',
-    description: 'Read one Wiki page, fact, skill, rule, or prompt in full, with its sources, links, and backlinks. Pass an id (arch, skills/review) or a Wiki path (/projects/agent-x/arch).',
+    description: 'Read one Wiki page, fact, skill, rule, or prompt in full, with its sources, links, and backlinks. Pass an id (arch, skills/review) or a Wiki path (/projects/xagent/arch).',
     parameters: { type: 'object', properties: { id: text('Entry id or Wiki path'), revision: text('Optional pinned revision selected for this reply'), offset: { type: 'integer', minimum: 0, description: 'Character offset when reading a pinned revision; use nextOffset to continue.' } }, required: ['id'] }
   },
   {

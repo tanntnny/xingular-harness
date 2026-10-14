@@ -321,7 +321,7 @@ export function toolGroups(context: CallerContext, launch: Launch): OrderedGroup
       tools: MEMORY_GROUP,
       order: GROUP_ORDER.Memory,
       guidance: cli
-        ? 'Memory: `agentx-wiki block append <label> <text>`, `block replace <label> --old <text> --new <text>`, and `block rethink <label> <text>` edit your memory blocks. `agentx-wiki facts [query]` recalls saved facts. `agentx-wiki history <query>` searches earlier runs and `agentx-wiki history-read <run id>` returns one.'
+        ? 'Memory: `xagent-wiki block append <label> <text>`, `block replace <label> --old <text> --new <text>`, and `block rethink <label> <text>` edit your memory blocks. `xagent-wiki facts [query]` recalls saved facts. `xagent-wiki history <query>` searches earlier runs and `xagent-wiki history-read <run id>` returns one.'
         : 'Memory: memory_append, memory_replace, and memory_rethink edit your memory blocks; memory_facts recalls saved facts. history_search finds what was said and done in earlier conversations and runs, including a chat that was cleared; history_read returns one run.'
     },
     {
@@ -329,7 +329,7 @@ export function toolGroups(context: CallerContext, launch: Launch): OrderedGroup
       tools: KNOWLEDGE_GROUP,
       order: GROUP_ORDER.Knowledge,
       guidance: cli
-        ? 'Knowledge: `agentx-wiki search <query>`, `read <id or path>`, `list [namespace]`, `skill [name]`, and `propose <json>` to record durable knowledge. Cite what you use as [id@revision].'
+        ? 'Knowledge: `xagent-wiki search <query>`, `read <id or path>`, `list [namespace]`, `skill [name]`, and `propose <json>` to record durable knowledge. Cite what you use as [id@revision].'
         : 'Knowledge: wiki_search, wiki_read, and wiki_list read the Wiki; skill_load loads a skill\'s steps; wiki_propose records durable knowledge, quoting its evidence (the Wiki validates it and may send it to the Inbox). Cite what you use as [id@revision].'
     },
     {

@@ -7,7 +7,7 @@ import { configDir, ensureSharedDir, linkSharedEntries, sharedDir, type EntryLin
 
 const temp = () => mkdtempSync(join(tmpdir(), 'harness-env-'))
 const refused = (code = 'EPERM') => Object.assign(new Error(`${code}: operation not permitted, symlink`), { code })
-const backups = (folder: string) => readdirSync(folder).filter((name) => name.includes('agentx-backup'))
+const backups = (folder: string) => readdirSync(folder).filter((name) => name.includes('xagent-backup') || name.includes('agentx-backup'))
 
 // A Windows account without the symlink privilege: file symlinks are refused, junctions and hard links work.
 const windowsLike: EntryLinker = {

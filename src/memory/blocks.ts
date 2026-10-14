@@ -367,13 +367,13 @@ export function undoLast(wiki: string, blockId: string): Block {
 }
 
 /**
- * The memory-blocks section of a compiled prompt. `cli` names the `agentx-wiki` commands in
+ * The memory-blocks section of a compiled prompt. `cli` names the `xagent-wiki` commands in
  * place of the tools, for sessions that have the command and not the tools.
  */
 export function render(blocks: readonly Block[], caller: Caller, cli: boolean): string {
   if (!blocks.length) return ''
   const how = cli
-    ? '`agentx-wiki block append <label> <text>`, `block replace <label> --old <text> --new <text>`, or `block rethink <label> <text>`'
+    ? '`xagent-wiki block append <label> <text>`, `block replace <label> --old <text> --new <text>`, or `block rethink <label> <text>`'
     : 'memory_append, memory_replace, or memory_rethink'
   return `## Memory blocks\n\nThese blocks are your memory that is always in view, and they persist across conversations. When you learn something worth keeping, edit a block you may change with ${how}. Keep each block within its limit.\n${renderItems(blocks, caller)}`
 }

@@ -26,7 +26,7 @@ export interface MemoryFront {
   id: string
   title: string
   kind: string
-  /** `/` for everything, or a project namespace such as `/projects/agent-x`. */
+  /** `/` for everything, or a project namespace such as `/projects/xagent`. */
   namespace: string
   sourceIds: string[]
   confidence: string

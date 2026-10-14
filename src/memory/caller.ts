@@ -21,7 +21,7 @@ export interface CallerContext {
   briefProjectIds?: string[] | null
   /** `Chat` for an agent's own conversation, `Code` for a session in a project. */
   actor?: string | null
-  /** `cli` when the caller reaches the Wiki through the `agentx-wiki` command. */
+  /** `cli` when the caller reaches the Wiki through the `xagent-wiki` command. */
   surface?: string | null
 }
 

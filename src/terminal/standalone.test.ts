@@ -117,4 +117,14 @@ describe('standalone terminal startup', () => {
     expect(existsSync(socketPath(harness.stateDir))).toBe(false)
     expect(harness.terminals.has('failed')).toBe(false)
   })
+
+  it('explains a missing Pi executable in terms of the terminal launch', async () => {
+    const home = temporaryDirectory('harness-standalone-enoent-')
+    const cwd = temporaryDirectory('harness-cwd-enoent-')
+    const error = Object.assign(new Error('spawn /opt/pi/bin/pi ENOENT'), { code: 'ENOENT' })
+    const spawn = fakeSpawn(() => undefined, { error })
+
+    await expect(runStandaloneTerminal([], { home, cwd, stdinIsTTY: true, stdoutIsTTY: true, createSessionId: () => 'missing-pi', createHarness: harnessFactory, spawn }))
+      .rejects.toThrow(/Could not start Pi terminal.*Pi executable.*\/opt\/pi\/bin\/pi/)
+  })
 })

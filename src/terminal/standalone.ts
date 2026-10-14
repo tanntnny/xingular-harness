@@ -73,6 +73,16 @@ function exitCode(code: number | null, signal: NodeJS.Signals | null): number {
   return 1
 }
 
+function spawnError(error: Error, launch: TerminalLaunch): Error {
+  const code = (error as NodeJS.ErrnoException).code
+  if (code !== 'ENOENT' && code !== 'EACCES' && code !== 'EPERM') return error
+  if (launch.program === process.execPath || launch.env.XINGULAR_HARNESS_NODE === launch.program) {
+    return new Error(`Could not start the Pi terminal because Node could not run "${launch.args[0] ?? 'the bundled Pi CLI'}" (${code}). Verify Node and the bundled Pi package are installed.`, { cause: error })
+  }
+  const problem = code === 'ENOENT' ? 'was not found' : `could not start (${code})`
+  return new Error(`Could not start Pi terminal. Pi executable "${launch.program}" ${problem}; verify it is installed and executable or check the configured terminal executable.`, { cause: error })
+}
+
 function spawnPi(launch: TerminalLaunch, cwd: string, spawn = nodeSpawn): Promise<number> {
   return new Promise((resolveExit, reject) => {
     const child = spawn(launch.program, launch.args, {
@@ -103,7 +113,7 @@ function spawnPi(launch: TerminalLaunch, cwd: string, spawn = nodeSpawn): Promis
     process.on('SIGINT', onInterrupt)
     process.on('SIGTERM', onTerminate)
     process.on('SIGHUP', onHangup)
-    child.once('error', (error) => finish(() => reject(error)))
+    child.once('error', (error) => finish(() => reject(spawnError(error, launch))))
     child.once('exit', (code, signal) => finish(() => resolveExit(exitCode(code, signal))))
   })
 }

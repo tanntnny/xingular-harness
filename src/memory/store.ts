@@ -93,7 +93,7 @@ export function ensureProjectNamespace(root: string, slug: string, name: string)
 
 // ---- Locations ----------------------------------------------------------------
 
-/** A page's Wiki path (`/projects/agent-x/architecture`) and namespace (`/projects/agent-x`). */
+/** A page's Wiki path (`/projects/xagent/architecture`) and namespace (`/projects/xagent`). */
 export interface Location {
   path: string
   namespace: string

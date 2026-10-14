@@ -97,8 +97,8 @@ test('a session gets blocks, rules, skills, knowledge and tools', () => {
   for (const expected of ['<block label="user"', '<block label="project/xingular-agent"', 'Always run the tests.', 'review (skills/review)', '/projects/xingular-agent/decisions — Decisions', 'Use pnpm', 'App tools and connected apps: Use get_capabilities.']) expect(text).toContain(expected)
   expect(text).not.toContain('Astro')
   const cli = render(env, compile(env, { ...session('p1'), surface: 'cli' }))
-  expect(cli).toContain('agentx-wiki search')
-  expect(cli).toContain('agentx-wiki block append')
+  expect(cli).toContain('xagent-wiki search')
+  expect(cli).toContain('xagent-wiki block append')
 })
 
 test('long rules shorten only the rules section', () => {

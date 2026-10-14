@@ -7,7 +7,7 @@ import { secretKey, type SecretStore } from '../accounts/secrets'
 import type { Bus } from '../core/bus'
 import { HarnessError, invalid, notFound } from '../core/errors'
 import { newId, readJson, safeId, writeJson } from '../core/fs'
-import { findBinary, searchPath } from '../core/path'
+import { findBinary, pathVariableName, searchPath } from '../core/path'
 import { isDir } from '../memory/store'
 import type { RunEvent } from '../sessions/contracts'
 import * as attachments from '../plugins/attachments'
@@ -450,7 +450,7 @@ export class Connections {
     }
     let command = findBinary(connection.command) ?? (isAbsolute(connection.command) ? connection.command : null)
     if (!command) throw new HarnessError('mcp_unavailable', 'MCP executable was not found. Select its absolute path.')
-    const env: Record<string, string> = { PATH: searchPath() }
+    const env: Record<string, string> = { [pathVariableName(process.env)]: searchPath() }
     for (const key of ['HOME', 'TMPDIR', 'LANG']) if (process.env[key]) env[key] = process.env[key]!
     for (const key of connection.envKeys) {
       const value = await this.secret(connection.id, key)

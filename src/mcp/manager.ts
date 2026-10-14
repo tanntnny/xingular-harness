@@ -62,7 +62,7 @@ export class McpManager {
   }
 
   private async connectStdio(config: StdioConfig) {
-    const client = new Client({ name: 'agent-x', version: '0.1.0' })
+    const client = new Client({ name: 'xagent', version: '0.1.0' })
     const transport = new StdioClientTransport({ command: config.command, args: config.args, cwd: config.cwd ?? undefined, env: config.env, stderr: 'pipe' })
     try {
       await client.connect(transport, { timeout: 30000 })
@@ -82,7 +82,7 @@ export class McpManager {
     const options = { authProvider, requestInit: { headers: config.headers } }
     // Servers that predate Streamable HTTP only answer on SSE.
     for (const Transport of [StreamableHTTPClientTransport, SSEClientTransport]) {
-      const client = new Client({ name: 'agent-x', version: '0.1.0' })
+      const client = new Client({ name: 'xagent', version: '0.1.0' })
       const transport = new Transport(new URL(config.url), options)
       try {
         await client.connect(transport, { timeout: 30000 })

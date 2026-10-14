@@ -13,7 +13,7 @@ needs to work for someone over time, and nothing about any particular applicatio
 | Plugins | `src/plugins/` | What a Pi session loads, chosen by the harness and never by Pi's own discovery; trust for a working folder's code; the list of every plugin and what reaches one caller. |
 | Tools | `src/tools/` | Tool definitions, the memory tools, `ask_user`; a gate that asks the application's policy, then standing approvals, then the person. |
 | Connected apps | `src/mcp/` | MCP connections, OAuth, per-session grants, redaction, a trace of what each call returned. |
-| Terminal | `src/terminal/` | Interactive Pi sessions with isolated accounts, compiled instructions, a telemetry and tool extension, and the session socket with the `agentx-wiki` and `agentx-mcp` commands. |
+| Terminal | `src/terminal/` | Interactive Pi sessions with isolated accounts, compiled instructions, a telemetry and tool extension, and the session socket with the `xagent-wiki` and `xagent-mcp` commands. |
 | Server | `src/server/` | The same API over newline-delimited JSON, for a host that is not a Node program. |
 
 It was split out of Xingular Agent, which is now an application built on it.
@@ -210,8 +210,9 @@ npm install --global @xingular/harness
 xingular-harness
 ```
 
-The machine needs Node 22.13 or newer and the `pi` command on `PATH`. On first launch, the
-harness creates a `Default` Pi account; Pi handles provider sign-in.
+The machine needs Node 22.19 or newer. On macOS and Linux, the `pi` command must be on `PATH`;
+on Windows, Harness runs the pinned Pi CLI package through the active Node runtime. On first
+launch, the harness creates a `Default` Pi account; Pi handles provider sign-in.
 
 To build and run from a source checkout instead:
 

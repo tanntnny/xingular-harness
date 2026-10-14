@@ -200,7 +200,7 @@ test('existing account config moves into the shared folder, newest wins', async 
   // acc2's settings are newer than the shared copy acc1 just moved in, so they win.
   const second = ensureHome(dir, { id: 'acc2' })
   expect(readFileSync(join(sharedDir(dir), 'settings.json'), 'utf8')).toBe('{"from":"acc2"}')
-  expect(readdirSync(sharedDir(dir)).some((name) => name.startsWith('settings.json.agentx-backup-'))).toBe(true)
+  expect(readdirSync(sharedDir(dir)).some((name) => name.startsWith('settings.json.xagent-backup-'))).toBe(true)
   expect(lstatSync(join(second, 'settings.json')).isSymbolicLink()).toBe(true)
 })
 

@@ -3,7 +3,7 @@
 // skills, the session socket), then follows the process through its extension. It never owns
 // the terminal: the application spawns the process from the spec returned here and reports when
 // it exits.
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -15,7 +15,7 @@ import { log } from '../core/bus'
 import type { HarnessEnv } from '../core/env'
 import { HarnessError, invalid } from '../core/errors'
 import { newId, now } from '../core/fs'
-import { findBinary, searchPath } from '../core/path'
+import { prependSearchPath, searchPath } from '../core/path'
 import type { BrokerSession, ConnectedApps } from '../mcp/service'
 import type { CallerContext } from '../memory/caller'
 import { dispatch } from '../memory/dispatch'
@@ -33,6 +33,7 @@ import type { ToolSpec } from '../tools/types'
 import { APPS_COMMAND, WIKI_COMMAND } from './cli'
 import { SOCKET_ENV, TOKEN_ENV } from './client'
 import { TerminalController, type PolicyReply } from './controller'
+import { resolvePiCommand, terminalCommandFiles } from './launch'
 import { SessionSocket, socketPath } from './socket'
 
 /** The files a terminal session needs on disk, outside this process. */
@@ -102,7 +103,7 @@ export interface TerminalsOptions {
   /** Lists plugins and applies a person's choices, for the session's `/plugins` command. */
   pluginControl?: PluginControl
   assets?: TerminalAssets
-  /** The `pi` executable. Defaults to the one on the search path. */
+  /** The `pi` executable. Defaults to the PATH command on POSIX and the bundled CLI on Windows. */
   program?: () => string | null
 }
 
@@ -134,19 +135,27 @@ export class Terminals {
   private ensureCommands(): string {
     const bin = join(this.options.stateDir, 'run', 'bin')
     mkdirSync(bin, { recursive: true })
-    const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`
-    for (const [name, mode] of [[WIKI_COMMAND, 'wiki'], [APPS_COMMAND, 'mcp']] as const) {
-      const wrapper = join(bin, name)
-      const text = `#!/bin/sh\nexec ${quote(this.assets.node)} ${quote(this.assets.cli)} ${mode} "$@"\n`
-      let current: string | null = null
+    for (const name of ['agentx-wiki', 'agentx-mcp', 'agentx-wiki.cmd', 'agentx-mcp.cmd']) {
+      const path = join(bin, name)
       try {
-        current = readFileSync(wrapper, 'utf8')
+        if (lstatSync(path).isFile()) unlinkSync(path)
       } catch {
-        current = null
+        // These names belonged to the previous generated wrappers.
       }
-      if (current !== text) {
-        writeFileSync(wrapper, text)
-        chmodSync(wrapper, 0o755)
+    }
+    for (const [name, mode] of [[WIKI_COMMAND, 'wiki'], [APPS_COMMAND, 'mcp']] as const) {
+      for (const file of terminalCommandFiles(process.platform, this.assets.node, this.assets.cli, name, mode)) {
+        const path = join(bin, file.name)
+        let current: string | null = null
+        try {
+          current = readFileSync(path, 'utf8')
+        } catch {
+          current = null
+        }
+        if (current !== file.content) {
+          writeFileSync(path, file.content)
+          chmodSync(path, 0o755)
+        }
       }
     }
     return bin
@@ -298,8 +307,7 @@ export class Terminals {
     const { root } = env
     if (!input?.sessionId || !input.cwd || !input.sessionFolder) throw invalid('A terminal session needs an id, a working folder, and its own folder.')
     await this.dispose(input.sessionId)
-    const program = this.options.program ? this.options.program() : findBinary('pi')
-    if (!program) throw new HarnessError('harness_unavailable', 'The Pi CLI was not found on PATH.')
+    const command = resolvePiCommand({ platform: process.platform, node: this.assets.node, programOverride: this.options.program })
     // A pinned account is used as it is; it is never exchanged for another one.
     const account = input.accountId ? accounts.find(input.accountId) : accounts.resolve(null, null)
     const launch = launchEnv(accounts.dir, account)
@@ -343,7 +351,7 @@ export class Terminals {
       live.token = token
       this.sessions.set(sessionId, live)
 
-      const args = ['--append-system-prompt', render(env, pack)]
+      const args = [...command.argsPrefix, '--append-system-prompt', render(env, pack)]
       if (input.model) args.push('--model', input.model)
       if (loading) {
         // Pi's own discovery is off: the terminal loads what the harness found and nothing else.
@@ -358,9 +366,15 @@ export class Terminals {
       args.push('--extension', this.assets.piExtension, '--session-dir', this.historyDir(input))
       if (input.nativeSessionId) args.push('--session', input.nativeSessionId)
       return {
-        program,
+        program: command.program,
         args,
-        env: { ...launch, PATH: `${this.ensureCommands()}:${searchPath()}`, [SOCKET_ENV]: this.socket.path, [TOKEN_ENV]: token },
+        env: {
+          ...launch,
+          ...(process.platform === 'win32' ? { XINGULAR_HARNESS_NODE: this.assets.node, XINGULAR_HARNESS_CLI: this.assets.cli } : {}),
+          ...prependSearchPath(this.ensureCommands(), searchPath()),
+          [SOCKET_ENV]: this.socket.path,
+          [TOKEN_ENV]: token
+        },
         accountId: account.id,
         nativeSessionId: input.nativeSessionId ?? null
       }

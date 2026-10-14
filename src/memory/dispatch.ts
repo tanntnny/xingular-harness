@@ -1,5 +1,5 @@
 // One entry point for every memory, recall, and Wiki call a session makes, whichever way it
-// reaches the harness (a Pi tool, the `agentx-wiki` command, the bundled MCP server).
+// reaches the harness (a Pi tool, the `xagent-wiki` command, the bundled MCP server).
 import type { Bus } from '../core/bus'
 import type { HarnessEnv } from '../core/env'
 import { HarnessError } from '../core/errors'

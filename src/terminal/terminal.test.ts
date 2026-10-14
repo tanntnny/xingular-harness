@@ -1,4 +1,5 @@
-import { mkdtempSync, readFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
 import { connect } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -24,6 +25,10 @@ afterEach(async () => {
 async function setup(policy: ToolPolicy = {}) {
   const root = rootWithProject()
   const harness = createHarness({ dataRoot: root, stateDir: mkdtempSync(join(tmpdir(), 'hs-')), secrets: memorySecretStore(), policy, piProgram: () => '/opt/pi/bin/pi', assets: { node: '/opt/node', cli: '/opt/harness/cli.js', piExtension: '/opt/harness/terminal-pi.js' } })
+  const legacyBin = join(harness.stateDir, 'run', 'bin')
+  mkdirSync(legacyBin, { recursive: true })
+  writeFileSync(join(legacyBin, 'agentx-wiki'), 'old wrapper')
+  writeFileSync(join(legacyBin, 'agentx-mcp'), 'old wrapper')
   open.push(harness)
   const account = harness.accounts.create('Main', 'apiKey').accounts[0]
   const events: RunEvent[] = []
@@ -59,7 +64,7 @@ describe('a pi terminal session', () => {
     expect(launch.accountId).toBe(account.id)
     expect(launch.args[0]).toBe('--append-system-prompt')
     expect(launch.args[1]).toContain('# Xingular Harness context')
-    expect(launch.args[1]).toContain('agentx-wiki')
+    expect(launch.args[1]).toContain('xagent-wiki')
     // Pi's own discovery is off; its command's built-in extensions are named, and the harness's comes last.
     expect(launch.args.slice(2)).toEqual([
       '--model', 'chosen-model', '--no-extensions', '--no-skills', '--no-prompt-templates', '--no-themes',
@@ -68,11 +73,34 @@ describe('a pi terminal session', () => {
     ])
     expect(launch.env.PI_CODING_AGENT_DIR).toBe(join(harness.accounts.dir, account.id, 'home', 'pi'))
     expect(String(launch.env.PATH).split(':')[0]).toBe(join(harness.stateDir, 'run', 'bin'))
-    expect(readFileSync(join(harness.stateDir, 'run', 'bin', 'agentx-wiki'), 'utf8')).toBe("#!/bin/sh\nexec '/opt/node' '/opt/harness/cli.js' wiki \"$@\"\n")
-    expect(readFileSync(join(harness.stateDir, 'run', 'bin', 'agentx-mcp'), 'utf8')).toContain("'/opt/harness/cli.js' mcp")
+    expect(readFileSync(join(harness.stateDir, 'run', 'bin', 'xagent-wiki'), 'utf8')).toBe("#!/bin/sh\nexec '/opt/node' '/opt/harness/cli.js' wiki \"$@\"\n")
+    expect(readFileSync(join(harness.stateDir, 'run', 'bin', 'xagent-mcp'), 'utf8')).toContain("'/opt/harness/cli.js' mcp")
+    expect(existsSync(join(harness.stateDir, 'run', 'bin', 'agentx-wiki'))).toBe(false)
+    expect(existsSync(join(harness.stateDir, 'run', 'bin', 'agentx-mcp'))).toBe(false)
     // The session keeps the pack it started with.
     expect(JSON.parse(readFileSync(join(sessionFolder, 'context.json'), 'utf8')).profile).toBe('session')
     expect(root).toBeTruthy()
+  })
+
+  it.skipIf(process.platform !== 'win32')('starts the resolved Pi CLI through Node without a model or interactive terminal', async () => {
+    const root = rootWithProject()
+    const stateDir = mkdtempSync(join(tmpdir(), 'hs-pi-smoke-'))
+    const harness = createHarness({ dataRoot: root, stateDir, secrets: memorySecretStore() })
+    open.push(harness)
+    harness.accounts.create('Main', 'subscription')
+    const launch = await harness.terminals.prepare({ sessionId: 'pi-smoke', cwd: root, sessionFolder: join(root, 'sessions', 'pi-smoke') })
+    const cli = launch.args[0]
+    const pathKeys = Object.keys(launch.env).filter((name) => name.toLowerCase() === 'path')
+
+    expect(launch.program).toBe(process.execPath)
+    expect(pathKeys).toHaveLength(1)
+    expect(launch.env[pathKeys[0]]).toContain(';')
+    expect(launch.env.XINGULAR_HARNESS_NODE).toBe(process.execPath)
+    expect(readFileSync(join(stateDir, 'run', 'bin', 'xagent-wiki.cmd'), 'utf8')).toContain(' wiki %*\r\n')
+    const result = spawnSync(launch.program, [cli, '--help'], { cwd: root, encoding: 'utf8', timeout: 20_000 })
+    expect(result.error).toBeUndefined()
+    expect(result.status).toBe(0)
+    expect(`${result.stdout}${result.stderr}`).toMatch(/usage|options|pi coding agent/i)
   })
 
   it('passes what the harness found as paths, the enabled registry items with them, and its own extension last', async () => {
@@ -284,7 +312,7 @@ describe('the session socket', () => {
   })
 })
 
-describe('agentx-wiki command', () => {
+describe('xagent-wiki command', () => {
   it('maps commands onto memory and Wiki calls', () => {
     expect(parseCli(['search', 'deploy', 'steps', '--kind', 'page'])).toEqual({ kind: 'call', call: 'wiki.search', params: { query: 'deploy steps', kinds: ['page'] } })
     expect(parseCli(['read', '/projects/app/arch'])).toEqual({ kind: 'call', call: 'wiki.read', params: { id: '/projects/app/arch' } })

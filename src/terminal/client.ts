@@ -1,5 +1,5 @@
-// How a process outside the harness (the `pi` command's extension, the `agentx-wiki` and
-// `agentx-mcp` commands) reaches it: one newline-delimited JSON request and reply per
+// How a process outside the harness (the `pi` command's extension, the `xagent-wiki` and
+// `xagent-mcp` commands) reaches it: one newline-delimited JSON request and reply per
 // connection to the session socket, authorized by the token the harness put in its environment.
 import { createConnection } from 'node:net'
 

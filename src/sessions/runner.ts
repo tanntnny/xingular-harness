@@ -452,7 +452,7 @@ export async function loadResources(pi: typeof import('@earendil-works/pi-coding
     agentDir: params.account.configDir,
     // Inline extensions load after the ones on disk, and the gate after all of them, so it sees
     // what every plugin made of a call.
-    extensionFactories: [...(params.inline ?? []).map((extension) => ({ name: extension.name, factory: extension.factory as never, hidden: true })), { name: 'agent-x-approvals', factory: gate as never, hidden: true }],
+    extensionFactories: [...(params.inline ?? []).map((extension) => ({ name: extension.name, factory: extension.factory as never, hidden: true })), { name: 'xagent-approvals', factory: gate as never, hidden: true }],
     additionalSkillPaths: [...(params.resources?.skillPaths ?? []), ...(loading?.skillPaths ?? [])],
     additionalPromptTemplatePaths: [...(params.resources?.promptPaths ?? []), ...(loading?.promptPaths ?? [])],
     // The compiler writes one prompt; nothing else is appended here.
