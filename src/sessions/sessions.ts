@@ -126,9 +126,15 @@ export class Sessions {
         } catch (error) {
           return error instanceof Error ? error.message : 'Tool unavailable in the app settings.'
         }
-        if (scope.allowed && (scope.automatic || !gated.has(tool))) return null
-        // A call outside the scope is approved one at a time; a gated tool may be remembered.
-        const decision = await run.requestApproval({ target: tool, action: summarize(args), operation: { tool, args: (args && typeof args === 'object' ? args : {}) as Record<string, unknown> }, rememberable: scope.allowed })
+        if (scope.allowed && !scope.humanOnly && (scope.automatic || !gated.has(tool))) return null
+        // A call outside the scope is approved one at a time; a gated tool may be remembered, unless only a person may decide it.
+        const decision = await run.requestApproval({
+          target: tool,
+          action: summarize(args),
+          operation: { tool, args: (args && typeof args === 'object' ? args : {}) as Record<string, unknown> },
+          rememberable: scope.allowed && !scope.humanOnly,
+          standing: scope.humanOnly ? 'none' : undefined
+        })
         if (decision !== 'approved') return 'The user denied this action. Ask how they would like to proceed.'
         try {
           await policy.authorize?.(call)

@@ -7,6 +7,7 @@ import { Type } from 'typebox'
 
 import { connectionFromEnv, socketCall, terminalCall } from './client'
 import { runPluginsMenu } from './pluginMenu'
+import { runHubMenu } from './hubMenu'
 
 interface SocketTool {
   name: string
@@ -44,6 +45,16 @@ export default async function (pi: ExtensionAPI) {
     // Claimed here, before the model has run anything, and kept in this process's memory: a
     // command the model runs can read the session token from its environment, never this key.
     const control = await socketCall<{ key: string }>(connection, 'control.claim', {}, 15_000).then((claimed) => claimed.key).catch(() => null)
+    pi.registerCommand('hub', {
+      description: 'Browse and install reviewed skills, plugins, and reusable documents',
+      handler: async (_args, ctx) => {
+        if (!control) return ctx.ui.notify('This session cannot install hub items.', 'warning')
+        await runHubMenu(
+          { select: (title, options) => ctx.ui.select(title, options), confirm: (title, message) => ctx.ui.confirm(title, message), notify: (message, level) => ctx.ui.notify(message, level) },
+          (method, params) => socketCall(connection, method, params ?? {}, 300_000, control)
+        )
+      }
+    })
     pi.registerCommand('plugins', {
       description: 'See what this session loads, and switch a plugin on or off or trust its code',
       handler: async (_args, ctx) => {

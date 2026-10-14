@@ -57,8 +57,11 @@ The capability snapshot and attachment-scope migration are being implemented in 
   in the background. Memory code only calls `noteChange` once the file is in place; it never
   waits for a hook, and a hook's failure never reaches it. A new write point that should be
   heard calls `noteChange` too. Do not add a hook that can stop or change a write.
-- **No tool installs, switches on or trusts a plugin.** `plugin_propose` parks a proposal; a
-  person does the rest. Keep it that way.
+- **A plugin reaches people through the Inbox, or through the agent that wrote it.** `plugin_propose`
+  parks a proposal; a person does the rest. `plugin_write` (the registry-write plugin) saves a
+  plugin, switches it on for the calling agent only, and records trust for the exact code it wrote
+  (trust is kept by content hash, so that code runs wherever it is later switched on). It never
+  adopts, switches on or trusts anything else. Keep it that way.
 - **One store says what is switched on.** `src/plugins/attachments.ts` holds every choice about
   a plugin or a contribution, per scope (everywhere, an agent, a project). Do not add a second
   enablement file for a new kind of thing; give it a default and read it with `attached`.

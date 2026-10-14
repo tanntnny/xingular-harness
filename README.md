@@ -272,3 +272,27 @@ Node 22.13 or newer (for `node:sqlite`).
 ## Images
 
 `SessionRunInput.requiresImageInput` optionally requires a vision-capable resolved Pi model before a prompt is delivered. The check includes direct `images` input, and the generic tool wrapper rejects image results on text-only models. Direct prompt images use Pi's `{ type: 'image', data, mimeType }` content shape. Applications own file formats, attachment selection, extraction and image preparation; the Harness only transports typed image content and validates model capability.
+
+## Curated Hub
+
+`xingular-harness hub list [--refresh]`, `hub show publisher/name@version`, and
+`hub install publisher/name@version` browse and install exact catalog versions. `/hub` offers the
+same review in the interactive terminal, using its private control key for installation. Both the
+terminal and embedding applications use `hub.list`, `hub.get`, `hub.install`, and `hub.readDocument`.
+`hub.get { id, version, preview: true }` verifies data payload bytes without installing them.
+
+Registry bundles import complete skills or single Markdown prompts/rules, disabled. Pi packages
+reuse the existing installer and require an exact npm version or full GitHub commit. Documents
+are saved as inert JSON for a compatible host to interpret; the harness does not apply them.
+Installation grants no attachment, trust, credentials, or permission. Writes are serialized and
+existing registry files are never overwritten.
+
+Installed documents and provenance live under `<data root>/hub/`; the catalog cache is
+`<state dir>/hub/catalog.json`. An offline snapshot ships with the package. Explicit refresh keeps
+the last valid catalog when the network or schema fails. The prepared public distribution repository
+is `../Hub`; publication remains separate from local installation and testing. Run its build with
+`--sync-harness` to regenerate this package's offline snapshot after reviewing catalog changes.
+
+Standalone defaults stay separate from a host application's folders. Use explicit `--data` and
+`--state` to target the same library. CLI hub commands construct the harness without opening the
+data root, so they do not migrate the Wiki or settle another process's runs.

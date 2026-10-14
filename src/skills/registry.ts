@@ -291,11 +291,16 @@ export function create(root: string, kind: string, rawName: string): RegistrySta
 
 /** Imports complete user-owned skill folders without replacing existing or built-in items. */
 export function importSkills(root: string, bundles: SkillBundleInput[]): RegistryState {
+  return importItems(root, 'skills', bundles)
+}
+
+/** Imports inert registry resources. Prompts and rules are single UTF-8 Markdown documents. */
+export function importItems(root: string, kind: RegistryKind, bundles: SkillBundleInput[]): RegistryState {
   if (!Array.isArray(bundles) || bundles.length === 0 || bundles.length > MAX_SKILL_BUNDLES) {
     throw invalid(`Import between 1 and ${MAX_SKILL_BUNDLES} skills at a time.`)
   }
 
-  const directory = kindDir(root, 'skills')
+  const directory = kindDir(root, kind)
   mkdirSync(directory, { recursive: true })
   const existing = new Set(list(root).map((item) => item.id))
   const seen = new Set<string>()
@@ -308,10 +313,10 @@ export function importSkills(root: string, bundles: SkillBundleInput[]): Registr
     if (name.length > 64) throw invalid('Use a skill name with at most 64 letters or numbers.')
     const slug = Array.from(name.toLowerCase(), (character) => (/^[a-z0-9]$/.test(character) ? character : '-')).join('').split('-').filter(Boolean).join('-')
     if (!slug || slug.length > 64) throw invalid('Use a skill name with at most 64 letters or numbers.')
-    const id = `skills/${slug}`
+    const id = `${kind}/${slug}`
     if (existing.has(id) || seen.has(id)) throw invalid(`The skill “${name}” already exists.`)
     try {
-      lstatSync(join(directory, slug))
+      lstatSync(join(directory, kind === 'skills' ? slug : `${slug}.md`))
       throw invalid(`The skill “${name}” already exists.`)
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
@@ -350,7 +355,8 @@ export function importSkills(root: string, bundles: SkillBundleInput[]): Registr
       if (file.encoding === 'base64' && bytes.toString('base64') !== file.content) throw invalid(`The file “${relative}” is not valid base64.`)
       files.set(relative, bytes)
     }
-    if (!files.has('SKILL.md')) throw invalid(`The skill “${name}” must include SKILL.md at its root.`)
+    if (kind === 'skills' && !files.has('SKILL.md')) throw invalid(`The skill “${name}” must include SKILL.md at its root.`)
+    if (kind !== 'skills' && (bundle.files.length !== 1 || bundle.files[0].encoding !== 'utf8' || bundle.files[0].path !== 'CONTENT.md')) throw invalid('A prompt or rule must contain one UTF-8 CONTENT.md file.')
     return { name, slug, files }
   })
 
@@ -366,8 +372,8 @@ export function importSkills(root: string, bundles: SkillBundleInput[]): Registr
       }
     }
     for (const bundle of prepared) {
-      const target = join(directory, bundle.slug)
-      renameSync(join(staging, bundle.slug), target)
+      const target = join(directory, kind === 'skills' ? bundle.slug : `${bundle.slug}.md`)
+      renameSync(kind === 'skills' ? join(staging, bundle.slug) : join(staging, bundle.slug, 'CONTENT.md'), target)
       installed.push(target)
     }
   } catch (error) {
@@ -383,7 +389,7 @@ export function importSkills(root: string, bundles: SkillBundleInput[]): Registr
  * Writes a skill, prompt, or rule (an accepted proposal), keeping an existing item's location.
  * The previous content and the new content are recorded as Wiki revisions of the item.
  */
-export function writeItem(root: string, kind: string, name: string, description: string, body: string, reason: string): string {
+export function writeItem(root: string, kind: string, name: string, description: string, body: string, reason: string, actor = 'user'): string {
   const plural = kind === 'skill' ? 'skills' : kind === 'prompt' ? 'prompts' : kind === 'rule' ? 'rules' : null
   if (!plural) throw invalid('Only skills, prompts, and rules can be written.')
   const stem = store.slug(name)
@@ -395,13 +401,13 @@ export function writeItem(root: string, kind: string, name: string, description:
   const wiki = store.wikiDir(root)
   if (existing) {
     try {
-      store.snapshot(wiki, id, readFileSync(existing.path, 'utf8'), 'user', 'Before accepted proposal')
+      store.snapshot(wiki, id, readFileSync(existing.path, 'utf8'), actor, 'Before accepted proposal')
     } catch {
       // Nothing readable to keep.
     }
   }
   atomicWrite(path, text)
-  store.snapshot(wiki, id, text, 'user', reason)
-  store.log(wiki, `- ${now()} · user · ${existing ? 'updated' : 'created'} \`${id}\` · ${reason}`)
+  store.snapshot(wiki, id, text, actor, reason)
+  store.log(wiki, `- ${now()} · ${actor} · ${existing ? 'updated' : 'created'} \`${id}\` · ${reason}`)
   return id
 }

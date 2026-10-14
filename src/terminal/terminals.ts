@@ -22,6 +22,7 @@ import { dispatch } from '../memory/dispatch'
 import type { AttachParams, PluginScope } from '../plugins/api'
 import type { Plugins } from '../plugins/plugins'
 import type { Plugin } from '../plugins/types'
+import type { Hub } from '../hub/hub'
 import { compile, copyToRun, memoryDelta, record, render, saveForSession, type Launch } from '../prompt/compile'
 import type { RunRecord } from '../sessions/contracts'
 import { isActiveStatus } from '../sessions/contracts'
@@ -102,6 +103,7 @@ export interface TerminalsOptions {
   plugins?: Plugins
   /** Lists plugins and applies a person's choices, for the session's `/plugins` command. */
   pluginControl?: PluginControl
+  hub?: Hub
   assets?: TerminalAssets
   /** The `pi` executable. Defaults to the PATH command on POSIX and the bundled CLI on Windows. */
   program?: () => string | null
@@ -200,6 +202,12 @@ export class Terminals {
     if (!api || !live) throw new HarnessError('unknown_method', `Unknown call ${call}.`)
     const projectId = live.input.projectId ?? null
     const scope = { cwd: live.input.cwd, accountId: live.account.id, projectId }
+    if (call === 'hub.list' && this.options.hub) return this.options.hub.list(params.refresh === true)
+    if (call === 'hub.install' && this.options.hub) {
+      if (!control) throw new HarnessError('unauthorized', 'Only a person at this terminal can install items. Type /hub.')
+      if (typeof params.id !== 'string' || typeof params.version !== 'string') throw invalid('An item id and version are required.')
+      return this.options.hub.install(params.id, params.version)
+    }
     if (call === 'plugins.list') return api.list(scope)
     if (call === 'plugins.session') return { projectId }
     if (!control) throw new HarnessError('unauthorized', 'Only a person at this terminal can change plugins. Type /plugins.')

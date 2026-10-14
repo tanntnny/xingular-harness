@@ -326,6 +326,22 @@ describe('session turns on Pi', () => {
     expect(events.at(-1)?.type).toBe('completed')
   })
 
+  it('asks a person for a humanOnly call even when the tool was remembered', async () => {
+    let blockReason: string | null | undefined
+    const policy: ToolPolicy = { scope: async () => ({ allowed: false, requiresApproval: true, humanOnly: true, reason: 'Run this command?' }) }
+    const { events, run, harness } = setup(async ({ gate }) => fakeSession(async (_emit, check) => void (blockReason = await check()), gate), policy)
+    harness.approvals.remember('agent-1', 'bash')
+    await run('run-human', { text: 'npm install' })
+    await tick()
+    const requested = events.find((event) => event.type === 'approval.requested')!.payload as { approvalId: string }
+    expect(requested).toMatchObject({ target: 'bash', rememberable: false })
+    expect(requested).not.toHaveProperty('automatic')
+    expect(events.some((event) => event.type === 'status.changed' && (event.payload as { status: string }).status === 'waiting_for_approval')).toBe(true)
+    harness.runs.resolveApproval('run-human', requested.approvalId, 'approved')
+    await tick()
+    expect(blockReason).toBeNull()
+  })
+
   it('still asks when the application cannot say what is allowed', async () => {
     const { events, run } = setup(async ({ gate }) => fakeSession(async (_emit, check) => void (await check()), gate), { approval: async () => { throw new Error('down') } })
     await run('run-ask', { text: 'list files' })

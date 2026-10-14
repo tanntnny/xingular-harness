@@ -50,6 +50,11 @@ try {
   await isReady
   const status = await request('harness.status')
   check('serves a data root with no application present', status.productName === 'Proof Host' && status.dataRoot === join(scratch, 'data'))
+  const hub = await request('hub.list')
+  const document = hub.entries.find((entry) => entry.delivery.kind === 'document')
+  await request('hub.install', { id: document.id, version: document.version })
+  const savedDocument = await request('hub.readDocument', { id: document.id, version: document.version })
+  check('installs a reviewed hub document as inert data', !!JSON.parse(savedDocument.content) && (await request('hub.list')).installed.length === 1)
 
   const { accounts } = await request('accounts.create', { label: 'First', authKind: 'apiKey' })
   await request('accounts.create', { label: 'Second', authKind: 'apiKey' })

@@ -65,6 +65,10 @@ export function methods(harness: Harness): Record<string, Handler> {
     'harness.status': () => ({ dataRoot: harness.dataRoot, productName: env.productName, recovery: harness.recovery, activeRuns: runs.activeRunIds() }),
     'harness.open': (params: Params) => harness.open(text(params, 'dataRoot'), Array.isArray(params.agentIds) ? params.agentIds : []),
     'harness.rebuildIndex': () => harness.rebuildIndex(),
+    'hub.list': (params: Params) => harness.hub.list(params.refresh === true),
+    'hub.get': (params: Params) => harness.hub.get(text(params, 'id'), text(params, 'version'), params.preview === true),
+    'hub.install': (params: Params) => harness.hub.install(text(params, 'id'), text(params, 'version')),
+    'hub.readDocument': (params: Params) => harness.hub.readDocument(text(params, 'id'), text(params, 'version')),
 
     // ---- Accounts --------------------------------------------------------------------------------
     'accounts.list': () => accounts.overview(),

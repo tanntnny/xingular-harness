@@ -149,7 +149,7 @@ export class SessionSocket {
         this.controls.set(token, key)
         return { result: { key } }
       }
-      if (call.startsWith('plugins.') && this.handlers.plugins) {
+      if ((call.startsWith('plugins.') || call.startsWith('hub.')) && this.handlers.plugins) {
         const key = this.controls.get(token)
         return { result: await this.handlers.plugins(grant, call, params, key !== undefined && request.control === key) }
       }

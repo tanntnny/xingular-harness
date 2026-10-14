@@ -5,6 +5,7 @@ import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { Accounts } from './accounts/accounts'
+import { Hub, type HubOptions } from './hub/hub'
 import * as capabilities from './capabilities/api'
 import { ensureSharedDir, isolateProcess } from './accounts/env'
 import { fileSecretStore, type SecretStore } from './accounts/secrets'
@@ -41,6 +42,7 @@ import * as registry from './skills/registry'
 import { Terminals, type TerminalAssets } from './terminal/terminals'
 
 export interface HarnessOptions {
+  hub?: HubOptions
   /** Where knowledge and history live. May be set later with `open`. */
   dataRoot?: string | null
   /** Device-local state that never belongs in the data root: accounts, approvals, connections, sockets. */
@@ -102,6 +104,7 @@ class Env implements HarnessEnv {
 }
 
 export class Harness {
+  readonly hub: Hub
   readonly bus = new Bus()
   readonly env: Env
   readonly stateDir: string
@@ -129,6 +132,7 @@ export class Harness {
     // Before anything can start a session: no inherited credential, no `~/.pi`.
     isolateProcess(join(this.stateDir, 'accounts'))
     this.env = new Env(options.dataRoot || null, options.directory ?? EMPTY_DIRECTORY, options.productName ?? DEFAULT_PRODUCT_NAME, this.bus)
+    this.hub = new Hub(this, options.hub)
     this.policy = options.policy ?? {}
     registry.configureBuiltins(options.builtins ?? [])
     const secrets = options.secrets ?? fileSecretStore(join(this.stateDir, 'secrets.json'))
@@ -184,7 +188,7 @@ export class Harness {
       factory: options.sessionFactory
     })
     this.maintenance = new Maintenance({ env: this.env, bus: this.bus, accounts: this.accounts, factory: options.maintainerFactory, idleMs: options.idleMs })
-    this.terminals = new Terminals({ env: this.env, stateDir: this.stateDir, accounts: this.accounts, runs: this.runs, apps: this.apps, policy: this.policy, bus: this.bus, plugins: this.plugins, pluginControl: { list: (scope) => pluginApi.list(this, scope), attach: (params, on) => pluginApi.attach(this, params, on), trust: (scope) => pluginApi.trust(this, scope), untrust: (scope) => pluginApi.untrust(this, scope) }, assets: options.assets, program: options.piProgram })
+    this.terminals = new Terminals({ env: this.env, stateDir: this.stateDir, accounts: this.accounts, runs: this.runs, apps: this.apps, policy: this.policy, bus: this.bus, plugins: this.plugins, pluginControl: { list: (scope) => pluginApi.list(this, scope), attach: (params, on) => pluginApi.attach(this, params, on), trust: (scope) => pluginApi.trust(this, scope), untrust: (scope) => pluginApi.untrust(this, scope) }, assets: options.assets, program: options.piProgram, hub: this.hub })
     this.ready = this.apps.start().catch((error) => log('connected apps', error instanceof Error ? error.message : String(error)))
     this.runs.listen((event, run) => {
       this.accounts.onRunEvent(event, run)
@@ -215,8 +219,10 @@ export class Harness {
    * older Wiki is migrated.
    */
   open(dataRoot: string, agentIds: readonly string[] = []): Recovery {
+    if (this.hub.busy && this.env.dataRoot !== dataRoot) throw new HarnessError('hub_busy', 'Wait for the hub installation before changing the data location.')
     if (this.env.dataRoot && this.env.dataRoot !== dataRoot) closeIndex(this.env.dataRoot)
     this.env.dataRoot = dataRoot
+    this.hub.watch(dataRoot)
     const root = dataRoot
     this.hooks.watch(store.wikiDir(root))
     void this.hooks.reload()
@@ -281,6 +287,7 @@ export class Harness {
 
   /** Stops live runs and releases the index. */
   async close(): Promise<void> {
+    this.hub.close()
     this.maintenance.stop()
     await this.terminals.close()
     await this.runs.interruptAll()

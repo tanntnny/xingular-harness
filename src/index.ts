@@ -7,6 +7,7 @@
 // providers, a tool policy, a secret store, a directory of its own names, and a description of
 // its own parts as plugins. Everything else is reachable by path, e.g. `@xingular/harness/memory/wiki`.
 export { createHarness, Harness, type HarnessOptions, type Recovery } from './harness'
+export { hubCatalogSchema, hubEntrySchema, hubOverviewSchema, hubReceiptSchema, type HubCatalog, type HubEntry, type HubOverview, type HubReceipt } from './hub/schema'
 
 export { Bus, log, type Notice } from './core/bus'
 export { EMPTY_DIRECTORY, type Directory, type HarnessEnv } from './core/env'
@@ -47,6 +48,7 @@ export type { Effort } from './sessions/runner'
 export { describeTool, WIKI_TOOLS, WIKI_TOOL_NAMES, type WikiCall, type WikiToolDefinition } from './tools/definitions'
 export type { ToolProvider, ToolResult, ToolSession, ToolSpec } from './tools/types'
 export { webTools, WEB_PLUGIN, WEB_SEARCH_KEY, type WebToolOptions } from './web/tools'
+export { registryTools, REGISTRY_WRITE, PLUGIN_WRITE, REGISTRY_WRITE_PLUGIN, type RegistryToolOptions } from './tools/registryWrite'
 export { safeRequest, type WebRequest, type WebResponse } from './web/safeRequest'
 
 export type { BrokeredTools, BrokerSession, BrokerTool } from './mcp/service'

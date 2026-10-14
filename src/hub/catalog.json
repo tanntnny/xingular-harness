@@ -1,0 +1,123 @@
+{
+  "schemaVersion": 1,
+  "entries": [
+    {
+      "id": "xingular/evidence-first",
+      "title": "Evidence first",
+      "description": "Keep observations, inferences, and unknowns distinct.",
+      "publisher": "Xingular",
+      "license": "MIT",
+      "version": "1.0.0",
+      "category": "rule",
+      "channel": "official",
+      "tags": [
+        "rule"
+      ],
+      "requires": {
+        "harness": "0.1.6"
+      },
+      "sourceUrl": "https://github.com/tanntnny/xingular-hub/tree/main/entries/xingular/evidence-first/1.0.0",
+      "delivery": {
+        "kind": "registry",
+        "registryKind": "rules",
+        "url": "https://raw.githubusercontent.com/tanntnny/xingular-hub/main/entries/xingular/evidence-first/1.0.0/payload.json",
+        "sha256": "0f77661ea41e27bcb51aad982d15d493b893c5c1ba1eb6046a21315ddac07c5b",
+        "bundled": "{\n  \"items\": [\n    {\n      \"name\": \"hub-evidence-first\",\n      \"files\": [\n        {\n          \"path\": \"CONTENT.md\",\n          \"encoding\": \"utf8\",\n          \"content\": \"---\\nname: Evidence first\\ndescription: Distinguish observations, inferences, and unknowns.\\n---\\n\\nSupport factual claims with inspectable evidence. Label inferences and uncertainties. Correct a claim when better evidence changes it.\\n\"\n        }\n      ]\n    }\n  ]\n}\n"
+      }
+    },
+    {
+      "id": "xingular/github-connector",
+      "title": "GitHub connector",
+      "description": "A setup recipe for the GitHub MCP server; provide your own credentials.",
+      "publisher": "Xingular",
+      "license": "MIT",
+      "version": "1.0.0",
+      "category": "connector",
+      "channel": "official",
+      "tags": [
+        "connector"
+      ],
+      "requires": {
+        "harness": "0.1.6"
+      },
+      "sourceUrl": "https://github.com/tanntnny/xingular-hub/tree/main/entries/xingular/github-connector/1.0.0",
+      "delivery": {
+        "kind": "document",
+        "url": "https://raw.githubusercontent.com/tanntnny/xingular-hub/main/entries/xingular/github-connector/1.0.0/payload.json",
+        "sha256": "ec5bd9675e2977b9d880cf81732d84ac72b04af271048499415eaa6288896223",
+        "bundled": "{\n  \"id\": \"github-hub\",\n  \"name\": \"GitHub\",\n  \"description\": \"Repositories, issues, and pull requests\",\n  \"kind\": \"remote\",\n  \"docsUrl\": \"https://github.com/github/github-mcp-server\",\n  \"url\": \"https://api.githubcopilot.com/mcp/\",\n  \"auth\": \"headers\",\n  \"oauth\": null,\n  \"fields\": [\n    {\n      \"header\": \"Authorization\",\n      \"label\": \"Personal access token\",\n      \"prefix\": \"Bearer \",\n      \"help\": \"Provide a token for only the repositories and permissions you need.\"\n    }\n  ],\n  \"setup\": [\n    \"Create a personal access token in GitHub with the access you want to grant.\",\n    \"Review the connection before enabling it.\"\n  ],\n  \"notice\": null,\n  \"provenance\": null,\n  \"suggestedReadTools\": []\n}\n"
+      }
+    },
+    {
+      "id": "xingular/research-starter",
+      "title": "Research starter",
+      "description": "A starting agent for comparing sources and writing supported answers.",
+      "publisher": "Xingular",
+      "license": "MIT",
+      "version": "1.0.0",
+      "category": "agent-template",
+      "channel": "official",
+      "tags": [
+        "agent-template"
+      ],
+      "requires": {
+        "harness": "0.1.6"
+      },
+      "sourceUrl": "https://github.com/tanntnny/xingular-hub/tree/main/entries/xingular/research-starter/1.0.0",
+      "delivery": {
+        "kind": "document",
+        "url": "https://raw.githubusercontent.com/tanntnny/xingular-hub/main/entries/xingular/research-starter/1.0.0/payload.json",
+        "sha256": "a2f672583df6f4049cc153ba1e173192301220e5f8817f9ad5a4fe87af25f52b",
+        "bundled": "{\n  \"schemaVersion\": 1,\n  \"id\": \"research-starter\",\n  \"title\": \"Research starter\",\n  \"description\": \"Compare sources and explain the evidence behind an answer.\",\n  \"version\": \"1.0.0\",\n  \"author\": \"Xingular\",\n  \"license\": \"MIT\",\n  \"agent\": {\n    \"name\": \"Research starter\",\n    \"icon\": {\n      \"kind\": \"mascot\",\n      \"shape\": \"prism\",\n      \"color\": \"violet\",\n      \"material\": \"glass\"\n    },\n    \"description\": \"Investigates questions with sources.\",\n    \"instructions\": \"Help the user investigate a question. Start with reliable sources, explain what the evidence supports, cite the sources, and state unresolved questions. Ask the user when their goal is unclear.\",\n    \"model\": null,\n    \"effort\": \"high\",\n    \"tools\": [\n      \"read\",\n      \"grep\",\n      \"find\",\n      \"ls\",\n      \"web_search\",\n      \"web_fetch\"\n    ]\n  },\n  \"skills\": [],\n  \"connections\": []\n}\n"
+      }
+    },
+    {
+      "id": "xingular/source-review",
+      "title": "Review a source",
+      "description": "Check who wrote a source, what it supports, and what remains uncertain.",
+      "publisher": "Xingular",
+      "license": "MIT",
+      "version": "1.0.0",
+      "category": "skill",
+      "channel": "official",
+      "tags": [
+        "skill"
+      ],
+      "requires": {
+        "harness": "0.1.6"
+      },
+      "sourceUrl": "https://github.com/tanntnny/xingular-hub/tree/main/entries/xingular/source-review/1.0.0",
+      "delivery": {
+        "kind": "registry",
+        "registryKind": "skills",
+        "url": "https://raw.githubusercontent.com/tanntnny/xingular-hub/main/entries/xingular/source-review/1.0.0/payload.json",
+        "sha256": "bb0617889ee1ca39611a10952bec3086fa3986e9ce10a809c473c57acf47bc07",
+        "bundled": "{\n  \"items\": [\n    {\n      \"name\": \"hub-source-review\",\n      \"files\": [\n        {\n          \"path\": \"SKILL.md\",\n          \"encoding\": \"utf8\",\n          \"content\": \"---\\nname: hub-source-review\\ndescription: Review the evidence behind a source before using its claims.\\n---\\n\\n# Review a source\\n\\nRecord its author and date. Identify the original evidence. Write what the source supports and which uncertainties remain. Cite the source so the reader can inspect it.\\n\"\n        }\n      ]\n    }\n  ]\n}\n"
+      }
+    },
+    {
+      "id": "xingular/summarize-source",
+      "title": "Summarize a source",
+      "description": "Summarize a provided source and explain its limitations.",
+      "publisher": "Xingular",
+      "license": "MIT",
+      "version": "1.0.0",
+      "category": "prompt",
+      "channel": "official",
+      "tags": [
+        "prompt"
+      ],
+      "requires": {
+        "harness": "0.1.6"
+      },
+      "sourceUrl": "https://github.com/tanntnny/xingular-hub/tree/main/entries/xingular/summarize-source/1.0.0",
+      "delivery": {
+        "kind": "registry",
+        "registryKind": "prompts",
+        "url": "https://raw.githubusercontent.com/tanntnny/xingular-hub/main/entries/xingular/summarize-source/1.0.0/payload.json",
+        "sha256": "12a646d474fe3cd822970869c972d1d9400c7f6350388dc735dce5c31a22680a",
+        "bundled": "{\n  \"items\": [\n    {\n      \"name\": \"hub-summarize-source\",\n      \"files\": [\n        {\n          \"path\": \"CONTENT.md\",\n          \"encoding\": \"utf8\",\n          \"content\": \"---\\nname: summarize-source\\ndescription: Summarize the supplied source and its limits.\\n---\\n\\nSummarize the source below. Include its main claims, supporting evidence, limitations, and questions it leaves unanswered.\\n\\n$@\\n\"\n        }\n      ]\n    }\n  ]\n}\n"
+      }
+    }
+  ]
+}
