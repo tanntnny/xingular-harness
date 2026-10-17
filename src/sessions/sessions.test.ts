@@ -331,6 +331,7 @@ describe('session turns on Pi', () => {
     const policy: ToolPolicy = { scope: async () => ({ allowed: false, requiresApproval: true, humanOnly: true, reason: 'Run this command?' }) }
     const { events, run, harness } = setup(async ({ gate }) => fakeSession(async (_emit, check) => void (blockReason = await check()), gate), policy)
     harness.approvals.remember('agent-1', 'bash')
+    harness.approvals.setAuto('chat', true)
     await run('run-human', { text: 'npm install' })
     await tick()
     const requested = events.find((event) => event.type === 'approval.requested')!.payload as { approvalId: string }
@@ -340,6 +341,19 @@ describe('session turns on Pi', () => {
     harness.runs.resolveApproval('run-human', requested.approvalId, 'approved')
     await tick()
     expect(blockReason).toBeNull()
+  })
+
+  it('lets the Agent chat switch approve humanOnly calls without remembering the tool', async () => {
+    let blockReason: string | null | undefined
+    const policy: ToolPolicy = { scope: async () => ({ allowed: false, requiresApproval: true, humanOnly: true, allowGlobalApproval: true, reason: 'Run this command?' }) }
+    const { events, run, harness } = setup(async ({ gate }) => fakeSession(async (_emit, check) => void (blockReason = await check()), gate), policy)
+    harness.approvals.setAuto('chat', true)
+    await run('run-human-auto', { text: 'run command' })
+    await tick()
+    expect(blockReason).toBeNull()
+    expect(events.find((event) => event.type === 'approval.requested')?.payload).toMatchObject({ target: 'bash', rememberable: false, automatic: 'always' })
+    expect(events.find((event) => event.type === 'approval.resolved')?.payload).toMatchObject({ decision: 'approved', automatic: 'always' })
+    expect(events.some((event) => event.type === 'status.changed' && (event.payload as { status: string }).status === 'waiting_for_approval')).toBe(false)
   })
 
   it('still asks when the application cannot say what is allowed', async () => {
@@ -360,12 +374,30 @@ describe('session turns on Pi', () => {
         if (authorized > 1) throw new Error('Tool unavailable in the app settings.')
       }
     }
-    const { run } = setup(async ({ gate }) => fakeSession(async () => {
+    const { run, harness } = setup(async ({ gate }) => fakeSession(async () => {
       reasons.push(await gate.check('bash', {}), await gate.check('read', {}), await gate.check('read', {}))
     }, gate), policy)
+    harness.approvals.setAuto('chat', true)
     await run('run-scope')
     await tick()
     expect(reasons).toEqual(['Scheduled workers may use scoped file tools only.', null, 'Tool unavailable in the app settings.'])
+  })
+
+  it('forwards opaque caller policy context to the application tool policy', async () => {
+    const contexts: unknown[] = []
+    const policy: ToolPolicy = {
+      scope: async ({ caller }) => {
+        contexts.push(caller.policyContext)
+        return { allowed: true }
+      }
+    }
+    const { run } = setup(async ({ gate }) => fakeSession(async (_emit, check) => void (await check()), gate), policy)
+    const policyContext = { delegatesTo: ['worker-1'], snapshot: 'run-start' }
+    await run('run-policy-context', {
+      caller: { agentId: 'agent-1', agentName: 'Helper', actor: 'Chat', policyContext }
+    })
+    await tick()
+    expect(contexts).toEqual([policyContext])
   })
 
   it('aborts the Pi session on interrupt', async () => {
@@ -391,7 +423,7 @@ describe('session turns on Pi', () => {
     await tick()
     expect(received!.allow.slice(0, 3)).toEqual(['react', 'ask_user', 'plugin_propose'])
     expect(received!.allow).toEqual(expect.arrayContaining(['memory_append', 'history_search', 'wiki_search', 'wiki_read', 'wiki_propose']))
-    expect(received!.tools.map((tool) => tool.name)).toEqual(['memory_append', 'memory_replace', 'memory_rethink', 'history_search', 'history_read', 'wiki_search', 'wiki_read', 'wiki_list', 'skill_load', 'memory_facts', 'wiki_propose', 'ask_user', 'plugin_propose', 'react'])
+    expect(received!.tools.map((tool) => tool.name)).toEqual(['memory_append', 'memory_replace', 'memory_rethink', 'history_search', 'history_read', 'wiki_search', 'wiki_read', 'wiki_list', 'skill_load', 'memory_facts', 'wiki_propose', 'ask_user', 'plugin_propose', 'spawn_subagent', 'wait_subagents', 'react'])
     expect(await received!.tools[0].execute({ block: 'notes', text: 'Remember this.' })).toContain('Updated the notes block')
     expect(received!.params.system).toContain('# Xingular Harness context')
   })
@@ -451,6 +483,90 @@ describe('history selection', () => {
     const dir = mkdtempSync(join(tmpdir(), 'context-history-'))
     writeFileSync(join(dir, 'broken.jsonl'), 'not json\n')
     expect(() => selectHistory({ sessionDir: dir })).toThrow(/saved conversation/)
+  })
+})
+
+describe('subagents', () => {
+  it('starts a child run of the same caller with no more tools than its parent, and returns its result', async () => {
+    const seen = new Map<string, { allow: string[]; tools: string[]; depth: string | null }>()
+    let parentResult: unknown = null
+    const { harness, run } = setup(async ({ gate, params, allow, tools }) => {
+      seen.set(params.runId, { allow: [...allow], tools: tools.map((tool) => tool.name), depth: null })
+      return fakeSession(async (emit) => {
+        if (params.runId === 'parent') {
+          const spawn = tools.find((tool) => tool.name === 'spawn_subagent')!
+          expect(await spawn.execute({ brief: 'Find the bug', tools: ['bash', 'web'] })).toMatch(/cannot have tools you do not have: web/)
+          parentResult = await spawn.execute({ brief: 'Find the bug', tools: ['read'], wait: true })
+          return
+        }
+        emit({ type: 'message_start', message: { role: 'assistant' } })
+        emit({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: 'Found it in parser.ts' }] } })
+      }, gate)
+    })
+    await run('parent', { subagents: { maxDepth: 1 } })
+    for (let attempt = 0; attempt < 50 && !parentResult; attempt++) await tick()
+    expect(parentResult).toMatchObject({ text: expect.stringContaining('Found it in parser.ts'), details: expect.any(Object) })
+    expect(seen.get('parent')!.allow).toContain('spawn_subagent')
+    const [childId] = [...seen.keys()].filter((id) => id !== 'parent')
+    const child = seen.get(childId)!
+    expect(child.allow).toContain('read')
+    expect(child.allow).not.toContain('bash')
+    // At the depth limit the child cannot start subagents of its own.
+    expect(child.allow).not.toContain('spawn_subagent')
+    expect(loadRun(harness.env.root, childId)).toMatchObject({ parentRunId: 'parent', relation: 'subagent', agentId: 'agent-1', status: 'completed' })
+  })
+
+  it('exposes native child runs, freezes the launch, respects nesting, and settles waiters on parent stop', async () => {
+    const seen = new Map<string, string[]>()
+    const { harness, run } = setup(async ({ gate, params, allow }) => {
+      seen.set(params.runId, [...allow])
+      return fakeSession(async () => new Promise<void>(() => undefined), gate)
+    })
+    const subagents = { maxDepth: 2 }
+    await run('parent', { subagents })
+    subagents.maxDepth = 3
+    await expect(harness.sessions.spawnSubagent({ parentRunId: 'parent', brief: 'Bad tools', tools: ['outside'] })).rejects.toMatchObject({ code: 'invalid_request' })
+    const child = await harness.sessions.spawnSubagent({ parentRunId: 'parent', brief: 'Search' })
+    const grandchild = await harness.sessions.spawnSubagent({ parentRunId: child.runId, brief: 'Review' })
+    expect(seen.get(child.runId)).toContain('spawn_subagent')
+    expect(seen.get(grandchild.runId)).not.toContain('spawn_subagent')
+    await expect(harness.sessions.spawnSubagent({ parentRunId: grandchild.runId, brief: 'Too deep' })).rejects.toMatchObject({ code: 'invalid_request' })
+    const narrowed = await harness.sessions.spawnSubagent({ parentRunId: 'parent', brief: 'Read only', tools: ['read'] })
+    expect(seen.get(narrowed.runId)).toEqual(['read'])
+    const settled = Promise.all([child, grandchild, narrowed].map(({ runId }) => harness.runs.wait(runId)))
+    await harness.runs.interrupt('parent')
+    await settled
+    for (const { runId } of [child, grandchild, narrowed]) expect(loadRun(harness.env.root, runId).status).toBe('interrupted')
+    await expect(harness.sessions.spawnSubagent({ parentRunId: 'parent', brief: 'Too late' })).rejects.toMatchObject({ code: 'run_not_active' })
+    await harness.runs.wait(child.runId)
+  })
+
+  it('settles a failed child and attributes the tool to the Harness plugin', async () => {
+    const { harness, run } = setup(async ({ gate, params }) => {
+      if (params.runId !== 'parent') throw new Error('No provider')
+      return fakeSession(async () => new Promise<void>(() => undefined), gate)
+    })
+    await run('parent', { subagents: {} })
+    const child = await harness.sessions.spawnSubagent({ parentRunId: 'parent', brief: 'Try' })
+    await harness.runs.wait(child.runId)
+    expect(loadRun(harness.env.root, child.runId)).toMatchObject({ status: 'failed', parentRunId: 'parent', terminalReason: 'No provider' })
+    const { HARNESS_PLUGINS } = await import('../plugins/builtin')
+    expect(HARNESS_PLUGINS.find((plugin) => plugin.id === 'subagents')?.tools).toContainEqual(expect.objectContaining({ name: 'spawn_subagent' }))
+  })
+
+  it('can explicitly disable subagents and run without the application\'s tool providers', async () => {
+    const offered: string[][] = []
+    const { harness, run } = setup(async ({ gate, tools }) => {
+      offered.push(tools.map((tool) => tool.name))
+      return fakeSession(async () => undefined, gate)
+    })
+    harness.sessions.provide(() => [{ name: 'app_tool', label: 'App', description: 'An app tool', parameters: (Type) => Type.Object({}), execute: async () => 'ok' }])
+    await run('plain', { tools: { allow: ['app_tool'] }, subagents: null })
+    await run('solo', { tools: { allow: ['app_tool'] }, providers: false })
+    await tick()
+    expect(offered[0]).toContain('app_tool')
+    expect(offered[0]).not.toContain('spawn_subagent')
+    expect(offered[1]).not.toContain('app_tool')
   })
 })
 

@@ -10,9 +10,9 @@ other applications. A change here changes every application built on it.
 
 - Belongs here: Pi sessions and accounts, the prompt compiler and its delivery, memory and the
   Wiki, recall, skills, the tool gate and standing approvals, connectors (MCP), terminal
-  sessions for the `pi` command, and the server protocol.
+  sessions and their owned standalone frontend, and the server protocol.
 - Stays in the application: agents, groups, conversations, tasks and coordination, projects and
-  worktrees, files, browser and computer use, windows, the PTY, the keychain, and all UI.
+  worktrees, files, browser and computer use, windows, the PTY, the keychain, and application UI.
 - **No application's name in a string.** Text a model or a person sees uses `env.productName`
   (`{product}` in a tool description, filled by `describeTool`). The default is `Xingular Harness`.
 - **No imports from an application, and no application nouns.** The harness knows a *caller*
@@ -22,6 +22,13 @@ other applications. A change here changes every application built on it.
 - When an application needs the harness to do something new, add an extension point (a prompt
   section, a tool provider, a policy hook, a plugin description, an option). Do not add an application-name check or a
   branch for one application's concept.
+
+## Standalone terminal frontend
+
+For terminal rendering, input, overlays, lifecycle or Pi SDK adapter changes, read
+[`docs/terminal-tui.md`](docs/terminal-tui.md). Harness owns this generic terminal application;
+a host owns its PTY and process supervision. Keep execution, account isolation, trust,
+authorization and run recording behind their existing layers.
 
 ## RFC-0009 capability contract
 
@@ -67,7 +74,8 @@ The capability snapshot and attachment-scope migration are being implemented in 
   enablement file for a new kind of thing; give it a default and read it with `attached`.
 - **Accounts are isolated.** A session runs in its account's own Pi agent folder, never in
   `~/.pi`. An account is never exchanged for another: a pinned session that cannot use its
-  account fails.
+  account fails. A terminal's `/accounts` goes through the session socket's `accounts.*` calls,
+  and every one of them needs the session's control key, as `/plugins` does.
 - **Evidence only with an excerpt.** A fact or page proposed by a model is saved only when the
   harness finds the quoted evidence in the named run or source. Recall indexes runs; consolidation
   never turns a run into a page.

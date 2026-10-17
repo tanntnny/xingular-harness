@@ -1,0 +1,30 @@
+[
+  {
+    "label": "OMP",
+    "evidenceId": "ev_60e1d747658d669029d0702be3d5fb30440e1145c7021a62a145f4ee49b6f7e8",
+    "exit": {
+      "code": 0,
+      "signal": 0,
+      "reason": "exited"
+    },
+    "truncated": false,
+    "selectedFrames": {
+      "Welcome": 155,
+      "Settings": 163
+    }
+  },
+  {
+    "label": "Harness",
+    "evidenceId": "ev_f77284e263113f813d2f8a06a085b5447e55626af345e3a96aaf47eca0b7d95a",
+    "exit": {
+      "code": 0,
+      "signal": 0,
+      "reason": "exited"
+    },
+    "truncated": false,
+    "selectedFrames": {
+      "Welcome": 7,
+      "Settings": 15
+    }
+  }
+]

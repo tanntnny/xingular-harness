@@ -1,6 +1,7 @@
 // The harness, assembled: Pi sessions on isolated accounts, a compiled prompt, a memory
 // lifecycle, tools, connected apps, and skills. An application embeds one of these and adds
 // its own prompt sections, tools, and policy; nothing here knows what that application is.
+import { Subagents } from './sessions/subagentService'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 
@@ -56,11 +57,16 @@ export interface HarnessOptions {
   /** Replaces Pi, for tests. */
   sessionFactory?: SessionFactory
   maintainerFactory?: MaintainerFactory
+  /** Delegate maintenance execution to the embedding host through durable requests. */
+  externalMaintenance?: boolean
+  maintenanceExcludedTriggers?: string[]
+  /** Queue consolidation after every settled run (the default). False leaves memory to explicit proposals and scheduled merges. */
+  maintenanceRunTrigger?: boolean
   /** How long the maintenance queue stays empty before full memory blocks are condensed. */
   idleMs?: number
   /** Where the built commands a terminal session runs are, when they are not beside this package. */
   assets?: TerminalAssets
-  /** The `pi` executable a terminal session runs. Defaults to the one on the search path. */
+  /** Optional legacy executable override. The default is the Harness-owned terminal frontend. */
   piProgram?: () => string | null
   /** Folders of built-in skills, prompts, and rules, each laid out like `registry/`. */
   builtins?: string[]
@@ -119,6 +125,7 @@ export class Harness {
   /** Every part described as a plugin: the harness's own, then the application's. */
   descriptors: readonly PluginDescriptor[] = HARNESS_PLUGINS
   applicationPlugins: ReadonlySet<string> = new Set()
+  readonly subagents: Subagents
   readonly sessions: Sessions
   readonly maintenance: Maintenance
   readonly terminals: Terminals
@@ -177,7 +184,9 @@ export class Harness {
       reloadTimer.unref?.()
     })
     this.describe(options.plugins ?? [])
+    this.subagents = new Subagents(this.env, this.runs, (input) => this.sessions.run(input))
     this.sessions = new Sessions({
+      subagents: this.subagents,
       env: this.env,
       accounts: this.accounts,
       runs: this.runs,
@@ -187,8 +196,8 @@ export class Harness {
       resolveCapabilities: (caller, tools, cwd) => capabilities.resolve(this, { agentId: caller.agentId ?? null, projectId: caller.projectId ?? null, cwd, tools }),
       factory: options.sessionFactory
     })
-    this.maintenance = new Maintenance({ env: this.env, bus: this.bus, accounts: this.accounts, factory: options.maintainerFactory, idleMs: options.idleMs })
-    this.terminals = new Terminals({ env: this.env, stateDir: this.stateDir, accounts: this.accounts, runs: this.runs, apps: this.apps, policy: this.policy, bus: this.bus, plugins: this.plugins, pluginControl: { list: (scope) => pluginApi.list(this, scope), attach: (params, on) => pluginApi.attach(this, params, on), trust: (scope) => pluginApi.trust(this, scope), untrust: (scope) => pluginApi.untrust(this, scope) }, assets: options.assets, program: options.piProgram, hub: this.hub })
+    this.maintenance = new Maintenance({ env: this.env, bus: this.bus, accounts: this.accounts, factory: options.maintainerFactory, idleMs: options.idleMs, external: options.externalMaintenance, excludedTriggers: options.maintenanceExcludedTriggers, runTrigger: options.maintenanceRunTrigger })
+    this.terminals = new Terminals({ subagents: this.subagents, resolveCapabilities: (caller, tools, cwd) => capabilities.resolve(this, { agentId: caller.agentId ?? null, projectId: caller.projectId ?? null, cwd, tools }), env: this.env, stateDir: this.stateDir, accounts: this.accounts, runs: this.runs, apps: this.apps, policy: this.policy, bus: this.bus, plugins: this.plugins, pluginControl: { list: (scope) => pluginApi.list(this, scope), attach: (params, on) => pluginApi.attach(this, params, on), trust: (scope) => pluginApi.trust(this, scope), untrust: (scope) => pluginApi.untrust(this, scope) }, assets: options.assets, program: options.piProgram, hub: this.hub })
     this.ready = this.apps.start().catch((error) => log('connected apps', error instanceof Error ? error.message : String(error)))
     this.runs.listen((event, run) => {
       this.accounts.onRunEvent(event, run)
@@ -197,6 +206,7 @@ export class Harness {
       if ((event.type === 'completed' || event.type === 'failed') && run) {
         this.hooks.emit({ type: 'history.run.ended', runId: run.id, sessionId: run.sessionId, status: run.status, goal: run.goal ?? null, agentId: run.agentId ?? null, projectId: run.projectId ?? null, startedAt: run.startedAt, endedAt: run.endedAt ?? null, at: event.timestamp })
       }
+      if (event.type === 'completed' || event.type === 'failed' || (event.type === 'status.changed' && (event.payload as { status?: string }).status === 'interrupted')) this.maintenance.finishRun(event.runId, event.type !== 'completed')
       this.maintenance.onRunEvent(event)
     })
   }

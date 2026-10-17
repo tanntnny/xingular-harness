@@ -28,21 +28,27 @@ function acquire(path: string): () => void {
   mkdirSync(join(path, '..'), { recursive: true })
   try {
     const file = openSync(path, 'wx', 0o600)
-    writeFileSync(file, `${process.pid}`)
-    closeSync(file)
+    try { writeFileSync(file, `${process.pid}`) } finally { closeSync(file) }
     return () => rmSync(path, { force: true })
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
-    const pid = Number(readFileSync(path, 'utf8'))
-    if (Number.isInteger(pid) && pid > 0) {
-      try { process.kill(pid, 0) } catch (probe) {
-        if ((probe as NodeJS.ErrnoException).code === 'ESRCH') {
-          rmSync(path)
-          return acquire(path)
+    // Serialize stale-lock recovery too: two reapers must never remove a new writer's lock.
+    let recovery: number
+    try { recovery = openSync(`${path}.recovery`, 'wx', 0o600) } catch {
+      throw new HarnessError('hub_busy', 'Another installation is using this library. Wait and retry.')
+    }
+    try {
+      const pid = Number(readFileSync(path, 'utf8'))
+      if (Number.isInteger(pid) && pid > 0) {
+        try { process.kill(pid, 0) } catch (probe) {
+          if ((probe as NodeJS.ErrnoException).code === 'ESRCH') {
+            rmSync(path)
+            return acquire(path)
+          }
         }
       }
-    }
-    throw new HarnessError('hub_busy', 'Another installation is using this library. Wait for it to finish and retry.')
+      throw new HarnessError('hub_busy', 'Another installation is using this library. Wait for it to finish and retry.')
+    } finally { closeSync(recovery); rmSync(`${path}.recovery`, { force: true }) }
   }
 }
 
@@ -134,13 +140,19 @@ export class Hub {
 
   private async refreshCatalog(): Promise<HubOverview> {
     try {
-      const catalog = hubCatalogSchema.parse(JSON.parse((await this.bytes(this.catalogUrl)).toString('utf8')))
+      const catalog = hubCatalogSchema.parse(JSON.parse(this.decode(await this.bytes(this.catalogUrl))))
       writeJson(join(this.harness.stateDir, 'hub', 'catalog.json'), { catalog, at: now() })
       this.harness.bus.emit({ type: 'hub.changed' })
       return { ...this.snapshot(), origin: 'remote' }
     } catch (error) {
       return { ...this.snapshot(), error: error instanceof Error ? error.message : String(error) }
     }
+  }
+
+  private decode(bytes: Buffer): string {
+    const text = bytes.toString('utf8')
+    if (!Buffer.from(text).equals(bytes)) throw invalid('Hub JSON must use valid UTF-8.')
+    return text
   }
 
   private find(id: string, version: string): HubEntry {
@@ -154,7 +166,7 @@ export class Hub {
     if (!preview || entry.delivery.kind === 'pi-package' || entry.delivery.bundled !== undefined) return entry
     const bytes = await this.bytes(entry.delivery.url)
     if (digest(bytes) !== entry.delivery.sha256) throw invalid('The downloaded item differs from the reviewed version.')
-    return { ...entry, delivery: { ...entry.delivery, bundled: bytes.toString('utf8') } }
+    return { ...entry, delivery: { ...entry.delivery, bundled: this.decode(bytes) } }
   }
 
   async install(id: string, version: string): Promise<HubReceipt> {
@@ -179,13 +191,13 @@ export class Hub {
         const identity = (value: string): string => value.slice(0, value.lastIndexOf('@'))
         if (before.some((plugin) => plugin.install && identity(plugin.install.source) === identity(source))) throw invalid('This package is already installed. Manage it in Plugins.')
         const after = await packages.install(this.harness, { source })
-        receipt.resourceIds = after.filter((plugin) => !before.some((old) => old.id === plugin.id)).map((plugin) => plugin.id)
+        receipt.resourceIds = after.filter((plugin) => plugin.install?.source === source && !before.some((old) => old.id === plugin.id)).map((plugin) => plugin.id)
         if (!receipt.resourceIds.length) throw invalid('The package did not add an installable plugin. No hub installation was recorded.')
       } else {
         const delivery = entry.delivery
         const bytes = delivery.bundled === undefined ? await this.bytes(delivery.url) : Buffer.from(delivery.bundled)
         if (digest(bytes) !== delivery.sha256) throw invalid('The downloaded item differs from the reviewed version. Nothing was installed.')
-        const text = bytes.toString('utf8')
+        const text = this.decode(bytes)
         if (delivery.kind === 'document') {
           JSON.parse(text)
           receipt.document = `${receiptName(entry)}.json`

@@ -1,0 +1,57 @@
+{
+  "passed": false,
+  "startedAt": "2026-10-17T12:05:16.009798+00:00",
+  "provider": "openai-codex",
+  "model": "gpt-6-luna",
+  "authentication": "User-authorized personal Codex sign-in; copied unexpired access token only, no refresh token",
+  "profile": "Disposable Harness account, state, working directory and data root",
+  "cliSha256": "2f5df943661a1e89440d0e81d59cd4a5bdb7aaf087a2a930e232b6743d5db093",
+  "limits": [
+    "One user prompt with one native read call and a short final answer.",
+    "No source profile launch, source credential writes, or refresh-token copy.",
+    "This check does not establish Windows or OS clipboard/image behavior."
+  ],
+  "runStatus": "failed",
+  "events": [
+    "started",
+    "status.changed",
+    "message.completed",
+    "usage.updated",
+    "failed"
+  ],
+  "finalMarkerVerified": false,
+  "error": "The personal Codex account rejected the live request because its usage limit had been reached.",
+  "terminal": {
+    "exitCode": 0,
+    "termiosRestored": true,
+    "bracketedPasteDisabled": true,
+    "cursorShown": true,
+    "snapshots": []
+  },
+  "capture": {
+    "file": "complete-80x24.ansi.gz",
+    "columns": 80,
+    "rows": 24,
+    "rawBytes": 30457,
+    "rawSha256": "44ab01ebf78b2b8ff0a40e95857b567056c7c6b1dc1b9442d47d58da819cbfec",
+    "archiveSha256": "20bf2e1a57989393e23f49f475897fc5a1ddc84be784af90835d16b6ea1f33b7"
+  },
+  "sourceAuthenticationUnchanged": true,
+  "disposableCredentialsRemoved": true,
+  "finishedAt": "2026-10-17T12:05:25.688875+00:00",
+  "outcome": "blocked_by_provider_usage_limit",
+  "providerError": "Codex error: The usage limit has been reached",
+  "attemptedUserPrompts": 1,
+  "notVerified": [
+    "Successful live-provider streaming",
+    "Live-provider native tool execution",
+    "Live-provider usage accounting"
+  ],
+  "verified": [
+    "Production frontend surfaced the real provider quota error",
+    "Harness persisted the run as failed",
+    "Normal exit restored terminal attributes, bracketed paste and cursor visibility",
+    "Source personal Codex authentication file unchanged",
+    "Disposable profile and copied access credential removed"
+  ]
+}

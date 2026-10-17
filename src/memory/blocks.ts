@@ -52,7 +52,7 @@ export interface Block {
 export type Caller =
   | { kind: 'user' }
   /** An agent with blocks of its own, and the name recorded on its revisions. */
-  | { kind: 'agent'; id: string; name: string }
+  | { kind: 'agent'; id: string; name: string; vaultAccess?: 'self' | 'propose' | 'curator' }
   /** A session without blocks of its own, and its project, if any. */
   | { kind: 'session'; projectSlug: string | null }
 
@@ -192,6 +192,8 @@ export function editRefusal(caller: Caller, block: Block): string | null {
   const label = block.front.label
   if (caller.kind === 'user') return null
   if (block.front.readOnly) return `The ${label} block is read-only; only the user can change it.`
+  if (caller.kind === 'agent' && caller.vaultAccess === 'propose') return 'Memory changes are proposals in this session. Submit the block change with wiki_propose; the next memory merge applies it.'
+  if (caller.kind === 'agent' && caller.vaultAccess === 'self' && (block.scope !== 'agent' || block.owner !== caller.id || !['persona', 'notes'].includes(label))) return 'This field is outside your writable memory. Submit a block change with wiki_propose for the curator to review.'
   if (caller.kind === 'agent') {
     if (block.scope === 'agent') return block.owner === caller.id ? null : 'That block belongs to another agent.'
     if (block.scope === 'shared') return !block.front.agents.length || block.front.agents.includes(caller.id) ? null : `The ${label} block is not attached to you.`

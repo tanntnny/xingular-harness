@@ -1,0 +1,20 @@
+[
+  {
+    "observationType": "direct static read of shipped npm package source; no runtime inference",
+    "package": "@oh-my-pi/pi-tui",
+    "version": "18.11.3",
+    "path": "src/components/settings-list.ts",
+    "sha256": "2f947978cbeadb5d688f0db64ef78e1fba851a1c14f27575972e7df3e430112b",
+    "bytes": 42326,
+    "finding": "The split layout returns to flat rows when the editable pane has fewer than 60 columns; the sidebar is capped at 22 label columns plus four columns of indentation/gap."
+  },
+  {
+    "observationType": "direct static read of shipped npm package source; no runtime inference",
+    "package": "@oh-my-pi/pi-tui",
+    "version": "18.11.3",
+    "path": "src/theme/light.json",
+    "sha256": "e439bbc9a0903a94114eecf4a496838f4eedc9edeb3618557823463418aa8d8b",
+    "bytes": 2779,
+    "finding": "The shipped light palette supplies transcript and status colors; Harness adds only the Pi-specific fallback tokens absent upstream."
+  }
+]

@@ -17,8 +17,10 @@ export interface ScopeDecision {
   allowed: boolean
   /** Not allowed as it stands, but a person may approve this one call. */
   requiresApproval?: boolean
-  /** Whatever standing choices exist, a person decides this call: no always-approve, no remembered answer. */
+  /** Per-tool remembered approvals never answer this call. */
   humanOnly?: boolean
+  /** Whether the global always-approve switch may answer a human-only call. Defaults to false. */
+  allowGlobalApproval?: boolean
   reason?: string | null
 }
 

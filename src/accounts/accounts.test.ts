@@ -32,8 +32,14 @@ function loginService(login: (interaction: {
   const notices: Notice[] = []
   const bus = new Bus()
   bus.on((notice) => void notices.push(notice))
+  let loginOptions: { getDeviceId?: () => string } | undefined
+  let loginCalls = 0
   const runtime = {
-    login: (_provider: string, _method: string, interaction: Parameters<typeof login>[0]) => login(interaction)
+    login: (_provider: string, _method: string, interaction: Parameters<typeof login>[0], options?: { getDeviceId?: () => string }) => {
+      loginCalls += 1
+      loginOptions = options
+      return login(interaction)
+    }
   }
   class LoginAccounts extends Accounts {
     override runtime(account: Parameters<Accounts['runtime']>[0]): Promise<ModelRuntime> {
@@ -43,10 +49,32 @@ function loginService(login: (interaction: {
   }
   const accounts = new LoginAccounts({ dir, secrets, bus })
   const account = accounts.create('Login test', 'subscription').accounts[0]
-  return { accounts, account, notices }
+  return { accounts, account, notices, loginOptions: () => loginOptions, loginCalls: () => loginCalls }
 }
 
-const turn = () => new Promise<void>((resolve) => setImmediate(resolve))
+async function waitFor(predicate: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    if (predicate()) return
+    await new Promise((resolve) => setTimeout(resolve, 5))
+  }
+  throw new Error('Timed out waiting for the account operation.')
+}
+
+test('OpenAI login uses one persisted Harness installation device ID across accounts', async () => {
+  const { accounts, account, loginOptions, loginCalls } = loginService(async () => {})
+  const deviceId = await accounts.installationDeviceId()
+  const second = accounts.create('Second account', 'subscription').accounts.find((item) => item.id !== account.id)!
+
+  await accounts.loginStart(account.id, 'openai', 'oauth')
+  await waitFor(() => loginCalls() === 1)
+  expect(loginOptions()?.getDeviceId?.()).toBe(deviceId)
+
+  await accounts.loginStart(second.id, 'openai', 'oauth')
+  await waitFor(() => loginCalls() === 2)
+  expect(loginOptions()?.getDeviceId?.()).toBe(deviceId)
+  expect(JSON.parse(readFileSync(join(sharedDir(accounts.dir), 'settings.json'), 'utf8')).deviceId).toBe(deviceId)
+  expect(deviceId).toMatch(/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i)
+})
 
 test('device-code sign-in progress survives listener detachment and is available from status', async () => {
   const { accounts, account, notices } = loginService((interaction) => new Promise<void>((_resolve, reject) => {
@@ -55,7 +83,7 @@ test('device-code sign-in progress survives listener detachment and is available
   }))
 
   const { loginId } = await accounts.loginStart(account.id, 'openai-codex', 'oauth')
-  await turn()
+  await waitFor(() => (accounts.loginStatus(account.id)?.events.length ?? 0) > 0)
   const detached = accounts.loginStatus(account.id)
   expect(detached).toMatchObject({ loginId, status: 'running', events: [{ type: 'device_code', userCode: 'ABCD-EFGH' }] })
   expect(notices.find((notice) => notice.type === 'accounts.loginEvent')).toMatchObject({ revision: 1, loginId })
@@ -63,7 +91,7 @@ test('device-code sign-in progress survives listener detachment and is available
   // Asking again models a renderer returning to Accounts while the Harness stays alive.
   expect(accounts.loginStatus(account.id)).toEqual(detached)
   accounts.loginCancel(account.id, loginId)
-  await turn()
+  await waitFor(() => accounts.loginStatus(account.id)?.status === 'cancelled')
   const ended = accounts.loginStatus(account.id)
   expect(ended).toMatchObject({ loginId, status: 'cancelled', events: [], prompt: null, success: false })
   expect(JSON.stringify(ended)).not.toContain('ABCD-EFGH')
@@ -76,12 +104,12 @@ test('login status exposes the active prompt but never retains its response afte
   })
 
   const { loginId } = await accounts.loginStart(account.id, 'provider-with-prompt', 'oauth')
-  await turn()
+  await waitFor(() => accounts.loginStatus(account.id)?.prompt !== null)
   const waiting = accounts.loginStatus(account.id)
   expect(waiting).toMatchObject({ loginId, status: 'running', prompt: { type: 'prompt', prompt: { type: 'secret' } } })
   const promptId = String(waiting?.prompt?.promptId)
   accounts.loginRespond(loginId, promptId, 'private-response')
-  await turn()
+  await waitFor(() => accounts.loginStatus(account.id)?.status === 'completed')
   const ended = accounts.loginStatus(account.id)
   expect(ended).toMatchObject({ loginId, status: 'completed', success: true, events: [], prompt: null })
   expect(JSON.stringify(ended)).not.toContain('private-response')
@@ -222,6 +250,21 @@ test('provider errors are classified', () => {
   expect(classifyMessage('429 Too Many Requests')).toBe('rate_limited')
   expect(classifyMessage('fetch failed')).toBe('network')
   expect(classifyMessage('the model said no')).toBeNull()
+})
+
+test('a rejected OAuth refresh requests reauthentication and keeps the credential', async () => {
+  const { dir, accounts } = service()
+  const account = accounts.create('OpenAI', 'subscription').accounts[0]
+  await accounts.writeCredential(account.id, 'openai', { type: 'oauth', access: 'old-access', refresh: 'old-refresh', expires: 0 })
+  accounts.runtime = async () => ({
+    listCredentials: async () => [{ providerId: 'openai', type: 'oauth' }],
+    getAvailable: async () => { throw new Error('OAuth refresh failed for openai: OpenAI OAuth token request failed (400): {"error":"invalid_grant"}') }
+  } as unknown as ModelRuntime)
+
+  await accounts.refreshOne(account)
+
+  expect(loadState(dir, account.id)).toMatchObject({ health: 'auth_expired', lastError: { category: 'auth_expired' } })
+  expect(await accounts.readCredential(account.id, 'openai')).toMatchObject({ refresh: 'old-refresh' })
 })
 
 test('native config lists what is shared and what exists', () => {

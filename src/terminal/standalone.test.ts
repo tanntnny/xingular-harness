@@ -11,6 +11,7 @@ import { createHarness, type Harness, type HarnessOptions } from '../harness'
 import { defaultAssets } from './terminals'
 import { parseStandaloneOptions, runStandaloneTerminal, standaloneArguments } from './standalone'
 import { socketPath } from './socket'
+import { SOCKET_ENV, TOKEN_ENV, socketCall } from './client'
 
 const scratch: string[] = []
 const harnesses: Harness[] = []
@@ -126,5 +127,41 @@ describe('standalone terminal startup', () => {
 
     await expect(runStandaloneTerminal([], { home, cwd, stdinIsTTY: true, stdoutIsTTY: true, createSessionId: () => 'missing-pi', createHarness: harnessFactory, spawn }))
       .rejects.toThrow(/Could not start Pi terminal.*Pi executable.*\/opt\/pi\/bin\/pi/)
+  })
+})
+
+describe('switching the account of a running terminal', () => {
+  it('ends Pi when the person asks for another account, and starts it again on that account', async () => {
+    const home = temporaryDirectory('harness-switch-')
+    const cwd = temporaryDirectory('harness-switch-cwd-')
+    const paths = parseStandaloneOptions([], home)
+    const spawned: { args: string[]; env: NodeJS.ProcessEnv }[] = []
+    let spareId = ''
+    const spawn = ((_program: string, args: string[], options: { cwd?: string; env?: NodeJS.ProcessEnv; stdio?: string }) => {
+      spawned.push({ args, env: options.env ?? {} })
+      const child = new EventEmitter() as ChildProcess
+      child.kill = vi.fn(() => true)
+      void (async () => {
+        // Deferred, as a real process is: the launcher attaches its listeners after spawn returns.
+        await Promise.resolve()
+        if (spawned.length === 1) {
+          // The first Pi asks for the other account through its own extension, then ends.
+          spareId = harnesses[0].accounts.create('Spare', 'apiKey').accounts.find((account) => account.label === 'Spare')!.id
+          const connection = { socket: options.env![SOCKET_ENV]!, token: options.env![TOKEN_ENV]! }
+          const { key } = await socketCall<{ key: string }>(connection, 'control.claim')
+          await socketCall(connection, 'accounts.relaunch', { accountId: spareId }, 5_000, key)
+        }
+        child.emit('exit', 0, null)
+      })()
+      return child
+    }) as unknown as typeof nodeSpawn
+
+    expect(await runStandaloneTerminal([], { home, cwd, stdinIsTTY: true, stdoutIsTTY: true, createHarness: harnessFactory, spawn })).toBe(0)
+
+    expect(spawned).toHaveLength(2)
+    expect(spawned[1].env.PI_CODING_AGENT_DIR).toContain(join(paths.stateDir, 'accounts', spareId))
+    expect(spawned[1].env[TOKEN_ENV]).not.toBe(spawned[0].env[TOKEN_ENV])
+    // The session it ended is closed; nothing is left running in the harness.
+    expect(harnesses[0].terminals.has('standalone')).toBe(false)
   })
 })

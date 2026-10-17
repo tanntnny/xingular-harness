@@ -6,8 +6,13 @@ import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-a
 import { Type } from 'typebox'
 
 import { connectionFromEnv, socketCall, terminalCall } from './client'
+import { runAccountsMenu, type SessionAccount } from './accountsMenu'
 import { runPluginsMenu } from './pluginMenu'
 import { runHubMenu } from './hubMenu'
+import { claimTerminalControl, controlCall } from './control'
+import { SUBAGENT_OWNER, SUBAGENT_RECEIPT, SUBAGENT_RESULTS, subagentHistory, type SubagentReceipt } from '../sessions/subagents'
+import { askUserTool } from '../tools/askUser'
+import type { QuestionAnswer } from '../sessions/registry'
 
 interface SocketTool {
   name: string
@@ -23,9 +28,18 @@ function resultSize(result: unknown): number | null {
   return content.reduce((total: number, part: { type?: string; text?: unknown }) => total + (part?.type === 'text' && typeof part.text === 'string' ? part.text.length : 0), 0)
 }
 
+async function withParentCancellation<T>(signal: AbortSignal | undefined, work: () => Promise<T>): Promise<T> {
+  const stop = () => { void controlCall('terminal.interrupt').catch(() => {}) }
+  if (signal?.aborted) stop()
+  signal?.addEventListener('abort', stop, { once: true })
+  try { return await work() } finally { signal?.removeEventListener('abort', stop) }
+}
+
 export default async function (pi: ExtensionAPI) {
   await terminalCall('startup', { phase: 'Pi extension loaded' })
   let context: ExtensionContext | null = null
+  let nativeSubagents = false
+  let subagentParent = false
   let timer: ReturnType<typeof setInterval> | null = null
   let polling = false
   let failure: string | undefined
@@ -44,7 +58,7 @@ export default async function (pi: ExtensionAPI) {
     const connection = connectionFromEnv()
     // Claimed here, before the model has run anything, and kept in this process's memory: a
     // command the model runs can read the session token from its environment, never this key.
-    const control = await socketCall<{ key: string }>(connection, 'control.claim', {}, 15_000).then((claimed) => claimed.key).catch(() => null)
+    const control = await claimTerminalControl(connection).catch(() => null)
     pi.registerCommand('hub', {
       description: 'Browse and install reviewed skills, plugins, and reusable documents',
       handler: async (_args, ctx) => {
@@ -67,6 +81,26 @@ export default async function (pi: ExtensionAPI) {
         )
       }
     })
+    pi.registerCommand('accounts', {
+      description: 'Add, sign in to, check, switch, or remove the Pi accounts this harness uses',
+      handler: async (_args, ctx) => {
+        if (!control) return ctx.ui.notify('This session cannot manage accounts.', 'warning')
+        const session = await socketCall<SessionAccount>(connection, 'accounts.session', {}, 15_000, control).catch(() => null)
+        if (!session) return ctx.ui.notify('This session has no account to manage.', 'warning')
+        const outcome = await runAccountsMenu(
+          {
+            select: (title, options) => ctx.ui.select(title, options),
+            confirm: (title, message) => ctx.ui.confirm(title, message),
+            input: (title, placeholder) => ctx.ui.input(title, placeholder),
+            notify: (message, level) => ctx.ui.notify(message, level)
+          },
+          (method, params) => socketCall(connection, method, params ?? {}, 120_000, control),
+          session
+        )
+        // The session restarts on the account it chose: Pi ends here, and the launcher starts it again.
+        if (outcome === 'relaunch') ctx.shutdown()
+      }
+    })
     const { tools } = await socketCall<{ tools: SocketTool[] }>(connection, 'tools.list', {}, 15_000)
     stage = 'Tool registration'
     for (const tool of tools) {
@@ -81,6 +115,15 @@ export default async function (pi: ExtensionAPI) {
         }
       })
     }
+    const native = await controlCall<{ tools: SocketTool[] }>('terminal.subagents.tools')
+    nativeSubagents = native.tools.length > 0
+    for (const tool of native.tools) pi.registerTool({
+      name: tool.name, label: tool.label, description: tool.description, parameters: Type.Unsafe(tool.parameters),
+      execute: async (_id, input, signal) => {
+        const result = await withParentCancellation(signal, () => controlCall<{ text: string; details?: Record<string, unknown> }>('terminal.subagents.call', { name: tool.name, input }, 2_147_483_647))
+        return { content: [{ type: 'text' as const, text: result.text }], details: result.details ?? {} }
+      }
+    })
   } catch (error) {
     await terminalCall('startupFailed', { reason: `${stage} failed: ${error instanceof Error ? error.message : 'Unavailable'}` }).catch(() => {})
     throw error
@@ -88,6 +131,7 @@ export default async function (pi: ExtensionAPI) {
 
   pi.on('session_start', async (_event, ctx) => {
     context = ctx
+    if (timer) clearInterval(timer)
     await terminalCall('ready', { nativeSessionId: ctx.sessionManager.getSessionFile() })
     timer = setInterval(() => {
       if (polling || !context) return
@@ -117,8 +161,21 @@ export default async function (pi: ExtensionAPI) {
     reasoningTokens = undefined
     costReported = false
     // A run a plugin starts with a custom message has no user prompt to record; it still begins a turn.
-    await terminalCall('begin', { text: event.messageType === 'user' ? event.prompt : '' })
+    const begun = await terminalCall<{ runId: string }>('begin', { text: event.messageType === 'user' ? event.prompt : '' })
+    if (nativeSubagents) {
+      pi.appendEntry(SUBAGENT_OWNER, { runId: begun.runId })
+      await controlCall('terminal.subagents.register', { tools: pi.getActiveTools(), model: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : null, effort: pi.getThinkingLevel(), history: subagentHistory(ctx.sessionManager.getBranch()) })
+      subagentParent = true
+    }
   })
+  const deliverChildren = async (event: any, ctx: ExtensionContext, settle: boolean) => {
+    if (!nativeSubagents || (settle && event.outcome !== 'completed') || ctx.signal?.aborted) return
+    const result = await withParentCancellation(ctx.signal, () => controlCall<{ text: string; receipt: SubagentReceipt } | null>('terminal.subagents.delivery', { history: subagentHistory([...ctx.sessionManager.getBranch(), ...event.entries]), settle }, 2_147_483_647))
+    if (!result) return
+    return { entries: [...event.entries, { type: 'custom_message' as const, customType: SUBAGENT_RESULTS, content: result.text, display: false, details: { [SUBAGENT_RECEIPT]: result.receipt } }], continue: true }
+  }
+  pi.on('turn_end', (event, ctx) => deliverChildren(event, ctx, false))
+  pi.on('agent_before_settle', (event, ctx) => deliverChildren(event, ctx, true))
   pi.on('message_end', async (event) => {
     if (event.message.role !== 'assistant') return
     if (event.message.stopReason === 'error' || event.message.stopReason === 'aborted') failure = event.message.errorMessage ?? `Pi stopped: ${event.message.stopReason}`
@@ -193,15 +250,32 @@ export default async function (pi: ExtensionAPI) {
     fileTools.delete(event.toolCallId)
     if (!event.isError && path) await terminalCall('file', { path, change: 'modified' })
   })
-  pi.on('agent_settled', async () => {
-    await terminalCall('settled', { error: failure })
+  pi.on('agent_settled', async (event, ctx) => {
+    if (subagentParent && !event.aborted && !failure) {
+      try { await controlCall('terminal.subagents.verify', { history: subagentHistory(ctx.sessionManager.getBranch()) }, 2_147_483_647) } catch (error) { failure = error instanceof Error ? error.message : String(error) }
+    }
+    subagentParent = false
+    await terminalCall('settled', { error: failure, aborted: event.aborted })
   })
   pi.on('user_bash', async () => {
     throw new Error('Use the bash tool so this action can be checked.')
   })
   pi.on('session_shutdown', async () => {
     if (timer) clearInterval(timer)
+    timer = null
+    context = null
+    // This clears the controller's readiness while the next native session binds. The
+    // process-level control claim survives replacement; only the session poller stops.
     await terminalCall('shutdown').catch(() => {})
+  })
+  const ask = askUserTool({ requestAnswers: questions => terminalCall<QuestionAnswer[]>('questions', { questions }, 1_230_000) })
+  pi.registerTool({
+    name: ask.name, label: ask.label, description: ask.description,
+    parameters: Type.Unsafe(ask.parameters(Type) as Record<string, unknown>),
+    async execute(_id, input) {
+      const result = await ask.execute(input as Record<string, unknown>)
+      return { content: [{ type: 'text', text: typeof result === 'string' ? result : result.text }], details: undefined }
+    }
   })
   pi.registerTool({
     name: 'ask_user_question',

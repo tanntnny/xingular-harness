@@ -2,6 +2,7 @@
 // exists; none of it is loaded through Pi's extension system.
 import { CONNECTION_TOOLS, NATIVE_GROUP } from '../prompt/compile'
 import { ASK_USER } from '../tools/askUser'
+import { SPAWN_SUBAGENT, WAIT_SUBAGENTS } from '../sessions/subagents'
 import { PLUGIN_PROPOSE } from '../tools/pluginPropose'
 import { MEMORY_TOOLS, RECALL_TOOLS, WIKI_TOOLS, type WikiToolDefinition } from '../tools/definitions'
 import { FIRST_PARTY_PLUGINS } from './firstParty'
@@ -36,6 +37,7 @@ export const INCLUDED_PLUGIN: PluginDescriptor = { id: 'included', title: 'Inclu
 
 export const HARNESS_PLUGINS: readonly PluginDescriptor[] = [
   PI_PLUGIN,
+  { id: 'subagents', title: 'Subagents', description: 'Isolated child runs of the same caller, bounded by parent capabilities and nesting depth.', required: 'Availability is selected by the session host; child runs retain the parent permission boundary.', tools: [{ name: SPAWN_SUBAGENT, description: 'Start a subagent' }, { name: WAIT_SUBAGENTS, description: 'Wait for subagents' }] },
   {
     id: 'memory',
     title: 'Memory',

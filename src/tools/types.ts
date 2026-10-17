@@ -7,6 +7,8 @@ import type { ToolAttachmentRef } from '../sessions/contracts'
 
 export interface ToolResult {
   text: string
+  /** Native-history metadata; never interpreted as model instructions. */
+  details?: Record<string, unknown>
   image?: { data: string; mimeType: string }
   /** References to content stored by the provider; bytes never enter the run-event stream. */
   attachments?: ToolAttachmentRef[]

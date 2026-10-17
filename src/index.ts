@@ -47,6 +47,9 @@ export type { Effort } from './sessions/runner'
 
 export { describeTool, WIKI_TOOLS, WIKI_TOOL_NAMES, type WikiCall, type WikiToolDefinition } from './tools/definitions'
 export type { ToolProvider, ToolResult, ToolSession, ToolSpec } from './tools/types'
+export { SPAWN_SUBAGENT, SUBAGENT_RELATION } from './tools/spawnSubagent'
+export { maintenanceTools, MAINTENANCE_PLUGIN, MAINTENANCE_TOOL_NAMES } from './tools/maintenance'
+export type { CurationJob } from './memory/curation'
 export { webTools, WEB_PLUGIN, WEB_SEARCH_KEY, type WebToolOptions } from './web/tools'
 export { registryTools, REGISTRY_WRITE, PLUGIN_WRITE, REGISTRY_WRITE_PLUGIN, type RegistryToolOptions } from './tools/registryWrite'
 export { safeRequest, type WebRequest, type WebResponse } from './web/safeRequest'
@@ -70,3 +73,8 @@ export { methods } from './server/methods'
 export { remoteDirectory, remotePolicy, remoteSecrets, remoteTools } from './server/remote'
 export { PROTOCOL_VERSION, RpcPeer, stdioTransport, type Handler, type Transport } from './server/rpc'
 export { attach, serve, type Served } from './server/serve'
+
+export { DEFAULT_SUBAGENT_DEPTH, MAX_SUBAGENT_DEPTH, type SubagentOptions, type SubagentInput } from './sessions/subagents'
+
+export { Subagents } from './sessions/subagentService'
+export { WAIT_SUBAGENTS, type SubagentResult, type SubagentSelection } from './sessions/subagents'

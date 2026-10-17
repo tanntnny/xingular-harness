@@ -21,10 +21,13 @@ import { FIRST_PARTY_PLUGINS, firstPartyExtensions, type InlineExtension } from 
 import * as registry from '../skills/registry'
 import { ASK_USER, askUserTool } from '../tools/askUser'
 import { PLUGIN_PROPOSE, pluginProposeTool } from '../tools/pluginPropose'
+import { subagentTools } from '../tools/spawnSubagent'
 import { WIKI_TOOL_NAMES } from '../tools/definitions'
 import { memoryTools } from '../tools/memoryTools'
 import type { ToolProvider, ToolSession, ToolSpec } from '../tools/types'
 import type { RunRecord } from './contracts'
+import { SPAWN_SUBAGENT, WAIT_SUBAGENTS, subagentDepth, subagentHistory, type SubagentInput, type SubagentOptions } from './subagents'
+import type { Subagents } from './subagentService'
 import { selectHistory } from './history'
 import { runLineageJoin } from './lineageJoin'
 import type { ToolPolicy } from './policy'
@@ -66,6 +69,10 @@ export interface SessionRunInput {
   capabilities?: CapabilitySet
   /** Hops from the user to this session (0 when the user started it). */
   depth?: number
+  /** Interactive default: native child tools. Null disables; unattended callers must opt in. */
+  subagents?: SubagentOptions | null
+  /** Ask the application's tool providers for tools (the default). False runs with the harness's own tools only. */
+  providers?: boolean
 }
 
 /** The connected-apps broker, as a session sees it. */
@@ -75,6 +82,7 @@ export interface SessionBroker {
 }
 
 export interface SessionsOptions {
+  subagents: Subagents
   env: DispatchEnv
   accounts: Accounts
   runs: RunRegistry
@@ -100,6 +108,7 @@ export class Sessions {
 
   constructor(private readonly options: SessionsOptions) {
     this.factory = options.factory ?? piSessionFactory
+
   }
 
   private get env(): HarnessEnv {
@@ -133,7 +142,7 @@ export class Sessions {
           action: summarize(args),
           operation: { tool, args: (args && typeof args === 'object' ? args : {}) as Record<string, unknown> },
           rememberable: scope.allowed && !scope.humanOnly,
-          standing: scope.humanOnly ? 'none' : undefined
+          standing: scope.humanOnly ? (scope.allowGlobalApproval ? 'switch' : 'none') : undefined
         })
         if (decision !== 'approved') return 'The user denied this action. Ask how they would like to proceed.'
         try {
@@ -144,6 +153,11 @@ export class Sessions {
         return null
       }
     }
+  }
+
+  /** Compatibility alias for the shared native service. */
+  spawnSubagent(request: SubagentInput): Promise<{ runId: string; nativeSessionId: string | null }> {
+    return this.options.subagents.spawn(request)
   }
 
   /**
@@ -157,14 +171,17 @@ export class Sessions {
     const account = this.options.accounts.resolve(input.accountId, input.poolId)
     const context = this.options.accounts.context(account)
     const runId = input.run.id
-    const caller: CallerContext = { ...input.caller, runId, sessionId: input.caller.sessionId ?? input.run.sessionId }
+    const caller: CallerContext = { ...input.caller, maintenanceJobIds: input.caller.maintenanceJobIds?.slice(), runId, sessionId: input.caller.sessionId ?? input.run.sessionId }
     const broker = input.connections ? this.options.broker : null
+    const depth = input.depth ?? 0
+    const canSpawn = input.subagents !== null && (!input.automatic || input.subagents !== undefined) && depth < subagentDepth(input.subagents ?? undefined)
     const requestedTools = [...new Set([
-      ...input.tools.allow,
+      ...input.tools.allow.filter((name) => name !== SPAWN_SUBAGENT && name !== WAIT_SUBAGENTS),
       ASK_USER,
       ...(input.automatic ? [] : [PLUGIN_PROPOSE]),
       ...WIKI_TOOL_NAMES,
-      ...(broker?.toolNames ?? [])
+      ...(broker?.toolNames ?? []),
+      ...(canSpawn ? [SPAWN_SUBAGENT, WAIT_SUBAGENTS] : [])
     ])]
     const available = this.options.resolveCapabilities
       ? await this.options.resolveCapabilities(caller, requestedTools, input.cwd)
@@ -238,20 +255,22 @@ export class Sessions {
     if (run.finished) return { runId, nativeSessionId: null }
     // What every session has, after the tools the caller switched on and in a fixed order.
     const allow = capabilities.tools
-    const session: ToolSession = { run, caller, allow, depth: input.depth ?? 0, cwd: input.cwd, capabilities }
+    const session: ToolSession = { run, caller, allow, depth, cwd: input.cwd, capabilities }
     const { plugins } = this.options
 
-    let pi: PiSessionLike
+    let pi: PiSessionLike | undefined
     try {
       const tools: ToolSpec[] = [
         ...(broker ? broker.tools(session, { readOnly: typeof input.connections === 'object' && input.connections.readOnly === true }) : []),
         ...memoryTools(this.options.env, caller, capabilities.contributions),
         askUserTool(run),
-        pluginProposeTool(this.options.env, caller)
+        pluginProposeTool(this.options.env, caller),
+        ...subagentTools(this.options.subagents, runId).filter(tool => allow.includes(tool.name))
       ]
-      for (const provider of this.providers) tools.push(...(await provider(session)))
+      if (input.providers !== false) for (const provider of this.providers) tools.push(...(await provider(session)))
       const params: TurnParams = {
         runId,
+        restrictTools: input.run.relation === 'subagent',
         cwd: input.cwd,
         sessionDir: input.sessionDir,
         historyFile,
@@ -264,7 +283,7 @@ export class Sessions {
         automatic: input.automatic,
         account: context,
         resources: registry.resources(root, caller.projectId ?? null, caller.agentId ?? null, capabilities.contributions),
-        inline: [...firstPartyFor(root, capabilities.contributions), runLineageJoin(root, runId)],
+        inline: [...firstPartyFor(root, capabilities.contributions), runLineageJoin(root, runId), this.options.subagents.extension(runId)],
         ...(plugins ? { plugins: { loading: () => plugins.loading({ cwd: input.cwd, agentDir: context.configDir, install: true, caller: { agentId: caller.agentId ?? null, projectId: caller.projectId ?? null }, contributions: capabilities.contributions }), loaded: (extensions) => plugins.loaded(extensions) } } : {}),
         system,
         update
@@ -272,25 +291,35 @@ export class Sessions {
       pi = await this.factory({
         params,
         allow,
-        gate: this.gate(run, caller, new Set((input.tools.gated ?? []).filter((name) => capabilities.tools.includes(name)))),
+        gate: (() => {
+          const gate = this.gate(run, caller, new Set((input.tools.gated ?? []).filter((name) => capabilities.tools.includes(name))))
+          return { ...gate, check: (name: string, args: unknown) => input.run.relation === 'subagent' && !capabilities.tools.includes(name) ? Promise.resolve('This tool is outside the child capability snapshot.') : gate.check(name, args) }
+        })(),
         tools,
         runtime: () => this.options.accounts.runtime(context),
         // An unattended run loads no extension, so it has nobody to relay for.
         ...(input.automatic ? {} : { extensions: { ask: (question) => run.requestAnswer(question), notice: (notice) => run.emit('extension.notice', notice) } })
       })
-      if ((input.requiresImageInput || input.images?.length) && !pi.model?.input.includes('image')) {
+      if (run.finished) {
         pi.dispose()
+        return { runId, nativeSessionId: null }
+      }
+      if ((input.requiresImageInput || input.images?.length) && !pi.model?.input.includes('image')) {
         throw new HarnessError('image_input_unsupported', 'Choose a model that supports images, or remove the image attachments and send again.')
       }
       if (input.resume?.nativeSessionId && pi.sessionId !== input.resume.nativeSessionId) {
-        pi.dispose()
         run.finish('failed', { code: 'native_resume_unavailable', message: 'The saved conversation could not be restored.' })
         throw new HarnessError('native_resume_unavailable', 'The saved conversation could not be restored.')
       }
       updateRun(root, runId, (record) => void (record.nativeSessionId = pi.sessionId))
+      this.options.subagents.register(input, account.id, capabilities, Boolean(pi.sessionManager))
+      if (pi.model?.id && pi.model.provider) this.options.subagents.resolvedModel(runId, `${pi.model.provider}/${pi.model.id}`, pi.thinkingLevel)
+      const opened = pi
+      params.settle = () => this.options.subagents.verify(runId, opened.sessionManager ? subagentHistory(opened.sessionManager.getBranch()) : undefined)
       void runTurn(run, pi, params)
       return { runId, nativeSessionId: pi.sessionId }
     } catch (error) {
+      pi?.dispose()
       if (error instanceof HarnessError && error.code === 'native_resume_unavailable') throw error
       const message = error instanceof Error ? error.message : String(error)
       log('session failed to start', message)

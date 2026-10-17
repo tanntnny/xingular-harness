@@ -87,6 +87,17 @@ test('an agent recalls its own chats by default and everything on request', () =
   expect(searchTool(env, { ...agent('agent-a'), runId: 'chat-1' }, { query: 'pnpm' })).not.toContain('run chat-1')
 })
 
+test('a caller cannot recall the conversations of agents its host excludes', () => {
+  const env = setup()
+  sync(env.root)
+  const caller = { ...agent('agent-a'), recallExcludeAgents: ['agent-b'] }
+  const all = searchTool(env, caller, { query: 'pnpm', scope: 'all' })
+  expect(all).toContain('chat-1')
+  expect(all).not.toContain('chat-2')
+  expect(() => readTool(env, caller, { run: 'chat-2' })).toThrow()
+  expect(readTool(env, agent('agent-a'), { run: 'chat-2' })).toContain('Plan the launch')
+})
+
 test('a session recalls only session runs of its project', () => {
   const env = setup()
   sync(env.root)

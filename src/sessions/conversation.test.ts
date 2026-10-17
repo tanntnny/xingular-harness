@@ -56,6 +56,60 @@ async function setup() {
 }
 
 describe('a whole reply, with a scripted model', () => {
+  it('joins async native children and persists one result receipt before the final reply', async () => {
+    const { harness, root, model, start, until, settled, of } = await setup()
+    const route = (context: { messages: Array<{ role: string; content: unknown }> }) => {
+      const users = context.messages.filter(message => message.role === 'user').map(message => typeof message.content === 'string' ? message.content : (message.content as Array<{ text?: string }>).map(part => part.text ?? '').join(''))
+      if (users.includes('native-child-brief')) return model.says('CHILD_EVIDENCE')
+      if (JSON.stringify(context.messages).includes('CHILD_EVIDENCE')) return model.says('Final with CHILD_EVIDENCE')
+      if (!context.messages.some(message => message.role === 'toolResult')) return model.calls(['spawn_subagent', { brief: 'native-child-brief' }])
+      return model.says('Draft before joining')
+    }
+    model.script(Array(8).fill(route))
+    const id = await start()
+    await until(() => settled(id))
+    expect(of(id).at(-1)?.type).toBe('completed')
+    expect(of(id).filter(event => event.type === 'message.completed').at(-1)?.payload).toMatchObject({ text: 'Final with CHILD_EVIDENCE' })
+    const { sessionFile } = await import('../prompt/compile')
+    const { readFileSync } = await import('node:fs')
+    const entries = readFileSync(sessionFile(join(root, 'sessions', 'a1'))!, 'utf8').trim().split('\n').map(line => JSON.parse(line))
+    expect(entries.filter(entry => entry.customType === 'xingular-subagent-results')).toHaveLength(1)
+    expect(model.requests()).toBeLessThanOrEqual(4)
+    expect(harness.runs.activeRunIds()).toEqual([])
+  })
+
+  it('uses blocking native results without adding an unsolicited duplicate delivery', async () => {
+    const { root, model, start, until, settled, of } = await setup()
+    model.script([model.calls(['spawn_subagent', { brief: 'Find proof', wait: true }]), model.says('INLINE_CHILD_PROOF'), model.says('Final')])
+    const id = await start()
+    await until(() => settled(id))
+    expect(of(id).at(-1)?.type).toBe('completed')
+    expect(model.lastToolResults().join('')).toContain('INLINE_CHILD_PROOF')
+    const { sessionFile } = await import('../prompt/compile')
+    const { readFileSync } = await import('node:fs')
+    expect(readFileSync(sessionFile(join(root, 'sessions', 'a1'))!, 'utf8')).not.toContain('"customType":"xingular-subagent-results"')
+    expect(model.requests()).toBe(3)
+  })
+
+  it('interrupts a parent waiting on a child question without deadlocking SDK abort', async () => {
+    const { harness, model, start, until, settled } = await setup()
+    const ai = await import('@earendil-works/pi-ai')
+    model.script([
+      model.calls(['spawn_subagent', { brief: 'Ask for a decision', wait: true }]),
+      ai.fauxAssistantMessage([ai.fauxToolCall('ask_user', { questions: [{ summary: 'A decision', question: 'Which approach?' }] })], { stopReason: 'toolUse' })
+    ])
+    let childRunId: string | null = null
+    harness.runs.listen((event, run) => { if (event.type === 'question.requested' && run?.relation === 'subagent') childRunId = event.runId })
+    const id = await start()
+    await until(() => childRunId !== null || settled(id))
+    expect(childRunId).not.toBeNull()
+    await harness.runs.interrupt(id)
+    const { loadRun } = await import('./runStore')
+    expect(loadRun(harness.env.root, id).status).toBe('interrupted')
+    expect(loadRun(harness.env.root, childRunId!).status).toBe('interrupted')
+    expect(harness.runs.activeRunIds()).toEqual([])
+  })
+
   it('dispatches a registered command with notes without making a provider request', async () => {
     const { harness, model, start, until, settled, of } = await setup()
     const account = harness.accounts.context(harness.accounts.resolve(null, null))
@@ -146,5 +200,32 @@ describe('a whole reply, with a scripted model', () => {
     const id = await start({ automatic: true })
     await until(() => settled(id))
     expect(model.lastToolResults().at(-1)).not.toContain('waiting in the Inbox')
+  })
+
+  it('delivers a message sent during a tool call after that call, before the next request', async () => {
+    const { harness, model, call, start, until, settled, of } = await setup()
+    model.script([model.calls(['bash', { command: 'ls' }]), model.says('Noted.')])
+    const id = await start({ tools: { allow: ['read', 'bash'], gated: ['bash'] } })
+    await until(() => of(id).some((event) => event.type === 'approval.requested'))
+    const approval = of(id).find((event) => event.type === 'approval.requested')!.payload as { approvalId: string }
+    await call('runs.steer', { runId: id, text: 'Also check the logs.' })
+    harness.runs.resolveApproval(id, approval.approvalId, 'denied')
+    await until(() => settled(id))
+    const types = of(id).map((event) => event.type)
+    expect(of(id).find((event) => event.type === 'message.steered')?.payload).toEqual({ text: 'Also check the logs.' })
+    expect(types.indexOf('message.steered')).toBeGreaterThan(types.indexOf('approval.resolved'))
+    expect(model.requests()).toBe(2)
+    // The context update reaches the model as a user-role message too; the prompt and the steer come last.
+    expect(model.lastUserTexts().slice(-2)).toEqual(['Go.', 'Also check the logs.'])
+    expect(of(id).at(-1)?.type).toBe('completed')
+  })
+
+  it('refuses a message once the reply has ended, so the app sends it as a new reply', async () => {
+    const { call, model, start, until, settled, of } = await setup()
+    model.script([model.says('Done.')])
+    const id = await start()
+    await until(() => settled(id))
+    await expect(call('runs.steer', { runId: id, text: 'Too late.' })).rejects.toMatchObject({ code: 'run_not_active' })
+    expect(of(id).some((event) => event.type === 'message.steered')).toBe(false)
   })
 })

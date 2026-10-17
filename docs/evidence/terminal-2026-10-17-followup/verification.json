@@ -1,0 +1,207 @@
+{
+  "passed": true,
+  "implementation": "production standalone CLI + real Pi SDK + loopback OpenAI SSE transport",
+  "cli": "/Users/tanny/Documents/Projects/Xingular/Xingular Agent/Harness/dist/cli.js",
+  "cliSha256": "2f5df943661a1e89440d0e81d59cd4a5bdb7aaf087a2a930e232b6743d5db093",
+  "verifierSha256": "6b7652f0093b12a37bd975fcffa7accc0f34d627022397b7e45923be270abc85",
+  "provider": "controlled loopback OpenAI-compatible streaming transport; no external model requests or user credentials",
+  "requestCount": 39,
+  "profiles": [
+    {
+      "size": "40x20",
+      "checks": [
+        "welcome and real configured model",
+        "actual settings tabs, section focus, keyboard search/control and Escape return",
+        "command autocomplete and real accounts selector",
+        "suspend/resume restores cooked/raw terminal modes and command input",
+        "Unicode, real streaming/thinking/read/bash/approval/question, expansion, resizing and scrolling",
+        "trusted plugin custom overlay, widget, status and disposal",
+        "grouped question progress and atomic choice/text answers through real registry",
+        "approval deny and Escape cancellation prevent actual tool execution",
+        "question Escape cancellation settles pending tools and interrupts run",
+        "new session, explicit scoped resume and session naming",
+        "actual stream cancellation and interrupted run record",
+        "explicit account switching, process restart and real run on newly pinned account",
+        "fatal asynchronous plugin failure exits 1 and restores terminal modes",
+        "plugin startup failure exits 1 and restores terminal modes"
+      ],
+      "persistedRunCount": 7,
+      "exitCode": 0,
+      "termiosRestored": true,
+      "bracketedPasteDisabled": true,
+      "cursorShown": true,
+      "fatalCleanup": {
+        "exitCode": 1,
+        "termiosRestored": true,
+        "bracketedPasteDisabled": true,
+        "cursorShown": true
+      },
+      "startupCleanup": {
+        "exitCode": 1,
+        "termiosRestored": true,
+        "bracketedPasteDisabled": true,
+        "cursorShown": true
+      }
+    },
+    {
+      "size": "80x24",
+      "checks": [
+        "welcome and real configured model",
+        "actual settings tabs, section focus, keyboard search/control and Escape return",
+        "command autocomplete and real accounts selector",
+        "suspend/resume restores cooked/raw terminal modes and command input",
+        "Unicode, real streaming/thinking/read/bash/approval/question, expansion, resizing and scrolling",
+        "trusted plugin custom overlay, widget, status and disposal",
+        "grouped question progress and atomic choice/text answers through real registry",
+        "approval deny and Escape cancellation prevent actual tool execution",
+        "question Escape cancellation settles pending tools and interrupts run",
+        "new session, explicit scoped resume and session naming",
+        "actual stream cancellation and interrupted run record",
+        "explicit account switching, process restart and real run on newly pinned account",
+        "fatal asynchronous plugin failure exits 1 and restores terminal modes",
+        "plugin startup failure exits 1 and restores terminal modes"
+      ],
+      "persistedRunCount": 7,
+      "exitCode": 0,
+      "termiosRestored": true,
+      "bracketedPasteDisabled": true,
+      "cursorShown": true,
+      "fatalCleanup": {
+        "exitCode": 1,
+        "termiosRestored": true,
+        "bracketedPasteDisabled": true,
+        "cursorShown": true
+      },
+      "startupCleanup": {
+        "exitCode": 1,
+        "termiosRestored": true,
+        "bracketedPasteDisabled": true,
+        "cursorShown": true
+      }
+    },
+    {
+      "size": "120x40",
+      "checks": [
+        "welcome and real configured model",
+        "actual settings tabs, section focus, keyboard search/control and Escape return",
+        "command autocomplete and real accounts selector",
+        "suspend/resume restores cooked/raw terminal modes and command input",
+        "Unicode, real streaming/thinking/read/bash/approval/question, expansion, resizing and scrolling",
+        "trusted plugin custom overlay, widget, status and disposal",
+        "grouped question progress and atomic choice/text answers through real registry",
+        "approval deny and Escape cancellation prevent actual tool execution",
+        "question Escape cancellation settles pending tools and interrupts run",
+        "new session, explicit scoped resume and session naming",
+        "actual stream cancellation and interrupted run record",
+        "explicit account switching, process restart and real run on newly pinned account",
+        "fatal asynchronous plugin failure exits 1 and restores terminal modes",
+        "plugin startup failure exits 1 and restores terminal modes"
+      ],
+      "persistedRunCount": 7,
+      "exitCode": 0,
+      "termiosRestored": true,
+      "bracketedPasteDisabled": true,
+      "cursorShown": true,
+      "fatalCleanup": {
+        "exitCode": 1,
+        "termiosRestored": true,
+        "bracketedPasteDisabled": true,
+        "cursorShown": true
+      },
+      "startupCleanup": {
+        "exitCode": 1,
+        "termiosRestored": true,
+        "bracketedPasteDisabled": true,
+        "cursorShown": true
+      }
+    }
+  ],
+  "captures": [
+    {
+      "file": "40x20-welcome.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 40,
+      "rows": 20,
+      "rawBytes": 3085,
+      "rawSha256": "5ad9d6b7743730c00331865a713ade17a96d8a82254073eff8f7123f78ba0dfd",
+      "archiveBytes": 647,
+      "archiveSha256": "4e1d09e9e2b8ab6dd716c27342cb427e6d327b4517b2d5a1f9d6abe507ae6150"
+    },
+    {
+      "file": "40x20-settings-interaction.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 40,
+      "rows": 20,
+      "rawBytes": 10579,
+      "rawSha256": "6e8cb197fd6444abd5b34500d14d36def96d945f6ffe75b70c107511a2fc6f92",
+      "archiveBytes": 1250,
+      "archiveSha256": "33227bf1354591624311e69f016862cea964aeb0d2cf6af0274bc8c49b6aa39c"
+    },
+    {
+      "file": "40x20-settings-keyboard.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 40,
+      "rows": 20,
+      "rawBytes": 12779,
+      "rawSha256": "6071b778e316c86fdc6976ac024faffcf75221ba1043dfbd524e32cfcdff5e79",
+      "archiveBytes": 1387,
+      "archiveSha256": "722b555638b343520b7896527fb9287c71a2a9ba55e9a2f7c1ea573058db3a22"
+    },
+    {
+      "file": "80x24-approval-0.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 80,
+      "rows": 24,
+      "rawBytes": 63082,
+      "rawSha256": "d182c53020bc8f9dae3b3f910ab78bbccae229b41fb927983b26b9352e13c7d1",
+      "archiveBytes": 5420,
+      "archiveSha256": "c00dd2d226ff8d0d8455311b903791dff1a4fc2b9fc4921ffc08837290570c99"
+    },
+    {
+      "file": "80x24-question.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 80,
+      "rows": 24,
+      "rawBytes": 73627,
+      "rawSha256": "50c7fc4da8748ddcd2868007cf944e2294a9d55d035c60ad30cbe8820068682e",
+      "archiveBytes": 5834,
+      "archiveSha256": "d5371974389a6f99758d3d4e3bc820a69a48aa05fe344b3d0f4d3143cdd44298"
+    },
+    {
+      "file": "80x24-plugin-light.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 120,
+      "rows": 30,
+      "rawBytes": 118891,
+      "rawSha256": "089d74da63cf763e1a06faf0264966d5b8d788518eda880ed91fb556fe844ab5",
+      "archiveBytes": 7618,
+      "archiveSha256": "55fe9f7742387b7e10692711daef697fe1f55af76486554c40290eb039c4a1fa"
+    },
+    {
+      "file": "80x24-question-batch.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 120,
+      "rows": 30,
+      "rawBytes": 169983,
+      "rawSha256": "aee0560c4fb6bb878d187827ab8c40ceee81dda1022a98f663f8bb079e9bc2f6",
+      "archiveBytes": 8742,
+      "archiveSha256": "11ae7c4c7b3991014dbef17d126608104661c0776198e51e519ba35ad557dd35"
+    },
+    {
+      "file": "120x40-completed-transcript.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 120,
+      "rows": 40,
+      "rawBytes": 140149,
+      "rawSha256": "abdbba2e7db4a94d25b82826539e1acbb9e59be7bb9d15167eeeee8f3838644d",
+      "archiveBytes": 7935,
+      "archiveSha256": "2f79e0637ed13a1fbf69d237eb2e644939fd4e3bb5cb257e5b6910fb19981012"
+    }
+  ],
+  "limits": [
+    "The AgentSession, frontend, native tools, authorization and run writer are production code.",
+    "The controlled local transport supplies deterministic model responses and usage fixtures.",
+    "These functional checks do not establish external provider OAuth/service availability or visual equivalence to OMP.",
+    "Each compressed capture is a cumulative actual ANSI stream from PTY startup through the named interaction. Replay at its recorded dimensions."
+  ]
+}

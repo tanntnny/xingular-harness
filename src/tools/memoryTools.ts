@@ -8,7 +8,7 @@ export function memoryTools(env: DispatchEnv, context: CallerContext, contributi
   return WIKI_AGENT_TOOLS.map((tool) => ({
     name: tool.name,
     label: tool.label,
-    description: describeTool(tool, env.productName),
+    description: context.vaultAccess && tool.name === 'wiki_propose' ? `Submit a durable page, fact, block, skill, rule or prompt proposal for curator review. Nothing is applied immediately. Quote original evidence. Use kind block with a full block id for ${context.vaultAccess === 'propose' ? 'any memory block change, including your own persona and notes' : 'memory beyond your own persona/notes'}.` : describeTool(tool, env.productName),
     parameters: (Type) => Type.Unsafe(tool.parameters),
     execute: async (input) => {
       try {

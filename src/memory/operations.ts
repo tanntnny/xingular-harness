@@ -8,6 +8,8 @@ import { invalid, notFound } from '../core/errors'
 import { atomicWrite, newId, now, readJson, safeId, writeJson } from '../core/fs'
 import { compareText } from '../core/text'
 import * as store from './store'
+import * as attachments from '../plugins/attachments'
+import { dirname } from 'node:path'
 
 export interface OperationPage {
   pageId: string
@@ -23,6 +25,9 @@ export interface Operation {
   trigger: string
   pages: OperationPage[]
   undone: boolean
+  protected?: boolean
+  attachmentsBefore?: attachments.Attachments
+  attachmentsAfter?: attachments.Attachments
 }
 
 export function operationsDir(wiki: string): string {
@@ -107,7 +112,14 @@ export function undo(wiki: string, operationId: string): Operation {
   const operation = readJson<Operation>(path)
   if (!operation) throw notFound('Maintenance operation')
   if (operation.undone) throw invalid('This operation was already undone.')
+  if (operation.protected) {
+    for (const page of operation.pages) {
+      if (!existsSync(page.path) || readFileSync(page.path, 'utf8') !== store.revisionText(wiki, page.pageId, page.afterRevisionId)) throw invalid('An entry changed after this operation; review it before undoing.')
+    }
+    if (operation.attachmentsAfter && JSON.stringify(attachments.load(dirname(wiki))) !== JSON.stringify(operation.attachmentsAfter)) throw invalid('Attachment settings changed after this operation; review them before undoing.')
+  }
   const short = operation.id.slice(0, 8)
+  if (operation.attachmentsBefore) attachments.save(dirname(wiki), operation.attachmentsBefore)
   for (const page of operation.pages) {
     let current = ''
     try {

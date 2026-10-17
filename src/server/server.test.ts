@@ -59,6 +59,23 @@ function host(hostCalls: Record<string, (params: any) => unknown> = {}) {
 const idle = (): PiSessionLike => ({ sessionId: 'native-1', subscribe: () => () => undefined, prompt: async () => undefined, sendCustomMessage: async () => undefined, abort: async () => undefined, dispose: () => undefined })
 
 describe('the harness served to a host', () => {
+  it('starts native subagents over RPC using the live parent launch', async () => {
+    const { transport, request } = host()
+    const harness = createHarness({
+      dataRoot: rootWithProject(), stateDir: mkdtempSync(join(tmpdir(), 'hs-')), secrets: memorySecretStore(),
+      sessionFactory: async ({ params }) => ({ ...idle(), ...(params.runId === 'rpc-parent' ? { prompt: async () => new Promise<void>(() => undefined) } : {}) })
+    })
+    open.push(harness)
+    serve(harness, transport)
+    harness.accounts.create('Main', 'apiKey')
+    await request('sessions.run', { run: { id: 'rpc-parent', sessionId: 'opaque-session' }, cwd: harness.env.root, sessionDir: join(harness.env.root, 'sessions'), text: 'Parent', caller: { agentId: 'caller' }, tools: { allow: ['read'] }, subagents: {} })
+    const child = await request('subagents.spawn', { parentRunId: 'rpc-parent', brief: 'Review', tools: ['read'] })
+    expect(await request('subagents.wait', { parentRunId: 'rpc-parent', runIds: [child.runId] })).toMatchObject([{ runId: child.runId, status: 'completed' }])
+    const { loadRun } = await import('../sessions/runStore')
+    expect(loadRun(harness.env.root, child.runId)).toMatchObject({ parentRunId: 'rpc-parent', relation: 'subagent', agentId: 'caller', status: 'completed' })
+    await request('runs.interrupt', { runId: 'rpc-parent' })
+  })
+
   it('answers by method name, reports failures with their code, and forwards events and notices', async () => {
     const { transport, request, events, notices } = host()
     const harness = createHarness({ dataRoot: rootWithProject(), stateDir: mkdtempSync(join(tmpdir(), 'hs-')), secrets: memorySecretStore(), sessionFactory: async () => idle() })
@@ -67,7 +84,9 @@ describe('the harness served to a host', () => {
 
     const status = await request('harness.status')
     expect(status).toMatchObject({ dataRoot: harness.env.root, productName: 'Xingular Harness', activeRuns: [] })
-    expect(await request<string[]>('harness.methods')).toEqual(expect.arrayContaining(['accounts.list', 'sessions.run', 'wiki.pages', 'terminal.prepare', 'skills.list', 'skills.import', 'connections.list', 'harness.shutdown']))
+    expect(await request<string[]>('harness.methods')).toEqual(expect.arrayContaining(['accounts.list', 'sessions.run', 'sessions.spawnSubagent', 'subagents.spawn', 'subagents.wait', 'subagents.results', 'wiki.pages', 'terminal.prepare', 'skills.list', 'skills.import', 'connections.list', 'harness.shutdown']))
+
+    await expect(request('sessions.spawnSubagent', { parentRunId: 'missing', brief: 'Review' })).rejects.toMatchObject({ code: 'run_not_active' })
 
     const overview = await request('accounts.create', { label: 'Main', authKind: 'apiKey' })
     expect(overview.accounts).toHaveLength(1)

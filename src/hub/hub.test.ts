@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Bus } from '../core/bus'
 import { Harness } from '../harness'
 import { memorySecretStore } from '../accounts/secrets'
@@ -13,9 +13,12 @@ import { runHubMenu } from '../terminal/hubMenu'
 import { SessionSocket } from '../terminal/socket'
 import { HarnessError } from '../core/errors'
 import { runHubCli } from './cli'
+import * as packageApi from '../plugins/api'
+import * as packageInstall from '../plugins/install'
+import type { Plugin } from '../plugins/types'
 
 const folders: string[] = []
-afterEach(() => { for (const folder of folders.splice(0)) rmSync(folder, { recursive: true, force: true }) })
+afterEach(() => { vi.restoreAllMocks(); for (const folder of folders.splice(0)) rmSync(folder, { recursive: true, force: true }) })
 function entry(kind: 'document' | 'registry' = 'document', content = '{"message":"data only"}'): HubEntry {
   return hubEntrySchema.parse({ id: 'example/review', title: 'Review', description: 'A reviewed item.', publisher: 'Example', license: 'MIT', version: '1.0.0', category: kind === 'document' ? 'preset' : 'skill', channel: 'community', tags: [], requires: {}, sourceUrl: 'https://github.com/example/review', delivery: { kind, ...(kind === 'registry' ? { registryKind: 'skills' } : {}), url: 'https://raw.githubusercontent.com/example/review/main/payload.json', sha256: createHash('sha256').update(content).digest('hex'), bundled: content } })
 }
@@ -71,6 +74,14 @@ describe('Hub installation', () => {
     await expect(hub.install(item.id, item.version)).rejects.toThrow('differs')
     expect(existsSync(join(root, 'hub', 'installed.json'))).toBe(false)
     expect(hub.busy).toBe(false)
+  })
+  it('rejects malformed UTF-8 JSON even when its byte digest matches', async () => {
+    const bytes = Buffer.from([0x7b, 0x22, 0x78, 0x22, 0x3a, 0x22, 0xff, 0x22, 0x7d])
+    const item = entry()
+    if (item.delivery.kind !== 'pi-package') { delete item.delivery.bundled; item.delivery.sha256 = createHash('sha256').update(bytes).digest('hex') }
+    const { hub, root } = fixture([item], (async () => new Response(bytes)) as typeof fetch)
+    await expect(hub.install(item.id, item.version)).rejects.toThrow('valid UTF-8')
+    expect(existsSync(join(root, 'hub', 'installed.json'))).toBe(false)
   })
   it('previews reviewed bytes without creating files or receipts', async () => {
     const item = entry(); if (item.delivery.kind !== 'pi-package') delete item.delivery.bundled
@@ -164,6 +175,18 @@ describe('Hub installation', () => {
     const item = { ...entry(), requires: { harness: '99.0.0' } }
     const { hub } = fixture([item])
     await expect(hub.install(item.id, item.version)).rejects.toThrow('requires Harness')
+  })
+  it('records only the requested package when another plugin appears during installation', async () => {
+    const source = 'npm:@example/review@1.0.0'
+    const item = hubEntrySchema.parse({ ...entry(), category: 'plugin', delivery: { kind: 'pi-package', source } })
+    const { hub } = fixture([item])
+    vi.spyOn(packageApi, 'list').mockResolvedValue([])
+    vi.spyOn(packageInstall, 'install').mockResolvedValue([
+      { id: 'package:review', install: { kind: 'settings', source } } as Plugin,
+      { id: 'package:another', install: { kind: 'settings', source: 'npm:@someone/other@1.0.0' } } as Plugin
+    ])
+    expect((await hub.install(item.id, item.version)).resourceIds).toEqual(['package:review'])
+    expect(packageInstall.install).toHaveBeenCalledWith(expect.anything(), { source })
   })
   it('does not treat cancelling the terminal review as an install', async () => {
     const { hub } = fixture([entry()])

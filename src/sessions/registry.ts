@@ -27,6 +27,7 @@ export interface ApprovalInput {
 export interface QuestionInput {
   requestId?: string
   userOnly?: boolean
+  summary?: string
   question: string
   options: QuestionOption[]
   multiSelect: boolean
@@ -36,6 +37,21 @@ export interface QuestionInput {
 export interface QuestionAnswer {
   selected: string[]
   text?: string
+  /** Optional notes keyed by the selected choice label. */
+  notes?: Record<string, string>
+}
+
+interface QuestionBatchMetadata {
+  batchId: string
+  batchIndex: number
+  batchCount: number
+}
+
+interface PendingQuestion {
+  runId: string
+  input: QuestionInput
+  batch?: QuestionBatchMetadata
+  resolve: (answer: QuestionAnswer) => void
 }
 
 export interface ActiveRun {
@@ -43,10 +59,14 @@ export interface ActiveRun {
   sessionId: string
   emit(type: RunEventType, payload: unknown, native?: unknown): void
   onInterrupt(handler: () => Promise<void> | void): void
+  /** Hands a message to the model after its current step; the session registers how. */
+  onSteer(handler: (text: string) => Promise<void> | void): void
   /** Resolves when the user decides; only the approval with this exact id can be resolved by it. */
   requestApproval(input: ApprovalInput): Promise<ApprovalDecision>
   /** Asks the user a question and resolves with their answer. */
   requestAnswer(input: QuestionInput): Promise<QuestionAnswer>
+  /** Asks one to five related questions and resolves only after the whole batch is answered. */
+  requestAnswers(inputs: QuestionInput[]): Promise<QuestionAnswer[]>
   finish(outcome: 'completed' | 'failed' | 'interrupted', failure?: { code: string; message: string }): void
   readonly finished: boolean
 }
@@ -64,13 +84,14 @@ export interface RegistryOptions {
   redact?: (event: RunEvent) => void
 }
 
-type LiveRun = ActiveRun & { interrupt: () => Promise<void> }
+type LiveRun = ActiveRun & { interrupt: () => Promise<void>; steer: (text: string) => Promise<void> }
 
 export class RunRegistry {
   private readonly runs = new Map<string, LiveRun>()
   private readonly approvals = new Map<string, { runId: string; resolve: (decision: ApprovalDecision) => void }>()
-  private readonly questions = new Map<string, { runId: string; input: QuestionInput; resolve: (answer: QuestionAnswer) => void }>()
+  private readonly questions = new Map<string, PendingQuestion>()
   private readonly nativeCleared = new Map<string, string>()
+  private readonly waiters = new Map<string, Array<() => void>>()
   private readonly stopping = new Set<string>()
   private readonly listeners: RunListener[] = []
 
@@ -111,8 +132,31 @@ export class RunRegistry {
     }
     let finished = false
     const interruptHandlers: Array<() => Promise<void> | void> = []
+    let steerHandler: ((text: string) => Promise<void> | void) | null = null
     const waitingStatus = (): string =>
       [...this.approvals.values()].some((request) => request.runId === runId) ? 'waiting_for_approval' : [...this.questions.values()].some((request) => request.runId === runId) ? 'waiting_for_input' : 'running'
+
+    const requestQuestion = (input: QuestionInput, batch?: QuestionBatchMetadata, statusEvent = true): Promise<QuestionAnswer> => {
+      const { requestId, ...payload } = input
+      const questionId = requestId ?? randomUUID()
+      if (finished || this.nativeCleared.delete(questionId)) return Promise.resolve({ selected: [] })
+      if (this.questions.has(questionId)) throw new HarnessError('invalid_request', 'This question id is already pending.')
+      return new Promise<QuestionAnswer>((resolve) => {
+        this.questions.set(questionId, {
+          runId,
+          input,
+          ...(batch ? { batch } : {}),
+          resolve: (answer) => {
+            this.questions.delete(questionId)
+            emit('question.answered', { questionId, ...answer, ...(batch ?? {}) })
+            emit('status.changed', { status: waitingStatus() })
+            resolve(answer)
+          }
+        })
+        emit('question.requested', { questionId, ...payload, ...(batch ?? {}) })
+        if (statusEvent) emit('status.changed', { status: 'waiting_for_input' })
+      })
+    }
 
     const emit = (type: RunEventType, payload: unknown, native?: unknown): void => {
       if (finished) return
@@ -130,6 +174,13 @@ export class RunRegistry {
       sessionId,
       emit,
       onInterrupt: (handler) => void interruptHandlers.push(handler),
+      onSteer: (handler) => {
+        steerHandler = handler
+      },
+      steer: async (text) => {
+        if (finished || !steerHandler) throw new HarnessError('run_not_active', 'This run is not accepting messages.')
+        await steerHandler(text)
+      },
       requestApproval: async (input) => {
         const { requestId, standing = 'full', timeoutMs, ...payload } = input
         const approvalId = requestId ?? randomUUID()
@@ -160,24 +211,20 @@ export class RunRegistry {
           })
         })
       },
-      requestAnswer: (input) => {
-        const { requestId, ...payload } = input
-        const questionId = requestId ?? randomUUID()
-        if (finished || this.nativeCleared.delete(questionId)) return Promise.resolve({ selected: [] })
-        emit('question.requested', { questionId, ...payload })
+      requestAnswer: (input) => requestQuestion(input),
+      requestAnswers: (inputs) => {
+        if (!Array.isArray(inputs) || inputs.length < 1 || inputs.length > 5) {
+          throw new HarnessError('invalid_request', 'A question batch must contain between one and five questions.')
+        }
+        const requestedIds = inputs.flatMap((input) => input.requestId ? [input.requestId] : [])
+        if (new Set(requestedIds).size !== requestedIds.length || requestedIds.some((id) => this.questions.has(id))) {
+          throw new HarnessError('invalid_request', 'Question ids in a batch must be unique and not already pending.')
+        }
+        if (finished) return Promise.resolve(inputs.map(() => ({ selected: [] })))
+        const batchId = randomUUID()
+        const answers = inputs.map((input, index) => requestQuestion(input, { batchId, batchIndex: index + 1, batchCount: inputs.length }, false))
         emit('status.changed', { status: 'waiting_for_input' })
-        return new Promise<QuestionAnswer>((resolve) => {
-          this.questions.set(questionId, {
-            runId,
-            input,
-            resolve: (answer) => {
-              this.questions.delete(questionId)
-              emit('question.answered', { questionId, ...answer })
-              emit('status.changed', { status: waitingStatus() })
-              resolve(answer)
-            }
-          })
-        })
+        return Promise.all(answers)
       },
       finish: (outcome, failure) => {
         if (finished) return
@@ -186,6 +233,8 @@ export class RunRegistry {
         else emit('completed', {})
         finished = true
         this.runs.delete(runId)
+        for (const resolve of [...(this.waiters.get(runId) ?? [])]) resolve()
+        this.waiters.delete(runId)
         for (const [id, owner] of this.nativeCleared) if (owner === runId) this.nativeCleared.delete(id)
         for (const [, approval] of [...this.approvals]) if (approval.runId === runId) approval.resolve('denied')
         for (const [, question] of [...this.questions]) if (question.runId === runId) question.resolve({ selected: [] })
@@ -199,6 +248,8 @@ export class RunRegistry {
         return finished
       },
       interrupt: async () => {
+        // Release approvals/questions before SDK abort waits for their blocked tools.
+        run.finish('interrupted')
         for (const handler of interruptHandlers) {
           try {
             await handler()
@@ -206,7 +257,6 @@ export class RunRegistry {
             log(`an interrupt handler failed for run ${runId}`, error instanceof Error ? error.message : String(error))
           }
         }
-        run.finish('interrupted')
       }
     }
 
@@ -232,6 +282,30 @@ export class RunRegistry {
     return false
   }
 
+  /** Wait for a recorded run to settle without polling storage or retaining an event listener. */
+  wait(runId: string, signal?: AbortSignal): Promise<void> {
+    const record = findRun(this.options.root(), runId)
+    if (!record) throw new HarnessError('not_found', 'Run was not found.')
+    if (!isActiveStatus(record.status)) return Promise.resolve()
+    if (!this.runs.has(runId)) throw new HarnessError('run_not_active', 'This run is not active in this process.')
+    if (signal?.aborted) return Promise.reject(new HarnessError('run_not_active', 'The wait was interrupted.'))
+    return new Promise((resolve, reject) => {
+      const cleanup = () => {
+        signal?.removeEventListener('abort', abort)
+        const pending = this.waiters.get(runId)
+        const index = pending?.indexOf(done) ?? -1
+        if (index >= 0) pending!.splice(index, 1)
+        if (!pending?.length) this.waiters.delete(runId)
+      }
+      const done = () => { cleanup(); resolve() }
+      const abort = () => { cleanup(); reject(new HarnessError('run_not_active', 'The wait was interrupted.')) }
+      const pending = this.waiters.get(runId) ?? []
+      pending.push(done)
+      this.waiters.set(runId, pending)
+      signal?.addEventListener('abort', abort, { once: true })
+    })
+  }
+
   /** The live run with this id, for a tool or broker that reports into it. */
   active(runId: string): ActiveRun | null {
     return this.runs.get(runId) ?? null
@@ -241,6 +315,13 @@ export class RunRegistry {
   activeForSession(sessionId: string): ActiveRun | null {
     for (const run of this.runs.values()) if (run.sessionId === sessionId) return run
     return null
+  }
+
+  /** Hands a message to a live run's model after its current step. Throws `run_not_active` when the run cannot take it. */
+  async steer(runId: string, text: string): Promise<void> {
+    const run = this.runs.get(runId)
+    if (!run) throw new HarnessError('run_not_active', 'This run is not active.')
+    await run.steer(text)
   }
 
   async interrupt(runId: string): Promise<void> {
@@ -272,10 +353,44 @@ export class RunRegistry {
   answerQuestion(runId: string, questionId: string, answer: QuestionAnswer): void {
     const question = this.questions.get(questionId)
     if (!question || question.runId !== runId) throw new HarnessError('question_not_pending', 'This question is not waiting for an answer.')
-    if ((!question.input.multiSelect && answer.selected.length > 1) || answer.selected.some((label) => !question.input.options.some((option) => option.label === label)) || (answer.text && !question.input.allowText)) {
-      throw new HarnessError('invalid_answer', 'Choose the offered options or an allowed text answer.')
+    if (question.batch) throw new HarnessError('question_batch_required', 'Answer every question in this batch together.')
+    question.resolve(this.validateAnswer(question.input, answer))
+  }
+
+  answerQuestions(runId: string, batchId: string, answers: Array<{ questionId: string; answer: QuestionAnswer }>): void {
+    const questions = [...this.questions.entries()].filter(([, pending]) => pending.runId === runId && pending.batch?.batchId === batchId)
+    if (!questions.length || answers.length !== questions.length || new Set(answers.map(({ questionId }) => questionId)).size !== answers.length) {
+      throw new HarnessError('question_not_pending', 'This question batch is not waiting for an answer.')
     }
-    question.resolve(answer)
+    const pendingById = new Map(questions)
+    const validated = answers.map(({ questionId, answer }) => {
+      const pending = pendingById.get(questionId)
+      if (!pending) throw new HarnessError('question_not_pending', 'Every question in the batch must be answered together.')
+      return { pending, answer: this.validateAnswer(pending.input, answer) }
+    })
+    for (const { pending, answer } of validated) pending.resolve(answer)
+  }
+
+  private validateAnswer(input: QuestionInput, answer: QuestionAnswer): QuestionAnswer {
+    const selected = answer.selected
+    const selectedLabels = new Set(selected)
+    const notes: Record<string, string> = {}
+    for (const [label, note] of Object.entries(answer.notes ?? {})) {
+      const normalized = typeof note === 'string' ? note.trim() : ''
+      if (normalized) notes[label] = normalized
+    }
+    const text = answer.text?.trim()
+    if (
+      (!input.multiSelect && selected.length > 1) ||
+      selectedLabels.size !== selected.length ||
+      selected.some((label) => !input.options.some((option) => option.label === label)) ||
+      (text && !input.allowText) ||
+      Object.keys(notes).some((label) => !selectedLabels.has(label)) ||
+      Object.values(notes).some((note) => note.length > 10_000)
+    ) {
+      throw new HarnessError('invalid_answer', 'Choose the offered options or an allowed text answer, and attach notes only to selected choices.')
+    }
+    return { selected, ...(text ? { text } : {}), ...(Object.keys(notes).length ? { notes } : {}) }
   }
 
   activeRunIds(): string[] {

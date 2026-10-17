@@ -10,6 +10,7 @@ export const runEventTypeSchema = z.enum([
   'context.snapshot',
   'message.delta',
   'message.completed',
+  'message.steered',
   'tool.started',
   'tool.completed',
   'retry.started',
@@ -35,6 +36,8 @@ export type RunEventType = z.infer<typeof runEventTypeSchema>
 
 const messageDeltaPayload = z.object({ messageId: z.string(), text: z.string() })
 const messageCompletedPayload = z.object({ messageId: z.string(), role: z.enum(['user', 'assistant']), text: z.string() })
+/** A message the person sent into the run while it was going; the model reads it from its next request on. */
+const messageSteeredPayload = z.object({ text: z.string() })
 const contextSnapshotPayload = z.object({
   systemPrompt: z.string().max(100_000),
   contextUpdate: z.string().max(100_000).optional(),
@@ -96,15 +99,37 @@ const approvalRequestedPayload = z.object({
 const approvalResolvedPayload = z.object({ approvalId: z.string(), decision: z.enum(['approved', 'denied', 'native']), automatic: approvalAutomaticSchema.optional() })
 export const questionOptionSchema = z.object({ label: z.string().min(1), description: z.string().optional() })
 export type QuestionOption = z.infer<typeof questionOptionSchema>
+const questionBatchFields = {
+  batchId: z.string().min(1).optional(),
+  batchIndex: z.number().int().min(1).max(5).optional(),
+  batchCount: z.number().int().min(1).max(5).optional()
+}
+const questionBatchRefinement = <T extends { batchId?: string; batchIndex?: number; batchCount?: number }>(value: T, context: z.RefinementCtx): void => {
+  const fields = [value.batchId, value.batchIndex, value.batchCount]
+  if (fields.some((field) => field !== undefined) && fields.some((field) => field === undefined)) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: 'Question batch fields must be supplied together.' })
+  }
+  if (value.batchIndex !== undefined && value.batchCount !== undefined && value.batchIndex > value.batchCount) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: 'Question batch index cannot exceed its count.' })
+  }
+}
 const questionRequestedPayload = z.object({
   questionId: z.string(),
   question: z.string().min(1),
+  summary: z.string().min(1).max(100).optional(),
   options: z.array(questionOptionSchema),
   multiSelect: z.boolean(),
   allowText: z.boolean(),
-  userOnly: z.boolean().optional()
-})
-const questionAnsweredPayload = z.object({ questionId: z.string(), selected: z.array(z.string()), text: z.string().optional() })
+  userOnly: z.boolean().optional(),
+  ...questionBatchFields
+}).superRefine(questionBatchRefinement)
+const questionAnsweredPayload = z.object({
+  questionId: z.string(),
+  selected: z.array(z.string()),
+  text: z.string().optional(),
+  notes: z.record(z.string(), z.string().max(10_000)).optional(),
+  ...questionBatchFields
+}).superRefine(questionBatchRefinement)
 /** A short emoji sequence, never words or numbers. */
 const reactionAddedPayload = z.object({ emoji: z.string().min(1).refine((text) => Buffer.byteLength(text) <= 16 && !/[A-Za-z0-9\s]/.test(text)) })
 /** A message this run's agent sent to (`to`) or received back from (`from`) another agent. */
@@ -196,6 +221,7 @@ export const runEventPayloadSchemas = {
   'context.snapshot': contextSnapshotPayload,
   'message.delta': messageDeltaPayload,
   'message.completed': messageCompletedPayload,
+  'message.steered': messageSteeredPayload,
   'tool.started': toolPayload,
   'tool.completed': toolPayload,
   'retry.started': retryStartedPayload,

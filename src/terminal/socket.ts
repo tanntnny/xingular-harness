@@ -23,7 +23,7 @@ export interface SocketGrant {
   /** The session's connected-apps grant, when it has one. */
   broker: BrokerSession | null
   /** Telemetry from the native process, and what to do when it hangs up mid-request. */
-  terminal?: { accept(event: string, data: Record<string, unknown>): Promise<unknown>; disconnected(): void }
+  terminal?: { accept(event: string, data: Record<string, unknown>): Promise<unknown>; disconnected(): void; control?(call: string, data: Record<string, unknown>): unknown }
 }
 
 export interface SocketHandlers {
@@ -36,6 +36,8 @@ export interface SocketHandlers {
    * session's shell never sees; anything that changes what loads needs it.
    */
   plugins?(grant: SocketGrant, call: string, params: Record<string, unknown>, control: boolean): Promise<unknown>
+  /** `accounts.*`. Every call needs `control`: adding, signing in, or removing an account is a person's choice. */
+  accounts?(grant: SocketGrant, call: string, params: Record<string, unknown>, control: boolean): Promise<unknown>
 }
 
 const MAX_REQUEST_BYTES = 1024 * 1024
@@ -149,9 +151,18 @@ export class SessionSocket {
         this.controls.set(token, key)
         return { result: { key } }
       }
+      if (call.startsWith('terminal.') && grant.terminal?.control) {
+        const key = this.controls.get(token)
+        if (!key || request.control !== key) throw new HarnessError('unauthorized', 'Only a person at this terminal can answer decisions or change its draft state.')
+        return { result: await grant.terminal.control(call, params) }
+      }
       if ((call.startsWith('plugins.') || call.startsWith('hub.')) && this.handlers.plugins) {
         const key = this.controls.get(token)
         return { result: await this.handlers.plugins(grant, call, params, key !== undefined && request.control === key) }
+      }
+      if (call.startsWith('accounts.') && this.handlers.accounts) {
+        const key = this.controls.get(token)
+        return { result: await this.handlers.accounts(grant, call, params, key !== undefined && request.control === key) }
       }
       throw new HarnessError('unknown_method', `Unknown call ${call}.`)
     } catch (error) {

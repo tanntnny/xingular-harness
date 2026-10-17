@@ -221,6 +221,13 @@ export function sourceLabel(env: HarnessEnv, mode: string, sessionId: string, pr
   }
 }
 
+/** Whether a conversation belongs to an agent the caller may not recall. */
+function excluded(env: HarnessEnv, context: CallerContext, sessionId: string): boolean {
+  const hidden = context.recallExcludeAgents ?? []
+  if (!hidden.length) return false
+  return hidden.includes(sessionId) || hidden.includes(env.directory.sessionAgent(sessionId) ?? '')
+}
+
 /** `recall.search` as text for a model. */
 export function searchTool(env: HarnessEnv, context: CallerContext, params: Params): string {
   const query = textParam(params, 'query')
@@ -229,7 +236,7 @@ export function searchTool(env: HarnessEnv, context: CallerContext, params: Para
   const requested = params?.limit
   const limit = typeof requested === 'number' && Number.isInteger(requested) && requested >= 0 ? requested : SEARCH_DEFAULT
   // The caller's current run is what it is in the middle of, not something to recall.
-  const hits = search(env.root, query, scope, limit + 4).filter((hit) => hit.runId !== context.runId).slice(0, Math.min(Math.max(limit, 1), SEARCH_MAX))
+  const hits = search(env.root, query, scope, limit + 4 + (context.recallExcludeAgents?.length ? SEARCH_MAX : 0)).filter((hit) => hit.runId !== context.runId && !excluded(env, context, hit.sessionId)).slice(0, Math.min(Math.max(limit, 1), SEARCH_MAX))
   if (!hits.length) {
     return scope.sessionId && !isSession(context) ? 'Nothing in your own conversations matches. Pass scope "all" to search every conversation and Harness run.' : 'Nothing in the recorded history matches.'
   }
@@ -242,7 +249,7 @@ export function readTool(env: HarnessEnv, context: CallerContext, params: Params
   const run = findRun(env.root, runId)
   if (!run) throw notFound('Run')
   // Reading is as wide as an "all" search for an agent, and as narrow as a search for a session.
-  if (!mayRead(callerScope(env.root, context, { scope: 'all' }), run)) throw notFound('Run')
+  if (!mayRead(callerScope(env.root, context, { scope: 'all' }), run) || excluded(env, context, run.sessionId)) throw notFound('Run')
   const messages = read(env.root, run.id)
   if (!messages.length) return 'That run has no recorded messages.'
   let text = `Run ${run.id} · ${run.startedAt.slice(0, 16)} · ${sourceLabel(env, run.mode, run.sessionId, run.projectId)} · ${run.status}\n`

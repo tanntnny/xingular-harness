@@ -5,7 +5,8 @@
 import { createHash, randomUUID } from 'node:crypto'
 
 import { HarnessError } from '../core/errors'
-import type { ActiveRun, ApprovalDecision, QuestionAnswer } from '../sessions/registry'
+import type { RunEvent } from '../sessions/contracts'
+import type { ActiveRun, ApprovalDecision, QuestionAnswer, QuestionInput } from '../sessions/registry'
 
 export interface PolicyReply {
   allowed: boolean
@@ -23,6 +24,10 @@ export interface ControllerHooks {
   /** The native conversation identity changed. */
   native(nativeSessionId: string): void
   telemetry(event: string): void
+  interrupt?(runId: string): Promise<void>
+  resolveApproval?(runId: string, requestId: string, decision: ApprovalDecision): void
+  answerQuestion?(runId: string, requestId: string, answer: QuestionAnswer): void
+  answerQuestions?(runId: string, batchId: string, answers: Array<{ questionId: string; answer: QuestionAnswer }>): void
 }
 
 interface Delivery {
@@ -39,6 +44,7 @@ const ACK_TIMEOUT_MS = 25_000
 
 export class TerminalController {
   private run: ActiveRun | null = null
+  private readonly pending = new Map<string, Record<string, unknown>>()
   private ready = false
   private disposed = false
   private dirty = false
@@ -90,6 +96,7 @@ export class TerminalController {
     this.run?.finish(outcome, message ? { code: 'terminal_attention', message } : undefined)
     this.run = null
     this.seen.clear()
+    this.pending.clear()
   }
 
   /** Hands the native process an instruction and waits until it acknowledges the prompt. */
@@ -140,6 +147,57 @@ export class TerminalController {
     this.finish('failed', 'The native decision callback disconnected. Inspect the terminal before continuing.')
   }
 
+  /** Project registry-owned questions, including grouped requests, into the terminal inbox. */
+  observe(event: RunEvent, descendant = false): void {
+    if (this.disposed || !this.activeRun || (!descendant && event.runId !== this.activeRun.runId)) return
+    if (event.type === 'question.requested') {
+      const payload = event.payload as Record<string, unknown>
+      this.pending.set(String(payload.questionId), { ...payload, type: 'question', requestId: payload.questionId, runId: event.runId })
+    } else if (descendant && event.type === 'approval.requested') {
+      const payload = event.payload as Record<string, unknown>
+      if (!payload.automatic) this.pending.set(String(payload.approvalId), { ...payload, type: 'approval', requestId: payload.approvalId, runId: event.runId })
+    } else if (event.type === 'approval.resolved') {
+      this.pending.delete(String((event.payload as { approvalId: string }).approvalId))
+    } else if (event.type === 'question.answered') {
+      this.pending.delete(String((event.payload as { questionId: string }).questionId))
+    }
+  }
+
+  /** The socket grants this interface only to the process that owns terminal input. */
+  control(call: string, data: Record<string, any>): unknown {
+    if (this.disposed) throw new HarnessError('terminal_not_ready', 'This terminal has ended.')
+    if (call === 'terminal.draft') {
+      this.dirty = data.dirty === true
+      this.multilineDraft = false
+      return {}
+    }
+    if (call === 'terminal.pending') return { requests: [...this.pending.values()] }
+    if (call === 'terminal.interrupt') return this.activeRun && this.hooks.interrupt ? this.hooks.interrupt(this.activeRun.runId) : {}
+    if (call === 'terminal.answers' && this.hooks.answerQuestions) {
+      const run = this.activeRun
+      const batchId = String(data.batchId ?? '')
+      const requests = [...this.pending.values()].filter(request => request.batchId === batchId)
+      if (!run || !batchId || !requests.length || !Array.isArray(data.answers)) throw new HarnessError('invalid_request', 'This question batch is no longer pending.')
+      this.hooks.answerQuestions(String(requests[0].runId ?? run.runId), batchId, data.answers)
+      return {}
+    }
+    const requestId = String(data.requestId ?? '')
+    const request = this.pending.get(requestId)
+    const run = this.activeRun
+    if (!request || !run) throw new HarnessError('invalid_request', 'This terminal decision is no longer pending.')
+    if (call === 'terminal.approve' && request.type === 'approval' && this.hooks.resolveApproval) {
+      if (data.decision !== 'approved' && data.decision !== 'denied') throw new HarnessError('invalid_request', 'Choose approve or deny.')
+      this.hooks.resolveApproval(String(request.runId ?? run.runId), requestId, data.decision)
+      return {}
+    }
+    if (call === 'terminal.answer' && request.type === 'question' && this.hooks.answerQuestion) {
+      if (!data.answer || !Array.isArray(data.answer.selected)) throw new HarnessError('invalid_request', 'A question answer is required.')
+      this.hooks.answerQuestion(String(request.runId ?? run.runId), requestId, data.answer)
+      return {}
+    }
+    throw new HarnessError('unknown_method', `Unknown terminal control ${call}.`)
+  }
+
   async accept(event: string, data: Record<string, any>): Promise<unknown> {
     if (this.disposed) throw new Error('This terminal controller was disposed.')
     if (event !== 'poll') this.hooks.telemetry(event)
@@ -167,8 +225,8 @@ export class TerminalController {
       return {}
     }
     if (event === 'begin') {
-      this.begin(String(data.turnId ?? randomUUID()), String(data.text ?? ''))
-      return {}
+      const run = this.begin(String(data.turnId ?? randomUUID()), String(data.text ?? ''))
+      return { runId: run.runId }
     }
     if (event === 'shutdown') {
       this.ready = false
@@ -176,20 +234,26 @@ export class TerminalController {
       return {}
     }
     if (event === 'settled') {
-      this.finish(data.error ? 'failed' : 'completed', data.error ? String(data.error) : undefined)
+      this.finish(data.aborted ? 'interrupted' : data.error ? 'failed' : 'completed', data.error ? String(data.error) : undefined)
       return {}
     }
     const run = this.run
     if (!run) throw new Error('Native telemetry arrived without an active turn.')
     if (event === 'policy') return this.hooks.policy(run, String(data.tool), data.args ?? {})
+    if (event === 'questions') {
+      if (!Array.isArray(data.questions) || !data.questions.length || data.questions.length > 5) throw new HarnessError('invalid_request', 'Ask between one and five questions.')
+      const questions = (data.questions as QuestionInput[]).map(question => ({ ...question, requestId: randomUUID() }))
+      return run.requestAnswers(questions)
+    }
     if (event === 'approval' || event === 'question') {
-      const key = this.requestId(String(data.requestId ?? JSON.stringify(data)))
+      const key = this.requestId(`${event}:${String(data.requestId ?? JSON.stringify(data))}`)
       const existing = this.seen.get(key)
       if (existing) return event === 'approval' ? { decision: await existing } : existing
       if (event === 'question') {
         const response: Promise<QuestionAnswer> = run.requestAnswer({ requestId: key, question: String(data.question ?? ''), options: data.options ?? [], multiSelect: !!data.multiSelect, allowText: true })
+        this.pending.set(key, { type: 'question', requestId: key, question: String(data.question ?? ''), options: data.options ?? [], multiSelect: !!data.multiSelect })
         this.seen.set(key, response)
-        return response
+        return response.finally(() => this.pending.delete(key))
       }
       const response: Promise<ApprovalDecision> = run.requestApproval({
         requestId: key,
@@ -198,8 +262,13 @@ export class TerminalController {
         operation: { tool: String(data.tool ?? data.target), args: data.args ?? {} },
         rememberable: false
       })
+      this.pending.set(key, { type: 'approval', requestId: key, target: String(data.target ?? 'Action'), action: String(data.action ?? '{}') })
       this.seen.set(key, response)
-      return { decision: await response }
+      try {
+        return { decision: await response }
+      } finally {
+        this.pending.delete(key)
+      }
     }
     if (event === 'usage') run.emit('usage.updated', data)
     else if (event === 'file') run.emit('file.changed', data)

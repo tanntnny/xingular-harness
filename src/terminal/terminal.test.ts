@@ -282,7 +282,8 @@ describe('a pi terminal session', () => {
     const listed = await socketCall<{ tools: { name: string; parameters: { type: string } }[] }>(connection, 'tools.list')
     expect(listed.tools.map((tool) => tool.name)).toEqual(['mcp_list_tools', 'mcp_call_tool'])
     expect(listed.tools[0].parameters.type).toBe('object')
-    await expect(socketCall(connection, 'accounts.list')).rejects.toMatchObject({ code: 'unknown_method' })
+    // Account calls exist, but only the session's extension holds the key that unlocks them.
+    await expect(socketCall(connection, 'accounts.list')).rejects.toMatchObject({ code: 'unauthorized' })
     await expect(socketCall({ ...connection, token: 'guess' }, 'wiki.list')).rejects.toMatchObject({ code: 'unauthorized' })
     await harness.terminals.dispose('term-1')
     await expect(socketCall(connection, 'wiki.list')).rejects.toMatchObject({ code: 'unauthorized' })
@@ -326,5 +327,73 @@ describe('xagent-wiki command', () => {
     expect(parseCli(['block', 'replace', 'project', '--old', 'npm', '--new', 'pnpm'])).toEqual({ kind: 'call', call: 'memory.replace', params: { block: 'project', old: 'npm', new: 'pnpm' } })
     expect(parseCli(['search'])).toEqual({ kind: 'help' })
     expect(parseCli(['nonsense'])).toEqual({ kind: 'help' })
+  })
+})
+
+
+describe('decisions in the Harness-owned frontend', () => {
+  it('requires the private input-owner key for pending decisions and exact draft state', async () => {
+    const { connection, harness, tell } = await setup()
+    await tell('ready', { nativeSessionId: '/native.jsonl' })
+    await expect(socketCall(connection, 'terminal.pending')).rejects.toMatchObject({ code: 'unauthorized' })
+    const { key } = await socketCall<{ key: string }>(connection, 'control.claim')
+    await socketCall(connection, 'terminal.draft', { dirty: true }, 1000, key)
+    expect(harness.terminals.state('term-1').dirty).toBe(true)
+    await socketCall(connection, 'terminal.draft', { dirty: false }, 1000, key)
+    expect(harness.terminals.state('term-1').dirty).toBe(false)
+    await expect(socketCall(connection, 'terminal.approve', { requestId: 'missing', decision: 'approved' }, 1000, key)).rejects.toMatchObject({ code: 'invalid_request' })
+  })
+
+  it('answers through the existing run registry and rejects stale answers', async () => {
+    const { connection, tell, events } = await setup()
+    const { key } = await socketCall<{ key: string }>(connection, 'control.claim')
+    await tell('ready')
+    await tell('begin', { text: 'Ask a question' })
+    const answer = tell('question', { requestId: 'native-question', question: 'Choose?', options: [{ label: 'A', description: 'First' }], multiSelect: false })
+    let id = ''
+    await vi.waitFor(async () => {
+      const pending = await socketCall<{ requests: Array<{ requestId: string }> }>(connection, 'terminal.pending', {}, 1000, key)
+      expect(pending.requests).toHaveLength(1)
+      id = pending.requests[0].requestId
+    })
+    await socketCall(connection, 'terminal.answer', { requestId: id, answer: { selected: ['A'] } }, 1000, key)
+    expect(await answer).toEqual({ selected: ['A'] })
+    expect(events.some(event => event.type === 'question.answered')).toBe(true)
+    await expect(socketCall(connection, 'terminal.answer', { requestId: id, answer: { selected: ['A'] } }, 1000, key)).rejects.toMatchObject({ code: 'invalid_request' })
+  })
+
+  it('keeps an approval and question with the same native tool id independent', async () => {
+    const { connection, tell } = await setup()
+    const { key } = await socketCall<{ key: string }>(connection, 'control.claim')
+    await tell('ready'); await tell('begin', { text: 'Ask after approval' })
+    const approval = tell('approval', { requestId: 'same-tool-call', target: 'ask_user_question', action: '{}' })
+    let approvalId = ''
+    await vi.waitFor(async () => {
+      const { requests } = await socketCall<{ requests: Array<{ requestId: string }> }>(connection, 'terminal.pending', {}, 1000, key)
+      expect(requests).toHaveLength(1); approvalId = requests[0].requestId
+    })
+    await socketCall(connection, 'terminal.approve', { requestId: approvalId, decision: 'approved' }, 1000, key)
+    expect(await approval).toEqual({ decision: 'approved' })
+    const question = tell('question', { requestId: 'same-tool-call', question: 'Continue?', options: [{ label: 'Yes' }] })
+    let questionId = ''
+    await vi.waitFor(async () => {
+      const { requests } = await socketCall<{ requests: Array<{ requestId: string; type: string }> }>(connection, 'terminal.pending', {}, 1000, key)
+      expect(requests).toHaveLength(1); expect(requests[0].type).toBe('question'); questionId = requests[0].requestId
+    })
+    expect(questionId).not.toBe(approvalId)
+    await socketCall(connection, 'terminal.answer', { requestId: questionId, answer: { selected: ['Yes'] } }, 1000, key)
+    expect(await question).toEqual({ selected: ['Yes'] })
+  })
+
+  it('cancels a pending question through the run interrupt path', async () => {
+    const { connection, tell, harness } = await setup()
+    const { key } = await socketCall<{ key: string }>(connection, 'control.claim')
+    await tell('ready')
+    await tell('begin', { text: 'Wait for a question' })
+    const answer = tell('question', { requestId: 'cancel-question', question: 'Wait?', options: [], multiSelect: false })
+    await vi.waitFor(async () => expect((await socketCall<{ requests: unknown[] }>(connection, 'terminal.pending', {}, 1000, key)).requests).toHaveLength(1))
+    await socketCall(connection, 'terminal.interrupt', {}, 1000, key)
+    expect(await answer).toEqual({ selected: [] })
+    expect(harness.terminals.state('term-1').active).toBe(false)
   })
 })

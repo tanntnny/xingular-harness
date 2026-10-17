@@ -27,9 +27,7 @@ jobs:
             exit 1
           fi
       - run: npm ci
-      - run: npm run typecheck
-      - run: npm test
-      - run: npm run prove
+      - run: npm run ci
       - name: Upgrade npm (trusted publishing needs 11.5.1 or newer)
         run: npm install -g npm@^11.5.1
       - name: Publish with provenance

@@ -22,8 +22,8 @@ import { runStandaloneTerminal, standaloneArguments } from './terminal/standalon
 const USAGE = `Usage: xingular-harness [--data <dir>] [--state <dir>]
        xingular-harness <terminal | serve | wiki | mcp | plugins | hub> [arguments]
 
-  (no command)       Start the interactive Pi terminal
-  terminal           Start the interactive Pi terminal
+  (no command)       Start the interactive Harness terminal
+  terminal           Start the interactive Harness terminal
   serve --state <dir> [--data <dir>] [--name <product>] [--builtins <dir>]
         [--host-secrets] [--host-policy] [--host-tools] [--host-directory]
                      Serve the harness over newline-delimited JSON
@@ -93,6 +93,7 @@ function serveCommand(argv: string[]): Promise<number> {
 async function main(): Promise<number> {
   const argv = process.argv.slice(2)
   const [command, ...rest] = argv
+  if (command === 'terminal-frontend') return (await import('./terminal/tui/application')).runTerminalFrontend(rest)
   if (argv.includes('--help') || argv.includes('-h')) {
     process.stdout.write(USAGE)
     return 0

@@ -91,6 +91,7 @@ export class Accounts {
   private readonly logins = new Map<string, PendingLogin>()
   private readonly latestLogins = new Map<string, AccountLoginSnapshot>()
   private readonly terminals = new Map<string, number>()
+  private installationDeviceIdPromise: Promise<string> | null = null
 
   constructor(options: AccountsOptions) {
     this.dir = options.dir
@@ -174,6 +175,25 @@ export class Accounts {
         }),
       delete: (providerId: string) => serialize(() => this.writeCredential(accountId, providerId, null))
     }
+  }
+
+  /** Pi's OAuth device ID belongs to this Harness installation, not to one isolated account. */
+  installationDeviceId(): Promise<string> {
+    if (!this.installationDeviceIdPromise) {
+      this.installationDeviceIdPromise = this.loadInstallationDeviceId().catch((error: unknown) => {
+        this.installationDeviceIdPromise = null
+        throw error
+      })
+    }
+    return this.installationDeviceIdPromise
+  }
+
+  private async loadInstallationDeviceId(): Promise<string> {
+    const { SettingsManager } = await import('@earendil-works/pi-coding-agent')
+    const settings = SettingsManager.create(process.cwd(), env.ensureSharedDir(this.dir))
+    const deviceId = settings.getOrCreateDeviceId()
+    await settings.flush()
+    return deviceId
   }
 
   // ---- The Pi runtime ---------------------------------------------------------------------
@@ -269,7 +289,7 @@ export class Accounts {
         const keepLimitError = current.lastError !== null && store.isLimitCategory(current.lastError.category) && store.limitErrorActive(current.lastError)
         if (probe.signedIn === true && !keepLimitError) current.lastError = null
       } else {
-        current.lastError = { category: 'unknown', message: store.scrub(failure ?? ''), at: now(), resetsAt: null }
+        current.lastError = { category: classifyMessage(failure ?? '') ?? 'unknown', message: store.scrub(failure ?? ''), at: now(), resetsAt: null }
       }
     })
     if (previous !== state.health) store.audit(this.dir, account.id, 'health.changed', `${previous} → ${state.health} (status check)`)
@@ -483,7 +503,11 @@ export class Accounts {
         })
     }
     void this.runtime(account)
-      .then((runtime) => runtime.login(provider, login.method, interaction as never))
+      .then(async (runtime) => {
+        if (login.method !== 'oauth') return runtime.login(provider, login.method, interaction as never)
+        const deviceId = await this.installationDeviceId()
+        return runtime.login(provider, login.method, interaction as never, { getDeviceId: () => deviceId })
+      })
       .then(() => this.finishLogin(loginId, true, null))
       .catch((error: unknown) => this.finishLogin(
         loginId,
@@ -535,6 +559,11 @@ export class Accounts {
    * account's stored credentials are written there (mode 0600) while the terminal runs, then
    * read back and removed.
    */
+  /** How many terminal sessions are running on this account right now. */
+  terminalCount(accountId: string): number {
+    return this.terminals.get(accountId) ?? 0
+  }
+
   async terminalBegin(account: Account): Promise<void> {
     const count = (this.terminals.get(account.id) ?? 0) + 1
     this.terminals.set(account.id, count)

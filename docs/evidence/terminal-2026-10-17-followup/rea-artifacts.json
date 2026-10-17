@@ -1,0 +1,320 @@
+{
+  "format": "complete REA Evidence JSON compressed with gzip",
+  "records": [
+    {
+      "file": "omp-supplemental-static.json.gz",
+      "evidenceId": "ev_4438bf7b94a78ee2d13d0fe3b7a22238671d48b29a68f8beafbf942b9cee930c",
+      "operation": "analyze_javascript_application",
+      "rawBytes": 31432471,
+      "rawSha256": "33f28ff0bfa504b1701ff5e220382c086f6b8ffcf9beee1b097fb0e530467849",
+      "archiveBytes": 5785158,
+      "archiveSha256": "11123cad79e5e7a0fc7af135bb8ede75e0347ef9cb1e66653ef024bbe2268810",
+      "subject": {
+        "name": "package",
+        "digest": {
+          "sha256": "476c4be9445479f63043ee043f2f633c842c79140c228051b9b3da534054ab0e"
+        },
+        "local_path": "/private/tmp/xingular-omp-18.11.3-ugzs7h2m/pi-tui/package",
+        "format": "directory",
+        "architecture": null
+      },
+      "limitations": [
+        "Caller-selected source analysis leaves 939 inventoried files outside analysis scope. Inventory identity covers the complete artifact; relationships through unselected sources remain unknown.",
+        "CommonJS and ESM binding relationships were recovered from inert syntax and resolved only within the inventoried artifact container.",
+        "Graph coverage is incomplete; unavailable facts remain explicit and must not be read as absence.",
+        "JavaScript and HTML were parsed as inert text; bundle bootstrap code was never executed.",
+        "Static imports, entrypoints, workers, endpoints, and storage relationships do not prove runtime execution.",
+        "Static paths and relationships may remain unresolved when expressions are dynamic or obfuscated.",
+        "Webpack/Rspack factories were recovered from AST literals; REA did not invoke push handlers or bundle bootstrap code."
+      ],
+      "sourceSelection": {
+        "requested_paths": [
+          "package.json",
+          "src/components/composer/band.ts",
+          "src/prompt/composer.ts",
+          "src/theme/light.json",
+          "src/overlays/hook-selector.ts",
+          "src/overlays/approval-dialog.ts",
+          "src/overlays/ask-dialog.ts",
+          "src/chrome/error-block.ts",
+          "src/tools/default-renderer.ts"
+        ],
+        "unselected_files": 939
+      },
+      "exit": null,
+      "truncated": null,
+      "residualUnknowns": null
+    },
+    {
+      "file": "omp-reference-80x24-early.json.gz",
+      "evidenceId": "ev_d4fc1bd805ec0e3704024a58584477430cec8203e468824ea9872511a05bf2f9",
+      "operation": "capture_process_scenario",
+      "rawBytes": 727079,
+      "rawSha256": "746740b710b8ce4ab681ec839e88ca88b0ec633377d37dc93f1b446301b3dc83",
+      "archiveBytes": 32006,
+      "archiveSha256": "5c3a7c5f464403543413691ea777117122050c100426d83f650c51f6bca06071",
+      "subject": null,
+      "limitations": [
+        "Artifact identity is unavailable for this observation.",
+        "The executable digest is a prelaunch file sample; matching path metadata immediately after spawn does not prove an atomic operating-system image binding.",
+        "Process trees are sampled and may omit short-lived descendants.",
+        "Filesystem observations are before/after snapshots, not syscall traces.",
+        "Inherited host environment variables are not recorded and may affect results.",
+        "No filesystem observation paths were selected; filesystem effects remain unknown."
+      ],
+      "sourceSelection": null,
+      "exit": {
+        "code": null,
+        "signal": 9,
+        "reason": "timeout"
+      },
+      "truncated": false,
+      "residualUnknowns": [
+        {
+          "scope": "process",
+          "reason": "Process trees are sampled and may omit short-lived descendants."
+        },
+        {
+          "scope": "process",
+          "reason": "The executable digest is a prelaunch file sample; operating-system image binding is not atomically observed."
+        },
+        {
+          "scope": "environment",
+          "reason": "Inherited host environment variables are not recorded."
+        },
+        {
+          "scope": "network",
+          "reason": "Network activity is not observed by this capture."
+        },
+        {
+          "scope": "filesystem",
+          "reason": "No filesystem observation paths were selected; filesystem effects remain unknown."
+        },
+        {
+          "scope": "process",
+          "reason": "Ownership of unrelated process 84451 could not be verified; it was left untouched: sysctl_failed_22"
+        },
+        {
+          "scope": "process",
+          "reason": "Ownership of unrelated process 84509 could not be verified; it was left untouched: sysctl_failed_22"
+        },
+        {
+          "scope": "process",
+          "reason": "Ownership of unrelated process 84793 could not be verified; it was left untouched: platform_binary_environment_withheld"
+        },
+        {
+          "scope": "process",
+          "reason": "Ownership of unrelated process 84794 could not be verified; it was left untouched: platform_binary_environment_withheld"
+        },
+        {
+          "scope": "process",
+          "reason": "Ownership of unrelated process 84837 could not be verified; it was left untouched: platform_binary_environment_withheld"
+        },
+        {
+          "scope": "process",
+          "reason": "Ownership of unrelated process 84915 could not be verified; it was left untouched: platform_binary_environment_withheld"
+        },
+        {
+          "scope": "process",
+          "reason": "Ownership of unrelated process 84951 could not be verified; it was left untouched: platform_binary_environment_withheld"
+        },
+        {
+          "scope": "process",
+          "reason": "Ownership of unrelated process 84952 could not be verified; it was left untouched: platform_binary_environment_withheld"
+        },
+        {
+          "scope": "process",
+          "reason": "Ownership of unrelated process 85016 could not be verified; it was left untouched: platform_binary_environment_withheld"
+        },
+        {
+          "scope": "process",
+          "reason": "Ownership of unrelated process 85017 could not be verified; it was left untouched: platform_binary_environment_withheld"
+        },
+        {
+          "scope": "process",
+          "reason": "Ownership of unrelated process 85018 could not be verified; it was left untouched: platform_binary_environment_withheld"
+        },
+        {
+          "scope": "process",
+          "reason": "Ownership of unrelated process 85145 could not be verified; it was left untouched: platform_binary_environment_withheld"
+        },
+        {
+          "scope": "process",
+          "reason": "Ownership of unrelated process 85146 could not be verified; it was left untouched: platform_binary_environment_withheld"
+        },
+        {
+          "scope": "process",
+          "reason": "Ownership of unrelated process 85273 could not be verified; it was left untouched: platform_binary_environment_withheld"
+        },
+        {
+          "scope": "process",
+          "reason": "Ownership of unrelated process 85541 could not be verified; it was left untouched: platform_binary_environment_withheld"
+        }
+      ]
+    },
+    {
+      "file": "omp-reference-80x24.json.gz",
+      "evidenceId": "ev_60e1d747658d669029d0702be3d5fb30440e1145c7021a62a145f4ee49b6f7e8",
+      "operation": "capture_process_scenario",
+      "rawBytes": 728360,
+      "rawSha256": "2c77d9eb50e73ad88724c8767a51566e3bf29259e09c92fb9f395691685a0f0f",
+      "archiveBytes": 31797,
+      "archiveSha256": "2cde2f6837b5b188ed8a7c4aff77ab1bd99a15c92c4f9ed85d25d0dfe16a5398",
+      "subject": null,
+      "limitations": [
+        "Artifact identity is unavailable for this observation.",
+        "The executable digest is a prelaunch file sample; matching path metadata immediately after spawn does not prove an atomic operating-system image binding.",
+        "Process trees are sampled and may omit short-lived descendants.",
+        "Filesystem observations are before/after snapshots, not syscall traces.",
+        "Inherited host environment variables are not recorded and may affect results.",
+        "No filesystem observation paths were selected; filesystem effects remain unknown."
+      ],
+      "sourceSelection": null,
+      "exit": {
+        "code": 0,
+        "signal": 0,
+        "reason": "exited"
+      },
+      "truncated": false,
+      "residualUnknowns": [
+        {
+          "scope": "process",
+          "reason": "Process trees are sampled and may omit short-lived descendants."
+        },
+        {
+          "scope": "process",
+          "reason": "The executable digest is a prelaunch file sample; operating-system image binding is not atomically observed."
+        },
+        {
+          "scope": "environment",
+          "reason": "Inherited host environment variables are not recorded."
+        },
+        {
+          "scope": "network",
+          "reason": "Network activity is not observed by this capture."
+        },
+        {
+          "scope": "filesystem",
+          "reason": "No filesystem observation paths were selected; filesystem effects remain unknown."
+        }
+      ]
+    },
+    {
+      "file": "harness-reference-80x24.json.gz",
+      "evidenceId": "ev_33784029787117e58a741ab459c7daef86b25e1be60e01bfb62f7d513e43af6c",
+      "operation": "capture_process_scenario",
+      "rawBytes": 112601,
+      "rawSha256": "d28b20b6713bb7dc4a8571ef66a97c069733c14a9456d06f320ba0660747ce26",
+      "archiveBytes": 7847,
+      "archiveSha256": "4ce2691617e4a222ccae43c3bbe838599b4e963be31c5914f104c90e97bb059b",
+      "subject": null,
+      "limitations": [
+        "Artifact identity is unavailable for this observation.",
+        "The executable digest is a prelaunch file sample; matching path metadata immediately after spawn does not prove an atomic operating-system image binding.",
+        "Process trees are sampled and may omit short-lived descendants.",
+        "Filesystem observations are before/after snapshots, not syscall traces.",
+        "Inherited host environment variables are not recorded and may affect results.",
+        "No filesystem observation paths were selected; filesystem effects remain unknown."
+      ],
+      "sourceSelection": null,
+      "exit": {
+        "code": 0,
+        "signal": 0,
+        "reason": "exited"
+      },
+      "truncated": false,
+      "residualUnknowns": [
+        {
+          "scope": "process",
+          "reason": "Process trees are sampled and may omit short-lived descendants."
+        },
+        {
+          "scope": "process",
+          "reason": "The executable digest is a prelaunch file sample; operating-system image binding is not atomically observed."
+        },
+        {
+          "scope": "environment",
+          "reason": "Inherited host environment variables are not recorded."
+        },
+        {
+          "scope": "network",
+          "reason": "Network activity is not observed by this capture."
+        },
+        {
+          "scope": "filesystem",
+          "reason": "No filesystem observation paths were selected; filesystem effects remain unknown."
+        },
+        {
+          "scope": "process",
+          "reason": "Ownership of unrelated process 97608 could not be verified; it was left untouched: sysctl_failed_22"
+        },
+        {
+          "scope": "process",
+          "reason": "Ownership of unrelated process 97617 could not be verified; it was left untouched: sysctl_failed_22"
+        }
+      ]
+    },
+    {
+      "file": "harness-reference-final-80x24.json.gz",
+      "evidenceId": "ev_f77284e263113f813d2f8a06a085b5447e55626af345e3a96aaf47eca0b7d95a",
+      "operation": "capture_process_scenario",
+      "rawBytes": 116713,
+      "rawSha256": "0705a6322f7a1a3e4a98c1ff531ba21c043cf148d6a8d75c20712a1ab9b1ae96",
+      "archiveBytes": 7994,
+      "archiveSha256": "89cc78a19c92fb4cd3891365144f1023f67a6ff38a319923ce45eabcd4d5645e",
+      "subject": null,
+      "limitations": [
+        "Artifact identity is unavailable for this observation.",
+        "The executable digest is a prelaunch file sample; matching path metadata immediately after spawn does not prove an atomic operating-system image binding.",
+        "Process trees are sampled and may omit short-lived descendants.",
+        "Filesystem observations are before/after snapshots, not syscall traces.",
+        "Inherited host environment variables are not recorded and may affect results."
+      ],
+      "sourceSelection": null,
+      "exit": {
+        "code": 0,
+        "signal": 0,
+        "reason": "exited"
+      },
+      "truncated": false,
+      "residualUnknowns": [
+        {
+          "scope": "process",
+          "reason": "Process trees are sampled and may omit short-lived descendants."
+        },
+        {
+          "scope": "process",
+          "reason": "The executable digest is a prelaunch file sample; operating-system image binding is not atomically observed."
+        },
+        {
+          "scope": "environment",
+          "reason": "Inherited host environment variables are not recorded."
+        },
+        {
+          "scope": "network",
+          "reason": "Network activity is not observed by this capture."
+        }
+      ],
+      "cliBefore": [
+        {
+          "path": "root_0:.",
+          "mode": 33261,
+          "size": 802804,
+          "type": "file",
+          "sha256": "2f5df943661a1e89440d0e81d59cd4a5bdb7aaf087a2a930e232b6743d5db093",
+          "symlink_target": null
+        }
+      ],
+      "cliAfter": [
+        {
+          "path": "root_0:.",
+          "mode": 33261,
+          "size": 802804,
+          "type": "file",
+          "sha256": "2f5df943661a1e89440d0e81d59cd4a5bdb7aaf087a2a930e232b6743d5db093",
+          "symlink_target": null
+        }
+      ]
+    }
+  ]
+}

@@ -74,6 +74,20 @@ export function findRun(root: string, runId: string): RunRecord | null {
   }
 }
 
+/** A parent's reserved child IDs survive a crash before the spawn tool returns. */
+export function recordSubagent(root: string, parentRunId: string, childRunId: string): void {
+  loadRun(root, parentRunId)
+  const ids = recordedSubagents(root, parentRunId)
+  if (!ids.includes(childRunId)) writeJson(join(runDir(root, parentRunId), 'subagents.json'), [...ids, childRunId])
+}
+
+export function recordedSubagents(root: string, parentRunId: string): string[] {
+  const value = readJson(join(runDir(root, parentRunId), 'subagents.json'))
+  if (value === null) return []
+  if (!Array.isArray(value) || value.some(id => typeof id !== 'string')) throw new Error('Recorded subagent ownership is unreadable.')
+  return value as string[]
+}
+
 /** Changes a run's record. A settled run keeps its outcome whatever the change says. */
 export function updateRun(root: string, runId: string, update: (record: RunRecord) => void): void {
   const record = readRecord(recordPath(root, runId))

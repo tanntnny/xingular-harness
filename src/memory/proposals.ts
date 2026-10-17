@@ -95,6 +95,8 @@ export interface Evidence {
   sourceText?: string | null
   /** Ids of the blocks attached to the run. */
   blocks?: string[]
+  runs?: Record<string, string>
+  sources?: Record<string, string>
 }
 
 const MIN_EXCERPT = 12
@@ -175,6 +177,7 @@ export function captureHashes(wiki: string): Map<string, string> {
   for (const page of store.loadPages(wiki)) add(page.frontmatter.id, page.path)
   for (const memory of facts.loadMemories(wiki)) add(memory.front.id, memory.path)
   for (const block of blocks.loadAll(wiki)) add(block.id, block.path)
+  for (const item of registry.list(dirname(wiki))) add(item.id, item.path)
   return hashes
 }
 
@@ -223,7 +226,11 @@ interface Write {
 }
 
 /** Validates proposals and applies the valid ones as one operation. Pure file logic. */
-export function apply(wiki: string, defaultNamespace: string, trigger: Trigger, proposals: ProposalSet, captured: ReadonlyMap<string, string>, evidence: Evidence): ApplyOutcome {
+export function apply(wiki: string, defaultNamespace: string, trigger: Trigger, proposals: ProposalSet, captured: ReadonlyMap<string, string>, evidence: Evidence, operationKey?: string, appliedBy?: string): ApplyOutcome {
+  if (operationKey) {
+    const committed = readJson<Operation>(join(operationsDir(wiki), `${safeId(operationKey)}.json`))
+    if (committed) return { operation: committed, parked: 0, flagged: 0, notes: ['This request was already applied.'] }
+  }
   const existing = store.loadPages(wiki)
   const existingMemories = facts.loadMemories(wiki)
   const root = dirname(wiki)
@@ -240,7 +247,7 @@ export function apply(wiki: string, defaultNamespace: string, trigger: Trigger, 
   ])
   const outcome: ApplyOutcome = { operation: null, parked: 0, flagged: 0, notes: [] }
   const writes: Write[] = []
-  const actor = triggerActor(trigger)
+  const actor = appliedBy ?? triggerActor(trigger)
   const described = describeTrigger(trigger)
   const fromUser = trigger.kind === 'user'
 
@@ -248,7 +255,7 @@ export function apply(wiki: string, defaultNamespace: string, trigger: Trigger, 
   const park = (kind: string, title: string, label: string, reason: string, body: string, entryId: string, payload: unknown): void => {
     outcome.parked += 1
     outcome.notes.push(`${label} went to the Inbox: ${reason}`)
-    inbox(wiki, kind, title, `${reason}\n\n${takeChars(body, 600)}`, [entryId], null, payload)
+    inbox(wiki, kind, title, `${reason}\n\n${takeChars(body, 600)}`, [entryId], null, operationKey && payload && typeof payload === 'object' ? { ...payload, curationJobId: operationKey } : payload)
   }
 
   // Evidence: a source in the Wiki, the triggering run, a URL, or the user's acceptance. A run
@@ -259,11 +266,12 @@ export function apply(wiki: string, defaultNamespace: string, trigger: Trigger, 
     for (const reference of refs) {
       let id: string | null = null
       if (reference.kind === 'source') {
-        if (sourceIds.has(reference.ref) && (evidence.sourceText == null || quotedIn(evidence.sourceText, reference.excerpt))) id = reference.ref
+        const source = evidence.sources?.[reference.ref] ?? (trigger.kind === 'ingest' && trigger.sourceId === reference.ref ? evidence.sourceText : null)
+        if (sourceIds.has(reference.ref) && (operationKey ? quotedIn(source, reference.excerpt) : (evidence.sourceText == null || quotedIn(evidence.sourceText, reference.excerpt)))) id = reference.ref
       } else if (reference.kind === 'run') {
-        if (triggerRunId(trigger) === reference.ref && quotedIn(evidence.runText, reference.excerpt)) id = `run:${reference.ref}`
+        if (quotedIn(evidence.runs?.[reference.ref] ?? (triggerRunId(trigger) === reference.ref ? evidence.runText : null), reference.excerpt)) id = `run:${reference.ref}`
       } else if (reference.kind === 'url') {
-        if (reference.ref.startsWith('https://') || reference.ref.startsWith('http://')) id = `url:${reference.ref}`
+        if (!operationKey && (reference.ref.startsWith('https://') || reference.ref.startsWith('http://'))) id = `url:${reference.ref}`
       } else if (reference.kind === 'user') {
         if (fromUser) id = 'user:accepted'
       }
@@ -277,7 +285,7 @@ export function apply(wiki: string, defaultNamespace: string, trigger: Trigger, 
       .filter((link) => knownIds.has(link.toId) || proposedIds.has(link.toId))
       .filter((link) => link.toId !== ownId)
       .map((link) => ({ fromId: ownId, toId: link.toId, type: link.type }))
-  const changedSince = (id: string, path: string): boolean => captured.has(id) && captured.get(id) !== fileHash(path)
+  const changedSince = (id: string, path: string): boolean => (captured.has(id) || Boolean(operationKey)) && captured.get(id) !== fileHash(path)
 
   for (const proposal of proposals.pages) {
     const pageId = store.slug(proposal.id ?? proposal.title)
@@ -464,7 +472,7 @@ export function apply(wiki: string, defaultNamespace: string, trigger: Trigger, 
     }
   })
 
-  const operationId = newId()
+  const operationId = operationKey ?? newId()
   const short = operationId.slice(0, 8)
   const pages: OperationPage[] = writes.map((write) => ({
     pageId: write.entryId,

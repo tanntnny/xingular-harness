@@ -13,10 +13,21 @@ needs to work for someone over time, and nothing about any particular applicatio
 | Plugins | `src/plugins/` | What a Pi session loads, chosen by the harness and never by Pi's own discovery; trust for a working folder's code; the list of every plugin and what reaches one caller. |
 | Tools | `src/tools/` | Tool definitions, the memory tools, `ask_user`; a gate that asks the application's policy, then standing approvals, then the person. |
 | Connected apps | `src/mcp/` | MCP connections, OAuth, per-session grants, redaction, a trace of what each call returned. |
-| Terminal | `src/terminal/` | Interactive Pi sessions with isolated accounts, compiled instructions, a telemetry and tool extension, and the session socket with the `xagent-wiki` and `xagent-mcp` commands. |
+| Terminal | `src/terminal/` | A Harness-owned terminal frontend over persistent Pi sessions, isolated accounts, compiled instructions, the tool gate and telemetry bridge, native history, plugin UI, `/plugins`, `/hub`, `/accounts`, and the existing session socket. |
 | Server | `src/server/` | The same API over newline-delimited JSON, for a host that is not a Node program. |
 
 It was split out of Xingular Agent, which is now an application built on it.
+The [documentation index](docs/README.md) links current terminal architecture and decisions.
+
+### Session options for applications
+
+- Interactive sessions offer `spawn_subagent` and `wait_subagents` by default. `subagents: null` disables them; `{ maxDepth }` configures nesting (default one, maximum three). Unattended sessions remain disabled unless the host explicitly supplies subagent options. A frozen capability set can narrow these tools further.
+- `harness.subagents.spawn({ parentRunId, brief, tools?, wait? })` opens a fresh child of the same caller with no wider capabilities. It returns `{ runId, nativeSessionId }` once open; `wait: true` also waits for settlement. `harness.subagents.wait({ parentRunId, runIds? })` joins selected direct children, or the current children when omitted, and returns their outcomes. `results` reads the same bounded outcome records without waiting. RPC exposes `subagents.spawn`, `subagents.wait`, and `subagents.results`; `sessions.spawnSubagent` remains a compatibility alias.
+- The model's `spawn_subagent` returns immediately by default; `wait: true` returns an inline result. `wait_subagents` joins selected children. The SDK and standalone terminal share this execution service. Terminal calls use its private control channel, including when connected apps are disabled.
+- Parents receive results at native turn boundaries and join outstanding children before completing. Typed native-history receipts prevent duplicate automatic delivery; explicit waits can reread results. Ownership is recorded before startup so an explicit resume can recover even a lost spawn return. Startup reservations without a run become interrupted outcomes. A restarted Harness never restarts model work automatically. Recovery requires the same recorded account, caller, working folder, and selected history branch. Session IDs are opaque; consumers follow `parentRunId` and `relation`.
+- `providers: false` runs a session with the harness's own tools only.
+- On the caller, `vaultAccess: 'propose'` writes no memory directly, and `recallExcludeAgents` hides those agents' conversations from recall.
+- `maintenanceRunTrigger: false` (a harness option) leaves memory to explicit proposals and scheduled merges.
 
 ## Using it from Node
 
@@ -64,9 +75,14 @@ An application adds what it knows through six points:
    The harness provides the web tools itself: `webTools({ secrets })` gives `web_search` (Brave Search,
    key read from the secret store) and `web_fetch` (checked reads of public pages). An application
    passes it to `harness.sessions.provide` and switches the names on for each agent.
+   `registryTools({ harness })` gives `registry_write` (a skill, rule, or prompt) and `plugin_write`
+   (a plugin). Each writes for the calling agent only: the item is on for that agent, and a plugin's
+   code is trusted once written. An item others already use goes to the Inbox instead.
 3. **`ToolPolicy`**. `scope` says whether a call is inside what the run may do (or needs one
-   approval); `authorize` says whether the tool is still switched on; `approval` adds facts for
-   standing approvals; `connections` narrows the connected apps a session reaches.
+   approval). A decision with `humanOnly` is for a person alone: the always-approve switch and
+   remembered answers do not apply to it. `authorize` says whether the tool is still switched on;
+   `approval` adds facts for standing approvals; `connections` narrows the connected apps a session
+   reaches.
 4. **`SecretStore`**. Where credentials live (a keychain, a vault). Keys are
    `<account id>/<name>`.
 5. **`Directory`**. Names for the application's ids, shown in what the harness writes.
@@ -111,8 +127,10 @@ working folder brings.
   does nothing. A tool an extension registered is offered to the model and asks before every
   call. A command it registered runs when a message starts with it.
 - **The gate runs last.** In an SDK session it is an inline extension, loaded after those on
-  disk; in a terminal the harness's extension is the last `--extension`. A plugin that changes a
-  tool call's input does so before the gate sees it.
+  disk. A terminal retains its final prepared `--extension` bridge argument; the owned frontend
+  loads that bridge as the final trusted inline factory. A plugin that changes a tool call's
+  input does so before the gate sees it. Every resource reload revalidates the parent's original
+  trusted selection; changed or revoked code requires review and a fresh terminal.
 - **A required part can be extended.** A package names the part it adds to and, optionally, a
   hooks file: `"harness": { "extends": ["memory"], "hooks": "./hooks.mjs" }`. The harness runs
   hooks itself (`src/plugins/hooks.ts`), in its own process, because most memory is written while
@@ -138,8 +156,8 @@ working folder brings.
 - **A person can do the same from a terminal.** In a terminal session, `/plugins` lists what the
   session loads and switches a plugin, or one thing it brings, for the session's project or for
   everyone, and trusts code after showing its files. The session's shell can read the session
-  token from its environment, so a change is taken only with a second key that the harness's
-  extension claims once as it loads (`control.claim`) and keeps in its own memory; the socket's
+  token from its environment, so a change is taken only with a second key that the trusted
+  terminal process claims once (`control.claim`) and shares with its bridge in memory; the socket's
   `plugins.list` is open to the session, and `plugins.attach`, `plugins.detach`, `plugins.trust`
   and `plugins.untrust` refuse without that key. A change applies when the session restarts.
   Outside a session, `xingular-harness plugins list | show | install | remove | update | attach |
@@ -162,9 +180,10 @@ working folder brings.
   one caller, each item attributed to a plugin, with `unattributed` naming any prompt section,
   tool group or tool no plugin accounts for.
 
-A terminal session's `pi` command has four extensions of its own (`builtin:mcp`, `codemode`,
-`tool-search`, `llama.cpp`). They are passed by name unless Pi's settings switch them off. An SDK
-session does not have them.
+A terminal session can load Pi's four existing builtins (`builtin:mcp`, `codemode`,
+`tool-search`, `llama.cpp`). The Harness resource selection passes enabled builtins by name,
+and the pinned compatibility adapter supplies their implementations to the persistent SDK
+runtime. The separate per-turn SDK execution path does not load these terminal builtins.
 
 ## Using it from another language
 
@@ -201,7 +220,7 @@ has no knowledge of the application feature that may call it.
 `npm run prove` starts that server on a throwaway data root, with no application present, and
 exercises accounts, memory, skills, the prompt, connected apps, and a recorded session.
 
-## Run it as a standalone Pi terminal
+## Run it as a standalone Harness terminal
 
 After the CLI package is published to npm or your company's npm registry, install and launch it:
 
@@ -210,31 +229,66 @@ npm install --global @xingular/harness
 xingular-harness
 ```
 
-The machine needs Node 22.19 or newer. On macOS and Linux, the `pi` command must be on `PATH`;
-on Windows, Harness runs the pinned Pi CLI package through the active Node runtime. On first
-launch, the harness creates a `Default` Pi account; Pi handles provider sign-in.
+The machine needs Node 22.19 or newer. Harness runs its own terminal frontend through the
+active Node runtime on every platform, using its pinned Pi SDK; no separate global `pi`
+installation is required. On first launch, it creates a `Default` isolated account. Use
+`/accounts` or `/login` to sign in.
 
 Provider sign-in progress lives in the running Harness process. An embedding application can call
 `accounts.loginStatus` after reconnecting to recover the current device code or prompt by account;
 the status carries a revision so it can be safely merged with streamed login events. Progress is
 never written to account files, and a completed or cancelled attempt no longer exposes its code.
 
-To build and run from a source checkout instead:
+To build and run from a source checkout, use the development command:
 
 ```sh
 npm install
-npm run build
-node dist/cli.js
+npm run dev
 ```
 
-This opens Pi's interactive terminal in the current working directory. The harness adds its
-compiled context, isolated account, approval gate, Wiki commands, and terminal extension while
-Pi provides the interface.
+`npm run dev` rebuilds the CLI and opens the Harness terminal in the current working directory.
+It uses the normal Harness data and state directories. Press `/quit` or Ctrl+C to close it.
+For separate development data, pass the usual `--data <dir>` and `--state <dir>` arguments:
+`npm run dev -- --data <dir> --state <dir>`.
+
+Building a checkout does not update an existing global `xingular-harness` installation.
+To replace that command with this checkout, run `npm pack`, then install the exact tarball
+filename it prints with `npm install --global ./<tarball-filename>`. This is a local install;
+it does not publish a release. Close an already-running terminal session and launch the command
+again to load the new frontend. A package version alone cannot distinguish an unreleased local
+build from an older installed build with the same version.
+
+This opens the Harness-owned terminal frontend in the current working directory. Its
+presentation follows the inspected Oh My Pi 18.11.3 titanium and light palettes, centered welcome, filled
+status band and curved `╰─` prompt, with Harness identity and existing capabilities. Harness
+owns screen composition, editing/input dispatch, scrolling, command routing and plugin UI;
+Pi supplies the persistent execution runtime, native history and rich content components.
+The existing isolated account, compiled context, approval gate, telemetry and Wiki/socket
+commands remain behind the terminal. No Pi `InteractiveMode` is constructed.
+
+`/resume` stays inside the prepared history and working folder; `/import` accepts an explicitly
+selected native JSONL file only for the same working folder. Cancel an active response before
+changing or reloading a session. Full OMP visual parity is not established by the current
+verification. See [terminal architecture and evidence](docs/terminal-tui.md),
+[the decision](docs/decisions/ADR-0001-owned-terminal.md), and [third-party notices](NOTICE.md).
+
+### `/accounts` in the terminal
+
+`/accounts` manages the Pi accounts the same way the app's Accounts screen does: add, rename,
+check, make default, sign in (browser or API key), sign out, remove a provider or an account,
+manage pools, and read the activity log. Each change is made by the person at the terminal; a
+command the model runs in the shell cannot make it.
+
+A running session stays on the account it started with. To use another account for this
+session, choose **Use for this session**: the terminal child restarts and the same conversation
+resumes on that account. Removing an account that a running terminal is using is refused. Only
+terminals in this process are counted, so an account used by another running `xingular-harness` window can
+still be removed; that session then asks for another account the next time it starts.
 
 The default data and device state directories are `~/.xingular-harness/data` and
 `~/.xingular-harness/state`. Override them with `--data <dir>` and `--state <dir>`. Session
-history is stored per working directory and can be reopened with Pi's `/resume` command. The
-explicit `terminal` command is an alias for the default launch. Use `--help` to see the commands;
+history is stored per working directory and can be reopened with the terminal's `/resume`
+command. The explicit `terminal` command is an alias for the default launch. Use `--help` to see the commands;
 `serve` remains the host-facing RPC service for integrations such as Xingular Agent/App.
 
 ## Storage
@@ -244,7 +298,7 @@ explicit `terminal` command is an alias for the default launch. Use `--help` to 
   wiki/             home.md, library/, projects/<slug>/, facts/, blocks/, revisions, inbox, log
   registry/         skills/, prompts/, rules/   (a person's own; never copied)
   plugins/<name>/   packages kept with a person's data; each is found as an installed plugin
-  runs/<id>/        run.json, events.jsonl, context.json, caller.json
+  runs/<id>/        run.json, events.jsonl, context.json, caller.json, subagents.json (reserved child IDs)
   config/           context profiles, what is switched on for whom (plugin-attachments.json),
                     settings the harness reads
   index.sqlite      a rebuildable index of Wiki entries and runs (FTS5)
@@ -266,13 +320,11 @@ The files are the source of truth; `index.sqlite` can be deleted and rebuilt
 ## Commands
 
 ```sh
-npm run typecheck
-npm test          # unit tests and the golden prompt/memory fixtures in tests/golden
+npm run ci        # typecheck, unit/golden tests, and standalone proof; matches GitHub CI
 npm run build     # dist/cli.js (the xingular-harness command) and dist/terminal-pi.js
-npm run prove     # the standalone proof above
 ```
 
-Node 22.13 or newer (for `node:sqlite`).
+Node 22.19 or newer.
 
 ## Images
 
@@ -301,3 +353,17 @@ is `../Hub`; publication remains separate from local installation and testing. R
 Standalone defaults stay separate from a host application's folders. Use explicit `--data` and
 `--state` to target the same library. CLI hub commands construct the harness without opening the
 data root, so they do not migrate the Wiki or settle another process's runs.
+
+
+## External curation
+
+An embedding application may set `externalMaintenance: true`, supply trusted `CallerContext`
+`vaultAccess` (`self` or `curator`), and register `maintenanceTools`/`MAINTENANCE_PLUGIN`.
+Self callers directly edit only their own writable persona/notes; shared knowledge and text-resource
+writes become persistent proposals. Curator tools read original evidence, compare captured target
+revisions, apply reviewed changes, persist receipts and undo without overwriting later edits.
+`maintenance.list`, `maintenance.review` and `maintenance.retry` let the host dispatch its own
+recorded sessions. Curator runs do not recursively queue maintenance. Optional assigned IDs freeze
+which requests a batch may claim. These fields are trusted host context, never model arguments.
+Executable proposals remain inert until the user reviews/trusts them. Standalone callers that omit
+this option retain the existing lifecycle and direct-write contract.

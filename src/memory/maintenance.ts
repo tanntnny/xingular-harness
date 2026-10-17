@@ -22,11 +22,18 @@ import { piMaintainerFactory, runMaintenance, type ExistingBlock, type ExistingM
 import { inbox, undo } from './operations'
 import { accept, apply, captureHashes, describeTrigger, parseProposalSet, writeIndex, type Evidence, type Trigger } from './proposals'
 import { looksSecret } from './secrets'
+import { enqueueCuration, listCuration, curationJob, saveCuration, requireCurator, type CurationJob } from './curation'
+import * as registry from '../skills/registry'
+import * as attachments from '../plugins/attachments'
+import { parkPluginProposal, pluginProposalSchema } from '../plugins/proposal'
+import { registryProposalSchema } from './proposals'
+import { writeJson } from '../core/fs'
+import { invalid } from '../core/errors'
 import * as store from './store'
 import { namespaces, searchEntries } from './wiki'
 import { reindexQuietly } from './wikiIndex'
 
-export type Job = { kind: 'ingest'; namespace: string; sourceId: string } | { kind: 'run'; runId: string } | { kind: 'consolidate'; blockIds: string[] }
+export type Job = { kind: 'ingest'; namespace: string; sourceId: string } | { kind: 'run'; runId: string; namespace?: string } | { kind: 'consolidate'; blockIds: string[] } | { kind: 'review'; requestId?: string; manual?: boolean }
 
 const FULL_PAGES = 5
 const FULL_PAGE_LIMIT = 6000
@@ -144,6 +151,10 @@ export interface MaintenanceOptions {
   factory?: MaintainerFactory
   /** How long the queue stays empty before full blocks are condensed. */
   idleMs?: number
+  external?: boolean
+  excludedTriggers?: string[]
+  /** False: a settled run queues no consolidation of its own. */
+  runTrigger?: boolean
 }
 
 export class Maintenance {
@@ -157,6 +168,13 @@ export class Maintenance {
   /** Starts the idle check. Jobs can be queued whether or not it runs. */
   start(): void {
     this.stopped = false
+    if (this.options.external) {
+      for (const job of this.jobs().filter((job) => job.status === 'running')) {
+        job.status = 'failed'
+        job.reason = 'The previous process stopped before this request settled. Retry it explicitly.'
+        saveCuration(this.options.env.root, job)
+      }
+    }
     this.rest()
   }
 
@@ -188,6 +206,17 @@ export class Maintenance {
 
   enqueue(job: Job): void {
     if (this.idle) clearTimeout(this.idle)
+    if (this.options.external) {
+      if (job.kind === 'run') {
+        try { runEvidence(this.options.env.root, job.runId) } catch (error) { log('maintenance source skipped', error instanceof Error ? error.message : String(error)); return }
+        const run = findRun(this.options.env.root, job.runId)
+        const namespace = run?.projectId ? findProject(this.options.env.root, run.projectId).wikiNamespace : store.LIBRARY_NAMESPACE
+        enqueueCuration(this.options.env.root, { ...job, namespace })
+      } else enqueueCuration(this.options.env.root, job)
+      this.options.bus.emit({ type: 'maintenance.queued' })
+      this.rest()
+      return
+    }
     this.chain = this.chain
       .then(() => this.process(job))
       .catch((error) => log('maintenance', error instanceof Error ? error.message : String(error)))
@@ -196,11 +225,158 @@ export class Maintenance {
 
   /** A settled run is evidence; whether it is eligible is decided when its job runs. */
   onRunEvent(event: RunEvent): void {
+    if (this.options.runTrigger === false) return
+    const caller = readJsonOr<CallerContext | null>(join(this.options.env.root, 'runs', event.runId, 'caller.json'), null)
+    if (caller?.vaultAccess === 'curator' || this.options.excludedTriggers?.includes(findRun(this.options.env.root, event.runId)?.trigger ?? '')) return
     if (event.type === 'completed') this.enqueue({ kind: 'run', runId: event.runId })
   }
 
-  private async process(job: Job): Promise<void> {
-    const { env, bus } = this.options
+  jobs(): CurationJob[] { return listCuration(this.options.env.root) }
+
+  claim(context: CallerContext, id: string, prepare = true): CurationJob {
+    requireCurator(context)
+    const root = this.options.env.root
+    const job = curationJob(root, id)
+    if (job.status === 'completed' || job.status === 'rejected' || job.status === 'needs_user') return job
+    if (context.maintenanceJobIds !== undefined && !context.maintenanceJobIds.includes(id) && !('caller' in job.input && job.input.caller.runId === context.runId)) throw invalid('This request is not assigned to this run.')
+    if (job.runId && job.runId !== context.runId && job.status === 'running') throw invalid('Another run owns this request.')
+    job.runId = context.runId!
+    if (prepare && job.input.kind !== 'proposal' && job.input.kind !== 'registry' && job.input.kind !== 'plugin' && !job.prepared) {
+      let prepared: ReturnType<Maintenance['prepare']>
+      try { prepared = this.prepare(job.input) } catch (error) { job.status = 'failed'; job.reason = error instanceof Error ? error.message : String(error); saveCuration(root, job); throw error }
+      job.prepared = { request: prepared.request, evidence: prepared.evidence, namespace: prepared.namespace, trigger: prepared.trigger }
+      job.hashes = [...prepared.captured]
+      if (job.prepared.evidence.sourceText) job.prepared.evidence.sourceText = takeChars(job.prepared.evidence.sourceText, 60_000)
+    }
+    if (prepare && job.input.kind === 'proposal' && !job.prepared) {
+      const input = job.input
+      const origin = input.caller.runId
+      const attached = input.proposals.blocks.map((proposal) => blocks.find(store.wikiDir(root), proposal.block))
+      const evidence = origin && input.caller.vaultAccess !== 'curator' ? evidenceText(root, origin) : ''
+      const context = maintainerContext(root, input.namespace, evidence)
+      job.prepared = { request: { jobId: job.id, namespace: input.namespace, trigger: { kind: 'run', runId: origin ?? '', transcript: takeChars(evidence, 24_000) }, pages: context.pages, memories: context.memories, blocks: blockValues(attached), index: '' }, evidence: { runText: evidence, blocks: attached.map((block) => block.id) }, namespace: input.namespace, trigger: { kind: 'agent', runId: origin ?? null, actor: 'Curator' } }
+    }
+    job.status = 'running'
+    job.runId = context.runId!
+    return saveCuration(root, job)
+  }
+
+  readJob(context: CallerContext, id: string): unknown {
+    const job = this.claim(context, id)
+    return { id: job.id, status: job.status, input: job.input, context: job.prepared?.request ?? null, receipt: job.receipt }
+  }
+
+  decide(context: CallerContext, id: string, decision: 'reject' | 'needs_user', reason: string): CurationJob {
+    if (!reason.trim()) throw invalid('Explain the decision.')
+    const job = this.claim(context, id, false)
+    if (job.status === 'completed' || job.status === 'rejected' || job.status === 'needs_user') return job
+    job.status = decision === 'reject' ? 'rejected' : 'needs_user'
+    job.reason = reason.trim()
+    job.receipt = { operationId: null, notes: [job.reason], parked: decision === 'needs_user' ? 1 : 0, flagged: 0 }
+    if (decision === 'needs_user') {
+      const input = job.input
+      if (input.kind === 'registry') {
+        const proposal = input.proposal
+        inbox(store.wikiDir(this.options.env.root), 'proposed', `Review ${proposal.kind}: ${proposal.name}`, reason, [], null, { kind: proposal.kind, proposal, curationJobId: id })
+      } else if (input.kind === 'plugin') parkPluginProposal(store.wikiDir(this.options.env.root), `Curated request ${id}`, pluginProposalSchema.parse(input.proposal))
+      else inbox(store.wikiDir(this.options.env.root), 'unresolved', 'Maintenance needs your decision', reason, [])
+    }
+    this.options.bus.emit({ type: 'wiki.changed' })
+    return saveCuration(this.options.env.root, job)
+  }
+
+  applyJob(context: CallerContext, id: string, replacement?: unknown, reason = '', scope?: attachments.AttachScope): CurationJob {
+    if (!reason.trim()) throw invalid('Explain why this change should be applied.')
+    const root = this.options.env.root
+    const wiki = store.wikiDir(root)
+    const job = this.claim(context, id)
+    if (job.status === 'completed' || job.status === 'rejected' || job.status === 'needs_user') return job
+    const committed = readJsonOr<{ id: string } | null>(join(wiki, 'operations', `${job.id}.json`), null)
+    if (committed) {
+      job.status = 'completed'
+      job.receipt = { operationId: committed.id, notes: ['This request was already committed.'], parked: 0, flagged: 0 }
+      return saveCuration(root, job)
+    }
+    const input = job.input
+    if (input.kind === 'plugin') return this.decide(context, id, 'needs_user', reason || 'Plugin files require user review before activation; executable code also needs explicit trust.')
+    if (input.kind === 'registry') {
+      const proposal = registryProposalSchema.parse(input.proposal)
+      const itemId = `${proposal.kind}s/${store.slug(proposal.name)}`
+      if (!['skill', 'prompt', 'rule'].includes(proposal.kind) || !proposal.name.trim() || !proposal.body.trim() || looksSecret(proposal.body)) throw invalid('Invalid text resource proposal.')
+      const existing = registry.list(root).find((item) => item.id === itemId)
+      const current = captureHashes(wiki).get(itemId)
+      if (existing?.builtin || current !== new Map(job.hashes).get(itemId)) return this.decide(context, id, 'needs_user', 'The resource is built-in or changed since it was proposed. Review the current version.')
+      const target = scope ?? { agentId: input.caller.agentId ?? context.agentId }
+      if (target.agentId && target.projectId) throw invalid('Choose one attachment scope.')
+      if (target.agentId && target.agentId !== context.agentId && target.agentId !== input.caller.agentId && !this.options.env.directory.agentName(target.agentId)) throw invalid('Unknown attachment target.')
+      if (target.projectId) findProject(root, target.projectId)
+      const before = existing ? store.snapshot(wiki, itemId, readFileSync(existing.path, 'utf8'), 'Curator', `Before ${id}`).id : null
+      const beforeChoices = attachments.load(root)
+      registry.writeItem(root, proposal.kind, proposal.name, proposal.description, proposal.body, `Curated request ${id}: ${reason || proposal.reason}`, context.agentName ?? 'Curator')
+      const saved = registry.list(root).find((item) => item.id === itemId)!
+      const after = store.currentRevision(wiki, itemId)!
+      const choices = attachments.load(root)
+      attachments.set(choices, [itemId], target, true, false)
+      attachments.save(root, choices)
+      writeJson(join(wiki, 'operations', `${id}.json`), { id, createdAt: now(), trigger: `Curated request ${id}`, pages: [{ pageId: itemId, path: saved.path, beforeRevisionId: before, afterRevisionId: after }], undone: false, protected: true, attachmentsBefore: beforeChoices, attachmentsAfter: choices })
+      job.receipt = { operationId: id, notes: [`Saved ${itemId}; enabled for ${target.agentId ?? target.projectId ?? 'everyone'}. ${reason || proposal.reason}`], parked: 0, flagged: 0 }
+      this.options.bus.emit({ type: 'plugins.changed' })
+    } else {
+      const prepared = job.prepared
+      const proposalInput = input.kind === 'proposal' ? input : null
+      const proposals = parseProposalSet(replacement ?? proposalInput?.proposals)
+      const origin = proposalInput?.caller.runId ?? null
+      const trigger: Trigger = prepared?.trigger ?? { kind: 'agent', runId: origin, actor: context.agentName ?? 'Curator' }
+      const evidence: Evidence = input.kind === 'proposal' ? (prepared?.evidence ?? {}) : this.prepare(input).evidence
+      const originEvidence: Evidence = prepared?.evidence ?? { runText: origin ? evidenceText(root, origin) : null, blocks: proposals.blocks.map((block) => block.block) }
+      {
+        if (input.kind === 'proposal') Object.assign(evidence, originEvidence)
+        evidence.runs = {}
+        evidence.sources = {}
+        const refs = [...proposals.pages, ...proposals.memories, ...proposals.blocks].flatMap(proposal => proposal.sourceRefs).slice(0, 20)
+        for (const ref of refs) {
+          if (ref.kind === 'run' && findRun(root, ref.ref) && readJsonOr<CallerContext | null>(join(root, 'runs', ref.ref, 'caller.json'), null)?.vaultAccess !== 'curator') {
+            const excluded = readJsonOr<{ excludedSourceIds?: string[] }>(join(root, 'config/settings.json'), {}).excludedSourceIds ?? []
+            const text = evidenceText(root, ref.ref)
+            if (!excluded.includes(ref.ref) && !looksSecret(text)) evidence.runs[ref.ref] = takeChars(text, 60_000)
+          }
+          if (ref.kind === 'source') {
+            const source = store.listSources(wiki).find(source => source.id === ref.ref)
+            if (source) {
+              const text = readFileSync(join(wiki, 'raw', source.id, source.name), 'utf8')
+              if (!looksSecret(text)) evidence.sources[ref.ref] = takeChars(text, 60_000)
+            }
+          }
+        }
+      }
+      const outcome = apply(wiki, prepared?.namespace ?? proposalInput?.namespace ?? store.LIBRARY_NAMESPACE, trigger, proposals, new Map(job.hashes), evidence, id, context.agentName ?? 'Curator')
+      if (outcome.operation) writeJson(join(wiki, 'operations', `${outcome.operation.id}.json`), { ...outcome.operation, protected: true })
+      job.receipt = { operationId: outcome.operation?.id ?? null, notes: outcome.notes, parked: outcome.parked, flagged: outcome.flagged }
+    }
+    job.status = job.receipt.parked ? 'needs_user' : 'completed'
+    job.reason = reason
+    reindexQuietly(root)
+    this.options.bus.emit({ type: 'wiki.changed' })
+    return saveCuration(root, job)
+  }
+
+  finishRun(runId: string, failed: boolean): void {
+    for (const job of this.jobs().filter((job) => job.runId === runId && job.status === 'running')) {
+      job.status = failed ? 'failed' : 'completed'
+      job.reason = failed ? 'The run stopped before completing this request. Retry it explicitly.' : 'The review completed without applying a change.'
+      job.receipt ??= { operationId: null, notes: [job.reason], parked: 0, flagged: 0 }
+      saveCuration(this.options.env.root, job)
+    }
+  }
+
+  retry(id: string): CurationJob {
+    const job = curationJob(this.options.env.root, id)
+    if (job.status !== 'failed') throw invalid('Only a failed request can be retried.')
+    return saveCuration(this.options.env.root, { ...job, status: 'queued', runId: null, reason: '', receipt: null })
+  }
+
+  prepare(job: Job): { request: MaintenanceRequest; evidence: Evidence; captured: Map<string, string>; namespace: string; trigger: Trigger } {
+    const { env } = this.options
     const root = env.root
     const wiki = store.wikiDir(root)
     const evidence: Evidence = {}
@@ -220,9 +396,7 @@ export class Maintenance {
         text = null
       }
       if (text === null) {
-        inbox(wiki, 'unresolved', `${sourceName} was imported but not summarized`, 'Only text sources can be synthesized automatically right now.', [])
-        bus.emit({ type: 'wiki.changed' })
-        return
+        throw invalid('Only text sources can be synthesized automatically right now.')
       }
       shown = takeChars(text, 60_000)
       evidence.sourceText = text
@@ -234,8 +408,7 @@ export class Maintenance {
       try {
         found = runEvidence(root, job.runId)
       } catch (error) {
-        log(`maintenance skipped run ${job.runId}: ${error instanceof Error ? error.message : String(error)}`)
-        return
+        throw error
       }
       evidence.runText = evidenceText(root, job.runId)
       attached = runBlocks(env, job.runId)
@@ -244,7 +417,7 @@ export class Maintenance {
       trigger = { kind: 'run', runId: job.runId }
       request = { kind: 'run', runId: job.runId, transcript: shown }
     } else {
-      attached = job.blockIds.flatMap((id) => {
+      attached = (job.kind === 'review' ? blocks.loadAll(wiki).filter((block) => !block.front.readOnly).sort((a, b) => charCount(b.body) / b.front.limit - charCount(a.body) / a.front.limit).slice(0, 30).map((block) => block.id) : job.blockIds).flatMap((id) => {
         try {
           const block = blocks.find(wiki, id)
           return block.front.readOnly ? [] : [block]
@@ -252,7 +425,7 @@ export class Maintenance {
           return []
         }
       })
-      if (!attached.length) return
+      if (!attached.length && job.kind !== 'review') throw invalid('No writable blocks remain in this job.')
       namespace = store.LIBRARY_NAMESPACE
       trigger = { kind: 'consolidate' }
       request = { kind: 'consolidate' }
@@ -266,12 +439,27 @@ export class Maintenance {
     } catch {
       index = ''
     }
+    return { request: { jobId: '', namespace, trigger: request, pages: context.pages, memories: context.memories, blocks: blockValues(attached), namespaces: namespaces(root), index }, evidence, captured, namespace, trigger }
+  }
+
+  private async process(job: Job): Promise<void> {
+    const { env, bus } = this.options
+    const root = env.root
+    const wiki = store.wikiDir(root)
+    let prepared: ReturnType<Maintenance['prepare']>
+    try { prepared = this.prepare(job) } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      if (job.kind === 'run') log(`maintenance skipped run ${job.runId}: ${message}`)
+      else if (job.kind === 'ingest') { inbox(wiki, 'unresolved', 'Source was imported but not summarized', message, []); bus.emit({ type: 'wiki.changed' }) }
+      return
+    }
+    const { namespace, trigger, evidence, captured } = prepared
     const described = describeTrigger(trigger)
     try {
       // The job runs on the default account.
       const account = this.options.accounts.context(this.options.accounts.resolve())
       const proposed = await runMaintenance(
-        { jobId: newId(), namespace, trigger: request, pages: context.pages, memories: context.memories, blocks: blockValues(attached), namespaces: namespaces(root), index },
+        { ...prepared.request, jobId: newId() },
         { cwd: wiki, product: env.productName, account, runtime: () => this.options.accounts.runtime(account) },
         this.options.factory ?? piMaintainerFactory
       )

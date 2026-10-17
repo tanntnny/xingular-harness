@@ -10,11 +10,23 @@ import * as blocks from './blocks'
  * never limits what can be read.
  */
 export interface CallerContext {
+  /** Opaque, host-owned policy data frozen when this session starts. The harness only forwards it to the embedding app's tool policy. */
+  policyContext?: unknown
+  /**
+   * Trusted, frozen vault mutation capability supplied by an embedding host. `self` writes its own
+   * persona and notes directly and proposes the rest; `propose` writes nothing directly; `curator`
+   * applies proposals.
+   */
+  vaultAccess?: 'self' | 'propose' | 'curator'
+  maintenanceJobId?: string | null
+  maintenanceJobIds?: string[]
   runId?: string | null
   sessionId?: string | null
   projectId?: string | null
   /** The agent calling; it decides which memory blocks are attached and editable. */
   agentId?: string | null
+  /** Agents whose conversations this caller may not recall (opaque ids from the embedding host). */
+  recallExcludeAgents?: string[] | null
   /** The agent's name, recorded on the revisions it makes. */
   agentName?: string | null
   /** Projects whose briefs the agent carries, most recently active first. */
@@ -42,7 +54,7 @@ export function projectOf(root: string, context: CallerContext): Project | null 
 export function blockCaller(env: HarnessEnv, context: CallerContext): blocks.Caller {
   if (isSession(context)) return { kind: 'session', projectSlug: projectOf(env.root, context)?.slug ?? null }
   if (!context.agentId) throw invalid('Memory blocks need an agent or a Harness session.')
-  return { kind: 'agent', id: context.agentId, name: context.agentName ?? env.directory.agentName(context.agentId) ?? context.agentId }
+  return { kind: 'agent', id: context.agentId, name: context.agentName ?? env.directory.agentName(context.agentId) ?? context.agentId, vaultAccess: context.vaultAccess === 'propose' ? 'propose' : context.vaultAccess ? 'self' : undefined }
 }
 
 /** The blocks in the caller's context: an agent also carries the briefs of its active projects. */

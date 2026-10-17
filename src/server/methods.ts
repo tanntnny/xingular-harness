@@ -14,7 +14,7 @@ import { capabilitySet } from '../capabilities/runSnapshot'
 import type { Harness } from '../harness'
 import * as blocks from '../memory/blocks'
 import { validateScopeIds } from '../mcp/connections'
-import type { CallerContext } from '../memory/caller'
+import { callerBlocks, type CallerContext } from '../memory/caller'
 import { dispatch } from '../memory/dispatch'
 import * as facts from '../memory/facts'
 import * as graph from '../memory/graph'
@@ -33,6 +33,7 @@ import { comparison, compile, CONTEXT_PROFILES, load, profiles, render, setProfi
 import { selectHistory } from '../sessions/history'
 import { runsSince } from '../sessions/runIndex'
 import { findRun, listRuns, loadRun, pendingDecisions, readEvents, runFamily, snapshot } from '../sessions/runStore'
+import type { SubagentInput, SubagentSelection } from '../sessions/subagents'
 import type { SessionRunInput } from '../sessions/sessions'
 import * as registry from '../skills/registry'
 import type { TerminalPrepareInput } from '../terminal/terminals'
@@ -46,6 +47,16 @@ const text = (params: Params, name: string): string => {
   return value
 }
 const optional = (params: Params, name: string): string | null => (typeof params[name] === 'string' && params[name] ? (params[name] as string) : null)
+const questionAnswer = (value: unknown): { selected: string[]; text?: string; notes?: Record<string, string> } => {
+  const answer = value && typeof value === 'object' && !Array.isArray(value) ? value as Params : {}
+  return {
+    selected: Array.isArray(answer.selected) ? answer.selected.filter((label: unknown): label is string => typeof label === 'string') : [],
+    ...(typeof answer.text === 'string' && answer.text ? { text: answer.text } : {}),
+    ...(answer.notes && typeof answer.notes === 'object' && !Array.isArray(answer.notes)
+      ? { notes: Object.fromEntries(Object.entries(answer.notes).filter((entry): entry is [string, string] => typeof entry[1] === 'string')) }
+      : {})
+  }
+}
 const pluginScope = (params: Params): plugins.PluginScope => ({ cwd: optional(params, 'cwd'), accountId: optional(params, 'accountId'), agentId: optional(params, 'agentId'), projectId: optional(params, 'projectId') })
 
 /** Sources larger than this are not imported. */
@@ -65,6 +76,10 @@ export function methods(harness: Harness): Record<string, Handler> {
     'harness.status': () => ({ dataRoot: harness.dataRoot, productName: env.productName, recovery: harness.recovery, activeRuns: runs.activeRunIds() }),
     'harness.open': (params: Params) => harness.open(text(params, 'dataRoot'), Array.isArray(params.agentIds) ? params.agentIds : []),
     'harness.rebuildIndex': () => harness.rebuildIndex(),
+    'maintenance.list': (params: Params) => maintenance.jobs().filter((job) => params.runId ? job.runId === params.runId || (Array.isArray(params.ids) && params.ids.includes(job.id)) : params.includeCompleted === true || !['completed', 'rejected'].includes(job.status)).map(({ prepared: _prepared, hashes: _hashes, ...job }) => job),
+    'maintenance.review': (params: Params) => { maintenance.enqueue({ kind: 'review', requestId: optional(params, 'requestId') ?? String(Date.now()), manual: params.manual === true }); return { queued: true } },
+    'maintenance.failRun': (params: Params) => { maintenance.finishRun(text(params, 'runId'), true); return null },
+    'maintenance.retry': (params: Params) => maintenance.retry(text(params, 'id')),
     'hub.list': (params: Params) => harness.hub.list(params.refresh === true),
     'hub.get': (params: Params) => harness.hub.get(text(params, 'id'), text(params, 'version'), params.preview === true),
     'hub.install': (params: Params) => harness.hub.install(text(params, 'id'), text(params, 'version')),
@@ -201,6 +216,11 @@ export function methods(harness: Harness): Record<string, Handler> {
     },
 
     // ---- What a session calls, on behalf of a caller the host names -------------------------------
+    'memory.permissions': (params: Params) => {
+      const context = (params.context ?? {}) as CallerContext
+      const { caller, attached } = callerBlocks(env, context)
+      return attached.map((block) => ({ id: block.id, writable: blocks.editRefusal(caller, block) === null, reason: blocks.editRefusal(caller, block) }))
+    },
     'memory.call': (params: Params) => dispatch(env, (params.context ?? {}) as CallerContext, text(params, 'call'), params.params ?? {}),
 
     // ---- Recall ------------------------------------------------------------------------------------
@@ -283,6 +303,13 @@ export function methods(harness: Harness): Record<string, Handler> {
       await runs.interrupt(runId)
       return loadRun(root(), runId)
     },
+    // A message the person sends into a live reply. It reaches the model after the current step;
+    // `message.steered` marks the moment, and a message the run never takes is reported by its end.
+    'runs.steer': async (params: Params) => {
+      const runId = text(params, 'runId')
+      await runs.steer(runId, text(params, 'text'))
+      return { runId }
+    },
     // What the application reports into a live run, and an approval it asks a person for.
     'runs.emit': (params: Params) => {
       const run = runs.active(text(params, 'runId'))
@@ -303,9 +330,17 @@ export function methods(harness: Harness): Record<string, Handler> {
       return { decision }
     },
     'runs.resolveApproval': (params: Params) => runs.resolveApproval(text(params, 'runId'), text(params, 'approvalId'), params.decision),
-    'runs.answerQuestion': (params: Params) => runs.answerQuestion(text(params, 'runId'), text(params, 'questionId'), { selected: Array.isArray(params.answer?.selected) ? params.answer.selected : [], ...(typeof params.answer?.text === 'string' && params.answer.text ? { text: params.answer.text } : {}) }),
+    'runs.answerQuestion': (params: Params) => runs.answerQuestion(text(params, 'runId'), text(params, 'questionId'), questionAnswer(params.answer)),
+    'runs.answerQuestions': (params: Params) => {
+      if (!Array.isArray(params.answers)) throw invalid('answers must be an array.')
+      runs.answerQuestions(text(params, 'runId'), text(params, 'batchId'), params.answers.map((item: Params) => ({ questionId: text(item, 'questionId'), answer: questionAnswer(item.answer) })))
+    },
 
     // ---- Sessions ----------------------------------------------------------------------------------
+    'subagents.spawn': (params: Params) => harness.subagents.spawn(params as SubagentInput),
+    'subagents.wait': (params: Params) => harness.subagents.wait(params as SubagentSelection),
+    'subagents.results': (params: Params) => harness.subagents.results(params as SubagentSelection),
+    'sessions.spawnSubagent': (params: Params) => sessions.spawnSubagent(params as SubagentInput),
     'sessions.run': (params: Params) => sessions.run(params as SessionRunInput),
     'sessions.history': (params: Params) => ({ sessionFile: selectHistory({ sessionDir: text(params, 'sessionDir'), resume: params.resume ?? null }) }),
 

@@ -1,0 +1,18 @@
+{
+  "command": "/opt/homebrew/bin/xingular-harness",
+  "shellEntryPoint": true,
+  "ownedWelcomeAndSettings": true,
+  "terminal": {
+    "exitCode": 0,
+    "termiosRestored": true,
+    "bracketedPasteDisabled": true,
+    "cursorShown": true,
+    "snapshots": []
+  },
+  "capture": {
+    "file": "shell-command-80x24.ansi.gz",
+    "rawSha256": "5bb7e5318baf2a6b1dab5affcb0a10c632db5b21fd9ac426581f399fbb4dbcdc",
+    "archiveSha256": "594e5bec27c824bdf562376860ef16862970175af7e6222b00b90ccacf19f489"
+  },
+  "passed": true
+}

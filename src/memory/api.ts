@@ -11,6 +11,7 @@ import { findRun, readEvents } from '../sessions/runStore'
 import type { RunEvent } from '../sessions/contracts'
 import { takeChars } from '../core/text'
 import * as registry from '../skills/registry'
+import { enqueueCuration } from './curation'
 import * as blocks from './blocks'
 import { actorOf, blockCaller, projectOf, type CallerContext } from './caller'
 import * as facts from './facts'
@@ -104,7 +105,7 @@ export function search(env: HarnessEnv, context: CallerContext, params: Params):
   // Another agent's blocks never appear; a block of the caller's own does.
   const own = ownBlocksPrefix(env, context)
   const hits = searchEntries(root, query, { kinds, namespace: textParam(params, 'namespace') || null, projectId: context.projectId, limit: limit + 6 })
-    .filter((hit) => !(hit.kind === 'block' && hit.type === 'agent') || (own !== null && hit.id.startsWith(own)))
+    .filter((hit) => context.vaultAccess === 'curator' || !(hit.kind === 'block' && hit.type === 'agent') || (own !== null && hit.id.startsWith(own)))
     .slice(0, limit)
   if (!hits.length) return 'No matching Wiki entries.'
   const wiki = store.wikiDir(root)
@@ -126,7 +127,7 @@ export function read(env: HarnessEnv, context: CallerContext, params: Params): s
   // An agent's own blocks are not readable by other agents or by sessions.
   if (entry.kind === 'block' && entry.block.scope === 'agent') {
     const own = ownBlocksPrefix(env, context)
-    if (own === null || `blocks/agents/${entry.block.owner}/` !== own) throw notFound('Wiki entry')
+    if (context.vaultAccess !== 'curator' && (own === null || `blocks/agents/${entry.block.owner}/` !== own)) throw notFound('Wiki entry')
   }
   const linking = backlinks(root, entryId(entry))
   const linked = linking.length ? linking.map((link) => `${link.fromId} (${link.type})`).join(', ') : 'none'
@@ -272,13 +273,26 @@ export function propose(env: HarnessEnv, context: CallerContext, params: Params)
     proposals = {
       memories: [{ id: optional(params, 'id'), title, kind: optional(params, 'type') ?? 'fact', body, namespace: optional(params, 'namespace'), confidence: optional(params, 'confidence'), supersedes: optional(params, 'supersedes'), volatile: typeof params?.volatile === 'boolean' ? params.volatile : null, sourceRefs: sourceRefs(params, context), links: links(params) }]
     }
+  } else if (kind === 'block') {
+    const id = textParam(params, 'id')
+    const block = blocks.find(wiki, id)
+    if (block.front.readOnly) throw invalid('This block is user-only; only the user can change it.')
+    proposals = { blocks: [{ block: id, body, sourceRefs: sourceRefs(params, context) }] }
   } else if (kind === 'skill' || kind === 'rule' || kind === 'prompt') {
+    if (context.vaultAccess) {
+      const job = enqueueCuration(root, { kind: 'registry', proposal: { kind, name: optional(params, 'id') ?? title, description: textParam(params, 'description'), body, reason: textParam(params, 'reason') }, caller: context })
+      return `Submitted proposal ${job.id} for curator review. Nothing has been changed.`
+    }
     const id = parkRegistryProposal(wiki, trigger, { kind, name: optional(params, 'id') ?? title, description: textParam(params, 'description'), body, reason: textParam(params, 'reason') })
     return `The ${kind} change (${id}) is waiting in the Wiki Inbox. Skills, prompts, and rules change only after the user accepts them.`
   } else {
     throw invalid('kind must be page, fact, skill, rule, or prompt.')
   }
   // The caller's own run is evidence only for what it can quote from it.
+  if (context.vaultAccess) {
+    const job = enqueueCuration(root, { kind: 'proposal', namespace: defaultNamespace, proposals: parseProposalSet(proposals), caller: context })
+    return `Submitted proposal ${job.id} for curator review. Nothing has been changed.`
+  }
   const outcome = apply(wiki, defaultNamespace, trigger, parseProposalSet(proposals), captureHashes(wiki), { runText: context.runId ? evidenceText(root, context.runId) : null })
   let text = outcome.notes.join('\n')
   if (outcome.operation) {

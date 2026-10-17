@@ -7,6 +7,7 @@ import { join, resolve } from 'node:path'
 import { invalid } from '../core/errors'
 import type { Harness } from '../harness'
 import { actorOf, type CallerContext } from '../memory/caller'
+import { enqueueCuration } from '../memory/curation'
 import { inbox } from '../memory/operations'
 import { parkRegistryProposal } from '../memory/proposals'
 import { looksSecret } from '../memory/secrets'
@@ -68,8 +69,8 @@ function ownedByCaller(choices: attachments.Attachments, id: string, agentId: st
 function registryWriteTool(harness: Harness, caller: CallerContext): ToolSpec {
   return {
     name: REGISTRY_WRITE,
-    label: 'Write a skill, rule or prompt',
-    description:
+    label: caller.vaultAccess ? 'Propose a skill, rule or prompt' : 'Write a skill, rule or prompt',
+    description: caller.vaultAccess ? 'Submit a bounded text skill, rule or prompt for curator review. It stays inactive until reviewed; permissions and code trust remain unchanged.' :
       'Write a skill, rule or prompt directly. It is on only for you until the user switches it on for others. ' +
       'An item that others already use, or that is built in, is not changed: your text goes to the Inbox for the user to review. ' +
       'A rule reaches every future prompt of the agents it is on for, so write one only when it should always apply.',
@@ -92,6 +93,12 @@ function registryWriteTool(harness: Harness, caller: CallerContext): ToolSpec {
       if (!name || !body.trim()) throw invalid('A skill, prompt, or rule needs a name and a body.')
       if (Buffer.byteLength(body, 'utf8') > MAX_BODY_BYTES) throw invalid('The body is larger than 64 KiB.')
       if (looksSecret(body)) throw invalid('The text looks like a credential, so it was not saved.')
+
+      if (caller.vaultAccess === 'self' || caller.vaultAccess === 'propose' || caller.vaultAccess === 'curator') {
+        const job = enqueueCuration(harness.env.root, { kind: 'registry', proposal: { kind, name, description, body, reason }, caller })
+        harness.bus.emit({ type: 'wiki.changed' })
+        return `Submitted proposal ${job.id} for curator review. Nothing has been activated.`
+      }
 
       const { root } = harness.env
       const wiki = store.wikiDir(root)
@@ -118,8 +125,8 @@ function registryWriteTool(harness: Harness, caller: CallerContext): ToolSpec {
 function pluginWriteTool(harness: Harness, caller: CallerContext): ToolSpec {
   return {
     name: PLUGIN_WRITE,
-    label: 'Write a plugin',
-    description:
+    label: caller.vaultAccess ? 'Propose a plugin' : 'Write a plugin',
+    description: caller.vaultAccess ? 'Submit a plugin bundle for curator and user review. It remains inactive and untrusted; executable code requires an explicit user trust decision. Include at most 40 bounded files; never include credentials.' :
       'Write a plugin directly: a bundle of files that changes how agents work. It is switched on for you only. ' +
       'If it contains code (extensions/ or hooks.mjs), that code is trusted and runs in your sessions; nobody else runs it. ' +
       'Files by folder: skills/<name>/SKILL.md, prompts/<name>.md, extensions/<name>.ts, and hooks.mjs. Do not include package.json. Put no key or password in a file.',
@@ -142,6 +149,11 @@ function pluginWriteTool(harness: Harness, caller: CallerContext): ToolSpec {
         files
       }
       const checked = checkPluginProposal(proposal)
+      if (caller.vaultAccess === 'self' || caller.vaultAccess === 'propose' || caller.vaultAccess === 'curator') {
+        const job = enqueueCuration(harness.env.root, { kind: 'plugin', proposal, caller })
+        harness.bus.emit({ type: 'wiki.changed' })
+        return `Submitted proposal ${job.id}. Executable code requires user review and trust.`
+      }
       const { root } = harness.env
       // Trust the packages that were there first, so the new one is not adopted with them.
       await ensureAdopted(harness)

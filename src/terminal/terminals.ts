@@ -1,15 +1,21 @@
-// Terminal sessions: a person working with the `pi` command in a terminal that the embedding
-// application draws. The harness prepares the launch (isolated account, compiled instructions,
-// skills, the session socket), then follows the process through its extension. It never owns
-// the terminal: the application spawns the process from the spec returned here and reports when
-// it exits.
+// A host owns the PTY and process supervision; Harness owns the terminal application inside it.
+// This service prepares the isolated account, compiled context, trusted resource selection and
+// socket bridge. The default launch runs our frontend with Pi's persistent SDK runtime.
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { Type } from 'typebox'
+
+import type { CapabilitySet } from '../capabilities/types'
+import { freezeRun } from '../capabilities/runSnapshot'
+import type { Subagents } from '../sessions/subagentService'
+import { SPAWN_SUBAGENT, WAIT_SUBAGENTS, type SubagentOptions } from '../sessions/subagents'
+import { subagentTools } from '../tools/spawnSubagent'
+import type { Effort } from '../sessions/runner'
 import type { Accounts } from '../accounts/accounts'
 import { configDir, launchEnv } from '../accounts/env'
-import type { Account } from '../accounts/store'
+import { readAudit, type Account } from '../accounts/store'
 import type { Bus } from '../core/bus'
 import { log } from '../core/bus'
 import type { HarnessEnv } from '../core/env'
@@ -20,7 +26,7 @@ import type { BrokerSession, ConnectedApps } from '../mcp/service'
 import type { CallerContext } from '../memory/caller'
 import { dispatch } from '../memory/dispatch'
 import type { AttachParams, PluginScope } from '../plugins/api'
-import type { Plugins } from '../plugins/plugins'
+import type { Loading, Plugins } from '../plugins/plugins'
 import type { Plugin } from '../plugins/types'
 import type { Hub } from '../hub/hub'
 import { compile, copyToRun, memoryDelta, record, render, saveForSession, type Launch } from '../prompt/compile'
@@ -36,6 +42,16 @@ import { SOCKET_ENV, TOKEN_ENV } from './client'
 import { TerminalController, type PolicyReply } from './controller'
 import { resolvePiCommand, terminalCommandFiles } from './launch'
 import { SessionSocket, socketPath } from './socket'
+
+/** Identity of the exact resource decision that this terminal was prepared with. */
+function resourceIdentity(loading: Loading | null): string {
+  if (!loading) return 'null'
+  return JSON.stringify({
+    extensions: loading.extensionPaths, builtins: loading.builtins, skills: loading.skillPaths,
+    prompts: loading.promptPaths, themes: loading.themePaths, detached: loading.detached,
+    project: loading.projectCode, packages: loading.packageCode
+  })
+}
 
 /** The files a terminal session needs on disk, outside this process. */
 export interface TerminalAssets {
@@ -55,6 +71,7 @@ export function defaultAssets(): TerminalAssets {
 }
 
 export interface TerminalPrepareInput {
+  subagents?: SubagentOptions | null
   sessionId: string
   /** The account the session is pinned to. Omitted only for a session that has none yet; it then takes the default and keeps it. */
   accountId?: string | null
@@ -92,6 +109,8 @@ interface Live {
 }
 
 export interface TerminalsOptions {
+  subagents?: Subagents
+  resolveCapabilities?: (caller: CallerContext, tools: readonly string[], cwd: string) => Promise<CapabilitySet>
   env: HarnessEnv
   stateDir: string
   accounts: Accounts
@@ -105,7 +124,7 @@ export interface TerminalsOptions {
   pluginControl?: PluginControl
   hub?: Hub
   assets?: TerminalAssets
-  /** The `pi` executable. Defaults to the PATH command on POSIX and the bundled CLI on Windows. */
+  /** The `pi` executable. Defaults to the pinned bundled CLI through the active Node runtime. */
   program?: () => string | null
 }
 
@@ -123,13 +142,31 @@ export class Terminals {
   private readonly sessions = new Map<string, Live>()
   private readonly socket: SessionSocket
   private readonly assets: TerminalAssets
+  /** A session's `/accounts` switch, taken once its Pi process has ended. */
+  private readonly relaunches = new Map<string, { accountId: string; nativeSessionId: string | null }>()
 
   constructor(private readonly options: TerminalsOptions) {
     this.assets = options.assets ?? defaultAssets()
+    options.runs.listen(event => {
+      this.sessions.get(event.sessionId)?.controller.observe(event)
+      const record = findRun(options.env.root, event.runId)
+      if (record?.relation !== 'subagent') return
+      let parentId = record.parentRunId
+      const seen = new Set<string>()
+      while (parentId && !seen.has(parentId)) {
+        seen.add(parentId)
+        const parent = findRun(options.env.root, parentId)
+        if (!parent) break
+        const owner = this.sessions.get(parent.sessionId)
+        if (owner?.controller.activeRun?.runId === parent.id) { owner.controller.observe(event, true); break }
+        parentId = parent.parentRunId
+      }
+    })
     this.socket = new SessionSocket(socketPath(options.stateDir), {
       memory: (caller, call, params) => dispatch(options.env, caller, call, params),
       apps: (session, call, params) => this.appsCall(session, call, params),
-      plugins: (grant, call, params, control) => this.pluginsCall(grant.sessionId, call, params, control)
+      plugins: (grant, call, params, control) => this.pluginsCall(grant.sessionId, call, params, control),
+      accounts: (grant, call, params, control) => this.accountsCall(grant.sessionId, call, params, control)
     })
   }
 
@@ -228,6 +265,86 @@ export class Terminals {
     }
   }
 
+  /**
+   * `/accounts` in a terminal. Every call needs the session's control key: adding, signing in,
+   * or removing an account is a person's choice, never the model's shell command.
+   */
+  private async accountsCall(sessionId: string, call: string, params: Record<string, unknown>, control: boolean): Promise<unknown> {
+    const { accounts } = this.options
+    const live = this.sessions.get(sessionId)
+    if (!live) throw new HarnessError('unknown_method', `Unknown call ${call}.`)
+    if (!control) throw new HarnessError('unauthorized', 'Only a person at this terminal can manage accounts. Type /accounts.')
+    const text = (name: string): string => {
+      if (typeof params[name] !== 'string' || !params[name]) throw invalid(`${name} is required.`)
+      return params[name] as string
+    }
+    const optional = (name: string): string | null => (typeof params[name] === 'string' ? (params[name] as string) : null)
+    switch (call) {
+      case 'accounts.deviceId':
+        return accounts.installationDeviceId()
+      case 'accounts.list':
+        return accounts.overview()
+      case 'accounts.session':
+        return { accountId: live.account.id, label: live.account.label }
+      case 'accounts.create':
+        return accounts.create(text('label'), optional('authKind') ?? 'subscription')
+      case 'accounts.rename':
+        return accounts.rename(text('accountId'), text('label'))
+      case 'accounts.setDefault':
+        return accounts.setDefault(text('accountId'))
+      case 'accounts.remove': {
+        const accountId = text('accountId')
+        // Every terminal in this process counts, this session's own included. Another process's terminals are not visible here.
+        if (accounts.terminalCount(accountId) > 0) throw new HarnessError('account_in_use', 'A running terminal is using this account, this one included.', 'Switch this session to another account first, then remove it.')
+        return accounts.remove(accountId)
+      }
+      case 'accounts.refresh':
+        return accounts.refresh(optional('accountId'))
+      case 'accounts.providers':
+        return accounts.providers()
+      case 'accounts.loginStart':
+        return accounts.loginStart(text('accountId'), text('provider'), optional('method'))
+      case 'accounts.loginStatus':
+        return accounts.loginStatus(text('accountId'))
+      case 'accounts.loginRespond':
+        accounts.loginRespond(text('loginId'), text('promptId'), optional('value'))
+        return {}
+      case 'accounts.loginCancel':
+        accounts.loginCancel(text('accountId'), optional('loginId'))
+        return {}
+      case 'accounts.setApiKey':
+        return accounts.setApiKey(text('accountId'), text('key'), text('provider'))
+      case 'accounts.removeProvider':
+        return accounts.removeProvider(text('accountId'), text('provider'))
+      case 'accounts.signOut':
+        return accounts.signOut(text('accountId'))
+      case 'accounts.savePool': {
+        const pool = params.pool as { id?: unknown; label?: unknown; accountIds?: unknown } | undefined
+        if (!pool || typeof pool.label !== 'string' || !Array.isArray(pool.accountIds) || !pool.accountIds.every((id) => typeof id === 'string')) throw invalid('A pool needs a label and its account ids.')
+        return accounts.savePool({ id: typeof pool.id === 'string' ? pool.id : undefined, label: pool.label, accountIds: pool.accountIds as string[] })
+      }
+      case 'accounts.removePool':
+        return accounts.removePool(text('poolId'))
+      case 'accounts.audit':
+        return readAudit(accounts.dir, optional('accountId'), typeof params.limit === 'number' ? params.limit : 100)
+      case 'accounts.relaunch': {
+        // Checked here so a bad choice is refused before the session is asked to end.
+        const target = accounts.resolve(text('accountId'))
+        this.relaunches.set(sessionId, { accountId: target.id, nativeSessionId: live.controller.nativeSessionId })
+        return { accountId: target.id, label: target.label }
+      }
+      default:
+        throw new HarnessError('unknown_method', `Unknown call ${call}.`)
+    }
+  }
+
+  /** The account a session asked to switch to. Taken once, after its Pi process has ended and before `dispose`. */
+  takeRelaunch(sessionId: string): { accountId: string; nativeSessionId: string | null } | null {
+    const request = this.relaunches.get(sessionId) ?? null
+    this.relaunches.delete(sessionId)
+    return request
+  }
+
   private live(sessionId: string): Live {
     const live = this.sessions.get(sessionId)
     if (!live) throw new HarnessError('terminal_not_ready', 'The terminal controller is unavailable. Reopen this session.')
@@ -301,9 +418,50 @@ export class Terminals {
     }
     // With no application policy: reads run, a read-only session refuses the rest, and anything else asks.
     const name = tool.toLowerCase()
-    if (READ_ONLY_TOOLS.has(name) || this.options.apps.toolNames.includes(name as never)) return { allowed: true }
+    if (name === SPAWN_SUBAGENT || name === WAIT_SUBAGENTS || READ_ONLY_TOOLS.has(name) || this.options.apps.toolNames.includes(name as never)) return { allowed: true }
     if (live.input.readOnly) return { allowed: false, reason: 'This session is read-only.' }
     return { allowed: false, requiresApproval: true, reason: 'This native action requires approval.' }
+  }
+
+  private async subagentsCall(live: Live, call: string, params: Record<string, any>): Promise<unknown> {
+    const service = this.options.subagents
+    if (!service || live.input.subagents === null) {
+      if (call === 'terminal.subagents.tools') return { tools: [] }
+      throw invalid('Subagents are disabled for this terminal.')
+    }
+    if (call === 'terminal.subagents.tools') return { tools: subagentTools(service, '').map(tool => ({ name: tool.name, label: tool.label, description: tool.description, parameters: tool.parameters(Type) })) }
+    const run = live.controller.activeRun
+    if (!run) throw new HarnessError('run_not_active', 'This terminal has no active parent run.')
+    if (call === 'terminal.subagents.register') {
+      if (!Array.isArray(params.tools) || params.tools.some((name: unknown) => typeof name !== 'string')) throw invalid('Native tool names are required.')
+      const readOnly = live.input.readOnly === true
+      const readTools = new Set([...READ_ONLY_TOOLS, SPAWN_SUBAGENT, WAIT_SUBAGENTS, 'ask_user', 'mcp_list_tools', 'mcp_call_tool', 'history_search', 'history_read', 'wiki_search', 'wiki_read', 'wiki_list', 'memory_facts', 'skill_load'])
+      const tools = params.tools.filter((name: string) => !readOnly || readTools.has(name)) as string[]
+      const capabilities = this.options.resolveCapabilities ? await this.options.resolveCapabilities(live.caller, tools, live.input.cwd) : { version: 1 as const, tools, connectors: [], contributions: [] }
+      freezeRun(this.options.env.root, run.runId, live.caller, capabilities)
+      service.register({
+        run: { id: run.runId, sessionId: live.input.sessionId, mode: live.input.run?.mode ?? 'code', projectId: live.input.projectId, worktreeId: live.input.run?.worktreeId },
+        cwd: live.input.cwd, sessionDir: this.historyDir(live.input), text: '', caller: live.caller,
+        model: typeof params.model === 'string' ? params.model : live.input.model,
+        effort: typeof params.effort === 'string' ? params.effort as Effort : null,
+        launch: live.input.launch, tools: { allow: capabilities.tools, gated: capabilities.tools.filter(name => !readTools.has(name)) },
+        connections: live.input.connections === false ? false : { readOnly }, subagents: live.input.subagents,
+        capabilities
+      }, live.account.id, capabilities)
+      service.restore(run.runId, params.history ?? { owners: [], receipts: [] })
+      return { runId: run.runId }
+    }
+    if (call === 'terminal.subagents.verify') { await service.verify(run.runId, params.history); return {} }
+    if (call === 'terminal.subagents.delivery') return service.delivery(run.runId, params.history, params.settle === true)
+    if (call === 'terminal.subagents.call') {
+      const tool = subagentTools(service, run.runId).find(tool => tool.name === params.name)
+      if (!tool) throw invalid('Unknown subagent tool.')
+      const reason = await this.decide(live, run, tool.name, params.input ?? {})
+      if (!reason.allowed) throw new HarnessError('tool_denied', reason.reason ?? 'Subagents are unavailable.')
+      const result = await tool.execute(params.input ?? {})
+      return typeof result === 'string' ? { text: result } : result
+    }
+    throw invalid('Unknown subagent operation.')
   }
 
   /**
@@ -315,7 +473,7 @@ export class Terminals {
     const { root } = env
     if (!input?.sessionId || !input.cwd || !input.sessionFolder) throw invalid('A terminal session needs an id, a working folder, and its own folder.')
     await this.dispose(input.sessionId)
-    const command = resolvePiCommand({ platform: process.platform, node: this.assets.node, programOverride: this.options.program })
+    const command = resolvePiCommand({ platform: process.platform, node: this.assets.node, cli: this.assets.cli, programOverride: this.options.program })
     // A pinned account is used as it is; it is never exchanged for another one.
     const account = input.accountId ? accounts.find(input.accountId) : accounts.resolve(null, null)
     const launch = launchEnv(accounts.dir, account)
@@ -347,14 +505,24 @@ export class Terminals {
           begin: ({ reservedRunId, text }) => this.begin(live, reservedRunId, text),
           policy: (run, tool, args) => this.decide(live, run, tool, args),
           native: (nativeSessionId) => bus.emit({ type: 'terminal.native', sessionId, nativeSessionId }),
-          telemetry: (event) => bus.emit({ type: 'terminal.telemetry', sessionId, event })
+          telemetry: (event) => bus.emit({ type: 'terminal.telemetry', sessionId, event }),
+          interrupt: runId => this.options.runs.interrupt(runId),
+          resolveApproval: (runId, id, decision) => this.options.runs.resolveApproval(runId, id, decision),
+          answerQuestion: (runId, id, answer) => this.options.runs.answerQuestion(runId, id, answer),
+          answerQuestions: (runId, batchId, answers) => this.options.runs.answerQuestions(runId, batchId, answers)
         })
       }
       token = this.socket.issue({
         sessionId,
         caller: () => ({ ...caller, runId: live.controller.activeRun?.runId ?? null }),
         broker,
-        terminal: { accept: (event, data) => live.controller.accept(event, data), disconnected: () => live.controller.disconnected() }
+        terminal: { accept: (event, data) => live.controller.accept(event, data), disconnected: () => live.controller.disconnected(), control: async (call, params) => {
+          if (call.startsWith('terminal.subagents.')) return this.subagentsCall(live, call, params)
+          if (call !== 'terminal.resources') return live.controller.control(call, params)
+          const current = await this.options.plugins?.loading({ cwd: input.cwd, agentDir: configDir(accounts.dir, account), install: false, caller: { projectId: input.projectId ?? null } }) ?? null
+          if (resourceIdentity(current) !== resourceIdentity(loading)) throw new HarnessError('terminal_resources_changed', 'Trusted resources changed since this terminal was prepared. Review /plugins and reopen the terminal to load the new selection.')
+          return {}
+        } }
       })
       live.token = token
       this.sessions.set(sessionId, live)
@@ -378,6 +546,7 @@ export class Terminals {
         args,
         env: {
           ...launch,
+          XINGULAR_HARNESS_NAME: env.productName,
           ...(process.platform === 'win32' ? { XINGULAR_HARNESS_NODE: this.assets.node, XINGULAR_HARNESS_CLI: this.assets.cli } : {}),
           ...prependSearchPath(this.ensureCommands(), searchPath()),
           [SOCKET_ENV]: this.socket.path,

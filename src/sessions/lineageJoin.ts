@@ -16,7 +16,7 @@ function directChildren(root: string, runId: string): RunSummary[] {
   try {
     return runFamily(root, runId).runs
       .map(({ run }) => run)
-      .filter((run) => run.parentRunId === runId)
+      .filter((run) => run.parentRunId === runId && run.relation !== 'subagent')
       .map((run) => ({ id: run.id, status: run.status, goal: run.goal, terminalReason: run.terminalReason }))
   } catch {
     return []

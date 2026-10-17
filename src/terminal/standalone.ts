@@ -1,5 +1,4 @@
-// The standalone entry point for people using the harness directly. Pi owns the interface;
-// the harness prepares the isolated account, context, extension, and session socket.
+// The standalone host prepares an isolated Harness terminal and supervises its frontend.
 import { spawn as nodeSpawn } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
 import { homedir } from 'node:os'
@@ -77,7 +76,7 @@ function spawnError(error: Error, launch: TerminalLaunch): Error {
   const code = (error as NodeJS.ErrnoException).code
   if (code !== 'ENOENT' && code !== 'EACCES' && code !== 'EPERM') return error
   if (launch.program === process.execPath || launch.env.XINGULAR_HARNESS_NODE === launch.program) {
-    return new Error(`Could not start the Pi terminal because Node could not run "${launch.args[0] ?? 'the bundled Pi CLI'}" (${code}). Verify Node and the bundled Pi package are installed.`, { cause: error })
+    return new Error(`Could not start the Harness terminal because Node could not run "${launch.args[0] ?? 'the bundled Harness CLI'}" (${code}). Verify Node and the Harness package are installed.`, { cause: error })
   }
   const problem = code === 'ENOENT' ? 'was not found' : `could not start (${code})`
   return new Error(`Could not start Pi terminal. Pi executable "${launch.program}" ${problem}; verify it is installed and executable or check the configured terminal executable.`, { cause: error })
@@ -127,7 +126,8 @@ export async function runStandaloneTerminal(argv: string[], dependencies: Standa
   const paths = parseStandaloneOptions(argv, dependencies.home, cwd)
   const makeHarness = dependencies.createHarness ?? createHarness
   const harness = makeHarness({ dataRoot: paths.dataRoot, stateDir: paths.stateDir, productName: 'Xingular Harness' })
-  const sessionId = (dependencies.createSessionId ?? randomUUID)()
+  const newSessionId = dependencies.createSessionId ?? randomUUID
+  let current = { sessionId: newSessionId(), accountId: null as string | null, nativeSessionId: null as string | null }
 
   try {
     await harness.ready
@@ -135,10 +135,19 @@ export async function runStandaloneTerminal(argv: string[], dependencies: Standa
 
     const cwdHash = createHash('sha256').update(cwd).digest('hex')
     const sessionFolder = join(paths.dataRoot, 'sessions', 'terminal', cwdHash)
-    const launch = await harness.terminals.prepare({ sessionId, cwd, sessionFolder })
-    return await spawnPi(launch, cwd, dependencies.spawn)
+    for (;;) {
+      const launch = await harness.terminals.prepare({ ...current, cwd, sessionFolder })
+      const code = await spawnPi(launch, cwd, dependencies.spawn)
+      // `/accounts` asks for a switch and ends Pi. The conversation resumes on the chosen account.
+      const next = harness.terminals.takeRelaunch(current.sessionId)
+      if (!next) return code
+      const label = harness.accounts.find(next.accountId).label
+      process.stdout.write(`Switching this session to account ${label}.\n`)
+      await harness.terminals.dispose(current.sessionId)
+      current = { sessionId: newSessionId(), accountId: next.accountId, nativeSessionId: next.nativeSessionId }
+    }
   } finally {
-    await harness.terminals.dispose(sessionId)
+    await harness.terminals.dispose(current.sessionId)
     await harness.close()
   }
 }

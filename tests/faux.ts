@@ -17,6 +17,8 @@ export interface Faux {
   requests(): number
   /** The text of the tool results in the last request the model was sent, by tool call order. */
   lastToolResults(): string[]
+  /** The text of the user messages in the last request the model was sent, in order. */
+  lastUserTexts(): string[]
 }
 
 /** Gives every account of this harness a scripted model. */
@@ -36,12 +38,13 @@ export async function fauxModel(harness: Harness): Promise<Faux> {
       faux.setResponses(
         responses.map((response) => (context: { messages: { role: string; content: unknown }[] }) => {
           seen = context.messages
-          return response
+          return typeof response === 'function' ? response(context) : response
         }) as never
       ),
     says: (text) => ai.fauxAssistantMessage(text),
     calls: (...calls) => ai.fauxAssistantMessage(calls.map(([name, args]) => ai.fauxToolCall(name, args)), { stopReason: 'toolUse' }),
     requests: () => faux.state.callCount,
-    lastToolResults: () => seen.filter((message) => message.role === 'toolResult').map((message) => (Array.isArray(message.content) ? message.content.map((part: { text?: string }) => part.text ?? '').join('') : String(message.content)))
+    lastToolResults: () => seen.filter((message) => message.role === 'toolResult').map((message) => (Array.isArray(message.content) ? message.content.map((part: { text?: string }) => part.text ?? '').join('') : String(message.content))),
+    lastUserTexts: () => seen.filter((message) => message.role === 'user').map((message) => (Array.isArray(message.content) ? message.content.map((part: { text?: string }) => part.text ?? '').join('') : String(message.content)))
   }
 }

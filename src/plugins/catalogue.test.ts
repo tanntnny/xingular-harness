@@ -73,7 +73,7 @@ describe('the plugin list', () => {
       ['app-tasks', 'application', ['tool:start_task:on']],
       ['web', 'application', ['tool:web_search:on', 'tool:web_fetch:on']]
     ])
-    expect(plugins.filter((plugin) => plugin.source === 'builtin').map((plugin) => plugin.id)).toEqual(['ask-user', 'budget-guard', 'connected-apps', 'history', 'memory', 'output-trim', 'plugin-proposals', 'wiki'])
+    expect(plugins.filter((plugin) => plugin.source === 'builtin').map((plugin) => plugin.id)).toEqual(['ask-user', 'budget-guard', 'connected-apps', 'history', 'memory', 'output-trim', 'plugin-proposals', 'subagents', 'wiki'])
 
     const kit = plugins.find((plugin) => plugin.id === 'package:review-kit')!
     // It was there when trust was first asked per package, so it was taken over as trusted.

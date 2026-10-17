@@ -1,0 +1,130 @@
+{
+  "passed": true,
+  "implementation": "production standalone CLI + real Pi SDK + loopback OpenAI SSE transport",
+  "cli": "/Users/tanny/Documents/Projects/Xingular/Xingular Agent/Harness/dist/cli.js",
+  "cliSha256": "76d6ac270479abb2c84dc3eba6d7956467ece708f6b2a9976e256af1330739c1",
+  "verifierSha256": "71f2a827e458a333f9f01aa8048f30db6bb21065cd4c7b9a51feab7d130c4b62",
+  "provider": "controlled loopback OpenAI-compatible streaming transport; no external model requests or user credentials",
+  "requestCount": 18,
+  "profiles": [
+    {
+      "size": "40x20",
+      "checks": [
+        "welcome and real configured model",
+        "actual settings tabs, section focus, keyboard search/control and Escape return",
+        "command autocomplete and real accounts selector",
+        "Unicode, real streaming/thinking/read/bash/approval/question, expansion, resizing and scrolling",
+        "new session, explicit scoped resume and session naming",
+        "actual stream cancellation and interrupted run record",
+        "explicit account switching, process restart and real run on newly pinned account"
+      ],
+      "persistedRunCount": 3,
+      "exitCode": 0,
+      "termiosRestored": true,
+      "bracketedPasteDisabled": true,
+      "cursorShown": true
+    },
+    {
+      "size": "80x24",
+      "checks": [
+        "welcome and real configured model",
+        "actual settings tabs, section focus, keyboard search/control and Escape return",
+        "command autocomplete and real accounts selector",
+        "Unicode, real streaming/thinking/read/bash/approval/question, expansion, resizing and scrolling",
+        "new session, explicit scoped resume and session naming",
+        "actual stream cancellation and interrupted run record",
+        "explicit account switching, process restart and real run on newly pinned account"
+      ],
+      "persistedRunCount": 3,
+      "exitCode": 0,
+      "termiosRestored": true,
+      "bracketedPasteDisabled": true,
+      "cursorShown": true
+    },
+    {
+      "size": "120x40",
+      "checks": [
+        "welcome and real configured model",
+        "actual settings tabs, section focus, keyboard search/control and Escape return",
+        "command autocomplete and real accounts selector",
+        "Unicode, real streaming/thinking/read/bash/approval/question, expansion, resizing and scrolling",
+        "new session, explicit scoped resume and session naming",
+        "actual stream cancellation and interrupted run record",
+        "explicit account switching, process restart and real run on newly pinned account"
+      ],
+      "persistedRunCount": 3,
+      "exitCode": 0,
+      "termiosRestored": true,
+      "bracketedPasteDisabled": true,
+      "cursorShown": true
+    }
+  ],
+  "captures": [
+    {
+      "file": "40x20-welcome.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 40,
+      "rows": 20,
+      "rawBytes": 2901,
+      "rawSha256": "bbabb16e9e923f0bcf1c6d0781e3c91eefa819b11649a762cc34e0a104681b16",
+      "archiveBytes": 653,
+      "archiveSha256": "d22a0e07420d5e648290ccae08bb27284d8607d483f81337771102ba3dadc605"
+    },
+    {
+      "file": "40x20-settings-interaction.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 40,
+      "rows": 20,
+      "rawBytes": 10395,
+      "rawSha256": "6a933553fd256805ec75cb598f9a39b390dcfd5d78dea778ffe301a1e875fad8",
+      "archiveBytes": 1259,
+      "archiveSha256": "57c28148f2fcd339167fd0a60127ffe1fe9905d8496708c79464e4e6fb3f312c"
+    },
+    {
+      "file": "40x20-settings-keyboard.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 40,
+      "rows": 20,
+      "rawBytes": 12595,
+      "rawSha256": "f0a70d7cbf10d85c92d7a3fcc300a5bb2f0a26d3d5ff527924a649fd4f777403",
+      "archiveBytes": 1396,
+      "archiveSha256": "2ae513f637ddcc7fc903c55f96c35006bd11a9d95bc6d1e961c80636d7328398"
+    },
+    {
+      "file": "80x24-approval-0.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 80,
+      "rows": 24,
+      "rawBytes": 54463,
+      "rawSha256": "48b0ee63969f7b8d09add20edd8c61a7b3e43786e6a22e7c2624be26b28173cd",
+      "archiveBytes": 3428,
+      "archiveSha256": "307e401b2d0d311fa362e20496b9dcc2bff4a8a427c68f0cb61517db6f180f22"
+    },
+    {
+      "file": "80x24-question.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 80,
+      "rows": 24,
+      "rawBytes": 66349,
+      "rawSha256": "11951b9c71e340d8033d5bbefb259eedcd751f92881ffebc1440e721efefe459",
+      "archiveBytes": 3867,
+      "archiveSha256": "ddd4cedd9c8ab5adbd0f4e436931501a8b154b54839ffd3a22c69f5d019e6540"
+    },
+    {
+      "file": "120x40-completed-transcript.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 120,
+      "rows": 40,
+      "rawBytes": 136187,
+      "rawSha256": "ace9f73ae5499e0db188ac092f658e140fccacfcc41233aa252c2ed1509ff6e7",
+      "archiveBytes": 5939,
+      "archiveSha256": "abfcf2c2c5da270b32acb5b8fce6e8e97de3d0f9b7ada664fbcfbaa5e98d52c4"
+    }
+  ],
+  "limits": [
+    "The AgentSession, frontend, native tools, authorization and run writer are production code.",
+    "The controlled local transport supplies deterministic model responses and usage fixtures.",
+    "These functional checks do not establish external provider OAuth/service availability or visual equivalence to OMP.",
+    "Each compressed capture is a cumulative actual ANSI stream from PTY startup through the named interaction. Replay at its recorded dimensions."
+  ]
+}

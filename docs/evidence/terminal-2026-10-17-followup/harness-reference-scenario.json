@@ -1,0 +1,60 @@
+{
+  "executable": "/opt/homebrew/bin/node",
+  "arguments": [
+    "/Users/tanny/Documents/Projects/Xingular/Xingular Agent/Harness/dist/cli.js",
+    "--state",
+    "/private/var/folders/69/1vwvfl494kx0sqjxln4f0mtm0000gn/T/harness-omp-reference-l6rdt909/harness-state",
+    "--data",
+    "/private/var/folders/69/1vwvfl494kx0sqjxln4f0mtm0000gn/T/harness-omp-reference-l6rdt909/harness-data"
+  ],
+  "working_directory": "/private/var/folders/69/1vwvfl494kx0sqjxln4f0mtm0000gn/T/harness-omp-reference-l6rdt909/project",
+  "environment": {
+    "ASSEMBLYAI_API_KEY": "",
+    "PI_CODING_AGENT_DIR": "/private/var/folders/69/1vwvfl494kx0sqjxln4f0mtm0000gn/T/harness-omp-reference-l6rdt909/agent",
+    "TERM": "xterm-256color",
+    "COLORTERM": "truecolor"
+  },
+  "terminal": {
+    "columns": 80,
+    "rows": 24,
+    "scrollback": 100
+  },
+  "events": [
+    {
+      "at_ms": 8000,
+      "type": "input",
+      "data": "/settings\r"
+    },
+    {
+      "at_ms": 10000,
+      "type": "input",
+      "data": "\u001b"
+    },
+    {
+      "at_ms": 11000,
+      "type": "input",
+      "data": "/quit\r"
+    }
+  ],
+  "timeout_ms": 15000,
+  "settle_ms": 200,
+  "limits": {
+    "output_bytes": 2000000
+  },
+  "normalization": {
+    "paths": true,
+    "patterns": [
+      {
+        "pattern": "Oh My Pi",
+        "replacement": "PRODUCT"
+      },
+      {
+        "pattern": "Xingular Harness",
+        "replacement": "PRODUCT"
+      }
+    ]
+  },
+  "filesystem_observation_paths": [
+    "/Users/tanny/Documents/Projects/Xingular/Xingular Agent/Harness/dist/cli.js"
+  ]
+}

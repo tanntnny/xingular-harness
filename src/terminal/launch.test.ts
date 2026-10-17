@@ -1,26 +1,17 @@
-import { spawnSync } from 'node:child_process'
 import { describe, expect, it } from 'vitest'
 
-import { bundledPiCli, resolvePiCommand, terminalCommandFiles } from './launch'
+import { resolvePiCommand, terminalCommandFiles } from './launch'
 
 describe('terminal launch commands', () => {
-  it('runs the pinned Pi CLI with the active Node runtime on Windows', () => {
-    const launch = resolvePiCommand({ platform: 'win32', node: 'C:\\Program Files\\nodejs\\node.exe' })
+  it.each(['darwin', 'linux', 'win32'] as const)('runs the owned Harness frontend with the active Node runtime on %s', (platform) => {
+    const launch = resolvePiCommand({ platform, node: 'C:\\Program Files\\nodejs\\node.exe', cli: '/bundle/cli.js' })
 
     expect(launch.program).toBe('C:\\Program Files\\nodejs\\node.exe')
-    expect(launch.argsPrefix[0]).toMatch(/[\\/]node_modules[\\/]@earendil-works[\\/]pi-coding-agent[\\/]dist[\\/]bundle[\\/]cli\.js$/)
-  })
-
-  it('runs the package CLI through Node for a no-model help smoke', () => {
-    const result = spawnSync(process.execPath, [bundledPiCli(), '--help'], { encoding: 'utf8', timeout: 20_000 })
-
-    expect(result.error).toBeUndefined()
-    expect(result.status).toBe(0)
-    expect(`${result.stdout}${result.stderr}`).toMatch(/usage|options|pi/i)
+    expect(launch.argsPrefix).toEqual(['/bundle/cli.js', 'terminal-frontend'])
   })
 
   it('keeps an explicitly configured executable even on Windows', () => {
-    expect(resolvePiCommand({ platform: 'win32', node: 'node.exe', programOverride: () => 'C:\\Tools\\pi.exe' }))
+    expect(resolvePiCommand({ platform: 'win32', node: 'node.exe', cli: '/bundle/cli.js', programOverride: () => 'C:\\Tools\\pi.exe' }))
       .toEqual({ program: 'C:\\Tools\\pi.exe', argsPrefix: [] })
   })
 

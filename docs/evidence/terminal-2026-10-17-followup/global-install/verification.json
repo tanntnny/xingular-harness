@@ -1,0 +1,95 @@
+{
+  "passed": true,
+  "implementation": "production standalone CLI + real Pi SDK + loopback OpenAI SSE transport",
+  "cli": "/opt/homebrew/lib/node_modules/@xingular/harness/dist/cli.js",
+  "cliSha256": "2f5df943661a1e89440d0e81d59cd4a5bdb7aaf087a2a930e232b6743d5db093",
+  "verifierSha256": "6b7652f0093b12a37bd975fcffa7accc0f34d627022397b7e45923be270abc85",
+  "provider": "controlled loopback OpenAI-compatible streaming transport; no external model requests or user credentials",
+  "requestCount": 13,
+  "profiles": [
+    {
+      "size": "80x24",
+      "checks": [
+        "welcome and real configured model",
+        "actual settings tabs, section focus, keyboard search/control and Escape return",
+        "command autocomplete and real accounts selector",
+        "suspend/resume restores cooked/raw terminal modes and command input",
+        "Unicode, real streaming/thinking/read/bash/approval/question, expansion, resizing and scrolling",
+        "trusted plugin custom overlay, widget, status and disposal",
+        "grouped question progress and atomic choice/text answers through real registry",
+        "approval deny and Escape cancellation prevent actual tool execution",
+        "question Escape cancellation settles pending tools and interrupts run",
+        "new session, explicit scoped resume and session naming",
+        "actual stream cancellation and interrupted run record",
+        "explicit account switching, process restart and real run on newly pinned account",
+        "fatal asynchronous plugin failure exits 1 and restores terminal modes",
+        "plugin startup failure exits 1 and restores terminal modes"
+      ],
+      "persistedRunCount": 7,
+      "exitCode": 0,
+      "termiosRestored": true,
+      "bracketedPasteDisabled": true,
+      "cursorShown": true,
+      "fatalCleanup": {
+        "exitCode": 1,
+        "termiosRestored": true,
+        "bracketedPasteDisabled": true,
+        "cursorShown": true
+      },
+      "startupCleanup": {
+        "exitCode": 1,
+        "termiosRestored": true,
+        "bracketedPasteDisabled": true,
+        "cursorShown": true
+      }
+    }
+  ],
+  "captures": [
+    {
+      "file": "80x24-approval-0.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 80,
+      "rows": 24,
+      "rawBytes": 62572,
+      "rawSha256": "cc7b642a0f09d09eca3af30996b2a965462e547301c984fb81aaa47d39dc0663",
+      "archiveBytes": 5398,
+      "archiveSha256": "8b5ef850e4f0a7fb55d4dd15c9f2178add149e536dd6268b6292329e2ac88820"
+    },
+    {
+      "file": "80x24-question.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 80,
+      "rows": 24,
+      "rawBytes": 75413,
+      "rawSha256": "9c851409fbb3d52928bb09ed45ad525744feff0f6915e79a75e9365d0012dd67",
+      "archiveBytes": 5871,
+      "archiveSha256": "fe993aab1adeef4cacbc6faadf26c322f2cdc88115d9c83ec245e0175b4f1658"
+    },
+    {
+      "file": "80x24-plugin-light.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 120,
+      "rows": 30,
+      "rawBytes": 122320,
+      "rawSha256": "1da1e9a83fe56f5f90d7e6abe9c207a891de0f49b02c2190087a2a5ac1a6a2ab",
+      "archiveBytes": 7712,
+      "archiveSha256": "db8a25e009be6958d36daa37f9427d21ceeba1b0a9ef61405fb069204c596bc7"
+    },
+    {
+      "file": "80x24-question-batch.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 120,
+      "rows": 30,
+      "rawBytes": 173412,
+      "rawSha256": "62e8af05a73a37320a8cbcf276c6a8a35a4a8f8771cb4dcd7d25230cf3b7d7bb",
+      "archiveBytes": 8836,
+      "archiveSha256": "152f7f4cf0cc9c0621f460fb00e91733874a691183be87807c39ac1d846a7fa6"
+    }
+  ],
+  "limits": [
+    "The AgentSession, frontend, native tools, authorization and run writer are production code.",
+    "The controlled local transport supplies deterministic model responses and usage fixtures.",
+    "These functional checks do not establish external provider OAuth/service availability or visual equivalence to OMP.",
+    "Each compressed capture is a cumulative actual ANSI stream from PTY startup through the named interaction. Replay at its recorded dimensions."
+  ]
+}

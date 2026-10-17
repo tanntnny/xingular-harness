@@ -23,6 +23,9 @@ export type Effort = (typeof EFFORTS)[number]
 /** What one turn needs once its prompt is compiled and its tools are chosen. */
 export interface TurnParams {
   runId: string
+  /** Child runs may not gain tools registered by extensions outside their snapshot. */
+  restrictTools?: boolean
+  settle?: () => Promise<void>
   cwd: string
   sessionDir: string
   /** The native history to open, or `null` to start a fresh one. */
@@ -77,13 +80,19 @@ export type PiEvent =
 
 export interface PiSessionLike {
   sessionId: string
+  sessionManager?: { getBranch(): unknown[] }
+  thinkingLevel?: Effort
   systemPrompt?: string
   extensionCommands?: readonly string[]
-  model?: { input: string[]; contextWindow?: number }
+  model?: { input: string[]; contextWindow?: number; id?: string; provider?: string }
   getActiveToolNames?(): string[]
   getAllTools?(): Array<{ name: string; description?: string; parameters?: unknown }>
   subscribe(listener: (event: PiEvent) => void): () => void
   prompt(text: string, options?: { images?: unknown[] }): Promise<void>
+  /** Queues a message for the model after the current step. Resolves `handled` when Pi takes it without queueing. */
+  steer?(text: string): Promise<'handled' | 'queued'>
+  /** Drops queued messages Pi has not delivered. */
+  clearQueue?(): unknown
   sendCustomMessage?(message: { customType: string; content: string; display: boolean; details: unknown }, options: { triggerTurn: boolean }): Promise<void>
   abort(): Promise<void>
   dispose(): void
@@ -255,11 +264,35 @@ export async function runTurn(run: ActiveRun, session: PiSessionLike, params: Tu
     await session.abort()
   })
 
+  // Steers handed to Pi and not yet delivered, oldest first. Pi delivers them in that order, after
+  // the prompt's own user message, which is the first user message it starts.
+  const pendingSteers: string[] = []
+  let accepting = false
+  let promptStarted = false
+  const forgetSteer = (text: string): void => {
+    const index = pendingSteers.lastIndexOf(text)
+    if (index >= 0) pendingSteers.splice(index, 1)
+  }
+  run.onSteer(async (text) => {
+    if (!accepting || !session.steer) throw new HarnessError('run_not_active', 'This reply is not accepting messages.')
+    pendingSteers.push(text)
+    try {
+      if ((await session.steer(text)) === 'handled') forgetSteer(text)
+    } catch (error) {
+      forgetSteer(text)
+      throw error
+    }
+  })
+
   const unsubscribe = session.subscribe((event) => {
     switch (event.type) {
       case 'message_start': {
         const { message } = event as Extract<PiEvent, { type: 'message_start' }>
         if (message.role === 'assistant') currentMessageId = `${run.runId}:m${messageIndex++}`
+        else if (message.role === 'user' && promptStarted) {
+          const text = pendingSteers.shift()
+          if (text !== undefined) run.emit('message.steered', { text })
+        } else if (message.role === 'user') promptStarted = true
         break
       }
       case 'turn_start': {
@@ -424,7 +457,15 @@ export async function runTurn(run: ActiveRun, session: PiSessionLike, params: Tu
     }
     const prompt = params.preamble && !extensionCommand ? `${params.preamble}\n\n${params.text}` : params.text
     const images = (params.images ?? []).map((image) => ({ type: 'image', mimeType: image.mediaType, data: image.data }))
-    await session.prompt(prompt, images.length ? { images } : undefined)
+    accepting = true
+    try {
+      await session.prompt(prompt, images.length ? { images } : undefined)
+    } finally {
+      // A message Pi has not delivered by now never will be; the caller sends it again as a new reply.
+      accepting = false
+      session.clearQueue?.()
+    }
+    if (!aborted && !lastError) await params.settle?.()
     if (aborted) run.finish('interrupted')
     else if (lastError) run.finish('failed', { code: 'provider_error', message: lastError })
     else run.finish('completed')
@@ -505,7 +546,7 @@ export const piSessionFactory: SessionFactory = async ({ params, allow, gate, to
   const loaded = registeredBy(resourceLoader)
   // A tool an extension brought is offered to the model, and asks before every call: the person
   // trusted the code to load, and still decides each thing it does through a tool.
-  const extensionTools = [...new Set(loaded.flatMap((extension) => extension.tools))].filter((name) => !allow.includes(name))
+  const extensionTools = [...new Set(loaded.flatMap((extension) => extension.tools))].filter((name) => !allow.includes(name) && !params.restrictTools)
   gate.ask?.([...new Set(loaded.flatMap((extension) => extension.tools))])
 
   let supportsImageInput = false
@@ -523,7 +564,7 @@ export const piSessionFactory: SessionFactory = async ({ params, allow, gate, to
           if (output.image && !supportsImageInput) throw new HarnessError('image_input_unsupported', 'This model cannot inspect images. Choose a model that supports image input.')
           return {
             content: [{ type: 'text', text: output.text }, ...(output.image ? [{ type: 'image', data: output.image.data, mimeType: output.image.mimeType }] : [])] as never,
-            details: output.attachments?.length ? { attachments: output.attachments } : {}
+            details: { ...output.details, ...(output.attachments?.length ? { attachments: output.attachments } : {}) }
           }
         }
       })
