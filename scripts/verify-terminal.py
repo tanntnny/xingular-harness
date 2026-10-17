@@ -386,7 +386,7 @@ def main():
                 terminal.send('\t\r')
                 terminal.read(0.3)
                 terminal.send('\x1b')
-                terminal.wait('PgUp/PgDn: scroll transcript', start)
+                terminal.wait('escape: interrupt', start)
                 profile['checks'].append('actual settings tabs, section focus, keyboard search/control and Escape return')
                 start = len(terminal.data)
                 terminal.send('/acc')

@@ -1,5 +1,5 @@
 import { Theme, type AutocompleteProviderFactory, type ExtensionUIContext, type KeybindingsManager, type WorkingIndicatorOptions } from '@earendil-works/pi-coding-agent'
-import { stripTerminalSequences, type AutocompleteProvider, type EditorComponent, type TuiMainScreen } from '@earendil-works/pi-tui'
+import { stripTerminalSequences, type AutocompleteProvider, type EditorComponent, type TUI } from '@earendil-works/pi-tui'
 
 import { TerminalDialogs } from './dialogs'
 
@@ -18,7 +18,7 @@ export interface TerminalUiState {
   autocompleteFactories: AutocompleteProviderFactory[]
 }
 export interface TerminalUiOptions {
-  tui: TuiMainScreen
+  tui: TUI
   theme: Theme
   keybindings: KeybindingsManager
   changed(): void

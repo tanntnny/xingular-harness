@@ -1,6 +1,6 @@
 # Harness terminal frontend
 
-Status: implemented in the working tree; publication is separate. Last updated: 2026-10-17.
+Status: implemented in the working tree; publication is separate. Last updated: 2026-10-18.
 Decision: [ADR-0001](decisions/ADR-0001-owned-terminal.md).
 
 ## Native subagents (2026-10-18)
@@ -39,7 +39,7 @@ Harness parent: account + compiled context + trusted resources + run writer
        | launch specification / existing session socket
 Harness terminal child: TerminalApplication + persistent Pi AgentSessionRuntime
        | typed native events / plugin UI callbacks
-Harness screen: welcome, transcript, status band, editor, dialogs and overlays
+Harness screen: welcome and transcript above a dock (status, editor, footer), with dialogs and overlays
 ```
 
 [`runtime.ts`](../src/terminal/tui/runtime.ts) builds a public `AgentSessionRuntime` around
@@ -55,6 +55,27 @@ A persistent child retains queues, session-local extension state and interactive
 prompts. Reusing `sessions.run` for each prompt would recreate and dispose a session for every
 turn and overlap the terminal controller's run lifecycle. That API remains the embedding and
 unattended execution path.
+
+## Screen layout
+
+[`screen.ts`](../src/terminal/tui/screen.ts) chooses the screen from Pi's `tuiMode` in the
+account's `settings.json`; the default is `fullscreen`. Fullscreen uses Pi 1.2.0's
+`TuiAltScreen` with a layout root: a `ScrollView` holds the welcome and transcript and fills the
+terminal, and a `VStack` dock sits below it. The dock holds the working line, queued messages and
+notices, widgets, the editor with its status band, and the footer. The dock stays on the last rows
+as the transcript grows, and scrolling moves only the transcript. When the screen is short, the
+prompt and status keep their full height, and notices and widgets show their first rows and scroll
+for the rest. Pi's `tui.altScreen.*` bindings
+(PgUp/PgDn, Ctrl+Home/End and the rest), mouse wheel, selection and search apply. The scrollbar,
+wheel step and copy-on-select behaviour are read from Pi's `fullscreen*` settings. Submitting a
+message and changing session return the transcript to its latest row.
+
+`regular` uses the main screen with the same components flowing in order, and the terminal keeps
+the scrollback. Leaving fullscreen with `fullscreenExitOutput: "transcript"` (Pi's default) copies
+the rendered conversation into the normal scrollback once the alternate screen is gone; a session
+with no messages writes nothing. Other exit-output values are not implemented and write nothing.
+The decision and its consequences are recorded in
+[ADR-0004](decisions/ADR-0004-fullscreen-terminal-layout.md).
 
 ## Reference and reproduced presentation
 
@@ -177,7 +198,18 @@ keyboard bindings through the public TUI manager.
 
 ## Verification and remaining limits
 
-Harness typecheck, **419 passing tests / two platform skips**, build and standalone proof
+Fullscreen layout verification, 2026-10-18: [`screen.test.ts`](../src/terminal/tui/screen.test.ts)
+covers the dock on the last rows as the transcript grows and scrolls, notice clipping, regular
+flow, and the exit copy. The PTY verifier against the built CLI passed all 14 interaction groups at
+40×20, 80×24 and 120×40; the retained result is
+[docs/evidence/terminal-2026-10-18-fullscreen](evidence/terminal-2026-10-18-fullscreen/verification.json).
+The verifier's keyboard-list check now waits for the list's first line, because a long notice shows
+its first rows in the dock and scrolls for the rest. The App sidecar's suite passes 30 of 30 and
+`cargo test` passes 217 tests against this tree. The App's root Vitest suite has one failure, the
+pre-existing `PendingRequestDock` expectation. The App sidecar's own `tsc` run reports four errors
+in `agentRuns.ts` and `app.test.ts` that also occur on the checkpoint commit.
+
+Earlier verification, before the fullscreen layout: Harness typecheck, **419 passing tests / two platform skips**, build and standalone proof
 passed on 2026-10-17. A final cleanup-order adjustment was rechecked with all **91 frontend
 tests**, typecheck, build and standalone proof. Coverage includes the real isolated persistent SDK/socket boundary,
 exact history scope and symlink rejection, resource-trust refusal before new/reload, event and

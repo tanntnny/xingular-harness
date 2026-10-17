@@ -13,7 +13,7 @@ function setup() {
     ui: ExtensionUIContext & { wrapAutocomplete<T>(value: T): T; dispose(): void }
     keybindings: ReturnType<typeof terminalKeybindings>
     editor: CustomEditor
-    runtime: { interrupt: ReturnType<typeof vi.fn>; dispose: ReturnType<typeof vi.fn>; session: unknown }
+    runtime: { interrupt: ReturnType<typeof vi.fn>; dispose: ReturnType<typeof vi.fn>; session: unknown; snapshot(): { hasUserMessages: boolean } }
     commands: { execute: ReturnType<typeof vi.fn> }
     notices: { message: string }[]
     initialized: boolean
@@ -31,11 +31,10 @@ function setup() {
   app.keybindings = terminalKeybindings('/unused/isolated-account')
   app.initialized = true
   const context = {}
-  app.runtime = { interrupt: vi.fn(async () => {}), dispose: vi.fn(async () => {}), session: {
+  app.runtime = { interrupt: vi.fn(async () => {}), dispose: vi.fn(async () => {}), snapshot: () => ({ hasUserMessages: false }), session: {
     extensionRunner: { getShortcuts: () => new Map(), createContext: () => context },
     state: { messages: [] }, settingsManager: {}
   } }
-  application.tui.addChild(application)
   return { application, app, ui }
 }
 

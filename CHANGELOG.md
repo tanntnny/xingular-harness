@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Keep the terminal composer on the last rows in fullscreen while the transcript scrolls above it; `tuiMode: regular` keeps the flowing layout, and leaving fullscreen copies the conversation into scrollback.
 - Add one native asynchronous subagent service for SDK, RPC and standalone terminal callers, with selective waits, parent joins, typed history receipts and explicit-resume recovery.
 - Preserve capability ceilings and route child approvals/questions through the owning terminal; release pending interactions before SDK abort.
 

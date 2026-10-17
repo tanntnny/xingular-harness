@@ -5,6 +5,7 @@ Current implementation: [Harness terminal frontend](terminal-tui.md). The packag
 
 | ID | Record | Type | Status | Related |
 |---|---|---|---|---|
+| ADR-0004 | [Fullscreen terminal layout with a fixed dock](decisions/ADR-0004-fullscreen-terminal-layout.md) | Decision | Accepted; working tree implementation | ADR-0001, [Terminal architecture and evidence](terminal-tui.md) |
 | ADR-0003 | [Shared asynchronous subagents with native-history delivery receipts](decisions/ADR-0003-shared-asynchronous-subagents.md) | Decision | Accepted; working tree implementation | ADR-0002, [Embedding API](../README.md) |
 | ADR-0002 | [Native subagent lifecycle in Harness sessions](decisions/ADR-0002-native-subagent-lifecycle.md) | Decision | Superseded by ADR-0003 | [Embedding API](../README.md) |
 | ADR-0001 | [Own the terminal frontend and keep Pi as the session runtime](decisions/ADR-0001-owned-terminal.md) | Decision | Accepted; working tree implementation | [Terminal architecture and evidence](terminal-tui.md) |
