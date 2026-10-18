@@ -34,6 +34,7 @@ import type { ToolPolicy } from './policy'
 import type { ActiveRun, RunRegistry } from './registry'
 import { piSessionFactory, runTurn, summarize, type Effort, type PiSessionLike, type SessionFactory, type ToolGate, type TurnParams } from './runner'
 import { loadRun, runDir, saveRun, updateRun } from './runStore'
+import { planRefusal, planSection } from './planMode'
 
 /** The fields of a run record the caller decides; the harness fills in the rest. */
 export type RunFields = Pick<RunRecord, 'id' | 'sessionId'> & Partial<Pick<RunRecord, 'mode' | 'harness' | 'sessionType' | 'projectId' | 'agentId' | 'trigger' | 'goal' | 'attachmentCount' | 'resumedFromRunId' | 'parentRunId' | 'relation' | 'worktreeId' | 'handoffId'>>
@@ -73,6 +74,11 @@ export interface SessionRunInput {
   subagents?: SubagentOptions | null
   /** Ask the application's tool providers for tools (the default). False runs with the harness's own tools only. */
   providers?: boolean
+  /**
+   * Plan mode: the run may only read, search, recall and ask, and is told to end with a
+   * `<proposed_plan>` block. Other calls are refused at the gate; the tool list is unchanged.
+   */
+  plan?: boolean
 }
 
 /** The connected-apps broker, as a session sees it. */
@@ -240,8 +246,10 @@ export class Sessions {
     try {
       if (!existsSync(input.sessionDir)) mkdirSync(input.sessionDir, { recursive: true })
       const launch = input.launch ?? {}
+      const plan = planSection(input.plan === true, historyFile)
       const effectiveLaunch = {
         ...launch,
+        sections: plan ? [...(launch.sections ?? []).filter((section) => section.id !== plan.id), plan] : launch.sections,
         tools: capabilities.tools,
         connectionTools: (launch.connectionTools ?? []).filter((name) => capabilities.tools.includes(name)),
         toolGroups: launch.toolGroups?.map((group) => ({ ...group, tools: group.tools.filter((name) => capabilities.tools.includes(name)) })).filter((group) => group.tools.length > 0)
@@ -269,6 +277,7 @@ export class Sessions {
         ...subagentTools(this.options.subagents, runId).filter(tool => allow.includes(tool.name))
       ]
       if (input.providers !== false) for (const provider of this.providers) tools.push(...(await provider(session)))
+      const readOnly = new Set(tools.filter((tool) => tool.readOnly).map((tool) => tool.name))
       const params: TurnParams = {
         runId,
         restrictTools: input.run.relation === 'subagent',
@@ -294,7 +303,14 @@ export class Sessions {
         allow,
         gate: (() => {
           const gate = this.gate(run, caller, new Set((input.tools.gated ?? []).filter((name) => capabilities.tools.includes(name))))
-          return { ...gate, check: (name: string, args: unknown) => input.run.relation === 'subagent' && !capabilities.tools.includes(name) ? Promise.resolve('This tool is outside the child capability snapshot.') : gate.check(name, args) }
+          return {
+            ...gate,
+            check: (name: string, args: unknown) => {
+              if (input.run.relation === 'subagent' && !capabilities.tools.includes(name)) return Promise.resolve('This tool is outside the child capability snapshot.')
+              const refusal = input.plan ? planRefusal(name, readOnly) : null
+              return refusal ? Promise.resolve(refusal) : gate.check(name, args)
+            }
+          }
         })(),
         tools,
         runtime: () => this.options.accounts.runtime(context),

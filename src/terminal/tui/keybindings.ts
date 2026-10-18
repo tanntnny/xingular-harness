@@ -7,7 +7,6 @@ declare module '@earendil-works/pi-tui' {
   interface Keybindings {
     'app.thinking.increase': true
     'app.thinking.decrease': true
-    'app.plan.toggle': true
   }
 }
 
@@ -15,7 +14,7 @@ declare module '@earendil-works/pi-tui' {
 const actions: Record<string, string | string[]> = {
   'app.interrupt': 'escape', 'app.clear': 'ctrl+c', 'app.exit': 'ctrl+d',
   'app.suspend': process.platform === 'win32' ? [] : 'ctrl+z',
-  'app.thinking.cycle': [], 'app.thinking.save': 'ctrl+s', 'app.plan.toggle': 'shift+tab',
+  'app.thinking.cycle': [], 'app.thinking.save': 'ctrl+s',
   'app.thinking.increase': 'shift+up', 'app.thinking.decrease': 'shift+down',
   'app.model.cycleForward': 'ctrl+p', 'app.model.cycleBackward': 'alt+p',
   'app.model.select': 'ctrl+l', 'app.tools.expand': 'ctrl+o', 'app.thinking.toggle': 'ctrl+t',

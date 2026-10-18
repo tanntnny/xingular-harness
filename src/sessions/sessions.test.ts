@@ -400,6 +400,29 @@ describe('session turns on Pi', () => {
     expect(contexts).toEqual([policyContext])
   })
 
+  it('refuses non-read-only calls in plan mode and delivers its instructions without changing the system prompt', async () => {
+    const seen: { system: string; update: string | null; reasons: (string | null)[] }[] = []
+    const { run, harness } = setup(async ({ gate, params }) => fakeSession(async () => {
+      const reasons = [await gate.check('bash', {}), await gate.check('write', {}), await gate.check('memory_append', {}), await gate.check('lookup', {}), await gate.check('change', {})]
+      seen.push({ system: params.system, update: params.update?.content ?? null, reasons })
+    }, gate))
+    harness.approvals.setAuto('chat', true)
+    harness.sessions.provide(() => [
+      { name: 'lookup', label: 'Lookup', description: 'Reads', readOnly: true, parameters: (Type) => Type.Object({}), execute: async () => 'ok' },
+      { name: 'change', label: 'Change', description: 'Writes', parameters: (Type) => Type.Object({}), execute: async () => 'ok' }
+    ])
+    await run('plan-run', { plan: true, tools: { allow: ['read', 'bash', 'write', 'lookup', 'change'] } })
+    await tick()
+    await run('normal-run', { tools: { allow: ['read', 'bash', 'write', 'lookup', 'change'] } })
+    await tick()
+    const [planned, normal] = seen
+    expect(planned.reasons.map((reason) => reason?.startsWith('Plan mode is read-only') ?? null)).toEqual([true, true, true, null, true])
+    expect(normal.reasons).toEqual([null, null, null, null, null])
+    expect(planned.system).toBe(normal.system)
+    expect(planned.update).toContain('<proposed_plan>')
+    expect(normal.update ?? '').not.toContain('Plan mode is on')
+  })
+
   it('aborts the Pi session on interrupt', async () => {
     let session: (PiSessionLike & { aborted: boolean }) | null = null
     const { events, run, harness } = setup(async ({ gate }) => (session = fakeSession(() => new Promise((resolve) => setTimeout(resolve, 50)), gate)))

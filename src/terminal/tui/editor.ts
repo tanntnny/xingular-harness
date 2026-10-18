@@ -15,6 +15,12 @@ export const COMPOSER_SUGGESTIONS = [
   'write a test for the next change'
 ]
 
+function leadingSlashCommand(text: string, validCommands: ReadonlySet<string>): string | null {
+  const match = /^\s*\/([^\s/]+)(?=\s|$)/u.exec(text)
+  if (!match || !validCommands.has(match[1]!)) return null
+  return '/' + match[1]
+}
+
 export interface ComposerView {
   band(width: number, hiddenAbove: number, hiddenBelow: number): string
   theme(): Theme
@@ -27,9 +33,15 @@ export class HarnessEditor extends CustomEditor {
   private contentRows = 1
   private completionRows = 0
   private gutterWidth = 2
+  private validCommands = new Set<string>()
 
   constructor(tui: TUI, theme: EditorTheme, keybindings: KeybindingsManager, private readonly view: ComposerView) {
     super(tui, theme, keybindings, { paddingX: 0 })
+  }
+
+  setValidCommands(commands: readonly string[]): void {
+    this.validCommands = new Set(commands)
+    this.tui.requestRender()
   }
 
   override setPaddingX(_padding: number): void {
@@ -58,10 +70,13 @@ export class HarnessEditor extends CustomEditor {
     this.contentRows = content.length
     const theme = this.view.theme()
     const placeholder = this.getText() === '' ? this.view.placeholder() : undefined
+    const command = leadingSlashCommand(this.getText(), this.validCommands)
+    const commandLine = command ? content.findIndex(line => line.includes(command)) : -1
     const prompt = content.map((line, index) => {
       const cue = theme.fg('dim', index === 0 ? '❯ '.slice(0, this.gutterWidth) : ' '.repeat(this.gutterWidth))
       if (index === 0 && placeholder) return cue + this.placeholderRow(placeholder, innerWidth, theme)
-      return cue + line
+      const renderedLine = index === commandLine && command ? line.replace(command, theme.fg('mdLink', command)) : line
+      return cue + renderedLine
     })
     const completions = rows.slice(bottom + 1).map((line) => ' '.repeat(this.gutterWidth) + line)
     this.completionRows = completions.length

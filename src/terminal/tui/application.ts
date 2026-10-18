@@ -184,6 +184,7 @@ export class TerminalApplication {
         session: () => this.session, runtime: () => this.runtime!, ui: this.ui,
         cwd: () => this.runtime!.cwd, sessionDirectory: () => this.runtime!.sessionDirectory,
         refresh: () => this.refresh(), shutdown: () => { void this.shutdown() }, setEditorText: text => { this.editor.setText(text); this.syncDraft(text) },
+        planMode: () => this.planMode, setPlanMode: enabled => this.setPlanMode(enabled),
         copyText: copyToClipboard, openExternal,
         changed: this.change,
         trajectory: {
@@ -307,8 +308,9 @@ export class TerminalApplication {
     this.phase = undefined
   }
   /** Plan mode narrows the session to read-only tools; leaving it restores the set the session had before. */
-  private togglePlanMode(): void {
+  private setPlanMode(enabled: boolean): void {
     if (!this.runtime) return
+    if (this.planMode === enabled) return
     if (this.planMode) {
       this.session.setActiveToolsByName(this.normalTools ?? this.session.getActiveToolNames())
       this.normalTools = undefined
@@ -316,8 +318,8 @@ export class TerminalApplication {
       this.normalTools = this.session.getActiveToolNames()
       this.session.setActiveToolsByName(planModeTools(this.normalTools))
     }
-    this.planMode = !this.planMode
-    this.notify(this.planMode ? 'Plan mode: only read-only tools are available. Shift+Tab returns to normal.' : 'Normal mode: all tools are available.')
+    this.planMode = enabled
+    this.notify(this.planMode ? 'Plan mode: only read-only tools are available. Use /plan off to return to normal.' : 'Normal mode: all tools are available.')
     this.change()
   }
   private scrollToLatest(): void { this.viewport?.scrollToEnd() }
@@ -446,7 +448,6 @@ export class TerminalApplication {
       else void this.shutdown()
     } else if (is('app.exit') && this.editor.getText() === '') void this.shutdown()
     else if (is('app.thinking.cycle')) this.session.cycleThinkingLevel()
-    else if (is('app.plan.toggle')) this.togglePlanMode()
     else if (is('app.thinking.increase') || is('app.thinking.decrease')) this.stepThinking(is('app.thinking.increase') ? 1 : -1)
     else if (is('app.thinking.save')) this.session.setThinkingLevel(this.session.thinkingLevel, { persist: true })
     else if (is('app.model.cycleForward') || is('app.model.cycleBackward')) this.attempt(() => this.session.cycleModel(is('app.model.cycleBackward') ? 'backward' : 'forward'))
@@ -513,7 +514,14 @@ export class TerminalApplication {
       const text = typeof message.content === 'string' ? message.content : message.content.filter(part => part.type === 'text').map(part => part.text).join('\n')
       if (text) this.editor.addToHistory?.(text)
     }
-    this.baseAutocomplete = skillCompletions(new CombinedAutocompleteProvider(this.commands.completions(), this.runtime.cwd), this.commands.skills)
+    const commands = this.commands.completions()
+    if (this.editor instanceof HarnessEditor) {
+      this.editor.setValidCommands([
+        ...commands.map(command => command.name),
+        ...this.commands.skills().map(skill => 'skill:' + skill.name)
+      ])
+    }
+    this.baseAutocomplete = skillCompletions(new CombinedAutocompleteProvider(commands, this.runtime.cwd), this.commands.skills)
     this.editor.setAutocompleteProvider?.(this.ui.wrapAutocomplete(this.baseAutocomplete))
     this.change()
   }

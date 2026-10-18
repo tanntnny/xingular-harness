@@ -31,6 +31,7 @@ function setup() {
     session: () => session, runtime: () => runtime as unknown as ReturnType<TerminalCommandHost['runtime']>, ui,
     cwd: () => '/isolated/project', sessionDirectory: () => '/isolated/account/history',
     refresh: vi.fn(), changed: vi.fn(), shutdown: vi.fn(), setEditorText: vi.fn(), copyText: vi.fn(async () => {}),
+    planMode: () => false, setPlanMode: vi.fn(),
     hotkeys: () => 'Escape: interrupt', changelog: async () => 'Harness release notes',
     trajectory: {
       list: vi.fn(async () => [trajectoryRun]),

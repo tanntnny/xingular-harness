@@ -83,6 +83,8 @@ export function methods(harness: Harness): Record<string, Handler> {
     'hub.list': (params: Params) => harness.hub.list(params.refresh === true),
     'hub.get': (params: Params) => harness.hub.get(text(params, 'id'), text(params, 'version'), params.preview === true),
     'hub.install': (params: Params) => harness.hub.install(text(params, 'id'), text(params, 'version')),
+    'hub.preview': (params: Params) => harness.hub.preview(text(params, 'id'), text(params, 'version'), typeof params.offset === 'number' ? params.offset : 0),
+    'hub.uninstall': (params: Params) => harness.hub.uninstall(text(params, 'id'), text(params, 'version')),
     'hub.readDocument': (params: Params) => harness.hub.readDocument(text(params, 'id'), text(params, 'version')),
 
     // ---- Accounts --------------------------------------------------------------------------------

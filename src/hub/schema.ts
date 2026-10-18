@@ -2,6 +2,7 @@ import { z } from 'zod'
 
 export const HUB_CATALOG_URL = 'https://raw.githubusercontent.com/tanntnny/xingular-hub/main/catalog.json'
 export const HUB_MAX_BYTES = 16 * 1024 * 1024
+export const HUB_PREVIEW_PAGE_BYTES = 16 * 1024
 
 const httpsUrl = z.string().max(2000).url().refine((value) => {
   const url = new URL(value)
@@ -53,7 +54,17 @@ export const hubReceiptSchema = z.object({
   entry: hubEntrySchema,
   installedAt: z.string(),
   resourceIds: z.array(z.string()),
-  document: z.string().nullable()
+  document: z.string().nullable(),
+  state: z.enum(['installed', 'changed', 'incomplete']).optional()
+}).strict()
+
+export const hubPreviewPageSchema = z.object({
+  entry: hubEntrySchema,
+  content: z.string(),
+  offset: z.number().int().nonnegative(),
+  nextOffset: z.number().int().nonnegative(),
+  totalBytes: z.number().int().nonnegative(),
+  done: z.boolean()
 }).strict()
 
 export const hubOverviewSchema = z.object({
@@ -69,6 +80,7 @@ export const hubOverviewSchema = z.object({
 export type HubEntry = z.infer<typeof hubEntrySchema>
 export type HubCatalog = z.infer<typeof hubCatalogSchema>
 export type HubReceipt = z.infer<typeof hubReceiptSchema>
+export type HubPreviewPage = z.infer<typeof hubPreviewPageSchema>
 export type HubOverview = z.infer<typeof hubOverviewSchema>
 
 export function meetsMinimum(actual: string, minimum: string): boolean {

@@ -20,6 +20,8 @@ export interface ToolSpec {
   description: string
   /** Builds the TypeBox parameter schema. */
   parameters: (type: typeof import('typebox').Type) => unknown
+  /** Only reads or asks; such a tool stays callable in plan mode. */
+  readOnly?: boolean
   execute: (input: Record<string, unknown>) => Promise<string | ToolResult>
 }
 

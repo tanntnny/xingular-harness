@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest'
 vi.mock('../control', () => ({ controlCall: vi.fn(async () => ({})) }))
 import { controlCall } from '../control'
 import { TerminalApplication } from './application'
+import { createTerminalCommands, type TerminalCommandHost } from './commands'
 import type { TerminalDecision } from './runtime'
 import { terminalKeybindings } from './keybindings'
 import { autocompleteRuleColor, createHarnessTheme } from './theme'
@@ -22,7 +23,9 @@ function setup() {
     keybindings: ReturnType<typeof terminalKeybindings>
     editor: CustomEditor
     runtime: { interrupt: ReturnType<typeof vi.fn>; dispose: ReturnType<typeof vi.fn>; session: object; snapshot(): { hasUserMessages: boolean; cwd?: string; model?: { name: string; reasoning: boolean; contextWindow: number }; thinkingLevel?: string; account?: { label: string } | null; context?: { percent: number | null; window: number }; costUsd?: number; subscription?: boolean } }
-    commands: { execute: ReturnType<typeof vi.fn> }
+    commands: ReturnType<typeof createTerminalCommands> | { execute: ReturnType<typeof vi.fn> }
+    planMode: boolean
+    setPlanMode(enabled: boolean): void
     masthead: { render(width: number): string[] }
     header?: { render(width: number): string[]; invalidate(): void }
     branch: string | null
@@ -234,15 +237,33 @@ describe('the owned terminal application', () => {
     await application.shutdown()
   })
 
-  it('toggles plan mode on Shift+Tab, narrowing to read-only tools and leaving thinking alone', async () => {
+  it('toggles plan mode with /plan, narrowing to read-only tools', async () => {
     const { application, app } = setup()
     const session = app.runtime.session as { getActiveToolNames(): string[]; setActiveToolsByName(names: string[]): void; cycleThinkingLevel(): void }
     const setActiveToolsByName = vi.fn()
     const cycleThinkingLevel = vi.fn()
     Object.assign(session, { getActiveToolNames: () => ['read', 'bash', 'edit', 'write', 'grep', 'spawn_subagent'], setActiveToolsByName, cycleThinkingLevel })
-    expect(app.dispatchInput('\x1b[Z')).toEqual({ consume: true })
+    app.commands = createTerminalCommands({
+      session: () => session as never,
+      runtime: () => ({} as never),
+      ui: app.ui,
+      cwd: () => '/work/project',
+      sessionDirectory: () => '/isolated/account/history',
+      refresh: () => {},
+      changed: () => {},
+      planMode: () => app.planMode,
+      setPlanMode: enabled => app.setPlanMode(enabled),
+      shutdown: () => {},
+      setEditorText: () => {},
+      copyText: async () => {},
+      trajectory: {} as TerminalCommandHost['trajectory']
+    })
+    app.mountEditor()
+    app.submit('/plan')
+    await vi.waitFor(() => expect(setActiveToolsByName).toHaveBeenCalledWith(['read', 'grep']))
     expect(setActiveToolsByName).toHaveBeenLastCalledWith(['read', 'grep'])
-    expect(app.dispatchInput('\x1b[Z')).toEqual({ consume: true })
+    app.submit('/plan off')
+    await vi.waitFor(() => expect(setActiveToolsByName).toHaveBeenLastCalledWith(['read', 'bash', 'edit', 'write', 'grep', 'spawn_subagent']))
     expect(setActiveToolsByName).toHaveBeenLastCalledWith(['read', 'bash', 'edit', 'write', 'grep', 'spawn_subagent'])
     expect(cycleThinkingLevel).not.toHaveBeenCalled()
     await application.shutdown()

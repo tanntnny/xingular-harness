@@ -21,6 +21,8 @@ export interface TerminalCommandHost {
   sessionDirectory(): string
   refresh(): void
   changed(): void
+  planMode(): boolean
+  setPlanMode(enabled: boolean): void
   shutdown(): void
   setEditorText(text: string): void
   copyText(text: string): Promise<void>
@@ -39,6 +41,7 @@ export interface TerminalCommandCompletion { name: string; description?: string 
 
 const BUILTINS: TerminalCommandCompletion[] = [
   { name: 'help', description: 'Available terminal commands' },
+  { name: 'plan', description: 'Toggle read-only plan mode' },
   { name: 'new', description: 'Start a new session' },
   { name: 'resume', description: 'Resume a session in this account and folder' },
   { name: 'tree', description: 'Navigate the session tree' },
@@ -286,6 +289,13 @@ export function createTerminalCommands(host: TerminalCommandHost) {
       const session = host.session()
       switch (name) {
         case 'help': notify(completions().map(item => `/${item.name}  ${item.description ?? ''}`).join('\n')); break
+        case 'plan': {
+          const current = host.planMode()
+          const next = !argument || argument === 'toggle' ? !current : argument === 'on' ? true : argument === 'off' ? false : null
+          if (next === null) throw new Error('Use /plan, /plan on, /plan off, or /plan toggle.')
+          host.setPlanMode(next)
+          break
+        }
         case 'quit': host.shutdown(); break
         case 'new': await host.runtime().newSession(); break
         case 'resume': {

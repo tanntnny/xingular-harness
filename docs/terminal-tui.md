@@ -87,16 +87,22 @@ The decision and its consequences are recorded in
 
 ## Plan mode and thinking keys
 
-Shift+Tab switches the terminal between normal and plan mode. The switch is announced in the
-transcript. Plan mode narrows the session to read-only inspection (`read`, `grep`, `find`, `ls`),
+Use `/plan`, `/plan on`, or `/plan off` to switch between normal and plan mode. The switch is
+announced in the transcript. Plan mode narrows the session to read-only inspection (`read`, `grep`, `find`, `ls`),
 questions (`ask_user`, `ask_user_question`) and recall (history and Wiki reads, `memory_facts`). Edits,
 writes, shell commands, memory writes, subagents and connected-app tools are withdrawn until plan mode
 is switched off, and switching back restores the tools the session had. Plan mode belongs to the open
 conversation: a new or resumed session starts in normal mode.
 
-The model is not yet told about the mode through the prompt; it only sees the narrower tool set. That
-instruction belongs in the prompt compiler, the one place model instructions are built. Shift+Up and
-Shift+Down step the thinking level within the levels the model supports, and do not wrap.
+While typing, a recognized leading slash command uses the selected theme's link color. This
+includes built-in commands, loaded extension and prompt commands, and enabled skill invocations
+written as `/skill:name`. Unknown slash tokens keep the normal text color.
+
+SDK session runs can receive plan instructions as a dynamic context update, leaving the stable
+system prompt unchanged; their session gate refuses calls outside the read-only set. The standalone
+terminal still narrows Pi's active tools directly and does not yet deliver plan instructions through
+the prompt. Shift+Up and Shift+Down step the thinking level within the levels the model supports,
+and do not wrap.
 
 ## Reference and reproduced presentation
 

@@ -348,14 +348,18 @@ Node 22.19 or newer.
 `xingular-harness hub list [--refresh]`, `hub show publisher/name@version`, and
 `hub install publisher/name@version` browse and install exact catalog versions. `/hub` offers the
 same review in the interactive terminal, using its private control key for installation. Both the
-terminal and embedding applications use `hub.list`, `hub.get`, `hub.install`, and `hub.readDocument`.
-`hub.get { id, version, preview: true }` verifies data payload bytes without installing them.
+terminal and embedding applications use `hub.list`, `hub.get`, `hub.preview`, `hub.install`,
+`hub.uninstall`, and `hub.readDocument`. `hub.get { id, version, preview: true }` verifies data
+payload bytes without installing them. `hub.preview { id, version, offset }` returns bounded,
+UTF-8-safe pages of up to 16 KiB from a verified payload.
 
 Registry bundles import complete skills or single Markdown prompts/rules, disabled. Pi packages
 reuse the existing installer and require an exact npm version or full GitHub commit. Documents
 are saved as inert JSON for a compatible host to interpret; the harness does not apply them.
 Installation grants no attachment, trust, credentials, or permission. Writes are serialized and
-existing registry files are never overwritten.
+existing registry files are never overwritten. Receipts report whether their resources are intact;
+uninstall removes only the exact receipt's resources, including local edits within those paths, and
+revokes its attachment choices.
 
 Installed documents and provenance live under `<data root>/hub/`; the catalog cache is
 `<state dir>/hub/catalog.json`. An offline snapshot ships with the package. Explicit refresh keeps

@@ -40,6 +40,8 @@ describe('Hub installation', () => {
     expect(existsSync(join(root, 'config', 'plugin-attachments.json'))).toBe(false)
     writeFileSync(join(root, 'hub', 'documents', receipt.document!), '{"edited":true}')
     expect(() => hub.readDocument('example/review', '1.0.0')).toThrow('differs')
+    expect((await hub.list()).installed[0]).toMatchObject({ state: 'changed' })
+    await expect(hub.install('example/review', '1.0.0')).rejects.toThrow('Uninstall it before installing')
   })
   it('imports complete skills disabled and refuses overwriting local files', async () => {
     const { hub, root } = fixture([entry('registry', skill())])
@@ -90,12 +92,58 @@ describe('Hub installation', () => {
     expect(preview.delivery.kind !== 'pi-package' && preview.delivery.bundled).toContain('data only')
     expect(existsSync(join(root, 'hub'))).toBe(false)
   })
+  it('returns bounded UTF-8-safe preview pages and reuses the verified download for install', async () => {
+    const content = `"${'é'.repeat(20_000)}"`
+    const item = entry('document', content)
+    if (item.delivery.kind !== 'pi-package') delete item.delivery.bundled
+    const fetcher = vi.fn(async () => new Response(content)) as typeof fetch
+    const { hub, root } = fixture([item], fetcher)
+    const pages = []
+    let offset = 0
+    while (true) {
+      const page = await hub.preview(item.id, item.version, offset)
+      expect(Buffer.byteLength(page.content)).toBeLessThanOrEqual(16 * 1024)
+      pages.push(page.content)
+      if (page.done) break
+      offset = page.nextOffset
+    }
+    expect(pages.join('')).toBe(content)
+    expect(fetcher).toHaveBeenCalledTimes(1)
+    await hub.install(item.id, item.version)
+    expect(fetcher).toHaveBeenCalledTimes(1)
+    expect(existsSync(join(root, 'hub', 'documents'))).toBe(true)
+  })
+  it('uninstalls only its receipt-owned document, including local edits', async () => {
+    const first = entry()
+    const second = { ...entry(), id: 'example/second', title: 'Second' }
+    const { hub, root } = fixture([first, second])
+    const owned = await hub.install(first.id, first.version)
+    const other = await hub.install(second.id, second.version)
+    writeFileSync(join(root, 'hub', 'documents', owned.document!), '{"local":true}')
+    await hub.uninstall(first.id, first.version)
+    expect(existsSync(join(root, 'hub', 'documents', owned.document!))).toBe(false)
+    expect(existsSync(join(root, 'hub', 'documents', other.document!))).toBe(true)
+    expect((await hub.list()).installed.map((receipt) => receipt.entry.id)).toEqual([second.id])
+  })
+  it('uninstalls only receipt-owned registry resources and leaves unrelated files', async () => {
+    const { hub, root } = fixture([entry('registry', skill())])
+    const receipt = await hub.install('example/review', '1.0.0')
+    const unrelated = join(root, 'registry', 'skills', 'unrelated', 'SKILL.md')
+    mkdirSync(join(root, 'registry', 'skills', 'unrelated'), { recursive: true })
+    writeFileSync(unrelated, '---\nname: unrelated\ndescription: Local.\n---\n')
+    await hub.uninstall('example/review', '1.0.0')
+    expect(existsSync(join(root, 'registry', 'skills', 'review'))).toBe(false)
+    expect(readFileSync(unrelated, 'utf8')).toContain('unrelated')
+    expect((await hub.list()).installed).toEqual([])
+    expect(receipt.resourceIds).toEqual(['skills/review'])
+  })
   it('can reinstall deleted resources and clears stale attachment grants', async () => {
     const { hub, root } = fixture([entry('registry', skill())])
     await hub.install('example/review', '1.0.0')
     registry.setEnabled(root, null, ['skills/review'])
     rmSync(join(root, 'registry', 'skills', 'review'), { recursive: true })
-    expect((await hub.list()).installed).toEqual([])
+    expect((await hub.list()).installed[0]).toMatchObject({ state: 'incomplete' })
+    await hub.uninstall('example/review', '1.0.0')
     await hub.install('example/review', '1.0.0')
     expect(registry.enabledFor(root, null)).toEqual([])
     expect((await hub.list()).installed).toHaveLength(1)
