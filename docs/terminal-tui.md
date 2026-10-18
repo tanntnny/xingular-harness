@@ -1,6 +1,6 @@
 # Harness terminal frontend
 
-Status: implemented in the 2.1.2 release candidate; publication follows the tagged CI workflow. Last updated: 2026-10-19.
+Status: published as `@xingular/harness` 2.1.2. Last updated: 2026-10-19.
 Decision: [ADR-0001](decisions/ADR-0001-owned-terminal.md).
 
 ## Native subagents (2026-10-18)
