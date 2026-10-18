@@ -3,6 +3,7 @@
 import { existsSync } from 'node:fs'
 import type { DatabaseSync } from 'node:sqlite'
 
+import { logLine } from '../core/bus'
 import { all, dbPath, deleteIndex, ftsQuery, run, transaction, withIndex } from '../core/index'
 import { readAllRuns, syncRuns, upsertRun } from '../sessions/runIndex'
 import { scan } from './wiki'
@@ -55,7 +56,7 @@ export function reindexQuietly(root: string): void {
   try {
     reindexWiki(root)
   } catch (error) {
-    process.stderr.write(`[index] reindex failed: ${error instanceof Error ? error.message : String(error)}\n`)
+    logLine(`[index] reindex failed: ${error instanceof Error ? error.message : String(error)}`)
   }
 }
 
@@ -81,7 +82,7 @@ export function ensure(root: string, after?: () => void): number {
     try {
       syncRuns(root)
     } catch (error) {
-      process.stderr.write(`[index] ${error instanceof Error ? error.message : String(error)}\n`)
+      logLine(`[index] ${error instanceof Error ? error.message : String(error)}`)
     }
   } else {
     pages = rebuild(root)

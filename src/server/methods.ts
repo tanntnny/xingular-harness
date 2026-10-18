@@ -135,6 +135,7 @@ export function methods(harness: Harness): Record<string, Handler> {
     'connections.setAgentScope': (params: Params) => apps.setAgentScope(params.creator ?? {}, text(params, 'agentId'), Array.isArray(params.ids) ? params.ids : []),
     'connections.removeAgentScope': (params: Params) => apps.removeAgentScope(text(params, 'agentId')),
     'connections.revision': () => apps.connections.revision(),
+    'connections.appClients': () => apps.appClients(),
     'connections.validateScope': (params: Params) => validateScopeIds(apps.connections.list(), { agentId: optional(params, 'agentId'), projectId: optional(params, 'projectId') }, Array.isArray(params.ids) ? params.ids : []),
 
     // ---- Wiki: what a person browses and edits ---------------------------------------------------

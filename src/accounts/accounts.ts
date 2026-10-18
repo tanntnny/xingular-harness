@@ -1,7 +1,7 @@
 // The accounts service: everything that needs the secret store, the Pi runtime, or a notice.
 // Credentials go to the embedding application's secret store; nothing here writes one to the
 // harness's own files, except a terminal session's `auth.json` while that terminal runs.
-import { chmodSync, rmSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readdirSync, rmSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 
@@ -37,6 +37,36 @@ export interface ModelOption {
 }
 
 type Credential = Record<string, unknown> & { type: 'api_key' | 'oauth' }
+
+/** The lease files of an account: one per process that has a terminal on it. */
+const leaseFolder = (dir: string, accountId: string): string => join(dir, accountId, 'terminal-leases')
+
+/** Whether a process with this id exists. One that exists but belongs to another user still counts. */
+function processAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'EPERM'
+  }
+}
+
+/** The credentials in an auth.json, or null when there is no readable file. */
+function readAuth(path: string): Record<string, Credential> | null {
+  try {
+    const parsed = readJson<Record<string, Credential>>(path)
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null
+  } catch {
+    return null
+  }
+}
+
+/** Compares two credentials by their fields, not their key order, which Pi may change when it rewrites the file. */
+function sameCredential(a: Credential | undefined, b: Credential | undefined): boolean {
+  if (a === b) return true
+  if (!a || !b) return false
+  return JSON.stringify(a, Object.keys(a).sort()) === JSON.stringify(b, Object.keys(b).sort())
+}
 
 function validProvider(provider: string): string {
   if (provider && provider.length <= 64 && /^[A-Za-z0-9._-]+$/.test(provider)) return provider
@@ -90,7 +120,10 @@ export class Accounts {
   private readonly runtimes = new Map<string, Promise<ModelRuntime>>()
   private readonly logins = new Map<string, PendingLogin>()
   private readonly latestLogins = new Map<string, AccountLoginSnapshot>()
+  /** How many of this process's terminals use each account's auth.json. */
   private readonly terminals = new Map<string, number>()
+  /** The credentials this process wrote to, or found in, each account's auth.json when its first terminal began. */
+  private readonly terminalSnapshots = new Map<string, Record<string, Credential>>()
   private installationDeviceIdPromise: Promise<string> | null = null
 
   constructor(options: AccountsOptions) {
@@ -564,26 +597,44 @@ export class Accounts {
     return this.terminals.get(accountId) ?? 0
   }
 
+  /**
+   * Starts a terminal's use of the account's auth.json. The file is written from the store when the
+   * first terminal of the account begins. While another process's terminal still uses it, the tokens
+   * already in the file stay, because that terminal may have refreshed them; only a provider the file
+   * lacks is added from the store, so a key saved after the other terminal began still reaches this one.
+   */
   async terminalBegin(account: Account): Promise<void> {
     const count = (this.terminals.get(account.id) ?? 0) + 1
     this.terminals.set(account.id, count)
     if (count > 1) return
     const path = join(env.configDir(this.dir, account), 'auth.json')
+    let shared = false
     try {
-      const data: Record<string, unknown> = {}
-      for (const provider of store.loadState(this.dir, account.id).piProviders) {
-        const credential = await this.readCredential(account.id, provider).catch(() => null)
-        if (credential) data[provider] = credential
+      shared = this.otherTerminalProcesses(account.id)
+      this.claimLease(account.id)
+      const existing = shared && existsSync(path) ? readAuth(path) : null
+      const data = await this.storedCredentials(account.id, existing ?? {})
+      if (!existing || Object.keys(data).length > Object.keys(existing).length) {
+        atomicWrite(path, JSON.stringify(data, null, 2))
+        chmodSync(path, 0o600)
       }
-      atomicWrite(path, JSON.stringify(data, null, 2))
-      chmodSync(path, 0o600)
+      this.terminalSnapshots.set(account.id, data)
     } catch (error) {
       this.terminals.delete(account.id)
-      rmSync(path, { force: true })
+      this.terminalSnapshots.delete(account.id)
+      this.releaseLease(account.id)
+      if (!shared) rmSync(path, { force: true })
       throw error
     }
   }
 
+  /**
+   * Ends a terminal's use of the auth.json. Each terminal saves what its Pi changed since it began (a
+   * refreshed or new sign-in, or a provider it signed out of), even while another process still uses the
+   * file, so no refresh is lost when the other terminal ends first. A credential saved to the store after
+   * the terminal began is in neither the file nor the snapshot, so it stays. The last terminal of the
+   * account to end, in every process, removes the file.
+   */
   async terminalEnd(account: Account): Promise<void> {
     const remaining = Math.max(0, (this.terminals.get(account.id) ?? 1) - 1)
     if (remaining > 0) {
@@ -591,21 +642,72 @@ export class Accounts {
       return
     }
     this.terminals.delete(account.id)
+    const snapshot = this.terminalSnapshots.get(account.id) ?? {}
+    this.terminalSnapshots.delete(account.id)
+    this.releaseLease(account.id)
     const path = join(env.configDir(this.dir, account), 'auth.json')
-    let data: Record<string, Credential> | null = null
-    try {
-      const parsed = readJson<Record<string, Credential>>(path)
-      data = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null
-    } catch {
-      data = null
-    }
+    const data = readAuth(path)
     if (data) {
-      for (const provider of store.loadState(this.dir, account.id).piProviders) if (!(provider in data)) await this.writeCredential(account.id, provider, null).catch(() => undefined)
-      for (const [provider, credential] of Object.entries(data)) await this.writeCredential(account.id, provider, credential).catch(() => undefined)
-      this.invalidate(account.id)
-      store.audit(this.dir, account.id, 'credentials.synced', 'Pi terminal sign-in saved to the Keychain.')
+      let changed = false
+      for (const provider of new Set([...Object.keys(snapshot), ...Object.keys(data)])) {
+        if (provider in data) {
+          if (sameCredential(data[provider], snapshot[provider])) continue
+          await this.writeCredential(account.id, provider, data[provider]).catch(() => undefined)
+          changed = true
+        } else if (provider in snapshot) {
+          await this.writeCredential(account.id, provider, null).catch(() => undefined)
+          changed = true
+        }
+      }
+      if (changed) {
+        this.invalidate(account.id)
+        store.audit(this.dir, account.id, 'credentials.synced', 'Pi terminal sign-in saved to the Keychain.')
+      }
     }
-    rmSync(path, { force: true })
+    if (!this.otherTerminalProcesses(account.id)) rmSync(path, { force: true })
+  }
+
+  /** The account's stored credentials, with `existing` kept as it is for every provider it already has. */
+  private async storedCredentials(accountId: string, existing: Record<string, Credential>): Promise<Record<string, Credential>> {
+    const data = { ...existing }
+    for (const provider of store.loadState(this.dir, accountId).piProviders) {
+      if (provider in data) continue
+      const credential = await this.readCredential(accountId, provider).catch(() => null)
+      if (credential) data[provider] = credential
+    }
+    return data
+  }
+
+  /**
+   * Whether another live process has a terminal on this account. Lease files of processes that have
+   * ended are removed, so a crash never leaves the account looking busy.
+   */
+  private otherTerminalProcesses(accountId: string): boolean {
+    const folder = leaseFolder(this.dir, accountId)
+    let names: string[]
+    try {
+      names = readdirSync(folder)
+    } catch {
+      return false
+    }
+    let others = false
+    for (const name of names) {
+      const pid = Number(name)
+      if (!/^\d+$/.test(name) || pid <= 0 || pid === process.pid) continue
+      if (processAlive(pid)) others = true
+      else rmSync(join(folder, name), { force: true })
+    }
+    return others
+  }
+
+  private claimLease(accountId: string): void {
+    const folder = leaseFolder(this.dir, accountId)
+    mkdirSync(folder, { recursive: true, mode: 0o700 })
+    atomicWrite(join(folder, String(process.pid)), JSON.stringify({ pid: process.pid, startedAt: now() }))
+  }
+
+  private releaseLease(accountId: string): void {
+    rmSync(join(leaseFolder(this.dir, accountId), String(process.pid)), { force: true })
   }
 
   // ---- Health from runs ---------------------------------------------------------------------

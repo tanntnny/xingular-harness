@@ -8,7 +8,7 @@ needs to work for someone over time, and nothing about any particular applicatio
 | Accounts | `src/accounts/` | Several isolated Pi accounts and pools, sign-in, model lists, health and limits. A session keeps the account it started with. |
 | Sessions | `src/sessions/` | Pi SDK turns, run records and `events.jsonl`, interrupt, approvals, questions, recovery after a crash. |
 | Prompt | `src/prompt/` | The system prompt compiled from sections with budgets and profiles; a stable prefix, and changing state delivered as updates in native history. |
-| Memory | `src/memory/` | The Wiki: pages, facts, memory blocks, revisions, proposals with an evidence gate, undo, an Inbox, recall over past runs, and sleep-time consolidation. |
+| Memory | `src/memory/` | The Wiki: pages, facts, memory blocks, revisions, proposals with an evidence gate, undo, an Inbox, history recall, run trajectory inspection, and sleep-time consolidation. |
 | Skills | `src/skills/` | Skills, prompts, and rules: a person's own in the data root, and built-in ones shipped with the harness or the application. |
 | Plugins | `src/plugins/` | What a Pi session loads, chosen by the harness and never by Pi's own discovery; trust for a working folder's code; the list of every plugin and what reaches one caller. |
 | Tools | `src/tools/` | Tool definitions, the memory tools, `ask_user`; a gate that asks the application's policy, then standing approvals, then the person. |
@@ -21,13 +21,22 @@ The [documentation index](docs/README.md) links current terminal architecture an
 
 ### Session options for applications
 
-- Interactive sessions offer `spawn_subagent` and `wait_subagents` by default. `subagents: null` disables them; `{ maxDepth }` configures nesting (default one, maximum three). Unattended sessions remain disabled unless the host explicitly supplies subagent options. A frozen capability set can narrow these tools further.
+- Interactive sessions offer `spawn_subagent` and `wait_subagents` by default. `subagents: null` disables them; `{ maxDepth }` configures native nesting (default one, maximum three), independently of the host caller depth. Unattended sessions remain disabled unless the host explicitly supplies subagent options. A frozen capability set can narrow these tools further.
 - `harness.subagents.spawn({ parentRunId, brief, tools?, wait? })` opens a fresh child of the same caller with no wider capabilities. It returns `{ runId, nativeSessionId }` once open; `wait: true` also waits for settlement. `harness.subagents.wait({ parentRunId, runIds? })` joins selected direct children, or the current children when omitted, and returns their outcomes. `results` reads the same bounded outcome records without waiting. RPC exposes `subagents.spawn`, `subagents.wait`, and `subagents.results`; `sessions.spawnSubagent` remains a compatibility alias.
 - The model's `spawn_subagent` returns immediately by default; `wait: true` returns an inline result. `wait_subagents` joins selected children. The SDK and standalone terminal share this execution service. Terminal calls use its private control channel, including when connected apps are disabled.
 - Parents receive results at native turn boundaries and join outstanding children before completing. Typed native-history receipts prevent duplicate automatic delivery; explicit waits can reread results. Ownership is recorded before startup so an explicit resume can recover even a lost spawn return. Startup reservations without a run become interrupted outcomes. A restarted Harness never restarts model work automatically. Recovery requires the same recorded account, caller, working folder, and selected history branch. Session IDs are opaque; consumers follow `parentRunId` and `relation`.
 - `providers: false` runs a session with the harness's own tools only.
-- On the caller, `vaultAccess: 'propose'` writes no memory directly, and `recallExcludeAgents` hides those agents' conversations from recall.
+- On the caller, `vaultAccess: 'propose'` writes no memory directly, and `recallExcludeAgents` hides those agents' conversations from history and trajectory tools.
 - `maintenanceRunTrigger: false` (a harness option) leaves memory to explicit proposals and scheduled merges.
+
+Every session also gets `trajectory_search` and `trajectory_read` from the built-in History plugin.
+Search lists runs in the current data root, including active runs, with filters and a continuation
+cursor. Read returns pages of the canonical execution events, including captured prompt/context,
+tool, decision, retry, compaction, and usage evidence. Active runs show the latest events saved so
+far; settled reads stop at the first outcome. Payloads are bounded and marked when truncated, and
+the tools omit account identifiers, credential fields, attachment bytes, native adapter payloads,
+and provider reasoning text or summaries.
+They report recorded evidence without scoring runs, and do not backfill older records.
 
 ## Using it from Node
 
@@ -259,8 +268,8 @@ again to load the new frontend. A package version alone cannot distinguish an un
 build from an older installed build with the same version.
 
 This opens the Harness-owned terminal frontend in the current working directory. Its
-presentation follows the inspected Oh My Pi 18.11.3 titanium and light palettes, centered welcome, filled
-status band and curved `╰─` prompt, with Harness identity and existing capabilities. Harness
+presentation follows the inspected Oh My Pi 18.11.3 titanium and light palettes, centered welcome,
+colored text statusline and curved `╰─` prompt, with Harness identity and existing capabilities. Harness
 owns screen composition, editing/input dispatch, scrolling, command routing and plugin UI;
 Pi supplies the persistent execution runtime, native history and rich content components.
 The existing isolated account, compiled context, approval gate, telemetry and Wiki/socket
@@ -269,7 +278,10 @@ commands remain behind the terminal. No Pi `InteractiveMode` is constructed.
 `/resume` stays inside the prepared history and working folder; `/import` accepts an explicitly
 selected native JSONL file only for the same working folder. Cancel an active response before
 changing or reloading a session. Full OMP visual parity is not established by the current
-verification. See [terminal architecture and evidence](docs/terminal-tui.md),
+verification. `/permissions` reviews device-local Pi terminal grants and the Full Permission switch;
+tool grants apply across terminal sessions sharing this Harness state, and Full Permission requires
+confirmation. `/trajectory` opens recorded runs for the current native conversation, with event
+navigation and a detail inspector. See [terminal architecture and evidence](docs/terminal-tui.md),
 [the decision](docs/decisions/ADR-0001-owned-terminal.md), and [third-party notices](NOTICE.md).
 
 ### `/accounts` in the terminal
@@ -312,6 +324,7 @@ command. The explicit `terminal` command is an alias for the default launch. Use
   plugin-hooks.json       what each hooks file listens for and how its last run went
   connections.json  connected apps (secrets are in the SecretStore)
   run/              the session socket and the terminal commands
+  harness.log       diagnostics from the standalone terminal, kept off its screen
 ```
 
 The files are the source of truth; `index.sqlite` can be deleted and rebuilt
@@ -361,9 +374,12 @@ An embedding application may set `externalMaintenance: true`, supply trusted `Ca
 `vaultAccess` (`self` or `curator`), and register `maintenanceTools`/`MAINTENANCE_PLUGIN`.
 Self callers directly edit only their own writable persona/notes; shared knowledge and text-resource
 writes become persistent proposals. Curator tools read original evidence, compare captured target
-revisions, apply reviewed changes, persist receipts and undo without overwriting later edits.
+revisions, read all host-assigned requests together, and apply reconciled Wiki proposals as one
+undoable change set. Resource proposals keep their own receipts; executable proposals remain inert
+until the user reviews/trusts them. Later user edits are never overwritten.
 `maintenance.list`, `maintenance.review` and `maintenance.retry` let the host dispatch its own
 recorded sessions. Curator runs do not recursively queue maintenance. Optional assigned IDs freeze
 which requests a batch may claim. These fields are trusted host context, never model arguments.
-Executable proposals remain inert until the user reviews/trusts them. Standalone callers that omit
-this option retain the existing lifecycle and direct-write contract.
+`maintenance_read_batch` reads those assigned requests together; `maintenance_apply_batch` records
+one decision for each and applies the evidence-checked Wiki set atomically. Standalone callers that
+omit this option retain the existing lifecycle and direct-write contract.

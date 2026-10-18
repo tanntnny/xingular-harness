@@ -2,21 +2,21 @@
  * Adapted from @oh-my-pi/pi-tui 18.11.3 (https://github.com/can1357/oh-my-pi).
  *
  * MIT License
- * 
+ *
  * Copyright (c) 2025 Mario Zechner
  * Copyright (c) 2025-2026 Can Bölük
  * Copyright (c) 2026 Stencil Labs, Inc.
- * 
+ *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
  * in the Software without restriction, including without limitation the rights
  * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
  * copies of the Software, and to permit persons to whom the Software is
  * furnished to do so, subject to the following conditions:
- * 
+ *
  * The above copyright notice and this permission notice shall be included in all
  * copies or substantial portions of the Software.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -27,6 +27,8 @@
  */
 import { Theme, type ThemeBg, type ThemeColor } from '@earendil-works/pi-coding-agent'
 
+const orange = { dark: '#ffb347', light: '#9a7326' } as const
+
 export const TITANIUM = {
   brushedTitanium: '#151820',
   darkTitanium: '#0f1216',
@@ -35,7 +37,7 @@ export const TITANIUM = {
   titaniumGold: '#d4c090',
   brightAluminum: '#e8ecf4',
   dimAluminum: '#9ca3b0',
-  warningAmber: '#ffb347',
+  warningAmber: orange.dark,
   readoutGreen: '#00ff88',
   alertRed: '#ff4757',
   subtleGray: '#2a3038'
@@ -48,7 +50,7 @@ const foreground = {
   borderMuted: '#1f252d',
   success: '#00ff88',
   error: '#ff4757',
-  warning: '#ffb347',
+  warning: orange.dark,
   muted: '#9ca3b0',
   dim: '#6b7280',
   text: '',
@@ -114,7 +116,7 @@ const lightForeground = {
   borderMuted: '#b0b0b0',
   success: '#588458',
   error: '#aa5555',
-  warning: '#9a7326',
+  warning: orange.light,
   muted: '#6c6c6c',
   dim: '#767676',
   text: '',
@@ -173,7 +175,11 @@ export function createHarnessLightTheme(base: Theme): Theme {
   return new Theme(lightForeground, lightBackground, base.getColorMode(), { name: 'light', appearance: 'light' })
 }
 
-// Claude Code 2.1.302 frames its prompt in neutral grey rather than an accent, so the rules do too.
+// The composer keeps its neutral frame; the slash completion divider uses warning amber.
 export function composerRuleColor(theme: Theme): string {
   return theme.appearance === 'light' ? '#8a8a8a' : '#888888'
+}
+
+export function autocompleteRuleColor(theme: Theme): string {
+  return theme.appearance === 'light' ? orange.light : orange.dark
 }

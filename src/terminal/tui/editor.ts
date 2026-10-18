@@ -1,8 +1,8 @@
 // Harness owns composer geometry and actions; Pi provides the editing primitive.
 import { CustomEditor, type KeybindingsManager, type Theme } from '@earendil-works/pi-coding-agent'
-import { CURSOR_MARKER, type EditorTheme, type TUI, type TuiMouseEvent, parseColor, renderFakeCursor, truncateToWidth, visibleWidth } from '@earendil-works/pi-tui'
+import { CURSOR_MARKER, type EditorTheme, type TUI, type TuiMouseEvent, parseColor, renderFakeCursor, truncateToWidth } from '@earendil-works/pi-tui'
 
-import { composerRuleColor } from './theme'
+import { autocompleteRuleColor, composerRuleColor } from './theme'
 
 const BOTTOM = '\u0000harness-composer-bottom'
 
@@ -19,15 +19,13 @@ export interface ComposerView {
   band(width: number, hiddenAbove: number, hiddenBelow: number): string
   theme(): Theme
   placeholder(): string | undefined
-  showHint(): boolean
-  clearKey: string
-  thinkingKey: string
 }
 
 export class HarnessEditor extends CustomEditor {
   private hiddenAbove = 0
   private hiddenBelow = 0
   private contentRows = 1
+  private completionRows = 0
   private gutterWidth = 2
 
   constructor(tui: TUI, theme: EditorTheme, keybindings: KeybindingsManager, private readonly view: ComposerView) {
@@ -66,19 +64,22 @@ export class HarnessEditor extends CustomEditor {
       return cue + line
     })
     const completions = rows.slice(bottom + 1).map((line) => ' '.repeat(this.gutterWidth) + line)
+    this.completionRows = completions.length
+    const completionDivider = completions.length > 0 ? [this.rule(width, theme, autocompleteRuleColor(theme))] : []
     const result = [
-      this.rule(width, theme), ...prompt, this.rule(width, theme), this.footer(width, theme),
-      this.view.band(width, this.hiddenAbove, this.hiddenBelow), ...completions
+      ...completionDivider, ...completions,
+      this.rule(width, theme), ...prompt, this.rule(width, theme), this.view.band(width, this.hiddenAbove, this.hiddenBelow)
     ].map((line) => truncateToWidth(line, width, ''))
     if (this.focused && !result.some((line) => line.includes(CURSOR_MARKER))) {
-      const index = Math.max(1, Math.min(result.length - 1, prompt.length))
+      const composerOffset = completions.length > 0 ? completions.length + 1 : 0
+      const index = composerOffset + Math.max(1, Math.min(result.length - composerOffset - 1, prompt.length))
       result[index] = truncateToWidth(result[index], Math.max(0, width - 1), '') + CURSOR_MARKER + ' '
     }
     return result
   }
 
-  private rule(width: number, theme: Theme): string {
-    return theme.style('─'.repeat(width), { fg: parseColor(composerRuleColor(theme)) })
+  private rule(width: number, theme: Theme, color = composerRuleColor(theme)): string {
+    return theme.style('─'.repeat(width), { fg: parseColor(color) })
   }
 
   private placeholderRow(suggestion: string, innerWidth: number, theme: Theme): string {
@@ -89,24 +90,19 @@ export class HarnessEditor extends CustomEditor {
     return CURSOR_MARKER + renderFakeCursor(first) + theme.fg('dim', rest.join(''))
   }
 
-  private footer(width: number, theme: Theme): string {
-    const empty = this.getText() === ''
-    const left = theme.fg('dim', empty ? '? for shortcuts' : `${this.view.clearKey} to clear`)
-    const right = empty && this.view.showHint()
-      ? theme.fg('accent', this.view.thinkingKey) + ' ' + theme.italic(theme.fg('dim', 'to change thinking effort'))
-      : ''
-    const gap = width - this.gutterWidth - visibleWidth(left) - visibleWidth(right)
-    return truncateToWidth(' '.repeat(this.gutterWidth) + left + (right && gap >= 1 ? ' '.repeat(gap) + right : ''), width, '')
-  }
-
   override handleMouse(event: TuiMouseEvent) {
-    // Pi sees only its own rules, prompt rows and completions. The footer and band rows sit between them.
-    const footer = this.contentRows + 2
-    if (event.y >= footer && event.y <= footer + 1) return undefined
+    // Pi sees its own rows; the suggestion divider and status band are presentation rows.
+    const composerOffset = this.completionRows > 0 ? this.completionRows + 1 : 0
+    const band = composerOffset + this.contentRows + 2
+    if (event.y === band) return undefined
+    if (this.completionRows > 0 && event.y === 0) return undefined
+    const y = this.completionRows > 0 && event.y <= this.completionRows
+      ? this.contentRows + 1 + event.y
+      : event.y - composerOffset
     return super.handleMouse({
       ...event,
       x: event.x - this.gutterWidth,
-      y: event.y > footer + 1 ? event.y - 2 : event.y,
+      y,
       width: Math.max(1, event.width - this.gutterWidth)
     })
   }

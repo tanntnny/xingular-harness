@@ -8,7 +8,7 @@ import { McpServer, WebStandardStreamableHTTPServerTransport } from '@modelconte
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { memorySecretStore } from '../accounts/secrets'
-import { createHarness, type Harness } from '../harness'
+import { createHarness, type Harness, type HarnessOptions } from '../harness'
 import type { RunEvent } from '../sessions/contracts'
 import type { ToolPolicy } from '../sessions/policy'
 import type { PiSessionLike } from '../sessions/runner'
@@ -106,12 +106,12 @@ afterEach(async () => {
 const tick = (ms = 30) => new Promise((resolve) => setTimeout(resolve, ms))
 
 /** A harness with one live run whose session keeps going until the test releases it. */
-async function live(policy: ToolPolicy = {}) {
+async function live(policy: ToolPolicy = {}, extra: Partial<HarnessOptions> = {}) {
   let release: () => void = () => undefined
   const stateDir = mkdtempSync(join(tmpdir(), 'harness-mcp-state-'))
   const secrets = memorySecretStore()
   const session: PiSessionLike = { sessionId: 'native', subscribe: () => () => undefined, prompt: () => new Promise<void>((resolve) => (release = resolve)), sendCustomMessage: async () => undefined, abort: async () => release(), dispose: () => undefined }
-  const harness = createHarness({ dataRoot: mkdtempSync(join(tmpdir(), 'harness-mcp-data-')), stateDir, secrets, policy, sessionFactory: async () => session })
+  const harness = createHarness({ dataRoot: mkdtempSync(join(tmpdir(), 'harness-mcp-data-')), stateDir, secrets, policy, sessionFactory: async () => session, ...extra })
   open.push(harness)
   harness.accounts.create('Main', 'apiKey')
   const events: RunEvent[] = []
@@ -277,6 +277,7 @@ describe('remote connected apps', () => {
     await expect(harness.apps.save({ name: '', kind: 'local', command: 'x' })).rejects.toThrow('A name, executable')
     await expect(harness.apps.save({ ...local, env: { 'BAD NAME': 'x' } })).rejects.toThrow('environment variable')
     await expect(harness.apps.save({ ...remote, url: 'https://x.example/mcp', auth: 'headers', headers: { 'X-Key': 'a\nb' } })).rejects.toThrow('header')
+    await expect(harness.apps.save({ ...remote, url: 'https://x.example/mcp', auth: 'oauth', oauthClient: 'whoever' })).rejects.toThrow('Unsupported OAuth client')
     const workspace = await harness.apps.save({ name: 'Xingular Workspace', kind: 'workspace', command: process.execPath, enabled: true, global: true })
     expect(() => harness.apps.connections.allowTool(workspace.id, 'x_workspace_mutation_apply')).toThrow('one at a time')
     await harness.apps.remove(workspace.id)
@@ -372,5 +373,50 @@ describe('signing in to a remote connected app', () => {
     expect(server.seen.tokenRequests).toHaveLength(1)
     expect(server.seen.tokenRequests[0]).toContain('fixture-code')
     expect(server.seen.tokenRequests[0]).toMatch(/own-client|b3duLWNsaWVudDpvd24tc2VjcmV0/)
+  })
+
+  it('signs in with the application\'s own client, keeps it out of storage, and offers it only for that catalog entry', async () => {
+    const server = await oauthFixture()
+    const { harness, secrets } = await live({}, { oauthClients: { ids: () => ['fixture-app'], get: async (id) => (id === 'fixture-app' ? { clientId: 'app-client', clientSecret: 'app-secret' } : null) } })
+    harness.bus.on((notice) => {
+      if (notice.type === 'connections.openUrl') void fetch(String(notice.url))
+    })
+    expect(harness.apps.appClients()).toEqual({ catalogIds: ['fixture-app'] })
+    const saved = await harness.apps.save({ name: 'App client', kind: 'remote', enabled: true, global: true, url: server.url, auth: 'oauth', oauthClient: 'app', catalogId: 'fixture-app', oauthScopes: ['read'] })
+    expect((await harness.apps.signIn(saved.id)).authState).toBe('signed_in')
+    // No client of its own is registered, and the application's client is what the provider sees.
+    expect(server.seen.registered).toBe(0)
+    expect(server.seen.authorizeUrls[0].searchParams.get('client_id')).toBe('app-client')
+    // Neither the saved connection nor the secret store ever holds the application's client secret.
+    expect(JSON.stringify(harness.apps.connections.list())).not.toContain('app-secret')
+    expect(JSON.stringify([...secrets.values.entries()])).not.toContain('app-secret')
+    expect(JSON.parse(secrets.values.get(`mcp--${saved.id}/oauth`)!).tokens).toMatchObject({ refresh_token: 'fixture-refresh' })
+  })
+
+  it('uses the application client and resets sign-in when switching from a saved user client', async () => {
+    const server = await oauthFixture()
+    const { harness, secrets } = await live({}, { oauthClients: { ids: () => ['fixture-app'], get: async (id) => (id === 'fixture-app' ? { clientId: 'app-client', clientSecret: 'app-secret' } : null) } })
+    harness.bus.on((notice) => {
+      if (notice.type === 'connections.openUrl') void fetch(String(notice.url))
+    })
+    const user = await harness.apps.save({ name: 'Switched client', kind: 'remote', enabled: true, global: true, url: server.url, auth: 'oauth', oauthClient: 'user', oauthCredentials: { clientId: 'user-client', clientSecret: 'user-secret' } })
+    const signedInUser = await harness.apps.signIn(user.id)
+    expect(signedInUser.authState).toBe('signed_in')
+
+    const app = await harness.apps.save({ ...user, oauthClient: 'app', catalogId: 'fixture-app' })
+    expect(app.authState).toBe('signed_out')
+    expect(secrets.values.has(`mcp--${user.id}/oauth`)).toBe(false)
+    await harness.apps.signIn(user.id)
+
+    expect(server.seen.authorizeUrls.map((url) => url.searchParams.get('client_id'))).toEqual(['user-client', 'app-client'])
+    expect(server.seen.tokenRequests[1]).toMatch(/app-client|YXBwLWNsaWVudDphcHAtc2VjcmV0/)
+  })
+
+  it('refuses an application sign-in this build has no client for, naming the reason', async () => {
+    const { harness } = await live()
+    const saved = await harness.apps.save({ name: 'No client', kind: 'remote', enabled: true, global: true, url: 'https://example.com/mcp', auth: 'oauth', oauthClient: 'app', catalogId: 'google-drive', oauthScopes: [] })
+    expect(harness.apps.appClients()).toEqual({ catalogIds: [] })
+    await expect(harness.apps.signIn(saved.id)).rejects.toThrow(/no app sign-in/)
+    expect(harness.apps.connections.find(saved.id).authState).toBe('signed_out')
   })
 })

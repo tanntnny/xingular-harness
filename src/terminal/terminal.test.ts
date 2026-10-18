@@ -22,6 +22,23 @@ afterEach(async () => {
   for (const harness of open.splice(0)) await harness.close()
 })
 
+function tellOn(connection: SocketConnection, event: string, data: Record<string, unknown> = {}) {
+  return new Promise<any>((resolve, reject) => {
+    const stream = connect(connection.socket)
+    let buffer = ''
+    stream.on('connect', () => stream.write(`${JSON.stringify({ token: connection.token, event, data })}\n`))
+    stream.on('data', (chunk) => {
+      buffer += chunk.toString()
+      if (!buffer.includes('\n')) return
+      const reply = JSON.parse(buffer.slice(0, buffer.indexOf('\n')))
+      stream.end()
+      if (reply.error) reject(new Error(reply.error.message))
+      else resolve(reply.result)
+    })
+    stream.on('error', reject)
+  })
+}
+
 async function setup(policy: ToolPolicy = {}) {
   const root = rootWithProject()
   const harness = createHarness({ dataRoot: root, stateDir: mkdtempSync(join(tmpdir(), 'hs-')), secrets: memorySecretStore(), policy, piProgram: () => '/opt/pi/bin/pi', assets: { node: '/opt/node', cli: '/opt/harness/cli.js', piExtension: '/opt/harness/terminal-pi.js' } })
@@ -39,21 +56,7 @@ async function setup(policy: ToolPolicy = {}) {
   const launch = await harness.terminals.prepare({ sessionId: 'term-1', accountId: account.id, projectId: 'p1', cwd: root, sessionFolder, model: 'chosen-model', launch: { connections: 'Use mcp_list_tools.' } })
   const connection: SocketConnection = { socket: String(launch.env[SOCKET_ENV]), token: String(launch.env[TOKEN_ENV]) }
   /** One telemetry line, as the native extension sends it. */
-  const tell = (event: string, data: Record<string, unknown> = {}) =>
-    new Promise<any>((resolve, reject) => {
-      const stream = connect(connection.socket)
-      let buffer = ''
-      stream.on('connect', () => stream.write(`${JSON.stringify({ token: connection.token, event, data })}\n`))
-      stream.on('data', (chunk) => {
-        buffer += chunk.toString()
-        if (!buffer.includes('\n')) return
-        const reply = JSON.parse(buffer.slice(0, buffer.indexOf('\n')))
-        stream.end()
-        if (reply.error) reject(new Error(reply.error.message))
-        else resolve(reply.result)
-      })
-      stream.on('error', reject)
-    })
+  const tell = (event: string, data: Record<string, unknown> = {}) => tellOn(connection, event, data)
   return { harness, root, account, events, notices, launch, connection, tell, sessionFolder }
 }
 
@@ -237,6 +240,117 @@ describe('a pi terminal session', () => {
     expect(await decision).toEqual({ decision: 'approved' })
   })
 
+  it('protects permission controls and shares saved terminal grants across sessions', async () => {
+    const { connection, harness, account, root } = await setup()
+    await expect(socketCall(connection, 'terminal.permissions.get')).rejects.toMatchObject({ code: 'unauthorized' })
+    await expect(socketCall(connection, 'terminal.policy', { tool: 'bash', args: {} })).rejects.toMatchObject({ code: 'unauthorized' })
+    const { key } = await socketCall<{ key: string }>(connection, 'control.claim')
+    expect(await socketCall(connection, 'terminal.permissions.get', {}, 1000, key)).toEqual({ full: false, globalTools: [] })
+    await socketCall(connection, 'terminal.permissions.setTool', { tool: 'bash', allowed: true }, 1000, key)
+    await socketCall(connection, 'terminal.permissions.setFull', { enabled: true }, 1000, key)
+
+    const secondLaunch = await harness.terminals.prepare({ sessionId: 'term-2', accountId: account.id, projectId: 'p1', cwd: root, sessionFolder: join(root, 'sessions', 'p1', 'term-2') })
+    const secondConnection: SocketConnection = { socket: String(secondLaunch.env[SOCKET_ENV]), token: String(secondLaunch.env[TOKEN_ENV]) }
+    const { key: secondKey } = await socketCall<{ key: string }>(secondConnection, 'control.claim')
+    expect(await socketCall(secondConnection, 'terminal.permissions.get', {}, 1000, secondKey)).toEqual({ full: true, globalTools: ['bash'] })
+    await socketCall(secondConnection, 'terminal.permissions.setTool', { tool: 'bash', allowed: false }, 1000, secondKey)
+    expect(await socketCall(connection, 'terminal.permissions.get', {}, 1000, key)).toEqual({ full: true, globalTools: [] })
+    await expect(socketCall(connection, 'terminal.permissions.setFull', { enabled: 'yes' }, 1000, key)).rejects.toMatchObject({ code: 'invalid_request' })
+  })
+
+  it('does not let a permission change retroactively resolve an already pending approval', async () => {
+    const { connection, tell } = await setup()
+    await tell('ready')
+    await tell('begin', { text: 'Wait for a decision' })
+    const { key } = await socketCall<{ key: string }>(connection, 'control.claim')
+    const approval = socketCall<{ decision: string }>(connection, 'terminal.approval', { requestId: 'already-pending', tool: 'bash', args: { command: 'pwd' } }, 1000, key)
+    let requestId = ''
+    await vi.waitFor(async () => {
+      const { requests } = await socketCall<{ requests: Array<{ requestId: string }> }>(connection, 'terminal.pending', {}, 1000, key)
+      expect(requests).toHaveLength(1)
+      requestId = requests[0]!.requestId
+    })
+
+    await socketCall(connection, 'terminal.permissions.setFull', { enabled: true }, 1000, key)
+    expect(await socketCall(connection, 'terminal.pending', {}, 1000, key)).toMatchObject({ requests: [{ requestId }] })
+    await socketCall(connection, 'terminal.approve', { requestId, decision: 'denied' }, 1000, key)
+    expect(await approval).toEqual({ decision: 'denied' })
+  })
+
+  it('rechecks native tool policy when a pending approval is resolved', async () => {
+    let denied = false
+    const { connection, tell } = await setup({
+      scope: async () => denied ? { allowed: false, reason: 'The policy now denies this tool.' } : { allowed: true, requiresApproval: true }
+    })
+    await tell('ready')
+    await tell('begin', { text: 'Run a tool' })
+    const { key } = await socketCall<{ key: string }>(connection, 'control.claim')
+    expect(await socketCall(connection, 'terminal.policy', { tool: 'bash', args: { command: 'pwd' } }, 1000, key)).toMatchObject({ requiresApproval: true, rememberable: true })
+    const approval = socketCall<{ decision: string }>(connection, 'terminal.approval', { requestId: 'call-approval', tool: 'bash', args: { command: 'pwd' } }, 1000, key)
+    let requestId = ''
+    await vi.waitFor(async () => {
+      const pending = await socketCall<{ requests: Array<{ requestId: string }> }>(connection, 'terminal.pending', {}, 1000, key)
+      expect(pending.requests).toHaveLength(1)
+      requestId = pending.requests[0]!.requestId
+    })
+
+    denied = true
+    await socketCall(connection, 'terminal.approve', { requestId, decision: 'approved' }, 1000, key)
+    expect(await approval).toEqual({ decision: 'denied' })
+  })
+
+  it('keeps human-only rules out of tool grants and Full Permission unless the host opts in', async () => {
+    const { connection, tell, events, harness } = await setup({
+      scope: async () => ({ allowed: true, humanOnly: true, allowGlobalApproval: false })
+    })
+    harness.approvals.setAuto('pi', true)
+    await tell('ready')
+    await tell('begin', { text: 'Human decision required' })
+    const { key } = await socketCall<{ key: string }>(connection, 'control.claim')
+    expect(await socketCall(connection, 'terminal.policy', { tool: 'bash', args: {} }, 1000, key)).toMatchObject({ requiresApproval: true, rememberable: false, standing: 'none' })
+    const approval = socketCall<{ decision: string }>(connection, 'terminal.approval', { requestId: 'human-only', tool: 'bash', args: {} }, 1000, key)
+    let requestId = ''
+    await vi.waitFor(async () => {
+      expect(events.some(event => event.type === 'approval.requested')).toBe(true)
+      const { requests } = await socketCall<{ requests: Array<{ requestId: string; rememberable?: boolean }> }>(connection, 'terminal.pending', {}, 1000, key)
+      expect(requests).toHaveLength(1)
+      expect(requests[0]?.rememberable).toBe(false)
+      requestId = requests[0]!.requestId
+    })
+    await socketCall(connection, 'terminal.approve', { requestId, decision: 'denied' }, 1000, key)
+    expect(await approval).toEqual({ decision: 'denied' })
+  })
+
+  it('remembers a tool choice for future Pi terminal sessions sharing the state directory', async () => {
+    const { connection, tell, events, harness, account, root } = await setup()
+    await tell('ready')
+    await tell('begin', { text: 'Allow a tool' })
+    const { key } = await socketCall<{ key: string }>(connection, 'control.claim')
+    const first = socketCall<{ decision: string }>(connection, 'terminal.approval', { requestId: 'remember-call', tool: 'bash', args: { command: 'pwd' } }, 1000, key)
+    let requestId = ''
+    await vi.waitFor(async () => {
+      const { requests } = await socketCall<{ requests: Array<{ requestId: string; rememberable?: boolean }> }>(connection, 'terminal.pending', {}, 1000, key)
+      expect(requests[0]?.rememberable).toBe(true)
+      requestId = requests[0]!.requestId
+    })
+    await socketCall(connection, 'terminal.approve', { requestId, decision: 'approved', alwaysAllow: true }, 1000, key)
+    expect(await first).toEqual({ decision: 'approved' })
+    expect(harness.approvals.read().globalTools.pi).toEqual(['bash'])
+
+    const launch = await harness.terminals.prepare({ sessionId: 'term-2', accountId: account.id, projectId: 'p1', cwd: root, sessionFolder: join(root, 'sessions', 'p1', 'term-2') })
+    const next: SocketConnection = { socket: String(launch.env[SOCKET_ENV]), token: String(launch.env[TOKEN_ENV]) }
+    await tellOn(next, 'startup', { phase: 'ready' })
+    await tellOn(next, 'ready')
+    await tellOn(next, 'begin', { text: 'Reuse the grant' })
+    const { key: nextKey } = await socketCall<{ key: string }>(next, 'control.claim')
+    const before = events.filter(event => event.type === 'approval.requested').length
+    expect(await socketCall(next, 'terminal.approval', { requestId: 'next-call', tool: 'bash', args: { command: 'git status' } }, 1000, nextKey)).toEqual({ decision: 'approved' })
+    const automatic = events.filter(event => event.type === 'approval.requested').slice(before)
+    expect(automatic).toHaveLength(1)
+    expect(automatic[0]?.payload).toMatchObject({ automatic: 'remembered', target: 'bash' })
+    expect(await socketCall(next, 'terminal.pending', {}, 1000, nextKey)).toEqual({ requests: [] })
+  })
+
   it('applies the application policy to native tool calls', async () => {
     const seen: string[] = []
     const { tell } = await setup({
@@ -332,6 +446,27 @@ describe('xagent-wiki command', () => {
 
 
 describe('decisions in the Harness-owned frontend', () => {
+  it('exposes trajectory reads only to the input owner and scopes them to the current native conversation', async () => {
+    const { connection, tell, events } = await setup()
+    await tell('ready', { nativeSessionId: '/history/current.jsonl' })
+    await tell('begin', { text: 'Inspect this run' })
+    await tell('message', { text: 'Recorded response' })
+    await tell('settled', {})
+    const runId = events.find(event => event.type === 'started')!.runId
+
+    await expect(socketCall(connection, 'terminal.trajectory.list')).rejects.toMatchObject({ code: 'unauthorized' })
+    const { key } = await socketCall<{ key: string }>(connection, 'control.claim')
+    const listed = await socketCall<{ runs: Array<{ id: string }> }>(connection, 'terminal.trajectory.list', {}, 1000, key)
+    expect(listed.runs.map(run => run.id)).toContain(runId)
+    await expect(socketCall(connection, 'terminal.trajectory.events', { runId }, 1000, key)).resolves.toMatchObject({
+      run: { id: runId }, events: expect.arrayContaining([expect.objectContaining({ type: 'message.completed' })])
+    })
+
+    await tell('ready', { nativeSessionId: '/history/another.jsonl' })
+    await expect(socketCall(connection, 'terminal.trajectory.events', { runId }, 1000, key)).rejects.toMatchObject({ code: 'not_found' })
+    await expect(socketCall(connection, 'terminal.trajectory.list', {}, 1000, key)).resolves.toEqual({ runs: [] })
+  })
+
   it('requires the private input-owner key for pending decisions and exact draft state', async () => {
     const { connection, harness, tell } = await setup()
     await tell('ready', { nativeSessionId: '/native.jsonl' })

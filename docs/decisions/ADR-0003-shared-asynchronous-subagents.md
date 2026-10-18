@@ -60,3 +60,9 @@ receipts and interruption during a child question. `runtime.socket.test.ts` exer
 terminal socket, private controls, native execution and child decision routing. RPC and App host
 regressions cover protocol shapes and ancestry. Tests use disposable storage without external
 model requests. These are working-tree changes, not a publication or live-provider acceptance claim.
+
+Verification on 2026-10-18: Harness typecheck, 455 tests (two skipped), unchanged golden fixtures,
+build and standalone proof passed. App typecheck, layer/UI checks, sidecar build, 30 sidecar tests
+and 217 Rust tests passed (one ignored). The renderer suite passed 491 tests and retained its
+pre-existing `PendingRequestDock.test.ts` heading-text assertion failure. No live account or
+user-data-root testing was performed.

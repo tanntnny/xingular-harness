@@ -13,6 +13,7 @@ export class TerminalTranscript extends Container {
   private hideThinking = false
   private expanded = false
   private hiddenLabel = 'Thinking…'
+  private lastNotice?: { component: Component; text: string; type: string }
 
   constructor(private readonly tui: TUI, private readonly theme: () => Theme, private readonly builtinRenderers: BuiltinRenderers) { super() }
 
@@ -24,6 +25,16 @@ export class TerminalTranscript extends Container {
     this.tools.clear()
     this.assistant = undefined
     this.session = undefined
+  }
+
+  /** A line of terminal feedback, such as a mode change or an error. It sits in the conversation where it happened, not in the session. */
+  notice(text: string, type: string): void {
+    // A failure that repeats with nothing after it, such as a draft that cannot be saved on each keystroke, is shown once.
+    const last = this.lastNotice
+    if (last && last.text === text && last.type === type && this.children.at(-1) === last.component) return
+    const component = new Text(this.theme().fg(type === 'error' ? 'error' : type === 'warning' ? 'warning' : 'muted', text), 1, 1)
+    this.addChild(component)
+    this.lastNotice = { component, text, type }
   }
 
   bind(session: AgentSession): void {

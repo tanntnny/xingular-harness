@@ -5,6 +5,7 @@
 export type WikiCall =
   | 'memory.append' | 'memory.replace' | 'memory.rethink'
   | 'recall.search' | 'recall.read'
+  | 'trajectory.search' | 'trajectory.read'
   | 'wiki.entrypoint' | 'wiki.search' | 'wiki.read' | 'wiki.list' | 'wiki.skill' | 'wiki.memory' | 'wiki.propose'
 
 /** A JSON Schema object, kept loose so TypeBox, MCP, and the CLI can all use it. */
@@ -81,6 +82,44 @@ export const RECALL_TOOLS: WikiToolDefinition[] = [
     label: 'Read a run',
     description: 'Read one earlier run in order: the request, the replies, and the tools used. Pass a run id from history_search.',
     parameters: { type: 'object', properties: { run: text('Run id') }, required: ['run'] }
+  }
+]
+
+/** Trajectory: structured run metadata and the events the harness recorded. */
+export const TRAJECTORY_TOOLS: WikiToolDefinition[] = [
+  {
+    name: 'trajectory_search',
+    call: 'trajectory.search',
+    label: 'Search trajectories',
+    description: 'List recorded runs across this {product} data root, including active runs. Filter by agent name or id, project name or slug, mode, status, or start time. Results are newest first; use the returned cursor to continue. Then use trajectory_read for captured prompts, context snapshots, model and tool events, decisions, retries, compaction, and usage. Hidden agents excluded by the host stay hidden.',
+    parameters: {
+      type: 'object',
+      properties: {
+        agent: text('Only runs belonging to this agent name or id'),
+        project: text('Only runs in this project name, slug, or id'),
+        mode: text('Only this run mode, such as chat or code'),
+        status: { type: 'string', enum: ['queued', 'running', 'waiting_for_approval', 'waiting_for_input', 'interrupted', 'completed', 'failed'], description: 'Only runs in this status' },
+        since: text('Only runs started on or after this YYYY-MM-DD date or ISO timestamp'),
+        until: text('Only runs started on or before this YYYY-MM-DD date or ISO timestamp'),
+        limit: { type: 'integer', minimum: 1, maximum: 30, description: 'Maximum summaries to return; defaults to 10' },
+        cursor: text('Continue from the previous result’s nextCursor')
+      }
+    }
+  },
+  {
+    name: 'trajectory_read',
+    call: 'trajectory.read',
+    label: 'Read trajectory',
+    description: 'Read the recorded event trajectory for a run id from trajectory_search, or run "current" for this session. Active runs include the latest events saved so far. Read in sequence pages with afterSequence and nextAfterSequence. Event payloads are bounded; account identifiers, credential fields, attachment bytes, and provider reasoning text or summaries are omitted.',
+    parameters: {
+      type: 'object',
+      properties: {
+        run: text('Run id, or "current" for the run making this call'),
+        afterSequence: { type: 'integer', minimum: -1, description: 'Return events after this sequence; defaults to -1 for the beginning' },
+        limit: { type: 'integer', minimum: 1, maximum: 10, description: 'Maximum events to return; defaults to 8' }
+      },
+      required: ['run']
+    }
   }
 ]
 
@@ -176,7 +215,9 @@ export const WIKI_TOOLS: WikiToolDefinition[] = [
       },
       required: ['kind', 'title', 'body']
     }
-  }
+  },
+  // Keep new tools at the end so existing tool order and cached prefixes remain stable.
+  ...TRAJECTORY_TOOLS
 ]
 
 /** Tools agents get when the context pack is already in their instructions. */

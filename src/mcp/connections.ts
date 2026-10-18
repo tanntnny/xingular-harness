@@ -12,7 +12,7 @@ import { isDir } from '../memory/store'
 import type { RunEvent } from '../sessions/contracts'
 import * as attachments from '../plugins/attachments'
 import { connectionScopeMigrationComplete } from './scopeMigration'
-import { connectionCapabilityId, connectionInputSchema, connectionSchema, type Connection, type ConnectionInput, type LaunchConfig, type Scope } from './types'
+import { connectionCapabilityId, connectionInputSchema, connectionSchema, type AppOAuthClients, type Connection, type ConnectionInput, type LaunchConfig, type Scope } from './types'
 
 const OAUTH_STATE = 'oauth'
 const OAUTH_CLIENT_ID = 'oauth_client_id'
@@ -175,7 +175,8 @@ export class Connections {
     stateDir: string,
     private readonly secrets: SecretStore,
     private readonly bus: Bus,
-    private readonly attachmentRoot: () => string | null = () => null
+    private readonly attachmentRoot: () => string | null = () => null,
+    private readonly appClients: AppOAuthClients | null = null
   ) {
     this.path = join(stateDir, 'connections.json')
   }
@@ -468,21 +469,47 @@ export class Connections {
 
   // ---- OAuth state --------------------------------------------------------------------------
 
-  private requireOauth(id: string): void {
-    if (!this.list().some((item) => item.id === id && item.kind === 'remote' && item.auth === 'oauth')) throw notFound('Connection')
+  private requireOauth(id: string): Connection {
+    const connection = this.list().find((item) => item.id === id && item.kind === 'remote' && item.auth === 'oauth')
+    if (!connection) throw notFound('Connection')
+    return connection
   }
 
-  /** The saved sign-in of a connection, with the client the user registered, if any. */
+  /** The saved sign-in of a connection, with the client the user registered, or the application's own. */
   async oauthLoad(id: string): Promise<Record<string, unknown>> {
-    this.requireOauth(id)
+    const connection = this.requireOauth(id)
     const saved = (parsedContainer((await this.secret(id, OAUTH_STATE)) ?? '') ?? {}) as Record<string, unknown>
     const state = Array.isArray(saved) ? {} : saved
-    const clientId = await this.secret(id, OAUTH_CLIENT_ID)
-    if (clientId) {
-      const clientSecret = await this.secret(id, OAUTH_CLIENT_SECRET)
-      state.staticClient = { client_id: clientId, ...(clientSecret ? { client_secret: clientSecret } : {}) }
+    delete state.staticClient
+    if (connection.oauthClient === 'app') {
+      const client = await this.appClient(connection)
+      if (client) state.staticClient = { client_id: client.clientId, ...(client.clientSecret ? { client_secret: client.clientSecret } : {}) }
+    } else if (connection.oauthClient === 'user' || connection.oauthClient === null) {
+      const clientId = await this.secret(id, OAUTH_CLIENT_ID)
+      if (clientId) {
+        const clientSecret = await this.secret(id, OAUTH_CLIENT_SECRET)
+        state.staticClient = { client_id: clientId, ...(clientSecret ? { client_secret: clientSecret } : {}) }
+      }
     }
     return state
+  }
+
+  /** The client this application registered for a catalog entry, if it has one. */
+  private async appClient(connection: Connection): Promise<{ clientId: string; clientSecret?: string } | null> {
+    if (!connection.catalogId) return null
+    return (await this.appClients?.get(connection.catalogId)) ?? null
+  }
+
+  /** Whether a sign-in can be started: a dynamic server registers itself, the others need a client. */
+  async hasSignInClient(connection: Connection): Promise<boolean> {
+    if (connection.oauthClient === 'user') return (await this.secret(connection.id, OAUTH_CLIENT_ID)) !== null
+    if (connection.oauthClient === 'app') return (await this.appClient(connection)) !== null
+    return true
+  }
+
+  /** The catalog entries this application can sign in for without asking for a client. */
+  availableAppClients(): string[] {
+    return this.appClients?.ids() ?? []
   }
 
   async oauthSave(id: string, state: Record<string, unknown>): Promise<void> {
@@ -515,7 +542,7 @@ export class Connections {
     if (remote) {
       if (!webUrl(connection.url)) throw invalid('Server URL must be an https:// address.')
       if (!['none', 'headers', 'oauth'].includes(connection.auth)) throw invalid('Unsupported sign-in method.')
-      if (connection.oauthClient && !['dynamic', 'user'].includes(connection.oauthClient)) throw invalid('Unsupported OAuth client.')
+      if (connection.oauthClient && !['dynamic', 'user', 'app'].includes(connection.oauthClient)) throw invalid('Unsupported OAuth client.')
       Object.assign(connection, { command: '', args: [], cwd: null })
       if (connection.auth !== 'oauth') Object.assign(connection, { oauthClient: null, oauthScopes: [] })
     } else {
@@ -533,7 +560,7 @@ export class Connections {
     connection.envKeys = [...(existing?.envKeys ?? [])]
     connection.headerKeys = [...(existing?.headerKeys ?? [])]
     // A sign-in belongs to one server and one client; never carry it to another.
-    const sameServer = (existing?.url ?? null) === connection.url && (existing?.auth ?? '') === connection.auth && !oauthCredentials
+    const sameServer = (existing?.url ?? null) === connection.url && (existing?.auth ?? '') === connection.auth && existing?.oauthClient === connection.oauthClient && existing?.catalogId === connection.catalogId && !oauthCredentials
     if (!sameServer || connection.auth !== 'oauth') await this.forgetSignIn(connection.id)
     connection.authState = connection.auth === 'oauth' ? (sameServer ? (existing?.authState ?? 'signed_out') : 'signed_out') : null
     if (oauthCredentials) {

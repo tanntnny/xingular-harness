@@ -131,6 +131,7 @@ export class RunRegistry {
       sequence = 0
     }
     let finished = false
+    let finishing = false
     const interruptHandlers: Array<() => Promise<void> | void> = []
     let steerHandler: ((text: string) => Promise<void> | void) | null = null
     const waitingStatus = (): string =>
@@ -139,7 +140,7 @@ export class RunRegistry {
     const requestQuestion = (input: QuestionInput, batch?: QuestionBatchMetadata, statusEvent = true): Promise<QuestionAnswer> => {
       const { requestId, ...payload } = input
       const questionId = requestId ?? randomUUID()
-      if (finished || this.nativeCleared.delete(questionId)) return Promise.resolve({ selected: [] })
+      if (finished || finishing || this.nativeCleared.delete(questionId)) return Promise.resolve({ selected: [] })
       if (this.questions.has(questionId)) throw new HarnessError('invalid_request', 'This question id is already pending.')
       return new Promise<QuestionAnswer>((resolve) => {
         this.questions.set(questionId, {
@@ -187,7 +188,7 @@ export class RunRegistry {
         // What the user already allowed is known here; if it cannot be read, ask as usual.
         const record = findRun(this.options.root(), runId)
         const automatic = record && this.options.automatic && standing !== 'none' ? await this.options.automatic(record, input.target, input.operation, standing).catch(() => null) : null
-        if (finished) return 'denied'
+        if (finished || finishing) return 'denied'
         if (this.nativeCleared.delete(approvalId)) return 'native'
         if (automatic) {
           // Marked on the request too, so nothing treats it as waiting on someone.
@@ -220,14 +221,18 @@ export class RunRegistry {
         if (new Set(requestedIds).size !== requestedIds.length || requestedIds.some((id) => this.questions.has(id))) {
           throw new HarnessError('invalid_request', 'Question ids in a batch must be unique and not already pending.')
         }
-        if (finished) return Promise.resolve(inputs.map(() => ({ selected: [] })))
+        if (finished || finishing) return Promise.resolve(inputs.map(() => ({ selected: [] })))
         const batchId = randomUUID()
         const answers = inputs.map((input, index) => requestQuestion(input, { batchId, batchIndex: index + 1, batchCount: inputs.length }, false))
         emit('status.changed', { status: 'waiting_for_input' })
         return Promise.all(answers)
       },
       finish: (outcome, failure) => {
-        if (finished) return
+        if (finished || finishing) return
+        finishing = true
+        // Persist cancellation receipts while emit is still open, so every interface clears them.
+        for (const [, approval] of [...this.approvals]) if (approval.runId === runId) approval.resolve('denied')
+        for (const [, question] of [...this.questions]) if (question.runId === runId) question.resolve({ selected: [] })
         if (outcome === 'failed') emit('failed', failure ?? { code: 'failed', message: 'The run failed.' })
         else if (outcome === 'interrupted') emit('status.changed', { status: 'interrupted' })
         else emit('completed', {})
@@ -236,8 +241,6 @@ export class RunRegistry {
         for (const resolve of [...(this.waiters.get(runId) ?? [])]) resolve()
         this.waiters.delete(runId)
         for (const [id, owner] of this.nativeCleared) if (owner === runId) this.nativeCleared.delete(id)
-        for (const [, approval] of [...this.approvals]) if (approval.runId === runId) approval.resolve('denied')
-        for (const [, question] of [...this.questions]) if (question.runId === runId) question.resolve({ selected: [] })
         try {
           this.options.ended?.(runId, sessionId)
         } catch (error) {

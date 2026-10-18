@@ -12,24 +12,23 @@ function setup(view: Partial<ComposerView> = {}) {
   const editor = new HarnessEditor({ terminal: { rows: 30 }, requestRender() {} } as unknown as TUI,
     { borderColor: (text) => text, selectList: getSelectListTheme() }, new TuiKeybindingsManager(TUI_KEYBINDINGS) as KeybindingsManager, {
       band: (width) => bandText(width),
-      theme: () => theme, placeholder: () => undefined, showHint: () => true, clearKey: 'ctrl+c', thinkingKey: '⇧⇥', ...view
+      theme: () => theme, placeholder: () => undefined, ...view
     })
   editor.focused = true
   return editor
 }
 
 describe('Claude-style composer frame over the native Pi editor', () => {
-  it('frames the prompt between two full-width rules, with the footer and band below', () => {
+  it('frames the prompt between two full-width rules, with the band below', () => {
     const editor = setup()
     const rows = editor.render(40)
-    expect(rows).toHaveLength(5)
+    expect(rows).toHaveLength(4)
     expect(stripTerminalSequences(rows[0])).toBe('─'.repeat(40))
     expect(rows[0]).toContain('38;2;136;136;136')
     expect(stripTerminalSequences(rows[1])).toMatch(/^❯ /)
     expect(rows[1]).toContain(CURSOR_MARKER)
     expect(stripTerminalSequences(rows[2])).toBe('─'.repeat(40))
-    expect(stripTerminalSequences(rows[3])).toMatch(/^ {2}\? for shortcuts/)
-    expect(stripTerminalSequences(rows[4]).trimEnd()).toBe('[band]')
+    expect(stripTerminalSequences(rows[3]).trimEnd()).toBe('[band]')
     expect(rows.every((row) => visibleWidth(row) <= 40)).toBe(true)
     expect(editor.getText()).toBe('')
   })
@@ -54,16 +53,13 @@ describe('Claude-style composer frame over the native Pi editor', () => {
     expect(stripTerminalSequences(rows[1])).not.toContain('Try')
   })
 
-  it('puts the clear key and the thinking hint on the footer row, not in the prompt', () => {
+  it('does not render a shortcuts or thinking hint row', () => {
     const editor = setup()
-    expect(stripTerminalSequences(editor.render(80)[3])).toMatch(/^ {2}\? for shortcuts +⇧⇥ to change thinking effort$/)
+    const rows = editor.render(80).map(stripTerminalSequences)
+    expect(rows.join('\n')).not.toContain('? for shortcuts')
+    expect(rows.join('\n')).not.toContain('to change thinking effort')
     editor.handleInput('x')
-    expect(stripTerminalSequences(editor.render(80)[3])).toMatch(/^ {2}ctrl\+c to clear$/)
-  })
-
-  it('omits the thinking hint once it is no longer wanted', () => {
-    const editor = setup({ showHint: () => false })
-    expect(stripTerminalSequences(editor.render(80)[3]).trimEnd()).toBe('  ? for shortcuts')
+    expect(editor.render(80).map(stripTerminalSequences).join('\n')).not.toContain('to clear')
   })
 
   it('preserves editing, multiline wrapping, history, and cursor markers across resizes', () => {
@@ -86,7 +82,7 @@ describe('Claude-style composer frame over the native Pi editor', () => {
     expect(editor.getText()).toBe('previous prompt')
   })
 
-  it('lists autocomplete below the band and still accepts a selection', async () => {
+  it('lists autocomplete above the composer with matching orange dividers and accepts a selection', async () => {
     const editor = setup()
     editor.setAutocompleteProvider({
       getSuggestions: async () => ({ items: [{ value: '/accounts', label: '/accounts' }, { value: '/plugins', label: '/plugins' }], prefix: '/' }),
@@ -97,17 +93,21 @@ describe('Claude-style composer frame over the native Pi editor', () => {
     const rows = editor.render(50)
     const band = rows.findIndex((row) => stripTerminalSequences(row).startsWith('[band]'))
     const completion = rows.findIndex((row) => stripTerminalSequences(row).includes('/accounts'))
-    expect(completion).toBeGreaterThan(band)
+    const composerDivider = rows.findIndex((row, index) => index > completion && stripTerminalSequences(row) === '─'.repeat(50))
+    expect(rows[0]).toContain('38;2;255;179;71')
+    expect(rows[composerDivider]).toContain('38;2;136;136;136')
+    expect(completion).toBeGreaterThan(0)
+    expect(composerDivider).toBeGreaterThan(completion)
+    expect(band).toBeGreaterThan(composerDivider)
     expect(rows.every((row) => visibleWidth(row) <= 50)).toBe(true)
     editor.handleInput('\t')
     expect(editor.getText()).toContain('/accounts')
   })
 
-  it('does not hand footer or band rows to the editor as its own', () => {
+  it('does not hand the band row to the editor as its own', () => {
     const editor = setup()
     editor.render(40)
     const at = (y: number) => ({ x: 5, y, width: 40, height: 5 }) as TuiMouseEvent
     expect(editor.handleMouse(at(3))).toBeUndefined()
-    expect(editor.handleMouse(at(4))).toBeUndefined()
   })
 })

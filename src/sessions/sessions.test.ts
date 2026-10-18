@@ -423,7 +423,7 @@ describe('session turns on Pi', () => {
     await tick()
     expect(received!.allow.slice(0, 3)).toEqual(['react', 'ask_user', 'plugin_propose'])
     expect(received!.allow).toEqual(expect.arrayContaining(['memory_append', 'history_search', 'wiki_search', 'wiki_read', 'wiki_propose']))
-    expect(received!.tools.map((tool) => tool.name)).toEqual(['memory_append', 'memory_replace', 'memory_rethink', 'history_search', 'history_read', 'wiki_search', 'wiki_read', 'wiki_list', 'skill_load', 'memory_facts', 'wiki_propose', 'ask_user', 'plugin_propose', 'spawn_subagent', 'wait_subagents', 'react'])
+    expect(received!.tools.map((tool) => tool.name)).toEqual(['memory_append', 'memory_replace', 'memory_rethink', 'history_search', 'history_read', 'wiki_search', 'wiki_read', 'wiki_list', 'skill_load', 'memory_facts', 'wiki_propose', 'trajectory_search', 'trajectory_read', 'ask_user', 'plugin_propose', 'spawn_subagent', 'wait_subagents', 'react'])
     expect(await received!.tools[0].execute({ block: 'notes', text: 'Remember this.' })).toContain('Updated the notes block')
     expect(received!.params.system).toContain('# Xingular Harness context')
   })
@@ -523,8 +523,9 @@ describe('subagents', () => {
       return fakeSession(async () => new Promise<void>(() => undefined), gate)
     })
     const subagents = { maxDepth: 2 }
-    await run('parent', { subagents })
+    const starting = run('parent', { subagents })
     subagents.maxDepth = 3
+    await starting
     await expect(harness.sessions.spawnSubagent({ parentRunId: 'parent', brief: 'Bad tools', tools: ['outside'] })).rejects.toMatchObject({ code: 'invalid_request' })
     const child = await harness.sessions.spawnSubagent({ parentRunId: 'parent', brief: 'Search' })
     const grandchild = await harness.sessions.spawnSubagent({ parentRunId: child.runId, brief: 'Review' })
@@ -571,7 +572,7 @@ describe('subagents', () => {
 })
 
 describe('standing approvals', () => {
-  const policy = { auto: { pi: true }, remembered: { 'pane-1': ['shell'] } }
+  const policy = { auto: { pi: true }, globalTools: {}, remembered: { 'pane-1': ['shell'] } }
   const facts = (unattended: boolean, readOnly: boolean): ApprovalFacts => ({ unattended, readOnly })
 
   it('the switch reaches attended sessions but not unattended or read-only ones', () => {
@@ -582,6 +583,6 @@ describe('standing approvals', () => {
     expect(grant(policy, 'pi', 'pane-1', 'shell', facts(true, false))).toBeNull()
     expect(grant(policy, 'chat', 'pane-1', 'edit files', facts(false, false))).toBeNull()
     expect(grant(policy, 'pi', 'pane-2', 'shell', {})).toBe('always')
-    expect(grant({ auto: {}, remembered: policy.remembered }, 'pi', 'pane-2', 'shell', {})).toBeNull()
+    expect(grant({ auto: {}, globalTools: {}, remembered: policy.remembered }, 'pi', 'pane-2', 'shell', {})).toBeNull()
   })
 })

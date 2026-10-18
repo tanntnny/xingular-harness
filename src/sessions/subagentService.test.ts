@@ -7,7 +7,7 @@ import { memorySecretStore } from '../accounts/secrets'
 import { createHarness, type Harness } from '../harness'
 import type { SessionRunInput } from './sessions'
 import { SUBAGENT_OWNER, SUBAGENT_RECEIPT, subagentHistory } from './subagents'
-import { loadRun, recordSubagent } from './runStore'
+import { loadRun, recordSubagent, saveRun } from './runStore'
 
 const open: Harness[] = []
 afterEach(async () => { for (const harness of open.splice(0)) await harness.close() })
@@ -46,6 +46,9 @@ describe('native subagent ownership and delivery', () => {
     finish.get(a.runId)!('First result')
     await harness.runs.wait(a.runId)
     expect(joined).toBe(false)
+    const canceled = new AbortController()
+    canceled.abort()
+    await expect(harness.subagents.wait({ parentRunId: 'parent', runIds: [b.runId] }, canceled.signal)).rejects.toMatchObject({ code: 'run_not_active' })
     finish.get(b.runId)!('Second result')
     expect(await pending).toMatchObject([{ runId: b.runId, status: 'completed', text: 'Second result' }])
     expect(loadRun(harness.env.root, a.runId).sessionId).not.toContain(':subagent:')
@@ -74,6 +77,7 @@ describe('native subagent ownership and delivery', () => {
     await harness.runs.interrupt('parent')
     await interrupted
     expect(loadRun(harness.env.root, child.runId).status).toBe('interrupted')
+    expect(harness.subagents.results({ parentRunId: 'parent' })).toMatchObject([{ runId: child.runId, status: 'interrupted' }])
   })
 
   it('recovers a child whose spawn return was lost, only from its owning history and account', async () => {
@@ -95,6 +99,44 @@ describe('native subagent ownership and delivery', () => {
     const other = harness.accounts.create('Other', 'apiKey').accounts.find(account => account.label === 'Other')!
     await start('wrong-account', { accountId: other.id })
     expect(await harness.subagents.delivery('wrong-account', branch, true)).toBeNull()
+  })
+
+  it('reconstructs disk ownership after reopening without automatically restarting model work', async () => {
+    const { harness, finish, start } = setup()
+    await start('original')
+    const child = await harness.subagents.spawn({ parentRunId: 'original', brief: 'Persisted work' })
+    finish.get(child.runId)!('On-disk result')
+    await harness.runs.wait(child.runId)
+    recordSubagent(harness.env.root, 'original', 'orphan-after-crash')
+    const original = loadRun(harness.env.root, 'original')
+    saveRun(harness.env.root, { ...original, id: 'orphan-after-crash', sessionId: 'orphan-session', parentRunId: 'original', relation: 'subagent', status: 'running' })
+    const dataRoot = harness.env.root
+    const stateDir = harness.stateDir
+    await harness.close()
+    open.splice(open.indexOf(harness), 1)
+    let opened = 0
+    const restarted = createHarness({ dataRoot, stateDir, secrets: memorySecretStore(), sessionFactory: async () => {
+      opened++
+      return { sessionId: 'native-history', subscribe: () => () => {}, prompt: async () => new Promise<void>(() => {}), sendCustomMessage: async () => {}, abort: async () => {}, dispose: () => {} }
+    } })
+    open.push(restarted)
+    expect(opened).toBe(0)
+    expect(loadRun(dataRoot, 'orphan-after-crash').status).toBe('interrupted')
+    await restarted.sessions.run({ run: { id: 'explicit-resume', sessionId: original.sessionId, resumedFromRunId: original.id }, caller: { agentId: 'caller', actor: 'Chat' }, cwd: original.workingDirectory!, sessionDir: join(original.workingDirectory!, 'history'), text: 'Resume', tools: { allow: ['read'] } })
+    const delivery = await restarted.subagents.delivery('explicit-resume', { owners: ['original'], receipts: [] }, true)
+    expect(delivery?.text).toContain('On-disk result')
+    expect(delivery?.receipt.delivered).toEqual([child.runId, 'orphan-after-crash'])
+    expect(opened).toBe(1)
+  })
+
+  it('enables interactive callers at a host depth without extending native nesting or unattended access', async () => {
+    const { harness, start } = setup()
+    await start('host-depth', { depth: 3 })
+    const child = await harness.subagents.spawn({ parentRunId: 'host-depth', brief: 'One native level' })
+    await expect(harness.subagents.spawn({ parentRunId: child.runId, brief: 'Too deep' })).rejects.toMatchObject({ code: 'invalid_request' })
+    await harness.runs.interrupt('host-depth')
+    await start('unattended', { automatic: true })
+    await expect(harness.subagents.spawn({ parentRunId: 'unattended', brief: 'Not enabled' })).rejects.toMatchObject({ code: 'invalid_request' })
   })
 
   it('does not acknowledge results omitted from a bounded delivery batch', async () => {

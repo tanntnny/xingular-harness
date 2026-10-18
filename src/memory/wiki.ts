@@ -6,6 +6,7 @@ import { readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { noteChange } from '../core/changes'
+import { logLine } from '../core/bus'
 import { HarnessError, notFound } from '../core/errors'
 import * as frontmatter from '../core/frontmatter'
 import { atomicWrite, now } from '../core/fs'
@@ -216,7 +217,7 @@ export function searchEntries(root: string, query: string, options: SearchOption
   try {
     ranked = wikiIndex.search(root, query, limit * 4, boost)
   } catch (error) {
-    process.stderr.write(`[index] search fell back to files: ${error instanceof Error ? error.message : String(error)}\n`)
+    logLine(`[index] search fell back to files: ${error instanceof Error ? error.message : String(error)}`)
     const needle = query.trim().toLowerCase()
     if (!needle) return []
     const rank = (entry: IndexedEntry): number => (entry.namespace === boost ? 0 : 2) + (entry.title.toLowerCase().includes(needle) ? 0 : 1)

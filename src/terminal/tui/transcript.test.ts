@@ -23,3 +23,17 @@ it('detaches all custom transcript components before their session is invalidate
   transcript.clearSession()
   expect(second.dispose).toHaveBeenCalledOnce()
 })
+
+it('keeps notices in the conversation order and drops them with the session', () => {
+  const theme = createHarnessTheme({ getColorMode: () => 'truecolor' } as Theme)
+  const transcript = new TerminalTranscript({} as TUI, () => theme, () => undefined)
+  transcript.notice('Plan mode: only read-only tools are available.', 'info')
+  transcript.notice('Plan mode could not start.', 'error')
+  transcript.notice('Plan mode could not start.', 'error')
+  const lines = transcript.render(80).map(line => line.replace(/\x1b\[[0-9;]*m/g, '').trim()).filter(Boolean)
+  expect(lines).toEqual(['Plan mode: only read-only tools are available.', 'Plan mode could not start.'])
+  transcript.notice('Plan mode: only read-only tools are available.', 'info')
+  expect(transcript.render(80).map(line => line.replace(/\x1b\[[0-9;]*m/g, '').trim()).filter(Boolean)).toHaveLength(3)
+  transcript.clearSession()
+  expect(transcript.render(80)).toEqual([])
+})

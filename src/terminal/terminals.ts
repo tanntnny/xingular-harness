@@ -14,6 +14,7 @@ import { SPAWN_SUBAGENT, WAIT_SUBAGENTS, type SubagentOptions } from '../session
 import { subagentTools } from '../tools/spawnSubagent'
 import type { Effort } from '../sessions/runner'
 import type { Accounts } from '../accounts/accounts'
+import type { Approvals } from '../sessions/approvals'
 import { configDir, launchEnv } from '../accounts/env'
 import { readAudit, type Account } from '../accounts/store'
 import type { Bus } from '../core/bus'
@@ -42,6 +43,7 @@ import { SOCKET_ENV, TOKEN_ENV } from './client'
 import { TerminalController, type PolicyReply } from './controller'
 import { resolvePiCommand, terminalCommandFiles } from './launch'
 import { SessionSocket, socketPath } from './socket'
+import { listTerminalTrajectoryRuns, readTerminalTrajectory } from './trajectory'
 
 /** Identity of the exact resource decision that this terminal was prepared with. */
 function resourceIdentity(loading: Loading | null): string {
@@ -115,6 +117,7 @@ export interface TerminalsOptions {
   stateDir: string
   accounts: Accounts
   runs: RunRegistry
+  approvals: Approvals
   apps: ConnectedApps
   policy: ToolPolicy
   bus: Bus
@@ -408,19 +411,26 @@ export class Terminals {
     const { policy } = this.options
     if (policy.scope) {
       const scope = await policy.scope(call)
-      if (!scope.allowed && !scope.requiresApproval) return { allowed: false, reason: scope.reason ?? 'Outside what this session may do.' }
+      if (!scope.allowed && (scope.automatic || !scope.requiresApproval)) return { allowed: false, reason: scope.reason ?? 'Outside what this session may do.' }
       try {
         await policy.authorize?.(call)
       } catch (error) {
         return { allowed: false, reason: error instanceof Error ? error.message : 'Tool unavailable in the settings.' }
       }
-      return { allowed: scope.allowed, requiresApproval: !!scope.requiresApproval, reason: scope.reason ?? null }
+      const requiresApproval = !!scope.requiresApproval || (scope.allowed && !!scope.humanOnly)
+      return {
+        allowed: scope.allowed,
+        requiresApproval,
+        reason: scope.reason ?? null,
+        rememberable: scope.allowed && !scope.humanOnly,
+        ...(scope.humanOnly ? { standing: scope.allowGlobalApproval ? 'switch' as const : 'none' as const } : {})
+      }
     }
     // With no application policy: reads run, a read-only session refuses the rest, and anything else asks.
     const name = tool.toLowerCase()
     if (name === SPAWN_SUBAGENT || name === WAIT_SUBAGENTS || READ_ONLY_TOOLS.has(name) || this.options.apps.toolNames.includes(name as never)) return { allowed: true }
     if (live.input.readOnly) return { allowed: false, reason: 'This session is read-only.' }
-    return { allowed: false, requiresApproval: true, reason: 'This native action requires approval.' }
+    return { allowed: false, requiresApproval: true, rememberable: true, reason: 'This native action requires approval.' }
   }
 
   private async subagentsCall(live: Live, call: string, params: Record<string, any>): Promise<unknown> {
@@ -464,11 +474,25 @@ export class Terminals {
     throw invalid('Unknown subagent operation.')
   }
 
+  private trajectoryCall(live: Live, call: string, params: Record<string, unknown>): unknown {
+    if (call === 'terminal.trajectory.list') {
+      return { runs: listTerminalTrajectoryRuns(this.options.env.root, live.input.sessionId, live.controller.nativeSessionId) }
+    }
+    if (call === 'terminal.trajectory.events') {
+      if (typeof params.runId !== 'string' || !params.runId) throw invalid('A run id is required.')
+      const afterSequence = params.afterSequence
+      if (afterSequence !== undefined && typeof afterSequence !== 'number') throw invalid('The event sequence must be a number.')
+      return readTerminalTrajectory(this.options.env.root, live.input.sessionId, live.controller.nativeSessionId, params.runId, afterSequence as number | undefined)
+    }
+    throw new HarnessError('unknown_method', `Unknown call ${call}.`)
+  }
+
   /**
    * Prepares a `pi` terminal session and returns what to spawn. The caller must report the
    * process's end with `dispose`, also when it never starts.
    */
   async prepare(input: TerminalPrepareInput): Promise<TerminalLaunch> {
+    input = structuredClone(input)
     const { env, accounts, apps, bus } = this.options
     const { root } = env
     if (!input?.sessionId || !input.cwd || !input.sessionFolder) throw invalid('A terminal session needs an id, a working folder, and its own folder.')
@@ -504,6 +528,7 @@ export class Terminals {
           nativeSessionId: input.nativeSessionId ?? null,
           begin: ({ reservedRunId, text }) => this.begin(live, reservedRunId, text),
           policy: (run, tool, args) => this.decide(live, run, tool, args),
+          allowToolGlobally: target => { this.options.approvals.allowTool('pi', target) },
           native: (nativeSessionId) => bus.emit({ type: 'terminal.native', sessionId, nativeSessionId }),
           telemetry: (event) => bus.emit({ type: 'terminal.telemetry', sessionId, event }),
           interrupt: runId => this.options.runs.interrupt(runId),
@@ -518,6 +543,22 @@ export class Terminals {
         broker,
         terminal: { accept: (event, data) => live.controller.accept(event, data), disconnected: () => live.controller.disconnected(), control: async (call, params) => {
           if (call.startsWith('terminal.subagents.')) return this.subagentsCall(live, call, params)
+          if (call.startsWith('terminal.trajectory.')) return this.trajectoryCall(live, call, params)
+          if (call === 'terminal.permissions.get') {
+            const policy = this.options.approvals.read()
+            return { full: this.options.approvals.isAuto('pi'), globalTools: policy.globalTools.pi ?? [] }
+          }
+          if (call === 'terminal.permissions.setFull') {
+            if (typeof params.enabled !== 'boolean') throw invalid('A boolean permission state is required.')
+            return { full: this.options.approvals.setAuto('pi', params.enabled).auto.pi === true }
+          }
+          if (call === 'terminal.permissions.setTool') {
+            if (typeof params.tool !== 'string' || !params.tool.trim() || typeof params.allowed !== 'boolean') throw invalid('A tool name and boolean permission state are required.')
+            const policy = params.allowed
+              ? this.options.approvals.allowTool('pi', params.tool)
+              : this.options.approvals.revokeTool('pi', params.tool)
+            return { globalTools: policy.globalTools.pi ?? [] }
+          }
           if (call !== 'terminal.resources') return live.controller.control(call, params)
           const current = await this.options.plugins?.loading({ cwd: input.cwd, agentDir: configDir(accounts.dir, account), install: false, caller: { projectId: input.projectId ?? null } }) ?? null
           if (resourceIdentity(current) !== resourceIdentity(loading)) throw new HarnessError('terminal_resources_changed', 'Trusted resources changed since this terminal was prepared. Review /plugins and reopen the terminal to load the new selection.')

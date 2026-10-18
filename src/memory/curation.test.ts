@@ -11,9 +11,10 @@ import type { ToolSession } from '../tools/types'
 import * as blocks from './blocks'
 import { memoryEdit, propose } from './api'
 import { enqueueCuration } from './curation'
-import { findMemory } from './facts'
+import { findMemory, saveAsUser } from './facts'
 import * as registry from '../skills/registry'
 import * as attachments from '../plugins/attachments'
+import { listInbox } from './operations'
 import { wikiDir } from './store'
 
 const opened: Harness[] = []
@@ -55,6 +56,48 @@ test('a shared fact is proposed without writing, then validated against its orig
   expect(receipt.status).toBe('completed')
   expect(findMemory(wikiDir(h.env.root), 'build-tool').front.sourceIds).toContain('run:origin')
   expect(h.maintenance.applyJob(curator, job.id, undefined, 'Retry receipt').receipt).toEqual(receipt.receipt)
+})
+
+test('an assigned proposal batch is read together and committed as one reconciled Wiki operation', async () => {
+  const h = setup(); await origin(h)
+  propose(h.env, self, { kind: 'fact', title: 'Build package', body: 'Prefer pnpm for builds.', confidence: 'high', sourceRefs: [{ kind: 'run', ref: 'current', excerpt: 'Prefer pnpm for all builds.' }] })
+  propose(h.env, self, { kind: 'fact', title: 'Build tool', body: 'Use pnpm for builds.', confidence: 'high', sourceRefs: [{ kind: 'run', ref: 'current', excerpt: 'Prefer pnpm for all builds.' }] })
+  const ids = h.maintenance.jobs().filter(job => job.input.kind === 'proposal').map(job => job.id)
+  const batchCurator = { ...curator, maintenanceJobIds: ids }
+  expect(h.maintenance.readBatch(batchCurator).jobs).toHaveLength(2)
+
+  const applied = h.maintenance.applyBatch(batchCurator, ids.map(id => ({ id, decision: 'apply' as const, reason: 'Merge duplicate statements into one evidence-backed fact.' })), {
+    pages: [],
+    memories: [{ title: 'Build tool', kind: 'preference', body: 'Prefer pnpm for builds.', namespace: '/', confidence: 'high', sourceRefs: [{ kind: 'run', ref: 'origin', excerpt: 'Prefer pnpm for all builds.' }], links: [] }],
+    blocks: [],
+    flags: []
+  })
+
+  expect(applied.operationId).toMatch(/^batch-/)
+  expect(applied.jobs.map(job => job.status)).toEqual(['completed', 'completed'])
+  expect(applied.jobs.filter(job => job.receipt?.operationId === applied.operationId)).toHaveLength(1)
+  expect(findMemory(wikiDir(h.env.root), 'build-tool').body.trim()).toBe('Prefer pnpm for builds.')
+  expect(listInbox(wikiDir(h.env.root)).filter(item => item.operationId === applied.operationId)).toHaveLength(1)
+})
+
+test('a batch parks updates whose captured Wiki target changed before review', async () => {
+  const h = setup(); await origin(h)
+  const wiki = wikiDir(h.env.root)
+  saveAsUser(wiki, { id: 'build-tool', title: 'Build tool', kind: 'preference', namespace: '/', body: 'Use pnpm for builds.' })
+  propose(h.env, self, { kind: 'fact', id: 'build-tool', title: 'Build tool', body: 'Prefer pnpm for all builds.', confidence: 'high', sourceRefs: [{ kind: 'run', ref: 'current', excerpt: 'Prefer pnpm for all builds.' }] })
+  const id = h.maintenance.jobs().find(job => job.input.kind === 'proposal')!.id
+  saveAsUser(wiki, { id: 'build-tool', title: 'Build tool', kind: 'preference', namespace: '/', body: 'The user changed this preference.' })
+
+  const result = h.maintenance.applyBatch({ ...curator, maintenanceJobIds: [id] }, [{ id, decision: 'apply', reason: 'Review the proposed update against its evidence.' }], {
+    pages: [],
+    memories: [{ id: 'build-tool', title: 'Build tool', kind: 'preference', body: 'Prefer pnpm for all builds.', namespace: '/', confidence: 'high', sourceRefs: [{ kind: 'run', ref: 'origin', excerpt: 'Prefer pnpm for all builds.' }], links: [] }],
+    blocks: [],
+    flags: []
+  })
+
+  expect(result.jobs[0].status).toBe('needs_user')
+  expect(result.operationId).toBeNull()
+  expect(findMemory(wiki, 'build-tool').body.trim()).toBe('The user changed this preference.')
 })
 
 test('invented evidence is parked and a read-only memory block is not rewritten', async () => {

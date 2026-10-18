@@ -5,6 +5,7 @@
 // their limit are condensed.
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { createHash } from 'node:crypto'
 
 import type { Accounts } from '../accounts/accounts'
 import { log, type Bus } from '../core/bus'
@@ -20,7 +21,7 @@ import { callerBlocks, type CallerContext } from './caller'
 import * as facts from './facts'
 import { piMaintainerFactory, runMaintenance, type ExistingBlock, type ExistingMemory, type ExistingPage, type MaintainerFactory, type MaintenanceRequest } from './maintainer'
 import { inbox, undo } from './operations'
-import { accept, apply, captureHashes, describeTrigger, parseProposalSet, writeIndex, type Evidence, type Trigger } from './proposals'
+import { accept, apply, captureHashes, describeTrigger, parseProposalSet, writeIndex, type Evidence, type ProposalSet, type SourceRef, type Trigger } from './proposals'
 import { looksSecret } from './secrets'
 import { enqueueCuration, listCuration, curationJob, saveCuration, requireCurator, type CurationJob } from './curation'
 import * as registry from '../skills/registry'
@@ -46,27 +47,30 @@ export function chatUpdatesPaused(settings: unknown): boolean {
   return (settings as { autoMaintenanceChat?: unknown } | null)?.autoMaintenanceChat === false
 }
 
+/** A run that automatic maintenance leaves alone for a settled reason: a setting, a pause, or no project. Not an error. */
+class NotEligible extends Error {}
+
 /** Where a settled run's knowledge is filed and what the job reads of it; throws the reason it is not eligible. */
 function runEvidence(root: string, runId: string): { namespace: string; transcript: string } {
   const run = findRun(root, runId)
   if (!run) throw new Error('Run was not found.')
   const settings = readJsonOr<{ excludedSourceIds?: unknown } | null>(join(root, 'config/settings.json'), null)
-  if (Array.isArray(settings?.excludedSourceIds) && settings.excludedSourceIds.includes(runId)) throw new Error('run excluded in settings')
+  if (Array.isArray(settings?.excludedSourceIds) && settings.excludedSourceIds.includes(runId)) throw new NotEligible('run excluded in settings')
   const projectId = run.mode === 'chat' || run.mode === 'code' ? run.projectId : null
   let namespace: string
   if (projectId) {
     const project = findProject(root, projectId)
-    if (!project.autoMaintenance) throw new Error('automatic updates are paused for this project')
+    if (!project.autoMaintenance) throw new NotEligible('automatic updates are paused for this project')
     namespace = project.wikiNamespace
   } else if (run.mode === 'chat') {
-    if (chatUpdatesPaused(settings)) throw new Error('automatic updates are paused for Chat')
+    if (chatUpdatesPaused(settings)) throw new NotEligible('automatic updates are paused for Chat')
     namespace = store.LIBRARY_NAMESPACE
   } else {
-    throw new Error('run has no project')
+    throw new NotEligible('run has no project')
   }
   const text = transcript(run.goal ?? '', readEvents(root, runId))
-  if (!text.includes('Assistant:')) throw new Error('no recorded assistant output to use as evidence')
-  if (looksSecret(text)) throw new Error('the run contains text that looks like a credential')
+  if (!text.includes('Assistant:')) throw new NotEligible('no recorded assistant output to use as evidence')
+  if (looksSecret(text)) throw new NotEligible('the run contains text that looks like a credential')
   return { namespace, transcript: text }
 }
 
@@ -144,6 +148,12 @@ export function fullBlocks(wiki: string, tried: Set<string>): string[] {
 
 const blockValues = (found: readonly blocks.Block[]): ExistingBlock[] => found.map((block) => ({ id: block.id, label: block.front.label, description: block.front.description, limit: block.front.limit, body: block.body }))
 
+export interface MaintenanceBatchDecision {
+  id: string
+  decision: 'apply' | 'reject' | 'needs_user'
+  reason: string
+}
+
 export interface MaintenanceOptions {
   env: HarnessEnv
   bus: Bus
@@ -208,7 +218,12 @@ export class Maintenance {
     if (this.idle) clearTimeout(this.idle)
     if (this.options.external) {
       if (job.kind === 'run') {
-        try { runEvidence(this.options.env.root, job.runId) } catch (error) { log('maintenance source skipped', error instanceof Error ? error.message : String(error)); return }
+        try {
+          runEvidence(this.options.env.root, job.runId)
+        } catch (error) {
+          if (!(error instanceof NotEligible)) log('maintenance source skipped', error instanceof Error ? error.message : String(error))
+          return
+        }
         const run = findRun(this.options.env.root, job.runId)
         const namespace = run?.projectId ? findProject(this.options.env.root, run.projectId).wikiNamespace : store.LIBRARY_NAMESPACE
         enqueueCuration(this.options.env.root, { ...job, namespace })
@@ -232,6 +247,150 @@ export class Maintenance {
   }
 
   jobs(): CurationJob[] { return listCuration(this.options.env.root) }
+
+  /** Reads every request frozen into the current host-assigned review batch. */
+  readBatch(context: CallerContext): { jobs: unknown[] } {
+    requireCurator(context)
+    const ids = context.maintenanceJobIds ?? (context.maintenanceJobId ? [context.maintenanceJobId] : [])
+    return {
+      jobs: ids.map((id) => {
+        try {
+          return this.readJob(context, id)
+        } catch (error) {
+          return { id, status: 'failed', error: error instanceof Error ? error.message : String(error) }
+        }
+      })
+    }
+  }
+
+  /** Applies one evidence-checked Wiki change set for all accepted Wiki requests in a batch. */
+  applyBatch(context: CallerContext, decisions: readonly MaintenanceBatchDecision[], replacement: unknown): { operationId: string | null; jobs: CurationJob[] } {
+    requireCurator(context)
+    if (!decisions.length) throw invalid('Decide every assigned request in the batch.')
+    const ids = decisions.map((decision) => decision.id)
+    if (new Set(ids).size !== ids.length) throw invalid('Each request can appear only once in a batch decision.')
+    const assigned = context.maintenanceJobIds ?? (context.maintenanceJobId ? [context.maintenanceJobId] : [])
+    const pending = assigned.map((id) => curationJob(this.options.env.root, id)).filter((job) => !['completed', 'rejected', 'needs_user'].includes(job.status))
+    if (pending.some((job) => !ids.includes(job.id))) throw invalid('Decide every assigned request in one batch.')
+
+    const entries = decisions.map((decision) => {
+      if (!decision.reason.trim()) throw invalid('Explain every batch decision.')
+      if (!['apply', 'reject', 'needs_user'].includes(decision.decision)) throw invalid('Choose apply, reject, or needs_user for every request.')
+      const job = curationJob(this.options.env.root, decision.id)
+      if (context.maintenanceJobIds !== undefined && !context.maintenanceJobIds.includes(decision.id) && !('caller' in job.input && job.input.caller.runId === context.runId)) throw invalid('This request is not assigned to this run.')
+      if (job.runId && job.runId !== context.runId && job.status === 'running') throw invalid('Another run owns this request.')
+      return { decision, job }
+    })
+    const wikiEntries = entries.filter(({ decision, job }) => decision.decision === 'apply' && !['registry', 'plugin'].includes(job.input.kind) && !['completed', 'rejected', 'needs_user'].includes(job.status))
+    if (wikiEntries.length && replacement === undefined) throw invalid('Provide one combined, evidence-backed Wiki change set for the approved requests.')
+    const proposals: ProposalSet | null = wikiEntries.length ? parseProposalSet(replacement) : null
+    const operationId = wikiEntries.length ? `batch-${createHash('sha256').update(wikiEntries.map(({ job }) => job.id).sort().join('\0')).digest('hex').slice(0, 32)}` : null
+    const results = new Map<string, CurationJob>()
+
+    if (wikiEntries.length) {
+      const prepared = wikiEntries.map(({ job }) => this.claim(context, job.id))
+      const root = this.options.env.root
+      const wiki = store.wikiDir(root)
+      const evidence: Evidence = { runs: {}, sources: {}, blocks: [] }
+      const blocksSeen = new Set<string>()
+      const captured = new Map<string, string>()
+      const conflicts = new Set<string>()
+      for (const job of prepared) {
+        const input = job.input
+        for (const id of job.prepared?.evidence.blocks ?? (input.kind === 'proposal' ? input.proposals.blocks.map((proposal) => proposal.block) : [])) blocksSeen.add(id)
+        for (const [id, hash] of job.hashes) {
+          const previous = captured.get(id)
+          if (previous !== undefined && previous !== hash) conflicts.add(id)
+          else captured.set(id, hash)
+        }
+      }
+      for (const id of conflicts) captured.set(id, `conflicting-batch-snapshot:${id}`)
+      evidence.blocks = [...blocksSeen]
+
+      const refs: SourceRef[] = [...proposals!.pages, ...proposals!.memories, ...proposals!.blocks].flatMap((proposal) => proposal.sourceRefs)
+      const excluded = readJsonOr<{ excludedSourceIds?: unknown } | null>(join(root, 'config/settings.json'), null)?.excludedSourceIds
+      const excludedIds = Array.isArray(excluded) ? excluded.filter((id): id is string => typeof id === 'string') : []
+      for (const ref of refs) {
+        if (ref.kind === 'run' && findRun(root, ref.ref)) {
+          const caller = readJsonOr<CallerContext | null>(join(root, 'runs', ref.ref, 'caller.json'), null)
+          if (!excludedIds.includes(ref.ref) && caller?.vaultAccess !== 'curator') {
+            const text = evidenceText(root, ref.ref)
+            if (!looksSecret(text)) evidence.runs![ref.ref] = takeChars(text, 60_000)
+          }
+        }
+        if (ref.kind === 'source') {
+          const source = store.listSources(wiki).find((item) => item.id === ref.ref)
+          if (source) {
+            try {
+              const text = readFileSync(join(wiki, 'raw', source.id, source.name), 'utf8')
+              if (!looksSecret(text)) evidence.sources![ref.ref] = takeChars(text, 60_000)
+            } catch {
+              // Missing or unreadable evidence is rejected by the proposal validator.
+            }
+          }
+        }
+      }
+
+      const namespaceFor = (sourceRefs: readonly SourceRef[]): string => {
+        for (const ref of sourceRefs) {
+          const sourceJob = prepared.find((job) => {
+            if (job.input.kind === 'proposal') return job.input.caller.runId === ref.ref
+            if (job.input.kind === 'run') return job.input.runId === ref.ref
+            if (job.input.kind === 'ingest') return job.input.sourceId === ref.ref
+            return false
+          })
+          const namespace = sourceJob?.prepared?.namespace ?? (sourceJob?.input.kind === 'proposal' ? sourceJob.input.namespace : undefined)
+          if (namespace) return namespace
+        }
+        return prepared[0]?.prepared?.namespace ?? (prepared[0]?.input.kind === 'proposal' ? prepared[0].input.namespace : undefined) ?? store.LIBRARY_NAMESPACE
+      }
+      const batchProposals: ProposalSet = {
+        ...proposals!,
+        pages: proposals!.pages.map((proposal) => ({ ...proposal, namespace: proposal.namespace ?? namespaceFor(proposal.sourceRefs) })),
+        memories: proposals!.memories.map((proposal) => ({ ...proposal, namespace: proposal.namespace ?? namespaceFor(proposal.sourceRefs) }))
+      }
+      const trigger: Trigger = prepared.some((job) => job.input.kind === 'consolidate')
+        ? { kind: 'consolidate' }
+        : prepared.some((job) => job.input.kind === 'run')
+          ? { kind: 'run', runId: (prepared.find((job) => job.input.kind === 'run')!.input as Extract<Job, { kind: 'run' }>).runId }
+          : prepared.some((job) => job.input.kind === 'ingest')
+            ? (prepared.find((job) => job.input.kind === 'ingest')!.prepared?.trigger ?? { kind: 'agent', runId: context.runId ?? null, actor: context.agentName ?? 'Curator' })
+            : { kind: 'agent', runId: context.runId ?? null, actor: context.agentName ?? 'Curator' }
+      const outcome = apply(wiki, namespaceFor(refs), trigger, batchProposals, captured, evidence, operationId!, context.agentName ?? 'Curator')
+      if (outcome.operation) writeJson(join(wiki, 'operations', `${outcome.operation.id}.json`), { ...outcome.operation, protected: true })
+      reindexQuietly(root)
+      this.options.bus.emit({ type: 'wiki.changed' })
+      let operationAssigned = false
+      for (const { decision, job: original } of wikiEntries) {
+        const job = curationJob(root, original.id)
+        const jobReason = decision.reason.trim()
+        job.status = outcome.parked ? 'needs_user' : 'completed'
+        job.reason = jobReason
+        job.receipt = {
+          operationId: outcome.operation && !operationAssigned ? outcome.operation.id : null,
+          notes: [...outcome.notes, ...(outcome.operation ? [`Combined batch operation ${outcome.operation.id}.`] : ['The combined review produced no Wiki changes.'])],
+          parked: outcome.parked,
+          flagged: outcome.flagged
+        }
+        if (outcome.operation && !operationAssigned) operationAssigned = true
+        results.set(job.id, saveCuration(root, job))
+      }
+    }
+
+    for (const { decision, job } of entries) {
+      if (results.has(job.id) || ['completed', 'rejected', 'needs_user'].includes(job.status)) {
+        results.set(job.id, curationJob(this.options.env.root, job.id))
+        continue
+      }
+      if (decision.decision === 'apply') {
+        results.set(job.id, this.applyJob(context, job.id, undefined, decision.reason))
+      } else {
+        results.set(job.id, this.decide(context, job.id, decision.decision, decision.reason))
+      }
+    }
+    const receiptOperationId = [...results.values()].find((job) => job.receipt?.operationId)?.receipt?.operationId ?? null
+    return { operationId: receiptOperationId, jobs: decisions.map(({ id }) => results.get(id) ?? curationJob(this.options.env.root, id)) }
+  }
 
   claim(context: CallerContext, id: string, prepare = true): CurationJob {
     requireCurator(context)
@@ -448,6 +607,8 @@ export class Maintenance {
     const wiki = store.wikiDir(root)
     let prepared: ReturnType<Maintenance['prepare']>
     try { prepared = this.prepare(job) } catch (error) {
+      // A run that is not eligible is an expected outcome, not a problem to report.
+      if (error instanceof NotEligible) return
       const message = error instanceof Error ? error.message : String(error)
       if (job.kind === 'run') log(`maintenance skipped run ${job.runId}: ${message}`)
       else if (job.kind === 'ingest') { inbox(wiki, 'unresolved', 'Source was imported but not summarized', message, []); bus.emit({ type: 'wiki.changed' }) }

@@ -3,11 +3,20 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { KeybindingsManager, TUI_KEYBINDINGS, type KeybindingDefinitions, type KeybindingsConfig } from '@earendil-works/pi-tui'
 
+declare module '@earendil-works/pi-tui' {
+  interface Keybindings {
+    'app.thinking.increase': true
+    'app.thinking.decrease': true
+    'app.plan.toggle': true
+  }
+}
+
 // Harness owns application actions. Editing and selection retain Pi's reusable bindings.
 const actions: Record<string, string | string[]> = {
   'app.interrupt': 'escape', 'app.clear': 'ctrl+c', 'app.exit': 'ctrl+d',
   'app.suspend': process.platform === 'win32' ? [] : 'ctrl+z',
-  'app.thinking.cycle': 'shift+tab', 'app.thinking.save': 'ctrl+s',
+  'app.thinking.cycle': [], 'app.thinking.save': 'ctrl+s', 'app.plan.toggle': 'shift+tab',
+  'app.thinking.increase': 'shift+up', 'app.thinking.decrease': 'shift+down',
   'app.model.cycleForward': 'ctrl+p', 'app.model.cycleBackward': 'alt+p',
   'app.model.select': 'ctrl+l', 'app.tools.expand': 'ctrl+o', 'app.thinking.toggle': 'ctrl+t',
   'app.editor.external': 'ctrl+g', 'app.message.copy': 'ctrl+x',

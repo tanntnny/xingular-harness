@@ -225,9 +225,9 @@ export default async function (pi: ExtensionAPI) {
   })
   pi.on('tool_call', async (event) => {
     try {
-      const policy = await terminalCall<{ allowed: boolean; reason?: string; requiresApproval?: boolean }>('policy', { tool: event.toolName, args: event.input })
+      const policy = await controlCall<{ allowed: boolean; reason?: string; requiresApproval?: boolean }>('terminal.policy', { tool: event.toolName, args: event.input })
       if (policy.requiresApproval) {
-        const approval = await terminalCall<{ decision: string }>('approval', { requestId: event.toolCallId, target: event.toolName, action: JSON.stringify(event.input), tool: event.toolName, args: event.input })
+        const approval = await controlCall<{ decision: string }>('terminal.approval', { requestId: event.toolCallId, tool: event.toolName, args: event.input })
         if (approval.decision === 'approved') return
         return { block: true, reason: 'The user denied this action. Ask how they would like to proceed.' }
       }

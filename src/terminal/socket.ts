@@ -56,6 +56,11 @@ export function socketPath(stateDir: string): string {
   return join(tmpdir(), `xh-${createHash('sha256').update(path).digest('hex').slice(0, 16)}.sock`)
 }
 
+function alternateSocketPath(path: string): string {
+  const candidate = join(dirname(path), `harness-${process.pid}-${randomBytes(8).toString('hex')}.sock`)
+  return Buffer.byteLength(candidate) <= MAX_SOCKET_PATH ? candidate : join(tmpdir(), `xh-${randomBytes(16).toString('hex')}.sock`)
+}
+
 /** A named pipe has no folder, file mode, or owner to check or clean up. */
 const isPipePath = (path: string): boolean => path.startsWith('\\\\.\\pipe\\')
 
@@ -88,6 +93,7 @@ function refusedBind(path: string, error: unknown): unknown {
 export class SessionSocket {
   private server: Server | null = null
   private listening: Promise<void> | null = null
+  private socketPathValue: string
   private readonly grants = new Map<string, SocketGrant>()
   /**
    * A second key per token, handed out once. The token is in the session's environment, where a
@@ -97,10 +103,11 @@ export class SessionSocket {
   private readonly controls = new Map<string, string>()
   private readonly clients = new Set<Socket>()
 
-  constructor(
-    readonly path: string,
-    private readonly handlers: SocketHandlers
-  ) {}
+  constructor(path: string, private readonly handlers: SocketHandlers) {
+    this.socketPathValue = path
+  }
+
+  get path(): string { return this.socketPathValue }
 
   issue(grant: SocketGrant): string {
     const token = `${newId()}${newId()}`.replaceAll('-', '')
@@ -141,6 +148,7 @@ export class SessionSocket {
       const call = typeof request.call === 'string' ? request.call : ''
       const params = (request.params && typeof request.params === 'object' ? request.params : {}) as Record<string, unknown>
       if (['wiki.', 'memory.', 'recall.'].some((prefix) => call.startsWith(prefix))) return { result: this.handlers.memory(grant.caller(), call, params) }
+      if (call === 'tools.list' && !grant.broker) return { result: { tools: [] } }
       if (['mcp.', 'tools.'].some((prefix) => call.startsWith(prefix))) {
         if (!grant.broker) throw new HarnessError('mcp_unauthorized', 'Connected apps are not available to this session.')
         return { result: await this.handlers.apps(grant.broker, call, params) }
@@ -193,22 +201,14 @@ export class SessionSocket {
     })
   }
 
-  /** Binds the socket once; later calls wait for the same bind. */
-  listen(): Promise<void> {
-    this.listening ??= new Promise<void>((resolve, reject) => {
-      if (!isPipePath(this.path)) {
-        mkdirSync(dirname(this.path), { recursive: true, mode: 0o700 })
-        rmSync(this.path, { force: true })
-      }
+  private bind(path: string): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
       const server = createServer((client) => this.serve(client))
-      server.once('error', (error) => {
-        this.listening = null
-        reject(refusedBind(this.path, error))
-      })
-      server.listen(this.path, () => {
-        if (!isPipePath(this.path)) {
+      server.once('error', reject)
+      server.listen(path, () => {
+        if (!isPipePath(path)) {
           try {
-            chmodSync(this.path, 0o600)
+            chmodSync(path, 0o600)
           } catch (error) {
             log('session socket permissions', error instanceof Error ? error.message : String(error))
           }
@@ -216,6 +216,30 @@ export class SessionSocket {
         this.server = server
         resolve()
       })
+    })
+  }
+
+  /** Binds the usual path, or an instance-specific path if another Harness owns it. */
+  private async bindAvailablePath(): Promise<void> {
+    if (!isPipePath(this.path)) mkdirSync(dirname(this.path), { recursive: true, mode: 0o700 })
+    try {
+      await this.bind(this.path)
+    } catch (error) {
+      if (isPipePath(this.path) || (error as NodeJS.ErrnoException).code !== 'EADDRINUSE') throw refusedBind(this.path, error)
+      this.socketPathValue = alternateSocketPath(this.path)
+      try {
+        await this.bind(this.path)
+      } catch (alternateError) {
+        throw refusedBind(this.path, alternateError)
+      }
+    }
+  }
+
+  /** Binds the socket once; later calls wait for the same bind. */
+  listen(): Promise<void> {
+    this.listening ??= this.bindAvailablePath().catch(error => {
+      this.listening = null
+      throw error
     })
     return this.listening
   }

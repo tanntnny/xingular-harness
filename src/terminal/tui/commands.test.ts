@@ -4,7 +4,7 @@ import { createTerminalCommands, type TerminalCommandHost } from './commands'
 
 function setup() {
   const ui = {
-    notify: vi.fn(), select: vi.fn(), confirm: vi.fn(), input: vi.fn(),
+    notify: vi.fn(), select: vi.fn(), confirm: vi.fn(), input: vi.fn(), custom: vi.fn(async () => undefined),
     theme: { name: 'harness-titanium' }
   } as unknown as ExtensionUIContext
   const session = {
@@ -15,16 +15,27 @@ function setup() {
     },
     settingsManager: { getEnableSkillCommands: () => true },
     compact: vi.fn(), reload: vi.fn(), setSessionName: vi.fn(),
+    getActiveToolNames: () => ['read', 'bash'],
     getLastAssistantText: vi.fn(() => 'Actual assistant response'),
     getSessionStats: () => ({ sessionId: 'real-session', tokens: { input: 7 } }),
     exportToHtml: vi.fn(async (path: string) => path), exportToJsonl: vi.fn((path: string) => path)
   } as unknown as AgentSession
-  const runtime = { newSession: vi.fn(), switchSession: vi.fn(), fork: vi.fn(), importFromJsonl: vi.fn(), reload: vi.fn(), navigateTree: vi.fn(), installationDeviceId: vi.fn(async () => '12345678-1234-4234-8234-123456789abc') }
+  const runtime = {
+    newSession: vi.fn(), switchSession: vi.fn(), fork: vi.fn(), importFromJsonl: vi.fn(), reload: vi.fn(), navigateTree: vi.fn(),
+    installationDeviceId: vi.fn(async () => '12345678-1234-4234-8234-123456789abc'),
+    permissions: vi.fn(async () => ({ full: false, globalTools: [] as string[] })),
+    setFullPermission: vi.fn(async () => {}), setGlobalTool: vi.fn(async () => {})
+  }
+  const trajectoryRun = { id: 'run-1', mode: 'code', goal: 'Review the change', startedAt: '2026-10-18T00:00:00.000Z', endedAt: '2026-10-18T00:00:01.000Z', status: 'completed' }
   const host: TerminalCommandHost = {
     session: () => session, runtime: () => runtime as unknown as ReturnType<TerminalCommandHost['runtime']>, ui,
     cwd: () => '/isolated/project', sessionDirectory: () => '/isolated/account/history',
-    refresh: vi.fn(), shutdown: vi.fn(), setEditorText: vi.fn(), copyText: vi.fn(async () => {}),
-    hotkeys: () => 'Escape: interrupt', changelog: async () => 'Harness release notes'
+    refresh: vi.fn(), changed: vi.fn(), shutdown: vi.fn(), setEditorText: vi.fn(), copyText: vi.fn(async () => {}),
+    hotkeys: () => 'Escape: interrupt', changelog: async () => 'Harness release notes',
+    trajectory: {
+      list: vi.fn(async () => [trajectoryRun]),
+      read: vi.fn(async () => ({ run: trajectoryRun, events: [] }))
+    }
   }
   return { host, session, runtime, ui, commands: createTerminalCommands(host) }
 }
@@ -47,14 +58,21 @@ describe('owned terminal commands', () => {
   it('populates completion from builtins and loaded resources', () => {
     const { commands } = setup()
     const names = commands.completions().map(item => item.name)
-    expect(names).toEqual(expect.arrayContaining(['model', 'resume', 'accounts', 'review', 'skill:diagnose']))
+    expect(names).toEqual(expect.arrayContaining(['model', 'resume', 'accounts', 'review', 'effort', 'trajectory', 'permissions']))
+    expect(names).not.toContain('thinking')
+    expect(names).not.toContain('skill:diagnose')
     expect(new Set(names).size).toBe(names.length)
   })
 
-  it('respects disabled skill commands', () => {
+  it('invokes a loaded skill as $name, and leaves other text for the SDK', () => {
     const { commands, session } = setup()
+    expect(commands.skills()).toEqual([{ name: 'diagnose', description: 'Diagnose a problem' }])
+    expect(commands.expandSkill('$diagnose the trace')).toBe('/skill:diagnose the trace')
+    expect(commands.expandSkill('$unknown the trace')).toBe('$unknown the trace')
+    expect(commands.expandSkill('/skill:diagnose trace')).toBe('/skill:diagnose trace')
     vi.spyOn(session.settingsManager, 'getEnableSkillCommands').mockReturnValue(false)
-    expect(commands.completions().map(item => item.name)).not.toContain('skill:diagnose')
+    expect(commands.skills()).toEqual([])
+    expect(commands.expandSkill('$diagnose the trace')).toBe('$diagnose the trace')
   })
 
   it('uses the scope checked runtime for explicit resume and import paths', async () => {
@@ -129,6 +147,48 @@ describe('owned terminal commands', () => {
     expect(ui.notify).toHaveBeenCalledWith('Harness release notes', 'info')
   })
 
+  it('opens the latest or requested trajectory run in the interactive overlay', async () => {
+    const { commands, host, ui } = setup()
+    await commands.execute('/trajectory')
+    expect(host.trajectory.list).toHaveBeenCalledOnce()
+    expect(host.trajectory.read).toHaveBeenCalledWith('run-1')
+    expect(ui.custom).toHaveBeenCalledOnce()
+    expect(ui.custom).toHaveBeenCalledWith(expect.any(Function), { overlay: true, overlayOptions: { width: '100%', maxHeight: '90%' } })
+
+    await commands.execute('/trajectory run-1')
+    expect(host.trajectory.read).toHaveBeenLastCalledWith('run-1')
+  })
+
+  it('shows shared tool grants and confirms Full Permission before enabling it', async () => {
+    const { commands, host, runtime, ui } = setup()
+    vi.mocked(ui.custom).mockImplementationOnce(async () => 'tool:bash' as never)
+      .mockImplementationOnce(async () => 'done' as never)
+    await commands.execute('/permissions')
+    expect(runtime.permissions).toHaveBeenCalled()
+    expect(runtime.setGlobalTool).toHaveBeenCalledWith('bash', true)
+
+    vi.mocked(ui.custom).mockImplementationOnce(async () => 'full' as never)
+      .mockImplementationOnce(async () => 'done' as never)
+    vi.mocked(ui.confirm).mockResolvedValueOnce(true)
+    await commands.execute('/permissions')
+    expect(ui.confirm).toHaveBeenCalledWith('Enable Full Permission?', expect.stringContaining('Hard denials'))
+    expect(runtime.setFullPermission).toHaveBeenCalledWith(true)
+    expect(host.refresh).toHaveBeenCalled()
+  })
+
+  it('reports empty history and refuses run IDs outside the current native session', async () => {
+    const { commands, host, ui } = setup()
+    vi.mocked(host.trajectory.list).mockResolvedValue([])
+    await commands.execute('/trajectory')
+    expect(ui.notify).toHaveBeenCalledWith('No runs recorded for this native session yet', 'info')
+    expect(ui.custom).not.toHaveBeenCalled()
+
+    vi.mocked(host.trajectory.list).mockResolvedValue([{ id: 'run-1', mode: 'code', goal: null, startedAt: '2026-10-18T00:00:00.000Z', endedAt: null, status: 'running' }])
+    await commands.execute('/trajectory other-run')
+    expect(host.trajectory.read).not.toHaveBeenCalled()
+    expect(ui.notify).toHaveBeenLastCalledWith('Run not found in this native session', 'error')
+  })
+
   it('exits through the application lifecycle', async () => {
     const { commands, host } = setup()
     await commands.execute('/quit')
@@ -137,9 +197,9 @@ describe('owned terminal commands', () => {
   it('validates thinking levels before mutating the session', async () => {
     const { commands, session, ui } = setup()
     Object.assign(session, { getAvailableThinkingLevels: () => ['off', 'high'], setThinkingLevel: vi.fn() })
-    await commands.execute('/thinking high')
+    await commands.execute('/effort high')
     expect(session.setThinkingLevel).toHaveBeenCalledWith('high', { persist: true })
-    await commands.execute('/thinking fabricated')
+    await commands.execute('/effort fabricated')
     expect(session.setThinkingLevel).toHaveBeenCalledTimes(1)
     expect(ui.notify).toHaveBeenCalledWith('Available thinking levels: off, high', 'error')
   })

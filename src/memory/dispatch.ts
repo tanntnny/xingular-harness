@@ -7,6 +7,7 @@ import { launchText, load, render } from '../prompt/compile'
 import * as api from './api'
 import type { CallerContext } from './caller'
 import * as recall from './recall'
+import * as trajectory from './trajectory'
 import { reindexQuietly } from './wikiIndex'
 
 export type DispatchEnv = HarnessEnv & { bus?: Bus }
@@ -22,6 +23,10 @@ export function dispatch(env: DispatchEnv, context: CallerContext, call: string,
       return recall.searchTool(env, context, params)
     case 'recall.read':
       return recall.readTool(env, context, params)
+    case 'trajectory.search':
+      return trajectory.searchTool(env, context, params)
+    case 'trajectory.read':
+      return trajectory.readTool(env, context, params)
     case 'memory.append':
     case 'memory.replace':
     case 'memory.rethink': {

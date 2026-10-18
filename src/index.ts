@@ -55,7 +55,7 @@ export { registryTools, REGISTRY_WRITE, PLUGIN_WRITE, REGISTRY_WRITE_PLUGIN, typ
 export { safeRequest, type WebRequest, type WebResponse } from './web/safeRequest'
 
 export type { BrokeredTools, BrokerSession, BrokerTool } from './mcp/service'
-export type { Connection, ConnectionInput } from './mcp/types'
+export type { Connection, ConnectionInput, AppOAuthClients } from './mcp/types'
 
 export { configureBuiltins, type RegistryItem, type RegistryState, type SkillBundleInput } from './skills/registry'
 

@@ -3,6 +3,7 @@
 // and events stay canonical; the recall index is rebuilt from `runs/`.
 import type { DatabaseSync } from 'node:sqlite'
 
+import { logLine } from '../core/bus'
 import type { HarnessEnv } from '../core/env'
 import { invalid, notFound } from '../core/errors'
 import { all, run as execute, transaction, withIndex } from '../core/index'
@@ -67,7 +68,7 @@ export function indexRun(root: string, runId: string): void {
   try {
     withIndex(root, (database) => writeRun(database, run, found))
   } catch (error) {
-    process.stderr.write(`[recall] run ${runId} was not indexed: ${error instanceof Error ? error.message : String(error)}\n`)
+    logLine(`[recall] run ${runId} was not indexed: ${error instanceof Error ? error.message : String(error)}`)
   }
 }
 

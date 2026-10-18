@@ -7,6 +7,16 @@ import { z } from 'zod'
 export const MCP_OAUTH_PORT = 47823
 export const MCP_OAUTH_REDIRECT_URL = `http://127.0.0.1:${MCP_OAUTH_PORT}/oauth/callback`
 
+/**
+ * The application's own registered OAuth clients, by catalog entry. A client supplied here is
+ * used for that sign-in only and is never written to the connection or the secret store.
+ */
+export interface AppOAuthClients {
+  /** The catalog entries this application can sign in for. */
+  ids(): string[]
+  get(catalogId: string): Promise<{ clientId: string; clientSecret?: string } | null>
+}
+
 /** Stable attachment key for a connected app's capability switch. */
 export const connectionCapabilityId = (id: string): string => `connected-apps/connection/${id}`
 

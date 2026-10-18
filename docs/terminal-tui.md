@@ -39,7 +39,8 @@ Harness parent: account + compiled context + trusted resources + run writer
        | launch specification / existing session socket
 Harness terminal child: TerminalApplication + persistent Pi AgentSessionRuntime
        | typed native events / plugin UI callbacks
-Harness screen: welcome and transcript above a dock (status, editor, footer), with dialogs and overlays
+Harness screen: transcript, with the product lockup above it until the first message, above a dock
+       (status, editor, footer), with dialogs and overlays
 ```
 
 [`runtime.ts`](../src/terminal/tui/runtime.ts) builds a public `AgentSessionRuntime` around
@@ -60,22 +61,42 @@ unattended execution path.
 
 [`screen.ts`](../src/terminal/tui/screen.ts) chooses the screen from Pi's `tuiMode` in the
 account's `settings.json`; the default is `fullscreen`. Fullscreen uses Pi 1.2.0's
-`TuiAltScreen` with a layout root: a `ScrollView` holds the welcome and transcript and fills the
-terminal, and a `VStack` dock sits below it. The dock holds the working line, queued messages and
-notices, widgets, the editor with its status band, and the footer. The dock stays on the last rows
-as the transcript grows, and scrolling moves only the transcript. When the screen is short, the
-prompt and status keep their full height, and notices and widgets show their first rows and scroll
-for the rest. Pi's `tui.altScreen.*` bindings
+`TuiAltScreen` with a layout root: a `ScrollView` holds the transcript (with the product lockup
+above it) and fills the terminal, and a `VStack` dock sits below it. The dock holds the working
+line, queued messages, widgets, the editor with its status band, and the footer. Terminal notices
+(mode changes, errors, the keyboard list) are rows in the transcript, so they scroll with the
+conversation and clear with its session. The dock stays on the last rows as the transcript grows,
+and scrolling moves only the transcript. When the screen is short, the prompt and status keep
+their full height, and queued messages and widgets show their first rows and scroll for the rest. Pi's `tui.altScreen.*` bindings
 (PgUp/PgDn, Ctrl+Home/End and the rest), mouse wheel, selection and search apply. The scrollbar,
 wheel step and copy-on-select behaviour are read from Pi's `fullscreen*` settings. Submitting a
-message and changing session return the transcript to its latest row.
+message and changing session return the transcript to its latest row. The product lockup
+(`welcome.ts`) is the first row of the transcript only while the current chat has no user
+message, so a resumed session with history starts without it and a new, cleared or switched-to
+empty chat shows it again. A header set by a trusted extension with `setHeader` replaces the
+lockup and is never hidden. Hiding the lockup shrinks the rendered rows, so the main screen clears
+and reprints once when the first message is sent.
 
 `regular` uses the main screen with the same components flowing in order, and the terminal keeps
 the scrollback. Leaving fullscreen with `fullscreenExitOutput: "transcript"` (Pi's default) copies
 the rendered conversation into the normal scrollback once the alternate screen is gone; a session
-with no messages writes nothing. Other exit-output values are not implemented and write nothing.
+with no messages writes nothing, and a started chat copies it without the product lockup. Other
+exit-output values are not implemented and write nothing.
 The decision and its consequences are recorded in
 [ADR-0004](decisions/ADR-0004-fullscreen-terminal-layout.md).
+
+## Plan mode and thinking keys
+
+Shift+Tab switches the terminal between normal and plan mode. The switch is announced in the
+transcript. Plan mode narrows the session to read-only inspection (`read`, `grep`, `find`, `ls`),
+questions (`ask_user`, `ask_user_question`) and recall (history and Wiki reads, `memory_facts`). Edits,
+writes, shell commands, memory writes, subagents and connected-app tools are withdrawn until plan mode
+is switched off, and switching back restores the tools the session had. Plan mode belongs to the open
+conversation: a new or resumed session starts in normal mode.
+
+The model is not yet told about the mode through the prompt; it only sees the narrower tool set. That
+instruction belongs in the prompt compiler, the one place model instructions are built. Shift+Up and
+Shift+Down step the thinking level within the levels the model supports, and do not wrap.
 
 ## Reference and reproduced presentation
 
@@ -94,8 +115,10 @@ In the extracted `pi-tui` package, `src/theme/defaults/titanium.json` establishe
 palette and `src/prompt/welcome.ts` establishes the five-row Pi logo, exact diagonal RGB stops
 and indexed-color fallback, centered lockup and narrow-width behavior. Harness adapts these
 into [`theme.ts`](../src/terminal/tui/theme.ts) and [`welcome.ts`](../src/terminal/tui/welcome.ts),
-with its own product name, package version and existing-command tips. The status band is
-implemented in [`status.ts`](../src/terminal/tui/status.ts) and sits in the footer. The prompt
+with its own product name, package version and existing-command tips. The text-only status band in
+[`status.ts`](../src/terminal/tui/status.ts) shows the project name, branch, account/model/effort,
+the last completed response's output rate and current-session input/output totals. Input totals add
+cache reads and exclude cache writes. The prompt
 frame is implemented in [`editor.ts`](../src/terminal/tui/editor.ts): two full-width neutral
 rules around the prompt, a dim `❯` glyph, a `Try "…"` placeholder before the first prompt of a
 launch, and a `? for shortcuts` footer line above the band. The frame follows the observed
@@ -162,11 +185,21 @@ second key once with `control.claim`, before plugin code loads. [`control.ts`](.
 retains it in a process-local promise shared with the bridge; it is never written to disk or
 placed in the environment. It survives `/new`, resume, fork and reload.
 
-The private key is required for `terminal.pending`, `terminal.approve`, `terminal.answer`,
-`terminal.draft`, `terminal.interrupt` and `terminal.resources`, as well as existing account and
-plugin mutations. A model-spawned shell with only the environment token cannot answer its own
-pending questions or approvals. The application renders decisions obtained from the existing
+The private key is required for `terminal.policy`, `terminal.approval`, `terminal.pending`,
+`terminal.approve`, `terminal.answer`, `terminal.draft`, `terminal.interrupt` and
+`terminal.resources`, as well as existing account and plugin mutations. A model-spawned shell with
+only the environment token cannot submit policy or approval decisions, change permissions, or
+answer its own pending questions. The application renders decisions obtained from the existing
 controller and returns the person's answer through these calls.
+
+Approval prompts offer **Allow once**, **Always allow this tool everywhere** when the host policy
+marks the decision rememberable, and **Deny**. A tool grant covers every call with that tool name
+in Pi terminal sessions using this device's local Harness state directory; for example, Bash grants
+cover every Bash command. `/permissions` lists those grants and lets the person revoke them. Its
+Full Permission switch approves future eligible prompts across those terminal sessions, asks for
+confirmation when enabled, and is off by default. Neither choice approves an already-pending
+request. Hard denials and disabled tools remain enforced; human-only requests stay manual unless
+the host explicitly permits Full Permission for them. Chat approvals keep their separate profile.
 
 The editor sends exact draft state to `terminal.draft`; host delivery waits for that state
 instead of overwriting a draft. Interruption resolves pending socket-backed questions and
@@ -195,6 +228,12 @@ workflow in `/plugins`; trust changes require a freshly prepared terminal. `/bug
 reviewable Harness issue draft after confirmation, without attaching history. `/changelog`
 reads bundled Harness change notes. `/reload` also applies the isolated account's edited
 keyboard bindings through the public TUI manager.
+
+`/trajectory` opens the newest recorded run for the current native conversation; `/trajectory <run-id>`
+opens a selected run from that conversation. Left/right changes runs, up/down selects recorded
+events, PageUp/PageDown scrolls event details, and `c` copies the selected event. Active runs
+refresh while the overlay is open. The protected terminal socket scopes both the run list and event
+reads to the current terminal and native session file.
 
 ## Verification and remaining limits
 

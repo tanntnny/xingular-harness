@@ -20,7 +20,7 @@ import type { ToolSession, ToolSpec } from '../tools/types'
 import { allowed, Connections, webUrl } from './connections'
 import { isSignInRequired, McpManager, signInRequired } from './manager'
 import { signIn, type OAuthHost } from './oauth'
-import type { Connection, HttpConfig, LaunchConfig, McpSource, McpTrace } from './types'
+import type { AppOAuthClients, Connection, HttpConfig, LaunchConfig, McpSource, McpTrace } from './types'
 
 /** A session's access to the broker. A terminal session presents `token`; an SDK session holds the object. */
 export interface BrokerSession {
@@ -118,6 +118,8 @@ export interface ConnectedAppsOptions {
   bus: Bus
   runs: RunRegistry
   policy: ToolPolicy
+  /** The application's own registered OAuth clients, if it has any. */
+  oauthClients?: AppOAuthClients
 }
 
 /** The scope a plugin hook's connections are opened under: they belong to no session. */
@@ -134,7 +136,7 @@ export class ConnectedApps implements SessionBroker {
   private brokered: BrokeredTools | null = null
 
   constructor(private readonly options: ConnectedAppsOptions) {
-    this.connections = new Connections(options.stateDir, options.secrets, options.bus, () => options.env.root)
+    this.connections = new Connections(options.stateDir, options.secrets, options.bus, () => options.env.root, options.oauthClients ?? null)
     this.oauth = {
       clientName: options.env.productName,
       load: (id) => this.connections.oauthLoad(id),
@@ -469,12 +471,21 @@ export class ConnectedApps implements SessionBroker {
   async signIn(connectionId: string): Promise<Connection> {
     const connection = this.connections.find(connectionId)
     if (connection.kind !== 'remote' || connection.auth !== 'oauth') throw invalid('This connection does not use browser sign-in.')
-    if (connection.oauthClient === 'user' && !(await this.connections.hasOauthClient(connection.id))) throw invalid('Add your OAuth client ID before signing in.')
+    if (!(await this.connections.hasSignInClient(connection))) {
+      throw invalid(connection.oauthClient === 'app'
+        ? 'This connector has no app sign-in in this build. Enable its OAuth client or use your own client.'
+        : 'Add your OAuth client ID before signing in.')
+    }
     await signIn(this.oauth, (await this.connections.launch(connection)) as HttpConfig)
     const updated = this.connections.update(connectionId, (item) => Object.assign(item, { authState: 'signed_in', error: null }))
     await this.manager.close(connectionId)
     this.connections.changed()
     return updated
+  }
+
+  /** The catalog entries this application can sign in for, so a client need not be added by hand. */
+  appClients(): { catalogIds: string[] } {
+    return { catalogIds: this.connections.availableAppClients() }
   }
 
   async signOut(connectionId: string): Promise<Connection> {

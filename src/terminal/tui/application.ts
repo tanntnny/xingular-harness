@@ -10,18 +10,23 @@ import { CombinedAutocompleteProvider, Container, ProcessTerminal, Text, matches
 
 import { controlCall } from '../control'
 import { createTerminalCommands } from './commands'
+import { DialogPanel, SearchableSelect } from './dialogs'
 import { COMPOSER_SUGGESTIONS, HarnessEditor } from './editor'
 import { HARNESS_KEYBINDINGS, terminalKeybindings } from './keybindings'
 import { loadPiAdapter, setPiTheme } from './piAdapter'
 import { createTerminalRuntime, type TerminalDecision, type TerminalRuntime } from './runtime'
 import { createDock, createTerminalScreen, mountTerminalLayout, readScreenPreferences, scrollbackLines, writeScrollback, type ScreenHooks, type ScreenPreferences, type TerminalScreen } from './screen'
+import { planModeTools } from './planMode'
 import { renderStatusBand, singleLine } from './status'
+import { skillCompletions } from './skillInvocation'
 import { createHarnessLightTheme, createHarnessTheme } from './theme'
 import { TerminalTranscript } from './transcript'
 import { createTerminalUi, type TerminalUi } from './ui'
+import { chooseWorkingVerb, createCompletionStatus, getWorkingSpinnerFrames, SPINNER_INTERVAL_MS, spinnerFrameAt } from './workingStatus'
 import { HarnessWelcome } from './welcome'
 import { answerTerminalQuestion } from './questions'
 import type { QuestionAnswer } from '../../sessions/registry'
+import type { TerminalTrajectoryRun, TerminalTrajectorySnapshot } from '../trajectory'
 
 const exec = promisify(execFile)
 type Mounted = Component & { dispose?(): void }
@@ -61,11 +66,16 @@ export class TerminalApplication {
     pasteClipboard: () => this.attempt(() => this.pasteClipboard())
   }
   private readonly masthead: Component = {
-    render: width => ['', ...(this.header ?? new HarnessWelcome(this.theme, process.env.XINGULAR_HARNESS_NAME)).render(width), '', ''],
+    render: width => {
+      // A trusted extension's header owns the top of the transcript and is never hidden here.
+      if (this.header) return ['', ...this.header.render(width), '', '']
+      if (!this.showsMasthead) return []
+      return ['', ...new HarnessWelcome(this.theme, process.env.XINGULAR_HARNESS_NAME).render(width), '', '']
+    },
     invalidate: () => this.header?.invalidate()
   }
   private readonly titleRow: Component = { render: width => this.titleLines(width), invalidate: () => {} }
-  private readonly noteRows: Component = { render: width => this.queueAndNotices(width), invalidate: () => {} }
+  private readonly queueRows: Component = { render: width => this.queuedMessages(width), invalidate: () => {} }
   private readonly statusRow: Component = { render: width => this.statusLines(width), invalidate: () => {} }
   private runtime?: TerminalRuntime
   private ui!: TerminalUi
@@ -83,12 +93,17 @@ export class TerminalApplication {
   private branch: string | null = null
   private branchListeners = new Set<() => void>()
   private baseAutocomplete?: AutocompleteProvider
-  private notices: { message: string; type: string }[] = []
   private startedAt: number | null = null
+  private activeVerb?: string
+  private activeTurnId?: string
+  private completionStatus?: string
+  private requestStartedAt: number | null = null
+  private lastTokensPerSecond: number | null = null
   private phase?: string
   private viewport?: ScrollView
   private toolsExpanded = false
-  private thinkingChanges = 0
+  private planMode = false
+  private normalTools?: string[]
   private stopped = false
   private initialized = false
   private closing?: Promise<void>
@@ -111,16 +126,17 @@ export class TerminalApplication {
     this.preferences = readScreenPreferences(process.env.PI_CODING_AGENT_DIR)
     this.tui = createTerminalScreen(this.terminal, this.preferences, this.hooks)
     this.chat.addChild(this.masthead)
-    this.dock = createDock({ title: this.titleRow, above: this.above, notes: this.noteRows, editor: this.editorSlot, below: this.below, footer: this.footerSlot })
+    this.dock = createDock({ title: this.titleRow, above: this.above, queue: this.queueRows, editor: this.editorSlot, below: this.below, footer: this.footerSlot })
     this.viewport = mountTerminalLayout(this.tui, { document: this.chat, dock: this.dock }, this.preferences, this.hooks)
   }
   private get session() { if (!this.runtime) throw new Error('The terminal runtime is not ready.'); return this.runtime.session }
   private get theme(): Theme { return this.ui.theme }
+  /** The product lockup stays only until the chat has a user message; a resumed session starts without it. */
+  private get showsMasthead(): boolean { return !this.runtime?.snapshot().hasUserMessages }
   private change = (): void => { if (!this.stopped) this.tui.requestRender() }
   private notify = (message: string, type = 'info'): void => {
     if (message.startsWith('No models available.')) message = 'No model is configured. Use /accounts or /login to sign in.'
-    this.notices.push({ message, type })
-    this.notices = this.notices.slice(-8)
+    this.transcript?.notice(message, type)
     this.change()
   }
   private attempt = (action: () => Promise<unknown> | unknown): void => { void Promise.resolve().then(action).catch(error => this.notify(error instanceof Error ? error.message : String(error), 'error')).finally(this.change) }
@@ -169,6 +185,11 @@ export class TerminalApplication {
         cwd: () => this.runtime!.cwd, sessionDirectory: () => this.runtime!.sessionDirectory,
         refresh: () => this.refresh(), shutdown: () => { void this.shutdown() }, setEditorText: text => { this.editor.setText(text); this.syncDraft(text) },
         copyText: copyToClipboard, openExternal,
+        changed: this.change,
+        trajectory: {
+          list: async () => (await controlCall<{ runs: TerminalTrajectoryRun[] }>('terminal.trajectory.list')).runs,
+          read: (runId, afterSequence) => controlCall<TerminalTrajectorySnapshot>('terminal.trajectory.events', { runId, ...(afterSequence === undefined ? {} : { afterSequence }) })
+        },
         suspend: () => this.suspend(), hotkeys: () => this.hotkeys(),
         changelog: async () => {
           for (const path of ['../CHANGELOG.md', '../../../CHANGELOG.md']) {
@@ -180,7 +201,7 @@ export class TerminalApplication {
       })
       this.cleanup.push(this.runtime.subscribe(event => this.accept(event)))
       this.cleanup.push(this.runtime.onBeforeSessionChange(() => this.resetPresentation()))
-      this.cleanup.push(this.runtime.onSessionChange(() => { this.keybindings.reload(); this.startedAt = null; this.phase = undefined; this.scrollToLatest(); this.thinkingChanges = 0; this.refresh(true) }))
+      this.cleanup.push(this.runtime.onSessionChange(() => { this.keybindings.reload(); this.resetWorkingStatus(); this.scrollToLatest(); this.planMode = false; this.normalTools = undefined; this.refresh(true) }))
       this.initialized = true
       this.phase = undefined
       this.refresh(true)
@@ -241,11 +262,8 @@ export class TerminalApplication {
       selectedPrefix: (text: string) => this.theme.fg('accent', text), selectedText: (text: string) => this.theme.fg('accent', text), description: (text: string) => this.theme.fg('muted', text), scrollInfo: (text: string) => this.theme.fg('dim', text), noMatch: (text: string) => this.theme.fg('muted', text)
     } }
     this.editor = factory?.(this.tui, editorTheme, this.keybindings) ?? new HarnessEditor(this.tui, editorTheme, this.keybindings, {
-      band: (width, above, below) => this.band(width, above, below), theme: () => this.theme,
-      placeholder: () => this.runtime?.snapshot().hasUserMessages || this.startedAt !== null ? undefined : this.suggestion,
-      showHint: () => this.thinkingChanges < 3 && !this.runtime?.snapshot().hasUserMessages && this.startedAt === null,
-      clearKey: this.keybindings.getKeys('app.clear').join('/'),
-      thinkingKey: this.keybindings.getKeys('app.thinking.cycle').map(key => key === 'shift+tab' ? '⇧⇥' : key).join('/')
+      band: width => this.band(width), theme: () => this.theme,
+      placeholder: () => this.runtime?.snapshot().hasUserMessages || this.startedAt !== null ? undefined : this.suggestion
     })
     this.editor.setText(draft)
     this.editor.onSubmit = text => this.submit(text)
@@ -281,7 +299,77 @@ export class TerminalApplication {
     if (!this.ui) return
     this.transcript?.setThinking(this.runtime?.snapshot().hideThinking ?? false, this.ui.state.hiddenThinkingLabel ?? 'Thinking…')
   }
+  private resetWorkingStatus(): void {
+    this.startedAt = null
+    this.activeVerb = undefined
+    this.activeTurnId = undefined
+    this.completionStatus = undefined
+    this.phase = undefined
+  }
+  /** Plan mode narrows the session to read-only tools; leaving it restores the set the session had before. */
+  private togglePlanMode(): void {
+    if (!this.runtime) return
+    if (this.planMode) {
+      this.session.setActiveToolsByName(this.normalTools ?? this.session.getActiveToolNames())
+      this.normalTools = undefined
+    } else {
+      this.normalTools = this.session.getActiveToolNames()
+      this.session.setActiveToolsByName(planModeTools(this.normalTools))
+    }
+    this.planMode = !this.planMode
+    this.notify(this.planMode ? 'Plan mode: only read-only tools are available. Shift+Tab returns to normal.' : 'Normal mode: all tools are available.')
+    this.change()
+  }
   private scrollToLatest(): void { this.viewport?.scrollToEnd() }
+  private async chooseApproval(request: TerminalDecision, signal: AbortSignal): Promise<{ decision: 'approved' | 'denied'; alwaysAllow: boolean }> {
+    if (signal.aborted) return { decision: 'denied', alwaysAllow: false }
+    const viewport = this.viewport
+    const scrollTop = viewport?.scrollTop
+    const wasFollowingEnd = viewport?.isFollowingEnd
+    const tool = request.target ?? 'action'
+    const choices = [
+      { value: 'once', label: 'Allow once' },
+      ...(request.rememberable ? [{ value: 'global', label: `Always allow ${tool} everywhere` }] : []),
+      { value: 'deny', label: 'Deny' }
+    ]
+    const details = [
+      request.rememberable
+        ? `Always allow applies to every future ${tool} call in Pi terminal sessions sharing this local Harness state.`
+        : 'This approval cannot be saved as a tool grant.',
+      '',
+      request.action ?? ''
+    ].join('\n')
+    let abortListener: (() => void) | undefined
+    try {
+      const choice = await this.ui.custom<string | undefined>((tui, theme, _keys, done) => {
+        const finish = (value: string | undefined) => {
+          if (abortListener) signal.removeEventListener('abort', abortListener)
+          abortListener = undefined
+          done(value)
+        }
+        abortListener = () => finish(undefined)
+        signal.addEventListener('abort', abortListener, { once: true })
+        if (signal.aborted) abortListener()
+        const list = new SearchableSelect(choices.map(item => item.label), tui, () => theme,
+          index => finish(choices[index]?.value), () => finish(undefined))
+        return new DialogPanel(`Approve ${tool}?`, list, () => theme, 'Enter choose · Esc deny', details)
+      }, { overlay: true, overlayOptions: { width: '100%', maxHeight: '90%' } })
+      return { decision: choice === 'once' || choice === 'global' ? 'approved' : 'denied', alwaysAllow: choice === 'global' }
+    } finally {
+      if (abortListener) signal.removeEventListener('abort', abortListener)
+      if (viewport && viewport === this.viewport && scrollTop !== undefined && wasFollowingEnd !== undefined) {
+        if (wasFollowingEnd) viewport.scrollToEnd()
+        else viewport.scrollTo(scrollTop, { disableFollow: true })
+      }
+    }
+  }
+  /** Steps through the levels this model supports and stops at either end, unlike the wrapping cycle. */
+  private stepThinking(direction: 1 | -1): void {
+    const levels = this.session.getAvailableThinkingLevels()
+    const next = levels[Math.min(levels.length - 1, Math.max(0, levels.indexOf(this.session.thinkingLevel) + direction))]
+    if (!this.session.supportsThinking() || next === undefined || next === this.session.thinkingLevel) return
+    this.session.setThinkingLevel(next)
+  }
   private exitScrollback(): string[] | undefined {
     if (this.preferences.mode !== 'fullscreen' || this.preferences.exitOutput !== 'transcript' || !this.runtime?.snapshot().hasUserMessages) return undefined
     return scrollbackLines(this.chat, this.terminal.columns)
@@ -289,20 +377,25 @@ export class TerminalApplication {
   private titleLines(width: number): string[] {
     if (!this.ui) return []
     const title = this.runtime?.snapshot().name
-    const working = this.phase ?? (this.startedAt !== null && this.ui.state.workingVisible ? this.ui.state.workingMessage ?? 'Working…' : '')
+    const active = this.startedAt !== null
+    const working = this.phase ?? (active
+      ? this.ui.state.workingVisible ? this.ui.state.workingMessage ?? this.activeVerb ?? 'Working…' : ''
+      : this.completionStatus ?? '')
     const titleText = title ? this.theme.italic(this.theme.fg('dim', singleLine(title))) : ''
     const indicator = this.ui.state.workingIndicator
-    const frames = indicator?.frames
-    const frame = this.startedAt !== null && frames?.length ? frames[Math.floor((Date.now() - this.startedAt) / Math.max(1, indicator?.intervalMs ?? 80)) % frames.length] : ''
-    const workText = working ? (frame ? frame + ' ' : '') + this.theme.fg('muted', singleLine(working)) : ''
+    const frames = indicator?.frames ?? getWorkingSpinnerFrames(process.env.TERM)
+    const frame = active && frames.length
+      ? spinnerFrameAt(Date.now() - this.startedAt!, frames, indicator?.intervalMs ?? SPINNER_INTERVAL_MS)
+      : ''
+    const defaultWorking = active && !this.phase && this.ui.state.workingVisible && !this.ui.state.workingMessage && working === this.activeVerb
+    const workingColor = defaultWorking ? 'warning' : 'muted'
+    const workText = working ? this.theme.fg(workingColor, (frame ? frame + ' ' : '') + singleLine(working)) : ''
     return titleText || workText ? [truncateToWidth(workText, width, '') + ' '.repeat(Math.max(0, width - visibleWidth(workText) - visibleWidth(titleText))) + titleText] : []
   }
-  private queueAndNotices(width: number): string[] {
+  private queuedMessages(width: number): string[] {
     if (!this.ui) return []
     const state = this.runtime?.snapshot()
-    const rows = state ? [...state.queue.steering.map(text => `Steering: ${text}`), ...state.queue.followUp.map(text => `Follow-up: ${text}`)].flatMap(text => wrapTextWithAnsi(this.theme.fg('muted', text), width)) : []
-    for (const { message, type } of this.notices) rows.push(...wrapTextWithAnsi(this.theme.fg(type === 'error' ? 'error' : type === 'warning' ? 'warning' : 'muted', message), width))
-    return rows
+    return state ? [...state.queue.steering.map(text => `Steering: ${text}`), ...state.queue.followUp.map(text => `Follow-up: ${text}`)].flatMap(text => wrapTextWithAnsi(this.theme.fg('muted', text), width)) : []
   }
   private statusLines(width: number): string[] {
     return this.statuses.size ? wrapTextWithAnsi([...this.statuses.values()].join('  '), width) : []
@@ -310,13 +403,13 @@ export class TerminalApplication {
   private syncDraft(text: string): void {
     this.draftSync = this.draftSync.then(() => controlCall('terminal.draft', { dirty: text.length > 0 })).then(() => {}).catch(error => this.notify(String(error), 'error'))
   }
-  private band(width: number, above = 0, below = 0): string {
+  private band(width: number): string {
     const state = this.runtime?.snapshot()
+    const usage = this.runtime?.session.getSessionStats().tokens
     return renderStatusBand({ cwd: state?.cwd ?? process.cwd(), model: state?.model,
       thinkingLevel: state?.thinkingLevel ?? 'off', branch: this.branch, account: state?.account?.label ?? 'account unknown',
-      contextPercent: state?.context.percent ?? null, contextWindow: state?.context.window ?? 0,
-      costUsd: state?.costUsd ?? 0, subscription: state?.subscription ?? false,
-      running: this.startedAt !== null, elapsedMs: this.startedAt === null ? 0 : Date.now() - this.startedAt, hiddenAbove: above, hiddenBelow: below
+      inputTokens: (usage?.input ?? 0) + (usage?.cacheRead ?? 0), outputTokens: usage?.output ?? 0,
+      tokensPerSecond: this.lastTokensPerSecond
     }, width, this.theme)
   }
   private submit(text: string, followUp = false): void {
@@ -325,14 +418,14 @@ export class TerminalApplication {
     const command = text.trimStart().startsWith('/')
     if (command) this.commandBusy = true
     this.editor.addToHistory?.(text)
-    this.editor.setText(''); this.syncDraft(''); this.notices = []; this.scrollToLatest()
+    this.editor.setText(''); this.syncDraft(''); this.scrollToLatest()
     this.attempt(async () => {
       try {
         await this.draftSync
         if (this.stopped) return
         if (command && await this.commands.execute(text)) return
         if (text.trimStart().startsWith('!')) throw new Error('Use the bash tool so this action can be checked.')
-        await this.runtime!.submit(text, followUp)
+        await this.runtime!.submit(this.commands.expandSkill(text), followUp)
       } finally { if (command) this.commandBusy = false }
     })
   }
@@ -352,7 +445,9 @@ export class TerminalApplication {
       else if (this.editor.getText()) { this.editor.setText(''); this.syncDraft('') }
       else void this.shutdown()
     } else if (is('app.exit') && this.editor.getText() === '') void this.shutdown()
-    else if (is('app.thinking.cycle')) { this.session.cycleThinkingLevel(); this.thinkingChanges += 1 }
+    else if (is('app.thinking.cycle')) this.session.cycleThinkingLevel()
+    else if (is('app.plan.toggle')) this.togglePlanMode()
+    else if (is('app.thinking.increase') || is('app.thinking.decrease')) this.stepThinking(is('app.thinking.increase') ? 1 : -1)
     else if (is('app.thinking.save')) this.session.setThinkingLevel(this.session.thinkingLevel, { persist: true })
     else if (is('app.model.cycleForward') || is('app.model.cycleBackward')) this.attempt(() => this.session.cycleModel(is('app.model.cycleBackward') ? 'backward' : 'forward'))
     else if (is('app.model.select')) this.attempt(() => this.commands.execute('/model'))
@@ -364,7 +459,7 @@ export class TerminalApplication {
     else if (is('app.message.copy')) this.attempt(() => this.commands.execute('/copy'))
     else if (is('app.clipboard.pasteImage')) this.attempt(() => this.pasteClipboard())
     else if (is('app.suspend')) this.attempt(() => this.suspend())
-    else if (data === '?' && this.editor.getText() === '') { const text = this.hotkeys(); this.notices = this.notices.filter(notice => notice.message !== text); this.notify(text) }
+    else if (data === '?' && this.editor.getText() === '') this.notify(this.hotkeys())
     else return
     this.change(); return { consume: true }
   }
@@ -375,9 +470,34 @@ export class TerminalApplication {
     return true
   }
   private accept(event: AgentSessionEvent): void {
+    if (event.type === 'turn_start') this.requestStartedAt = performance.now()
+    if (event.type === 'message_end' && event.message.role === 'assistant') {
+      const outputTokens = event.message.usage?.output
+      const startedAt = this.requestStartedAt
+      if (startedAt !== null && typeof outputTokens === 'number') {
+        const duration = performance.now() - startedAt
+        if (duration > 0) this.lastTokensPerSecond = outputTokens * 1000 / duration
+      }
+      this.requestStartedAt = null
+    }
     this.transcript.accept(event)
-    if (event.type === 'agent_start') { this.startedAt = Date.now(); this.phase = undefined; this.terminal.setProgress(this.session.settingsManager.getShowTerminalProgress()) }
-    if (event.type === 'agent_settled') { this.startedAt = null; this.phase = undefined; this.terminal.setProgress(false) }
+    if (event.type === 'agent_start') {
+      this.startedAt = Date.now()
+      this.activeVerb = chooseWorkingVerb()
+      this.activeTurnId = randomUUID()
+      this.completionStatus = undefined
+      this.phase = undefined
+      this.terminal.setProgress(this.session.settingsManager.getShowTerminalProgress())
+    }
+    if (event.type === 'agent_settled') {
+      if (this.startedAt !== null) this.completionStatus = createCompletionStatus(this.activeTurnId ?? randomUUID(), Date.now() - this.startedAt)
+      this.startedAt = null
+      this.activeVerb = undefined
+      this.activeTurnId = undefined
+      this.requestStartedAt = null
+      this.phase = undefined
+      this.terminal.setProgress(false)
+    }
     if (event.type === 'compaction_start') this.phase = 'Compacting context…'
     if (event.type === 'compaction_end') { this.phase = undefined; this.transcript.bind(this.session); if (event.errorMessage) this.notify(event.errorMessage, 'error') }
     if (event.type === 'auto_retry_start') this.phase = `Retry ${event.attempt}/${event.maxAttempts} in ${(event.delayMs / 1000).toFixed(1)}s: ${event.errorMessage}`
@@ -393,12 +513,14 @@ export class TerminalApplication {
       const text = typeof message.content === 'string' ? message.content : message.content.filter(part => part.type === 'text').map(part => part.text).join('\n')
       if (text) this.editor.addToHistory?.(text)
     }
-    this.baseAutocomplete = new CombinedAutocompleteProvider(this.commands.completions(), this.runtime.cwd)
+    this.baseAutocomplete = skillCompletions(new CombinedAutocompleteProvider(this.commands.completions(), this.runtime.cwd), this.commands.skills)
     this.editor.setAutocompleteProvider?.(this.ui.wrapAutocomplete(this.baseAutocomplete))
     this.change()
   }
   private resetPresentation(): void {
     this.pendingAbort?.abort(); this.dismissedDecisions.clear()
+    this.resetWorkingStatus()
+    this.requestStartedAt = null; this.lastTokensPerSecond = null
     this.transcript.clearSession()
     this.ui.reset()
     this.release(this.header); this.release(this.footer)
@@ -435,8 +557,8 @@ export class TerminalApplication {
       const abort = new AbortController(); this.pendingAbort = abort; this.pendingId = request.requestId
       this.dismissedDecisions.add(request.requestId)
       if (request.type === 'approval') {
-        const approved = await this.ui.confirm(`Allow ${request.target ?? 'action'}?`, request.action ?? '', { signal: abort.signal })
-        if (!abort.signal.aborted) await this.runtime.approve(request.requestId, approved ? 'approved' : 'denied')
+        const choice = await this.chooseApproval(request, abort.signal)
+        if (!abort.signal.aborted) await this.runtime.approve(request.requestId, choice.decision, choice.alwaysAllow)
       } else {
         const group = request.batchId
           ? requests.filter(item => item.type === 'question' && item.batchId === request.batchId).sort((a, b) => (a.batchIndex ?? 0) - (b.batchIndex ?? 0))

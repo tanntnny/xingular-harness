@@ -1,5 +1,5 @@
-// What the user has chosen to stop being asked about: an "always approve" switch per kind of
-// session and, per session, the tools they answered "Always allow" for.
+// What the user has chosen to stop being asked about: an "always approve" switch, tools allowed
+// across a harness state directory, and tools remembered for one session.
 import { chmodSync } from 'node:fs'
 import { join } from 'node:path'
 
@@ -14,6 +14,8 @@ export const APPROVAL_KEYS = ['chat', 'pi'] as const
 export interface ApprovalPolicy {
   /** Switch key → every approval is granted without asking. */
   auto: Record<string, boolean>
+  /** Approval key → tools allowed across sessions that share this local state directory. */
+  globalTools: Record<string, string[]>
   /** Session id → approval targets always allowed there. */
   remembered: Record<string, string[]>
 }
@@ -34,13 +36,14 @@ export interface ApprovalFacts {
 /** Why the standing choices grant this request, if they do. */
 export function decide(policy: ApprovalPolicy, key: string, sessionId: string, target: string): AutomaticReason | null {
   if (policy.auto[key]) return 'always'
+  if (policy.globalTools[key]?.includes(target)) return 'remembered'
   return policy.remembered[sessionId]?.includes(target) ? 'remembered' : null
 }
 
 export function grant(policy: ApprovalPolicy, key: string, sessionId: string, target: string, facts: ApprovalFacts = {}): AutomaticReason | null {
   if (facts.unattended) return null
   // "Always approve" must not let a read-only session approve its way out of read-only mode.
-  return decide(facts.readOnly ? { auto: {}, remembered: policy.remembered } : policy, key, sessionId, target)
+  return decide(facts.readOnly ? { auto: {}, globalTools: {}, remembered: policy.remembered } : policy, key, sessionId, target)
 }
 
 /** A conversation's runs share one switch whatever model they use; other runs follow their own. */
@@ -55,7 +58,7 @@ export class Approvals {
 
   read(): ApprovalPolicy {
     const stored = readJson<Partial<ApprovalPolicy>>(this.path) ?? {}
-    return { auto: stored.auto ?? {}, remembered: stored.remembered ?? {} }
+    return { auto: stored.auto ?? {}, globalTools: stored.globalTools ?? {}, remembered: stored.remembered ?? {} }
   }
 
   private change(update: (policy: ApprovalPolicy) => void): ApprovalPolicy {
@@ -88,6 +91,25 @@ export class Approvals {
   setAuto(key: string, on: boolean): ApprovalPolicy {
     if (!(APPROVAL_KEYS as readonly string[]).includes(key)) throw invalid('Unknown harness.')
     return this.change((policy) => void (policy.auto[key] = on))
+  }
+
+  /** Always allow `target` for every session in this approval profile and state directory. */
+  allowTool(key: string, target: string): ApprovalPolicy {
+    if (!(APPROVAL_KEYS as readonly string[]).includes(key)) throw invalid('Unknown harness.')
+    if (!target.trim()) throw invalid('A tool is required.')
+    return this.change((policy) => {
+      const targets = (policy.globalTools[key] ??= [])
+      if (!targets.includes(target)) targets.push(target)
+    })
+  }
+
+  revokeTool(key: string, target: string): ApprovalPolicy {
+    if (!(APPROVAL_KEYS as readonly string[]).includes(key)) throw invalid('Unknown harness.')
+    return this.change((policy) => {
+      const targets = policy.globalTools[key]?.filter((item) => item !== target) ?? []
+      if (targets.length) policy.globalTools[key] = targets
+      else delete policy.globalTools[key]
+    })
   }
 
   /** Always allow `target` in this session. */

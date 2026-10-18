@@ -84,11 +84,19 @@ export interface TerminalSnapshot {
   readonly queue: Readonly<{ steering: readonly string[]; followUp: readonly string[] }>
 }
 
-export interface TerminalDecision extends TerminalQuestion { type: 'approval' | 'question'; target?: string; action?: string }
+export interface TerminalDecision extends TerminalQuestion { type: 'approval' | 'question'; target?: string; action?: string; rememberable?: boolean }
+
+export interface TerminalPermissionState {
+  readonly full: boolean
+  readonly globalTools: readonly string[]
+}
 
 export interface TerminalRuntime {
   pending(): Promise<TerminalDecision[]>
-  approve(requestId: string, decision: 'approved' | 'denied'): Promise<void>
+  approve(requestId: string, decision: 'approved' | 'denied', alwaysAllowTool?: boolean): Promise<void>
+  permissions(): Promise<TerminalPermissionState>
+  setFullPermission(enabled: boolean): Promise<void>
+  setGlobalTool(tool: string, allowed: boolean): Promise<void>
   answer(requestId: string, answer: QuestionAnswer): Promise<void>
   answerBatch(batchId: string, answers: Array<{ questionId: string; answer: QuestionAnswer }>): Promise<void>
   snapshot(): TerminalSnapshot
@@ -269,7 +277,13 @@ export async function createTerminalRuntime(args: string[], host: TerminalRuntim
       if (disposed) return []
       return (await controlCall<{ requests: TerminalDecision[] }>('terminal.pending')).requests
     },
-    approve: (requestId, decision) => decide('terminal.approve', { requestId, decision }),
+    approve: (requestId, decision, alwaysAllowTool = false) => decide('terminal.approve', { requestId, decision, alwaysAllow: alwaysAllowTool }),
+    async permissions() {
+      if (disposed) return { full: false, globalTools: [] }
+      return controlCall<TerminalPermissionState>('terminal.permissions.get')
+    },
+    setFullPermission: async enabled => { await decide('terminal.permissions.setFull', { enabled }) },
+    setGlobalTool: async (tool, allowed) => { await decide('terminal.permissions.setTool', { tool, allowed }) },
     answer: (requestId, answer) => decide('terminal.answer', { requestId, answer }),
     answerBatch: (batchId, answers) => decide('terminal.answers', { batchId, answers }),
     snapshot() {

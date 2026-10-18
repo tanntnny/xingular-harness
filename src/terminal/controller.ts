@@ -12,6 +12,8 @@ export interface PolicyReply {
   allowed: boolean
   reason?: string | null
   requiresApproval?: boolean
+  rememberable?: boolean
+  standing?: 'full' | 'switch' | 'none'
 }
 
 export interface ControllerHooks {
@@ -21,6 +23,8 @@ export interface ControllerHooks {
   begin(input: { reservedRunId: string | null; nativeTurnId: string; text: string }): ActiveRun
   /** Whether a native tool call may run. */
   policy(run: ActiveRun, tool: string, args: unknown): Promise<PolicyReply>
+  /** Saves a user-selected tool grant in the shared local approval store. */
+  allowToolGlobally(target: string): void
   /** The native conversation identity changed. */
   native(nativeSessionId: string): void
   telemetry(event: string): void
@@ -164,7 +168,7 @@ export class TerminalController {
   }
 
   /** The socket grants this interface only to the process that owns terminal input. */
-  control(call: string, data: Record<string, any>): unknown {
+  async control(call: string, data: Record<string, any>): Promise<unknown> {
     if (this.disposed) throw new HarnessError('terminal_not_ready', 'This terminal has ended.')
     if (call === 'terminal.draft') {
       this.dirty = data.dirty === true
@@ -173,6 +177,12 @@ export class TerminalController {
     }
     if (call === 'terminal.pending') return { requests: [...this.pending.values()] }
     if (call === 'terminal.interrupt') return this.activeRun && this.hooks.interrupt ? this.hooks.interrupt(this.activeRun.runId) : {}
+    if (call === 'terminal.policy') {
+      const run = this.activeRun
+      if (!run || typeof data.tool !== 'string' || !data.tool) throw new HarnessError('invalid_request', 'An active run and tool name are required.')
+      return this.hooks.policy(run, data.tool, data.args ?? {})
+    }
+    if (call === 'terminal.approval') return this.requestNativeApproval(data)
     if (call === 'terminal.answers' && this.hooks.answerQuestions) {
       const run = this.activeRun
       const batchId = String(data.batchId ?? '')
@@ -187,7 +197,21 @@ export class TerminalController {
     if (!request || !run) throw new HarnessError('invalid_request', 'This terminal decision is no longer pending.')
     if (call === 'terminal.approve' && request.type === 'approval' && this.hooks.resolveApproval) {
       if (data.decision !== 'approved' && data.decision !== 'denied') throw new HarnessError('invalid_request', 'Choose approve or deny.')
-      this.hooks.resolveApproval(String(request.runId ?? run.runId), requestId, data.decision)
+      const alwaysAllow = data.alwaysAllow === true
+      if (alwaysAllow && request.rememberable !== true) throw new HarnessError('invalid_request', 'This approval cannot be remembered for other sessions.')
+      let decision: ApprovalDecision = data.decision
+      if (decision === 'approved' && request.direct === true) {
+        const operation = request.operation as { tool?: unknown; args?: unknown } | undefined
+        const tool = typeof operation?.tool === 'string' ? operation.tool : ''
+        const current = await this.hooks.policy(run, tool, operation?.args ?? {})
+        if (!current.allowed && !current.requiresApproval) decision = 'denied'
+        if (alwaysAllow && current.rememberable !== true) {
+          request.rememberable = false
+          throw new HarnessError('invalid_request', 'This tool can no longer be allowed across sessions. Review the approval again.')
+        }
+      }
+      if (decision === 'approved' && alwaysAllow) this.hooks.allowToolGlobally(String(request.target ?? ''))
+      this.hooks.resolveApproval(String(request.runId ?? run.runId), requestId, decision)
       return {}
     }
     if (call === 'terminal.answer' && request.type === 'question' && this.hooks.answerQuestion) {
@@ -196,6 +220,40 @@ export class TerminalController {
       return {}
     }
     throw new HarnessError('unknown_method', `Unknown terminal control ${call}.`)
+  }
+
+  private async requestNativeApproval(data: Record<string, any>): Promise<unknown> {
+    const run = this.activeRun
+    const requestId = typeof data.requestId === 'string' ? data.requestId : ''
+    const tool = typeof data.tool === 'string' ? data.tool : ''
+    if (!run || !requestId || !tool) throw new HarnessError('invalid_request', 'An active run, request id, and tool name are required.')
+    const args = data.args && typeof data.args === 'object' && !Array.isArray(data.args) ? data.args as Record<string, unknown> : {}
+    const policy = await this.hooks.policy(run, tool, args)
+    if (!policy.allowed && !policy.requiresApproval) return { decision: 'denied' }
+    if (policy.allowed && !policy.requiresApproval) return { decision: 'approved' }
+    const key = this.requestId(`approval:${requestId}`)
+    const existing = this.seen.get(key)
+    if (existing) return { decision: await existing }
+    const action = JSON.stringify(args)
+    const operation = { tool, args }
+    const response = run.requestApproval({
+      requestId: key,
+      target: tool,
+      action,
+      operation,
+      rememberable: policy.rememberable === true,
+      standing: policy.standing
+    })
+    this.pending.set(key, {
+      type: 'approval', requestId: key, runId: run.runId, target: tool, action,
+      operation, rememberable: policy.rememberable === true, direct: true
+    })
+    this.seen.set(key, response)
+    try {
+      return { decision: await response }
+    } finally {
+      this.pending.delete(key)
+    }
   }
 
   async accept(event: string, data: Record<string, any>): Promise<unknown> {

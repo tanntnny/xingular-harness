@@ -26,7 +26,7 @@ import { WIKI_TOOL_NAMES } from '../tools/definitions'
 import { memoryTools } from '../tools/memoryTools'
 import type { ToolProvider, ToolSession, ToolSpec } from '../tools/types'
 import type { RunRecord } from './contracts'
-import { SPAWN_SUBAGENT, WAIT_SUBAGENTS, subagentDepth, subagentHistory, type SubagentInput, type SubagentOptions } from './subagents'
+import { SPAWN_SUBAGENT, WAIT_SUBAGENTS, subagentDepth, subagentHistory, subagentNesting, type SubagentInput, type SubagentOptions } from './subagents'
 import type { Subagents } from './subagentService'
 import { selectHistory } from './history'
 import { runLineageJoin } from './lineageJoin'
@@ -167,6 +167,7 @@ export class Sessions {
   async run(input: SessionRunInput): Promise<{ runId: string; nativeSessionId: string | null }> {
     const { root } = this.env
     if (!input?.run?.id || !input.run.sessionId || typeof input.text !== 'string') throw invalid('A session turn needs a run id, a session, and text.')
+    input = structuredClone(input)
     const historyFile = selectHistory({ sessionDir: input.sessionDir, resume: input.resume })
     const account = this.options.accounts.resolve(input.accountId, input.poolId)
     const context = this.options.accounts.context(account)
@@ -174,7 +175,7 @@ export class Sessions {
     const caller: CallerContext = { ...input.caller, maintenanceJobIds: input.caller.maintenanceJobIds?.slice(), runId, sessionId: input.caller.sessionId ?? input.run.sessionId }
     const broker = input.connections ? this.options.broker : null
     const depth = input.depth ?? 0
-    const canSpawn = input.subagents !== null && (!input.automatic || input.subagents !== undefined) && depth < subagentDepth(input.subagents ?? undefined)
+    const canSpawn = input.subagents !== null && (!input.automatic || input.subagents !== undefined) && subagentNesting(root, input.run) < subagentDepth(input.subagents ?? undefined)
     const requestedTools = [...new Set([
       ...input.tools.allow.filter((name) => name !== SPAWN_SUBAGENT && name !== WAIT_SUBAGENTS),
       ASK_USER,
@@ -311,10 +312,10 @@ export class Sessions {
         run.finish('failed', { code: 'native_resume_unavailable', message: 'The saved conversation could not be restored.' })
         throw new HarnessError('native_resume_unavailable', 'The saved conversation could not be restored.')
       }
-      updateRun(root, runId, (record) => void (record.nativeSessionId = pi.sessionId))
+      const opened = pi
+      updateRun(root, runId, (record) => void (record.nativeSessionId = opened.sessionId))
       this.options.subagents.register(input, account.id, capabilities, Boolean(pi.sessionManager))
       if (pi.model?.id && pi.model.provider) this.options.subagents.resolvedModel(runId, `${pi.model.provider}/${pi.model.id}`, pi.thinkingLevel)
-      const opened = pi
       params.settle = () => this.options.subagents.verify(runId, opened.sessionManager ? subagentHistory(opened.sessionManager.getBranch()) : undefined)
       void runTurn(run, pi, params)
       return { runId, nativeSessionId: pi.sessionId }

@@ -5,17 +5,22 @@ import { isAbsolute, join, relative, resolve } from 'node:path'
 import { promisify } from 'node:util'
 import { ModelSelectorComponent, TreeSelectorComponent, SessionManager, type AgentSession, type ExtensionUIContext } from '@earendil-works/pi-coding-agent'
 import { SettingsPanel, type TerminalSettingItem } from './settings'
+import { DialogPanel, SearchableSelect } from './dialogs'
+import { TrajectoryPanel } from './trajectoryPanel'
+import { expandSkillInvocation, type SkillEntry } from './skillInvocation'
 import manifest from '../../../package.json'
 import type { TerminalRuntime } from './runtime'
+import type { TerminalTrajectoryRun, TerminalTrajectorySnapshot } from '../trajectory'
 
 export interface TerminalCommandHost {
   session(): AgentSession
   /** Navigation is scope checked by the Harness runtime adapter. */
-  runtime(): Pick<TerminalRuntime, 'newSession' | 'switchSession' | 'fork' | 'importFromJsonl' | 'reload' | 'navigateTree' | 'installationDeviceId'>
+  runtime(): Pick<TerminalRuntime, 'newSession' | 'switchSession' | 'fork' | 'importFromJsonl' | 'reload' | 'navigateTree' | 'installationDeviceId' | 'permissions' | 'setFullPermission' | 'setGlobalTool'>
   ui: ExtensionUIContext
   cwd(): string
   sessionDirectory(): string
   refresh(): void
+  changed(): void
   shutdown(): void
   setEditorText(text: string): void
   copyText(text: string): Promise<void>
@@ -24,6 +29,10 @@ export interface TerminalCommandHost {
   suspend?(): Promise<void>
   hotkeys?(): string
   changelog?(): Promise<string>
+  trajectory: {
+    list(): Promise<TerminalTrajectoryRun[]>
+    read(runId: string, afterSequence?: number): Promise<TerminalTrajectorySnapshot>
+  }
 }
 
 export interface TerminalCommandCompletion { name: string; description?: string }
@@ -35,12 +44,14 @@ const BUILTINS: TerminalCommandCompletion[] = [
   { name: 'tree', description: 'Navigate the session tree' },
   { name: 'fork', description: 'Fork from a user message' },
   { name: 'model', description: 'Choose a model' },
-  { name: 'thinking', description: 'Choose thinking effort' },
+  { name: 'effort', description: 'Choose thinking effort' },
   { name: 'clone', description: 'Clone the current branch to a new session' },
   { name: 'scoped-models', description: 'Choose models for cycling' },
   { name: 'settings', description: 'Session and terminal settings' },
+  { name: 'permissions', description: 'Review and change terminal approval permissions' },
   { name: 'name', description: 'Name the current session' },
   { name: 'session', description: 'Current session statistics' },
+  { name: 'trajectory', description: 'Inspect recorded runs for this native session' },
   { name: 'compact', description: 'Compact the current context' },
   { name: 'reload', description: 'Reload trusted resources and keyboard bindings' },
   { name: 'trust', description: 'Review plugin code and project trust' },
@@ -72,11 +83,16 @@ export function createTerminalCommands(host: TerminalCommandHost) {
     for (const prompt of session.resourceLoader.getPrompts().prompts) {
       if (!commands.has(prompt.name)) commands.set(prompt.name, { name: prompt.name, description: prompt.description })
     }
-    if (session.settingsManager.getEnableSkillCommands()) {
-      for (const skill of session.resourceLoader.getSkills().skills) commands.set(`skill:${skill.name}`, { name: `skill:${skill.name}`, description: skill.description })
-    }
     return [...commands.values()]
   }
+  /** The skills this session may be asked to use, each invoked as `$name`. Off with the "Skill commands" setting. */
+  const skills = (): SkillEntry[] => {
+    const session = host.session()
+    if (!session.settingsManager.getEnableSkillCommands()) return []
+    return session.resourceLoader.getSkills().skills.map((skill) => ({ name: skill.name, description: skill.description }))
+  }
+  /** The text to send: a leading `$name` of a loaded skill becomes the `/skill:name` form Pi expands. */
+  const expandSkill = (text: string): string => expandSkillInvocation(text, new Set(skills().map((skill) => skill.name)))
 
   async function settings() {
     const session = host.session()
@@ -192,6 +208,68 @@ export function createTerminalCommands(host: TerminalCommandHost) {
     } finally { await rm(directory, { recursive: true, force: true }) }
   }
 
+  async function trajectory(runId: string) {
+    const runs = await host.trajectory.list()
+    if (!runs.length) { notify('No runs recorded for this native session yet'); return }
+    const initialIndex = runId ? runs.findIndex(run => run.id === runId) : 0
+    if (initialIndex < 0) throw new Error('Run not found in this native session')
+    const initial = await host.trajectory.read(runs[initialIndex]!.id)
+    await host.ui.custom<void>((tui, theme, _keys, done) => {
+      const content = new TrajectoryPanel({
+        tui, theme, runs, initialIndex, initial,
+        read: host.trajectory.read,
+        copy: host.copyText,
+        close: () => done(undefined),
+        changed: host.changed,
+        notify: (message, type) => host.ui.notify(message, type === 'error' || type === 'warning' ? type : 'info')
+      })
+      const dialog = new DialogPanel('Trajectory', content, () => theme, '←/→ runs · ↑/↓ events · PgUp/PgDn details · C copy · Esc close')
+      return Object.assign(dialog, { dispose: () => content.dispose() })
+    }, { overlay: true, overlayOptions: { width: '100%', maxHeight: '90%' } })
+  }
+
+  async function permissions() {
+    for (;;) {
+      const runtime = host.runtime()
+      const state = await runtime.permissions()
+      const activeTools = host.session().getActiveToolNames()
+      const granted = new Set(state.globalTools)
+      const toolNames = [...new Set([...activeTools, ...granted])].sort((a, b) => a.localeCompare(b))
+      const entries = [
+        { id: 'full', label: `Full Permission: ${state.full ? 'on' : 'off'}` },
+        ...toolNames.map(tool => ({ id: `tool:${tool}`, label: `${tool}: allow everywhere ${granted.has(tool) ? 'on' : 'off'}` })),
+        { id: 'done', label: 'Done' }
+      ]
+      const description = [
+        'Permissions apply to future Pi terminal approvals using this local Harness state.',
+        'A tool grant allows every call with that tool name, regardless of its arguments.',
+        'Full Permission approves every eligible future request. Hard denials and disabled tools still apply; human-only requests stay manual unless the host explicitly opts them in.',
+        'Existing pending requests are never approved by changing these settings.'
+      ].join('\n')
+      const selected = await host.ui.custom<string | undefined>((tui, theme, _keys, done) => {
+        const list = new SearchableSelect(entries.map(entry => entry.label), tui, () => theme,
+          index => done(entries[index]?.id), () => done(undefined))
+        return new DialogPanel('Permissions', list, () => theme, 'Enter change · Type to search · Esc close', description)
+      }, { overlay: true, overlayOptions: { width: '100%', maxHeight: '90%' } })
+      if (!selected || selected === 'done') return
+      if (selected === 'full') {
+        const desired = !state.full
+        const latest = await runtime.permissions()
+        if (latest.full !== desired) {
+          if (!desired || await host.ui.confirm('Enable Full Permission?', 'Automatically approve eligible future requests in every Pi terminal session sharing this local Harness state. Hard denials and disabled tools still apply; human-only requests stay manual unless the host explicitly opts them in.')) {
+            await runtime.setFullPermission(desired)
+          }
+        }
+        continue
+      }
+      const tool = selected.slice('tool:'.length)
+      if (!tool) continue
+      const desired = !granted.has(tool)
+      const latest = await runtime.permissions()
+      if (latest.globalTools.includes(tool) !== desired) await runtime.setGlobalTool(tool, desired)
+    }
+  }
+
   async function execute(text: string): Promise<boolean> {
     const match = /^\/([^\s]+)(?:\s+([\s\S]*))?$/.exec(text.trim())
     if (!match) return false
@@ -199,6 +277,8 @@ export function createTerminalCommands(host: TerminalCommandHost) {
     const argument = match[2]?.trim() ?? ''
     if (!BUILTINS.some(item => item.name === name)) {
       if (completions().some(item => item.name === name)) return false
+      // A skill is offered as $name; the typed /skill:name form still reaches the SDK, which expands it.
+      if (skills().some(skill => `skill:${skill.name}` === name)) return false
       host.ui.notify(`Unknown command: /${name}. Use /help to list commands.`, 'error')
       return true
     }
@@ -256,7 +336,7 @@ export function createTerminalCommands(host: TerminalCommandHost) {
           }
           break
         }
-        case 'thinking': {
+        case 'effort': {
           const levels = session.getAvailableThinkingLevels()
           const level = argument || await host.ui.select('Thinking effort', levels)
           if (!level) break
@@ -292,12 +372,14 @@ export function createTerminalCommands(host: TerminalCommandHost) {
           break
         }
         case 'settings': await settings(); break
+        case 'permissions': await permissions(); break
         case 'name': {
           const name = argument || await host.ui.input('Session name', session.sessionName)
           if (name !== undefined) session.setSessionName(name)
           break
         }
         case 'session': notify(JSON.stringify(session.getSessionStats(), null, 2)); break
+        case 'trajectory': await trajectory(argument); break
         case 'compact': await session.compact(argument || undefined); break
         case 'reload': await host.runtime().reload(); notify('Trusted resources reloaded'); break
         case 'trust': {
@@ -357,5 +439,5 @@ export function createTerminalCommands(host: TerminalCommandHost) {
     } catch (error) { host.ui.notify(error instanceof Error ? error.message : String(error), 'error') }
     return true
   }
-  return { execute, completions }
+  return { execute, completions, skills, expandSkill }
 }

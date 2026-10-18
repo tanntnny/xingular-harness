@@ -107,6 +107,8 @@ describe('a whole reply, with a scripted model', () => {
     const { loadRun } = await import('./runStore')
     expect(loadRun(harness.env.root, id).status).toBe('interrupted')
     expect(loadRun(harness.env.root, childRunId!).status).toBe('interrupted')
+    const { readEvents } = await import('./runStore')
+    expect(readEvents(harness.env.root, childRunId!).some(event => event.type === 'question.answered')).toBe(true)
     expect(harness.runs.activeRunIds()).toEqual([])
   })
 

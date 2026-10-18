@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 import { memorySecretStore } from '../accounts/secrets'
 import { writeJson } from '../core/fs'
-import type { Notice } from '../core/bus'
+import { setLogSink, type Notice } from '../core/bus'
 import { createHarness, type Harness } from '../harness'
 import type { PiSessionLike } from '../sessions/runner'
 import * as blocks from './blocks'
@@ -130,6 +130,22 @@ describe('the memory lifecycle', () => {
     await harness.maintenance.settled()
     expect(jobs).toBe(0)
     expect([chatUpdatesPaused({}), chatUpdatesPaused({ autoMaintenanceChat: true }), chatUpdatesPaused({ autoMaintenanceChat: false })]).toEqual([false, false, true])
+  })
+
+  it('a code run outside any project is not maintained, and it leaves no log line', async () => {
+    const lines: string[] = []
+    setLogSink((text) => void lines.push(text))
+    try {
+      let jobs = 0
+      const { harness } = setup(async () => ({ prompt: async () => void (jobs += 1), dispose: () => undefined, error: () => null }))
+      await harness.sessions.run({ run: { id: 'code-1', sessionId: 'nora', mode: 'code' },cwd: harness.env.root, sessionDir: join(harness.env.root, 'history'), text: 'Which shell do we use?', caller: { agentId: 'nora', agentName: 'Nora', actor: 'Code' }, tools: { allow: [] } })
+      await new Promise((resolve) => setTimeout(resolve, 30))
+      await harness.maintenance.settled()
+      expect(jobs).toBe(0)
+      expect(lines.filter((line) => line.includes('maintenance'))).toEqual([])
+    } finally {
+      setLogSink(null)
+    }
   })
 
   it('an imported source is read once and its proposals are checked against its text', async () => {

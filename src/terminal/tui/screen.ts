@@ -5,7 +5,7 @@ import { ScrollView, TuiAltScreen, TuiMainScreen, VStack, isViewportTUI, truncat
 export interface DockSlots {
   readonly title: Component
   readonly above: Component
-  readonly notes: Component
+  readonly queue: Component
   readonly editor: Component
   readonly below: Component
   readonly footer: Component
@@ -65,13 +65,13 @@ export function createTerminalScreen(terminal: Terminal, preferences: ScreenPref
   return new TuiAltScreen(terminal, undefined, undefined, options)
 }
 
-/** The prompt and status keep their full height; when the screen is short, notices and widgets show their first rows and scroll for the rest. */
+/** The prompt and status keep their full height; when the screen is short, queued messages and widgets show their first rows and scroll for the rest. */
 export function createDock(slots: DockSlots): VStack {
   const region = (component: Component) => new ScrollView(component)
   return new VStack([
     { component: slots.title, shrink: 0 },
     { component: region(slots.above), shrink: 1, minSize: 0 },
-    { component: region(slots.notes), shrink: 1, minSize: 0 },
+    { component: region(slots.queue), shrink: 1, minSize: 0 },
     { component: slots.editor, shrink: 0 },
     { component: region(slots.below), shrink: 1, minSize: 0 },
     { component: slots.footer, shrink: 0 }

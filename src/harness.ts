@@ -17,6 +17,7 @@ import { readJsonOr } from './core/fs'
 import { closeIndex } from './core/index'
 import { projectsOrNone } from './core/projects'
 import { ConnectedApps } from './mcp/service'
+import type { AppOAuthClients } from './mcp/types'
 import { migrateConnectionScopes } from './mcp/scopeMigration'
 import type { MaintainerFactory } from './memory/maintainer'
 import { Maintenance } from './memory/maintenance'
@@ -77,6 +78,11 @@ export interface HarnessOptions {
   plugins?: PluginDescriptor[]
   /** Replaces Pi's own search for extensions, skills, prompts and themes, for tests. */
   resolver?: Resolver
+  /**
+   * The application's own registered OAuth clients, so a connector it publishes needs no client
+   * from the person. Only a catalog entry listed in `ids` can use one, and nothing is stored.
+   */
+  oauthClients?: AppOAuthClients
   /** Replaces how a plugin's hooks file is read as a module, for tests. */
   hookImporter?: (address: string) => Promise<unknown>
 }
@@ -154,7 +160,7 @@ export class Harness {
       redact: (event) => this.apps.connections.redactEvent(event),
       ended: (runId, sessionId) => this.apps.revokeRun(runId, sessionId)
     })
-    this.apps = new ConnectedApps({ env: this.env, stateDir: this.stateDir, secrets, bus: this.bus, runs: this.runs, policy: this.policy })
+    this.apps = new ConnectedApps({ env: this.env, stateDir: this.stateDir, secrets, bus: this.bus, runs: this.runs, policy: this.policy, oauthClients: options.oauthClients })
     this.plugins = new Plugins({ stateDir: this.stateDir, bus: this.bus, resolver: options.resolver, attachments: () => (this.env.dataRoot ? attachments.load(this.env.dataRoot) : null), packagesDir: () => (this.env.dataRoot ? join(this.env.dataRoot, 'plugins') : null) })
     this.hooks = new Hooks({
       stateDir: this.stateDir,
@@ -197,7 +203,7 @@ export class Harness {
       factory: options.sessionFactory
     })
     this.maintenance = new Maintenance({ env: this.env, bus: this.bus, accounts: this.accounts, factory: options.maintainerFactory, idleMs: options.idleMs, external: options.externalMaintenance, excludedTriggers: options.maintenanceExcludedTriggers, runTrigger: options.maintenanceRunTrigger })
-    this.terminals = new Terminals({ subagents: this.subagents, resolveCapabilities: (caller, tools, cwd) => capabilities.resolve(this, { agentId: caller.agentId ?? null, projectId: caller.projectId ?? null, cwd, tools }), env: this.env, stateDir: this.stateDir, accounts: this.accounts, runs: this.runs, apps: this.apps, policy: this.policy, bus: this.bus, plugins: this.plugins, pluginControl: { list: (scope) => pluginApi.list(this, scope), attach: (params, on) => pluginApi.attach(this, params, on), trust: (scope) => pluginApi.trust(this, scope), untrust: (scope) => pluginApi.untrust(this, scope) }, assets: options.assets, program: options.piProgram, hub: this.hub })
+    this.terminals = new Terminals({ subagents: this.subagents, resolveCapabilities: (caller, tools, cwd) => capabilities.resolve(this, { agentId: caller.agentId ?? null, projectId: caller.projectId ?? null, cwd, tools }), env: this.env, stateDir: this.stateDir, accounts: this.accounts, runs: this.runs, approvals: this.approvals, apps: this.apps, policy: this.policy, bus: this.bus, plugins: this.plugins, pluginControl: { list: (scope) => pluginApi.list(this, scope), attach: (params, on) => pluginApi.attach(this, params, on), trust: (scope) => pluginApi.trust(this, scope), untrust: (scope) => pluginApi.untrust(this, scope) }, assets: options.assets, program: options.piProgram, hub: this.hub })
     this.ready = this.apps.start().catch((error) => log('connected apps', error instanceof Error ? error.message : String(error)))
     this.runs.listen((event, run) => {
       this.accounts.onRunEvent(event, run)

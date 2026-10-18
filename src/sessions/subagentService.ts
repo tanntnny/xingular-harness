@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
 
+import { loadRun as loadCapabilities } from '../capabilities/runSnapshot'
 import type { CapabilitySet } from '../capabilities/types'
 import type { HarnessEnv } from '../core/env'
 import { HarnessError, invalid } from '../core/errors'
@@ -32,7 +33,10 @@ export interface SubagentHistory {
 }
 
 function until<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
-  if (signal.aborted) return Promise.reject(new HarnessError('run_not_active', 'The parent run stopped.'))
+  if (signal.aborted) {
+    void promise.catch(() => {})
+    return Promise.reject(new HarnessError('run_not_active', 'The parent run stopped.'))
+  }
   return new Promise((resolve, reject) => {
     const abort = () => reject(new HarnessError('run_not_active', 'The parent run stopped.'))
     signal.addEventListener('abort', abort, { once: true })
@@ -60,10 +64,18 @@ export class Subagents {
   register(input: SessionRunInput, accountId: string, capabilities: CapabilitySet, deferUntilPrompt = false): void {
     if (!this.runs.active(input.run.id)) throw new HarnessError('run_not_active', 'The parent run is not active.')
     if (this.parents.has(input.run.id)) return
+    const frozen = loadCapabilities(this.env.root, input.run.id)
+    if (!frozen) throw invalid('A native parent requires a frozen capability snapshot.')
+    const ceiling: CapabilitySet = {
+      version: 1,
+      tools: capabilities.tools.filter(name => frozen.tools.includes(name)),
+      connectors: capabilities.connectors.filter(id => frozen.connectors.includes(id)),
+      contributions: capabilities.contributions.filter(id => frozen.contributions.includes(id))
+    }
     let started!: () => void
     const ready = new Promise<void>(resolve => { started = resolve })
     if (!deferUntilPrompt) started()
-    this.parents.set(input.run.id, { ready, started, input: structuredClone(input), accountId, capabilities: structuredClone(capabilities), stopped: new AbortController(), recovered: new Set(), launching: new Map() })
+    this.parents.set(input.run.id, { ready, started, input: structuredClone({ ...input, text: '', images: undefined, requiresImageInput: false, preamble: null, resume: null }), accountId, capabilities: ceiling, stopped: new AbortController(), recovered: new Set(), launching: new Map() })
   }
 
   resolvedModel(runId: string, model: string, effort?: Effort): void {
@@ -84,7 +96,6 @@ export class Subagents {
     const parent = this.parent(request.parentRunId)
     const { input, accountId, capabilities } = parent
     if (!capabilities.tools.includes(SPAWN_SUBAGENT)) throw invalid('Subagents are not enabled for this run.')
-    await until(parent.ready, parent.stopped.signal)
     const brief = typeof request.brief === 'string' ? request.brief.trim() : ''
     if (!brief) throw invalid('Give the subagent a brief.')
     if (request.wait !== undefined && typeof request.wait !== 'boolean') throw invalid('wait must be a boolean.')
@@ -92,6 +103,7 @@ export class Subagents {
     const outside = request.tools?.filter((name) => !capabilities.tools.includes(name)) ?? []
     if (outside.length) throw invalid(`A subagent cannot have tools you do not have: ${outside.join(', ')}.`)
     const tools = capabilities.tools.filter((name) => !request.tools || request.tools.includes(name))
+    await until(parent.ready, parent.stopped.signal)
     const runId = randomUUID()
     const sessionId = randomUUID()
     recordSubagent(this.env.root, request.parentRunId, runId)
@@ -107,7 +119,7 @@ export class Subagents {
     const started = this.launch(child).catch((error) => {
       if (!findRun(this.env.root, runId)) {
         const source = loadRun(this.env.root, request.parentRunId)
-        saveRun(this.env.root, { ...source, id: runId, sessionId, parentRunId: request.parentRunId, relation: SUBAGENT_RELATION, nativeSessionId: null, goal: takeChars(brief, 4000), attachmentCount: 0, status: 'failed', startedAt: now(), endedAt: now(), terminalReason: error instanceof Error ? error.message : String(error) })
+        saveRun(this.env.root, { ...source, id: runId, sessionId, parentRunId: request.parentRunId, relation: SUBAGENT_RELATION, nativeSessionId: null, resumedFromRunId: null, handoffId: null, exitCode: null, goal: takeChars(brief, 4000), attachmentCount: 0, status: 'failed', startedAt: now(), endedAt: now(), terminalReason: error instanceof HarnessError ? error.message : 'Subagent startup failed before its session opened.' })
       }
       return { runId, nativeSessionId: null }
     })
@@ -118,8 +130,8 @@ export class Subagents {
     return result
   }
 
-  private selected(selection: SubagentSelection, parent: Parent): string[] {
-    const owned = new Set([...recordedSubagents(this.env.root, selection.parentRunId), ...parent.recovered])
+  private selected(selection: SubagentSelection, parent?: Parent): string[] {
+    const owned = new Set([...recordedSubagents(this.env.root, selection.parentRunId), ...(parent?.recovered ?? [])])
     if (selection.runIds !== undefined && (!Array.isArray(selection.runIds) || selection.runIds.some((id) => typeof id !== 'string'))) throw invalid('runIds must be an array of child run IDs.')
     const ids = [...new Set(selection.runIds ?? [...owned])]
     if (ids.some((id) => !owned.has(id))) throw invalid('Select only subagents owned by this parent.')
@@ -127,7 +139,8 @@ export class Subagents {
   }
 
   results(selection: SubagentSelection): SubagentResult[] {
-    const parent = this.parent(selection.parentRunId)
+    loadRun(this.env.root, selection.parentRunId)
+    const parent = this.parents.get(selection.parentRunId)
     return this.selected(selection, parent).map((runId) => {
       const run = findRun(this.env.root, runId)
       const reply = run && readEvents(this.env.root, runId).filter((event) => event.type === 'message.completed' && (event.payload as { role?: unknown }).role === 'assistant').at(-1)
@@ -161,7 +174,7 @@ export class Subagents {
         let child = findRun(this.env.root, id)
         if (!child) {
           // The process can die after reserving ownership but before sessions.run saves the child.
-          saveRun(this.env.root, { ...old, id, sessionId: id, parentRunId: owner, relation: SUBAGENT_RELATION, nativeSessionId: null, resumedFromRunId: null, handoffId: null, goal: null, attachmentCount: 0, status: 'interrupted', endedAt: now(), terminalReason: 'Subagent startup was interrupted before its session opened.' })
+          saveRun(this.env.root, { ...old, id, sessionId: id, parentRunId: owner, relation: SUBAGENT_RELATION, nativeSessionId: null, resumedFromRunId: null, handoffId: null, exitCode: null, goal: null, attachmentCount: 0, status: 'interrupted', startedAt: now(), endedAt: now(), terminalReason: 'Subagent startup was interrupted before its session opened.' })
           child = findRun(this.env.root, id)
         }
         if (child?.parentRunId === owner && child.relation === SUBAGENT_RELATION && child.accountId === current.accountId) parent.recovered.add(id)

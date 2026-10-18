@@ -1,9 +1,11 @@
 // The standalone host prepares an isolated Harness terminal and supervises its frontend.
 import { spawn as nodeSpawn } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
+import { appendFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { isAbsolute, join, resolve } from 'node:path'
 
+import { setLogSink } from '../core/bus'
 import { createHarness, type Harness, type HarnessOptions } from '../harness'
 import type { TerminalLaunch } from './terminals'
 
@@ -128,6 +130,15 @@ export async function runStandaloneTerminal(argv: string[], dependencies: Standa
   const harness = makeHarness({ dataRoot: paths.dataRoot, stateDir: paths.stateDir, productName: 'Xingular Harness' })
   const newSessionId = dependencies.createSessionId ?? randomUUID
   let current = { sessionId: newSessionId(), accountId: null as string | null, nativeSessionId: null as string | null }
+  // The frontend draws on this terminal, so the host's diagnostics go to a file the person can read instead.
+  const logFile = join(paths.stateDir, 'harness.log')
+  setLogSink((text) => {
+    try {
+      appendFileSync(logFile, `${new Date().toISOString()} ${text}\n`)
+    } catch {
+      // Diagnostics are best effort; a full disk must not stop the terminal.
+    }
+  })
 
   try {
     await harness.ready
@@ -149,5 +160,6 @@ export async function runStandaloneTerminal(argv: string[], dependencies: Standa
   } finally {
     await harness.terminals.dispose(current.sessionId)
     await harness.close()
+    setLogSink(null)
   }
 }

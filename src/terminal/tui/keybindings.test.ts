@@ -4,6 +4,14 @@ import { join } from 'node:path'
 import { expect, it } from 'vitest'
 import { terminalKeybindings } from './keybindings'
 
+it('steps thinking effort on shift arrows and gives shift+tab to plan mode', () => {
+  const manager = terminalKeybindings('/unused/isolated-account')
+  expect(manager.matches('\x1b[1;2A', 'app.thinking.increase')).toBe(true)
+  expect(manager.matches('\x1b[1;2B', 'app.thinking.decrease')).toBe(true)
+  expect(manager.matches('\x1b[Z', 'app.plan.toggle')).toBe(true)
+  expect(manager.matches('\x1b[Z', 'app.thinking.cycle')).toBe(false)
+})
+
 it('reloads edited isolated keybindings on the existing public manager', () => {
   const root = mkdtempSync(join(tmpdir(), 'harness-keybindings-'))
   try {

@@ -100,11 +100,11 @@ describe('terminal screen layout', () => {
     tui.stop()
   })
 
-  it('shows the first rows of a long notice while the prompt and status stay whole', () => {
+  it('shows the first rows of a long queue while the prompt and status stay whole', () => {
     const tui = createTerminalScreen(fakeTerminal(40, 12), prefs('fullscreen'), hooks) as TuiAltScreen
-    const notes = Array.from({ length: 20 }, (_, index) => `notice ${index}`)
+    const queued = Array.from({ length: 20 }, (_, index) => `queued ${index}`)
     const dock = createDock({
-      title: rowOf(['title']), above: rowOf([]), notes: rowOf(notes), below: rowOf([]), footer: rowOf(['status']),
+      title: rowOf(['title']), above: rowOf([]), queue: rowOf(queued), below: rowOf([]), footer: rowOf(['status']),
       editor: rowOf(['─'.repeat(40), '❯ prompt', '─'.repeat(40), '? for shortcuts'])
     })
     const document = new Container()
@@ -115,8 +115,8 @@ describe('terminal screen layout', () => {
     const rows = screenRows(tui)
     expect(rows).toHaveLength(12)
     expect(rows.slice(-5)).toEqual(['─'.repeat(40), '❯ prompt', '─'.repeat(40), '? for shortcuts', 'status'])
-    expect(rows).toContain('notice 0')
-    expect(rows).not.toContain('notice 19')
+    expect(rows).toContain('queued 0')
+    expect(rows).not.toContain('queued 19')
     tui.stop()
   })
 

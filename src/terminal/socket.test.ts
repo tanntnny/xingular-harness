@@ -33,6 +33,29 @@ describe('session socket path', () => {
 })
 
 describe('session socket', () => {
+  it.skipIf(process.platform === 'win32')('keeps an existing Harness socket reachable when another instance uses the same state folder', async () => {
+    const base = mkdtempSync(join(tmpdir(), 'sock-shared-state-'))
+    const path = socketPath(base)
+    const first = new SessionSocket(path, handlers)
+    const second = new SessionSocket(path, handlers)
+    const canConnect = (socketPath: string): Promise<void> => new Promise((resolve, reject) => {
+      const client = createConnection(socketPath)
+      client.once('connect', () => { client.end(); resolve() })
+      client.once('error', reject)
+    })
+    try {
+      await first.listen()
+      await second.listen()
+      expect(second.path).not.toBe(first.path)
+      await second.close()
+      await expect(canConnect(first.path)).resolves.toBeUndefined()
+    } finally {
+      await first.close()
+      await second.close()
+      rmSync(base, { recursive: true, force: true })
+    }
+  })
+
   it.skipIf(process.platform !== 'win32')('listens on a named pipe and answers a request on Windows', async () => {
     const socket = new SessionSocket(socketPath('unused'), handlers)
     await socket.listen()

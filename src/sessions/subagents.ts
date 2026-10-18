@@ -1,5 +1,5 @@
 import { takeChars } from '../core/text'
-import { loadRun, readEvents } from './runStore'
+import { findRun, loadRun, readEvents } from './runStore'
 
 export const SPAWN_SUBAGENT = 'spawn_subagent'
 export const WAIT_SUBAGENTS = 'wait_subagents'
@@ -10,7 +10,7 @@ export const DEFAULT_SUBAGENT_DEPTH = 1
 export const MAX_SUBAGENT_DEPTH = 3
 
 export interface SubagentOptions {
-  /** Hops below the user-started run that subagents may reach (1 to 3). */
+  /** Maximum consecutive native subagent levels below a caller (1 to 3). */
   maxDepth?: number
 }
 
@@ -65,6 +65,23 @@ export function subagentHistory(entries: readonly unknown[]): { owners: string[]
     receipts.push(receipt)
   }
   return { owners, receipts }
+}
+
+/** Native nesting is independent of a host's other uses of the generic caller depth. */
+export function subagentNesting(root: string, run: { relation?: string | null; parentRunId?: string | null }): number {
+  let current: typeof run = run
+  let depth = 0
+  const visited = new Set<string>()
+  while (current.relation === SUBAGENT_RELATION) {
+    const parent = current.parentRunId
+    if (!parent || visited.has(parent)) return MAX_SUBAGENT_DEPTH
+    visited.add(parent)
+    depth++
+    const record = findRun(root, parent)
+    if (!record) return MAX_SUBAGENT_DEPTH
+    current = record
+  }
+  return depth
 }
 
 /** The child's final reply, or why it ended without one. */

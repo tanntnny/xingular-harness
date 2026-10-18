@@ -4,7 +4,7 @@ import { CONNECTION_TOOLS, NATIVE_GROUP } from '../prompt/compile'
 import { ASK_USER } from '../tools/askUser'
 import { SPAWN_SUBAGENT, WAIT_SUBAGENTS } from '../sessions/subagents'
 import { PLUGIN_PROPOSE } from '../tools/pluginPropose'
-import { MEMORY_TOOLS, RECALL_TOOLS, WIKI_TOOLS, type WikiToolDefinition } from '../tools/definitions'
+import { MEMORY_TOOLS, RECALL_TOOLS, TRAJECTORY_TOOLS, WIKI_TOOLS, type WikiToolDefinition } from '../tools/definitions'
 import { FIRST_PARTY_PLUGINS } from './firstParty'
 import type { PluginDescriptor } from './types'
 
@@ -61,7 +61,7 @@ export const HARNESS_PLUGINS: readonly PluginDescriptor[] = [
     ],
     toolGroups: ['Knowledge']
   },
-  { id: 'history', title: 'History', description: 'Search over earlier conversations and runs.', required: 'Earlier runs are how an agent picks up where work stopped.', tools: tools(RECALL_TOOLS) },
+  { id: 'history', title: 'History', description: 'Search earlier conversations and inspect recorded run trajectories.', required: 'Earlier runs are how an agent picks up where work stopped.', tools: tools([...RECALL_TOOLS, ...TRAJECTORY_TOOLS]) },
   {
     id: 'plugin-proposals',
     title: 'Plugin proposals',

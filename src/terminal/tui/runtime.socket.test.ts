@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createHarness, type Harness } from '../../harness'
 import { memorySecretStore } from '../../accounts/secrets'
 import { connectionFromEnv, socketCall, terminalCall } from '../client'
+import type { TerminalPrepareInput } from '../terminals'
 import { controlCall } from '../control'
 import { readAllRuns } from '../../sessions/runIndex'
 import { createTerminalRuntime, type TerminalRuntime } from './runtime'
@@ -22,7 +23,7 @@ afterEach(async () => {
   vi.unstubAllEnvs()
 })
 
-async function setup() {
+async function setup(input: Partial<TerminalPrepareInput> = {}) {
   const root = mkdtempSync(join(tmpdir(), 'harness-sdk-socket-'))
   const cwd = join(root, 'project')
   mkdirSync(cwd)
@@ -31,7 +32,7 @@ async function setup() {
   opened.push(entry)
   await harness.ready
   const account = harness.accounts.create('Offline test', 'apiKey').accounts[0]
-  const launch = await harness.terminals.prepare({ sessionId: 'offline-sdk', cwd, accountId: account.id, sessionFolder: join(root, 'history') })
+  const launch = await harness.terminals.prepare({ sessionId: 'offline-sdk', cwd, accountId: account.id, sessionFolder: join(root, 'history'), ...input })
   for (const [name, value] of Object.entries(launch.env)) vi.stubEnv(name, value === null ? undefined : value)
   vi.spyOn(process, 'cwd').mockReturnValue(cwd)
   const ui = { select: vi.fn(async () => undefined), confirm: vi.fn(async () => false), notify: vi.fn(), getEditorText: () => '' } as unknown as ExtensionUIContext
@@ -41,6 +42,18 @@ async function setup() {
 }
 
 describe('a native SDK runtime on the actual Harness terminal socket', () => {
+  it('reads and changes shared terminal permissions only through the claimed private control key', async () => {
+    const { runtime } = await setup()
+    await expect(socketCall(connectionFromEnv(), 'terminal.permissions.get')).rejects.toThrow('Only a person')
+    expect(await runtime.permissions()).toEqual({ full: false, globalTools: [] })
+    await runtime.setGlobalTool('bash', true)
+    await runtime.setFullPermission(true)
+    expect(await runtime.permissions()).toEqual({ full: true, globalTools: ['bash'] })
+    await runtime.setGlobalTool('bash', false)
+    await runtime.setFullPermission(false)
+    expect(await runtime.permissions()).toEqual({ full: false, globalTools: [] })
+  })
+
   it('runs asynchronous children through the protected bridge and joins their results before settling', async () => {
     const { harness, runtime } = await setup()
     const ai = await import('@earendil-works/pi-ai')
@@ -87,6 +100,18 @@ describe('a native SDK runtime on the actual Harness terminal socket', () => {
     await expect(answer).resolves.toBe('denied')
     expect(await runtime.pending()).toEqual([])
     active.finish('interrupted')
+  })
+
+  it('offers native tools without connected apps and preserves a read-only child ceiling', async () => {
+    const { harness, runtime } = await setup({ connections: false, readOnly: true })
+    expect(runtime.session.getToolDefinition('spawn_subagent')).toBeDefined()
+    await terminalCall('begin', { text: 'Read-only parent' })
+    await controlCall('terminal.subagents.register', { tools: ['read', 'write', 'bash', 'spawn_subagent', 'wait_subagents'], history: { owners: [], receipts: [] } })
+    const parentRunId = harness.runs.activeForSession('offline-sdk')!.runId
+    await expect(harness.subagents.spawn({ parentRunId, brief: 'Cannot widen', tools: ['write'] })).rejects.toThrow('cannot have tools')
+    const { loadRun } = await import('../../capabilities/runSnapshot')
+    expect(loadRun(harness.env.root, parentRunId)?.tools).toEqual(['read', 'spawn_subagent', 'wait_subagents'])
+    await runtime.interrupt()
   })
 
   it('keeps the same account, command control and readiness after new/reload with no provider request', async () => {
