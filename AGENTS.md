@@ -34,7 +34,7 @@ authorization and run recording behind their existing layers.
 
 `capabilities.resolve` returns the versioned generic set of tools, connectors and contributions available to a caller. `capabilities.intersect` narrows a set for a child caller; it never adds access. `sessions.run` filters the requested set through current availability and freezes the result with its opaque caller metadata beside the run. The tool gate still decides whether a call needs approval. Do not introduce application-specific task, agent-role, or UI concepts into this contract.
 
-The capability snapshot and attachment-scope migration are being implemented in this source tree. They have not been verified as a release; preserve per-run immutability and the generic boundary while finishing them.
+The capability snapshot and attachment-scope migration shipped in `@xingular/harness` 2.0.0 (commit `44471bc`); GitHub CI passed on Ubuntu and macOS. This verifies the automated package checks, not live-provider acceptance. Preserve per-run immutability and the generic boundary in further changes.
 
 ## Rules
 

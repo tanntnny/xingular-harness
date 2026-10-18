@@ -302,9 +302,9 @@ The [live report and capture](evidence/terminal-2026-10-17-followup/live-codex/R
 this quota failure explicitly. Successful live streaming/tool acceptance remains open until
 account capacity is available. GitHub gist publication, actual OS clipboard/image transfer,
 Windows behavior and every terminal emulator remain unverified. Rich image/diff rendering and clipboard adapters have
-focused compatibility tests; that does not establish OS interaction. These working-tree changes
-are not a published release and the complete plan's acceptance remains open while required
-integration/provider evidence is outstanding.
+focused compatibility tests; that does not establish OS interaction. These changes shipped in
+`@xingular/harness` 2.0.0 (commit `44471bc`), while the complete plan's acceptance remains
+open pending the required integration and provider evidence.
 
 To reproduce the controlled scenario after building:
 

@@ -59,10 +59,12 @@ recovery windows. Real scripted Pi tests in `conversation.test.ts` cover async d
 receipts and interruption during a child question. `runtime.socket.test.ts` exercises the real
 terminal socket, private controls, native execution and child decision routing. RPC and App host
 regressions cover protocol shapes and ancestry. Tests use disposable storage without external
-model requests. These are working-tree changes, not a publication or live-provider acceptance claim.
+model requests. These changes shipped in `@xingular/harness` 2.0.0 (commit `44471bc`); release does not imply live-provider acceptance.
 
 Verification on 2026-10-18: Harness typecheck, 455 tests (two skipped), unchanged golden fixtures,
 build and standalone proof passed. App typecheck, layer/UI checks, sidecar build, 30 sidecar tests
 and 217 Rust tests passed (one ignored). The renderer suite passed 491 tests and retained its
 pre-existing `PendingRequestDock.test.ts` heading-text assertion failure. No live account or
 user-data-root testing was performed.
+
+Release verification on 2026-10-18: npm 10 clean install, typecheck, 515 tests (two skipped), build and standalone proof passed. GitHub CI passed on Ubuntu and macOS, and the npm publish workflow released version 2.0.0 with provenance. No live provider requests were made during release verification.
