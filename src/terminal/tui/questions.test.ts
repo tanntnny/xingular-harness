@@ -1,41 +1,108 @@
-import type { ExtensionUIContext } from '@earendil-works/pi-coding-agent'
+import type { ExtensionUIContext, KeybindingsManager, Theme } from '@earendil-works/pi-coding-agent'
+import type { Component, TUI } from '@earendil-works/pi-tui'
+import { stripTerminalSequences } from '@earendil-works/pi-tui'
 import { describe, expect, it, vi } from 'vitest'
 import { answerTerminalQuestion } from './questions'
 
 function fixture() {
-  const ui = { select: vi.fn(), input: vi.fn() }
-  return { ui, context: ui as unknown as ExtensionUIContext, signal: new AbortController().signal }
+  const tui = { terminal: { rows: 24 }, requestRender: vi.fn() } as unknown as TUI
+  const theme = {
+    fg: (color: string, text: string) => color === 'warning' ? `\x1b[33m${text}\x1b[39m` : text,
+    bg: (_color: string, text: string) => text,
+    bold: (text: string) => text
+  } as unknown as Theme
+  let active: Component | undefined
+  const custom = vi.fn((factory: Parameters<ExtensionUIContext['custom']>[0]) => new Promise<unknown>((resolve) => {
+    active = factory(tui, theme, {} as KeybindingsManager, resolve) as Component
+  }))
+  const ui = { custom, input: vi.fn() }
+  return { ui, context: ui as unknown as ExtensionUIContext, signal: new AbortController().signal, getActive: () => active }
 }
 
 describe('terminal question answers', () => {
   it('keeps action-like option labels distinct from dialog actions', async () => {
-    const { ui, context, signal } = fixture()
-    ui.select.mockResolvedValue('1. Write an answer — Actual choice')
-    expect(await answerTerminalQuestion(context, { requestId: 'q', question: 'Choose?', options: [{ label: 'Write an answer', description: 'Actual choice' }] }, signal)).toEqual({ selected: ['Write an answer'] })
+    const { ui, context, signal, getActive } = fixture()
+    const answer = answerTerminalQuestion(context, { requestId: 'q', question: 'Choose?', options: [{ label: 'Write an answer', description: 'Actual choice' }] }, signal)
+    expect(stripTerminalSequences(getActive()!.render(80).join('\n'))).toContain('1. Write an answer')
+    getActive()!.handleInput?.('\r')
+    await expect(answer).resolves.toEqual({ selected: ['Write an answer'] })
     expect(ui.input).not.toHaveBeenCalled()
   })
 
-  it('returns to choices when text entry is cancelled and retains multiple selections', async () => {
-    const { ui, context, signal } = fixture()
-    ui.select.mockResolvedValueOnce('1. A').mockResolvedValueOnce('Write an answer').mockResolvedValueOnce('Submit choices')
-    ui.input.mockResolvedValue(undefined)
-    expect(await answerTerminalQuestion(context, { requestId: 'q', question: 'Choose?', options: [{ label: 'A' }], multiSelect: true }, signal)).toEqual({ selected: ['A'] })
-    expect(ui.select).toHaveBeenCalledTimes(3)
-    expect(ui.select.mock.calls[2][1]).toContain('1. ✓ A')
+  it('returns the original label when a recommended choice is selected', async () => {
+    const { context, signal, getActive } = fixture()
+    const answer = answerTerminalQuestion(context, {
+      requestId: 'q', question: 'Choose?', options: [{ label: 'Plan A' }, { label: 'Plan B', recommended: true }], allowText: false
+    }, signal)
+    getActive()!.handleInput?.('\r')
+    await expect(answer).resolves.toEqual({ selected: ['Plan B'] })
   })
 
-  it('shows real batch progress and returns cancellation without inventing an answer', async () => {
+  it('keeps numeric choice shortcuts aligned with the displayed recommendation-first order', async () => {
+    const { context, signal, getActive } = fixture()
+    const answer = answerTerminalQuestion(context, {
+      requestId: 'q', question: 'Choose?', options: [{ label: 'Plan A' }, { label: 'Plan B', recommended: true }], allowText: false
+    }, signal)
+    getActive()!.handleInput?.('2')
+    await expect(answer).resolves.toEqual({ selected: ['Plan A'] })
+  })
+
+  it('returns to choices after text entry is cancelled and retains multiple selections', async () => {
+    const { ui, context, signal, getActive } = fixture()
+    ui.input.mockResolvedValue(undefined)
+    const answer = answerTerminalQuestion(context, {
+      requestId: 'q', question: 'Choose?', options: [{ label: 'A' }], multiSelect: true
+    }, signal)
+    getActive()!.handleInput?.('\r')
+    getActive()!.handleInput?.('\x1b[B')
+    getActive()!.handleInput?.('\r')
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(ui.custom).toHaveBeenCalledTimes(2)
+    getActive()!.handleInput?.('\x1b[B')
+    getActive()!.handleInput?.('\x1b[B')
+    getActive()!.handleInput?.('\r')
+    await expect(answer).resolves.toEqual({ selected: ['A'] })
+  })
+
+  it('shows recommended options first with a yellow marker, without modifying the labels', async () => {
+    const controller = new AbortController()
+    const { ui, context, getActive } = fixture()
+    const answer = answerTerminalQuestion(context, {
+      requestId: 'q', question: 'Choose?', options: [
+        { label: 'Plan A' },
+        { label: 'Plan B', recommended: true },
+        { label: 'Plan C', recommended: true }
+      ], multiSelect: true
+    }, controller.signal)
+    const rendered = getActive()!.render(100).join('\n')
+    const plain = stripTerminalSequences(rendered)
+    expect(plain.indexOf('Plan B')).toBeLessThan(plain.indexOf('Plan A'))
+    expect(plain.indexOf('Plan C')).toBeLessThan(plain.indexOf('Plan A'))
+    expect(rendered).toContain('\x1b[33m(Recommended)\x1b[39m')
+    controller.abort()
+    await expect(answer).resolves.toBeUndefined()
+    expect(ui.custom).toHaveBeenCalledOnce()
+  })
+
+  it('shows batch progress and the full question in text entry', async () => {
     const { ui, context, signal } = fixture()
     ui.input.mockResolvedValue(undefined)
-    expect(await answerTerminalQuestion(context, { requestId: 'q', question: 'Why?', summary: 'Reason', batchId: 'batch', batchIndex: 2, batchCount: 3 }, signal)).toBeUndefined()
+    const answer = answerTerminalQuestion(context, {
+      requestId: 'q', question: 'Why?', summary: 'Reason', batchId: 'batch', batchIndex: 2, batchCount: 3
+    }, signal)
+    await expect(answer).resolves.toBeUndefined()
     expect(ui.input).toHaveBeenCalledWith('2 of 3 · Reason: Why?', undefined, { signal })
   })
 
-  it('honors text restrictions and ignores answers after expiry', async () => {
-    const { ui, context } = fixture()
+  it('honors text restrictions and cancels the picker when the question expires', async () => {
     const controller = new AbortController()
-    ui.select.mockImplementation(async () => { controller.abort(); return '1. A' })
-    expect(await answerTerminalQuestion(context, { requestId: 'q', options: [{ label: 'A' }], allowText: false }, controller.signal)).toBeUndefined()
-    expect(ui.select.mock.calls[0][1]).toEqual(['1. A'])
+    const { ui, context, getActive } = fixture()
+    const answer = answerTerminalQuestion(context, {
+      requestId: 'q', options: [{ label: 'A' }], allowText: false
+    }, controller.signal)
+    expect(stripTerminalSequences(getActive()!.render(80).join('\n'))).not.toContain('Write an answer')
+    controller.abort()
+    await expect(answer).resolves.toBeUndefined()
+    expect(ui.custom).toHaveBeenCalledOnce()
   })
 })

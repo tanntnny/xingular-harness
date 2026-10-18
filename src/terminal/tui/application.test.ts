@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from 'vitest'
 vi.mock('../control', () => ({ controlCall: vi.fn(async () => ({})) }))
 import { controlCall } from '../control'
 import { TerminalApplication } from './application'
-import { createTerminalCommands, type TerminalCommandHost } from './commands'
+import { createTerminalCommands } from './commands'
 import type { TerminalDecision } from './runtime'
 import { terminalKeybindings } from './keybindings'
 import { autocompleteRuleColor, createHarnessTheme } from './theme'
@@ -22,10 +22,8 @@ function setup() {
     }
     keybindings: ReturnType<typeof terminalKeybindings>
     editor: CustomEditor
-    runtime: { interrupt: ReturnType<typeof vi.fn>; dispose: ReturnType<typeof vi.fn>; session: object; snapshot(): { hasUserMessages: boolean; cwd?: string; model?: { name: string; reasoning: boolean; contextWindow: number }; thinkingLevel?: string; account?: { label: string } | null; context?: { percent: number | null; window: number }; costUsd?: number; subscription?: boolean } }
-    commands: ReturnType<typeof createTerminalCommands> | { execute: ReturnType<typeof vi.fn> }
-    planMode: boolean
-    setPlanMode(enabled: boolean): void
+    runtime: { interrupt: ReturnType<typeof vi.fn>; dispose: ReturnType<typeof vi.fn>; submit: ReturnType<typeof vi.fn>; submitPlan: ReturnType<typeof vi.fn>; session: object; snapshot(): { hasUserMessages: boolean; cwd?: string; model?: { name: string; reasoning: boolean; contextWindow: number }; thinkingLevel?: string; account?: { label: string } | null; context?: { percent: number | null; window: number }; costUsd?: number; subscription?: boolean } }
+    commands: ReturnType<typeof createTerminalCommands> | { execute: ReturnType<typeof vi.fn>; expandSkill(text: string): string }
     masthead: { render(width: number): string[] }
     header?: { render(width: number): string[]; invalidate(): void }
     branch: string | null
@@ -52,7 +50,7 @@ function setup() {
   app.keybindings = terminalKeybindings('/unused/isolated-account')
   app.initialized = true
   const context = {}
-  app.runtime = { interrupt: vi.fn(async () => {}), dispose: vi.fn(async () => {}), snapshot: () => ({
+  app.runtime = { interrupt: vi.fn(async () => {}), dispose: vi.fn(async () => {}), submit: vi.fn(async () => {}), submitPlan: vi.fn(async () => {}), snapshot: () => ({
     hasUserMessages: false, cwd: '/work/project', model: { name: 'Claude Sonnet 4.6', reasoning: true, contextWindow: 200_000 },
     thinkingLevel: 'high', account: { label: 'Tanny' }, context: { percent: null, window: 0 }, costUsd: 0, subscription: false
   }), session: {
@@ -226,7 +224,7 @@ describe('the owned terminal application', () => {
     const { application, app } = setup()
     app.mountEditor()
     let resolve!: (value: boolean) => void
-    app.commands = { execute: vi.fn(() => new Promise<boolean>(done => { resolve = done })) }
+    app.commands = { execute: vi.fn(() => new Promise<boolean>(done => { resolve = done })), expandSkill: text => text }
     app.submit('   /settings')
     await vi.waitFor(() => expect(app.commands.execute).toHaveBeenCalledWith('   /settings'))
     app.submit('/model')
@@ -237,35 +235,33 @@ describe('the owned terminal application', () => {
     await application.shutdown()
   })
 
-  it('toggles plan mode with /plan, narrowing to read-only tools', async () => {
+  it('keeps a queued plan isolated and sends later messages after it settles', async () => {
     const { application, app } = setup()
-    const session = app.runtime.session as { getActiveToolNames(): string[]; setActiveToolsByName(names: string[]): void; cycleThinkingLevel(): void }
-    const setActiveToolsByName = vi.fn()
-    const cycleThinkingLevel = vi.fn()
-    Object.assign(session, { getActiveToolNames: () => ['read', 'bash', 'edit', 'write', 'grep', 'spawn_subagent'], setActiveToolsByName, cycleThinkingLevel })
-    app.commands = createTerminalCommands({
-      session: () => session as never,
-      runtime: () => ({} as never),
-      ui: app.ui,
-      cwd: () => '/work/project',
-      sessionDirectory: () => '/isolated/account/history',
-      refresh: () => {},
-      changed: () => {},
-      planMode: () => app.planMode,
-      setPlanMode: enabled => app.setPlanMode(enabled),
-      shutdown: () => {},
-      setEditorText: () => {},
-      copyText: async () => {},
-      trajectory: {} as TerminalCommandHost['trajectory']
-    })
+    const session = app.runtime.session as { isIdle: boolean }
+    Object.assign(session, { isIdle: false })
+    const sent: string[] = []
+    app.runtime.submitPlan = vi.fn(async brief => { sent.push(`plan:${brief}`) })
+    app.runtime.submit = vi.fn(async text => { sent.push(`prompt:${text}`) })
+    const enqueuePlan = (application as unknown as { enqueuePlan(brief: string): void }).enqueuePlan.bind(application)
     app.mountEditor()
-    app.submit('/plan')
-    await vi.waitFor(() => expect(setActiveToolsByName).toHaveBeenCalledWith(['read', 'grep']))
-    expect(setActiveToolsByName).toHaveBeenLastCalledWith(['read', 'grep'])
-    app.submit('/plan off')
-    await vi.waitFor(() => expect(setActiveToolsByName).toHaveBeenLastCalledWith(['read', 'bash', 'edit', 'write', 'grep', 'spawn_subagent']))
-    expect(setActiveToolsByName).toHaveBeenLastCalledWith(['read', 'bash', 'edit', 'write', 'grep', 'spawn_subagent'])
-    expect(cycleThinkingLevel).not.toHaveBeenCalled()
+    app.commands = {
+      execute: vi.fn(async text => {
+        if (text.trimStart().startsWith('/plan ')) { enqueuePlan(text.trimStart().slice('/plan '.length)); return true }
+        return false
+      }),
+      expandSkill: text => text
+    }
+
+    app.submit('/plan inspect the source')
+    await vi.waitFor(() => expect(app.commandBusy).toBe(false))
+    app.submit('then implement it')
+    await vi.waitFor(() => expect((application as unknown as { deferredInputs: unknown[] }).deferredInputs).toHaveLength(2))
+    expect(sent).toEqual([])
+
+    session.isIdle = true
+    app.accept({ type: 'agent_settled' } as AgentSessionEvent)
+    await vi.waitFor(() => expect(sent).toEqual(['plan:inspect the source', 'prompt:then implement it']))
+    expect(app.runtime.submitPlan).toHaveBeenCalledOnce()
     await application.shutdown()
   })
 

@@ -44,6 +44,45 @@ export function logLine(text: string): void {
   else process.stderr.write(`${text}\n`)
 }
 
+/** Redacts common credentials and URL query values before diagnostic text is persisted or shown. */
+export function redactLogText(text: string): string {
+  return text
+    .replace(/\bBearer\s+\S+/gi, 'Bearer [redacted]')
+    .replace(/(["']?(?:authorization|proxy-authorization|cookie|set-cookie|x-[\w-]*(?:token|key)|[\w-]*(?:api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|token|secret|password|client[_-]?secret))["']?\s*[:=]\s*["']?)[^"'\s,;]+/gi, '$1[redacted]')
+    .replace(/\b(?:sk|sess)-[A-Za-z0-9_-]{16,}\b/gi, '[redacted]')
+    .replace(/\bhttps?:\/\/[^\s"'<>]+/gi, (raw) => {
+      const punctuation = /[),.;!?]+$/.exec(raw)?.[0] ?? ''
+      const address = punctuation ? raw.slice(0, -punctuation.length) : raw
+      try {
+        const url = new URL(address)
+        url.username = ''
+        url.password = ''
+        url.search = ''
+        url.hash = ''
+        return `${url.href}${punctuation}`
+      } catch {
+        return raw
+      }
+    })
+}
+
+/** Records useful failure detail without persisting credentials or response bodies. */
+export function logDiagnostic(scope: string, error: unknown, metadata: Record<string, unknown> = {}): void {
+  const failure = error instanceof Error ? error : new Error(String(error))
+  const details = {
+    ...metadata,
+    message: failure.message,
+    ...(failure.stack ? { stack: failure.stack } : {})
+  }
+  let serialized: string
+  try {
+    serialized = JSON.stringify(details)
+  } catch {
+    serialized = JSON.stringify({ message: failure.message, stack: failure.stack })
+  }
+  logLine(`[harness] ${redactLogText(scope)} ${redactLogText(serialized)}`)
+}
+
 export function log(...parts: unknown[]): void {
   logLine(`[harness] ${parts.map((part) => (typeof part === 'string' ? part : JSON.stringify(part))).join(' ')}`)
 }

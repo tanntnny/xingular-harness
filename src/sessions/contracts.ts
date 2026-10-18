@@ -97,7 +97,7 @@ const approvalRequestedPayload = z.object({
   automatic: approvalAutomaticSchema.optional()
 })
 const approvalResolvedPayload = z.object({ approvalId: z.string(), decision: z.enum(['approved', 'denied', 'native']), automatic: approvalAutomaticSchema.optional() })
-export const questionOptionSchema = z.object({ label: z.string().min(1), description: z.string().optional() })
+export const questionOptionSchema = z.object({ label: z.string().min(1), description: z.string().optional(), recommended: z.boolean().optional() })
 export type QuestionOption = z.infer<typeof questionOptionSchema>
 const questionBatchFields = {
   batchId: z.string().min(1).optional(),

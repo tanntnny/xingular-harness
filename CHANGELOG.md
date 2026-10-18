@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 2.1.2 - 2026-10-19
+
+- Add `/log`, a full-screen snapshot of redacted Harness diagnostics and current-conversation run events.
+- Allow argument-specific, provider-classified research calls during plan-mode runs while refusing other tools before approvals.
+- Mark recommended options in batched questions and provide a picker for staged multi-select and free-text answers.
+
+## 2.1.1 - 2026-10-19
+
+- Change terminal `/plan` to run one isolated, read-only planning request; queue later messages until it settles and apply plan instructions only for that run.
+
 ## 2.1.0 - 2026-10-19
 
 - Add per-request plan mode to SDK session runs: instructions arrive as a dynamic context update, and the tool gate refuses calls outside the read-only set. The terminal uses `/plan`, `/plan on`, and `/plan off` to narrow its active tools.

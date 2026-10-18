@@ -7,7 +7,8 @@ import {
 import { closeSync, existsSync, openSync, readSync, realpathSync } from 'node:fs'
 import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 
-import terminalExtension from '../piExtension'
+import terminalExtension, { type TerminalPlanRunState } from '../piExtension'
+import { planModeTools } from './planMode'
 import { claimTerminalControl, controlCall } from '../control'
 import { loadPiAdapter } from './piAdapter'
 import type { SessionAccount } from '../accountsMenu'
@@ -101,6 +102,7 @@ export interface TerminalRuntime {
   answerBatch(batchId: string, answers: Array<{ questionId: string; answer: QuestionAnswer }>): Promise<void>
   snapshot(): TerminalSnapshot
   submit(text: string, followUp?: boolean): Promise<void>
+  submitPlan(text: string): Promise<void>
   readonly session: AgentSession
   readonly services: AgentSessionServices
   readonly cwd: string
@@ -200,6 +202,7 @@ export async function createTerminalRuntime(args: string[], host: TerminalRuntim
     const generation = uiGeneration
     return sessionUiContext(host.ui, () => !disposed && generation === uiGeneration)
   }
+  const planRun: TerminalPlanRunState = { active: false, allowedTools: new Set() }
 
   const factory: CreateAgentSessionRuntimeFactory = async ({ cwd: targetCwd, sessionManager, sessionStartEvent }) => {
     if (realpathSync(targetCwd) !== cwd) throw new Error('A native session cannot change this terminal working folder.')
@@ -213,7 +216,7 @@ export async function createTerminalRuntime(args: string[], host: TerminalRuntim
       additionalExtensionPaths: prepared.extensions.slice(0, -1),
       additionalSkillPaths: prepared.skills, additionalPromptTemplatePaths: prepared.prompts,
       additionalThemePaths: prepared.themes,
-      extensionFactories: [...adapter.builtins, { name: 'harness-terminal-bridge', factory: terminalExtension, hidden: true }],
+      extensionFactories: [...adapter.builtins, { name: 'harness-terminal-bridge', factory: pi => terminalExtension(pi, planRun), hidden: true }],
       appendSystemPromptOverride: (base) => [...base, ...prepared.appendSystemPrompt]
     })
     const reloadResources = resourceLoader.reload.bind(resourceLoader)
@@ -308,6 +311,25 @@ export async function createTerminalRuntime(args: string[], host: TerminalRuntim
       if (changing) throw new Error('Wait for the native session change to finish before submitting.')
       const input = text.trimStart().startsWith('/') ? text.trimStart() : text
       await native.session.prompt(input, native.session.isStreaming ? { streamingBehavior: followUp ? 'followUp' : 'steer' } : {})
+    },
+    async submitPlan(text) {
+      if (disposed) throw new Error('The terminal runtime has closed.')
+      if (changing) throw new Error('Wait for the native session change to finish before submitting.')
+      if (!text.trim()) throw new Error('Use /plan <plan brief>.')
+      const session = native.session
+      if (!session.isIdle) throw new Error('A plan request must wait until the current response settles.')
+      const originalTools = session.getActiveToolNames()
+      const allowedTools = planModeTools(originalTools)
+      planRun.allowedTools = new Set(allowedTools)
+      planRun.active = true
+      try {
+        session.setActiveToolsByName(allowedTools)
+        await session.prompt(text, { expandPromptTemplates: false })
+      } finally {
+        planRun.active = false
+        planRun.allowedTools = new Set()
+        if (!disposed && native.session === session) session.setActiveToolsByName(originalTools)
+      }
     },
     get session() { return native.session },
     get services() { return native.services },

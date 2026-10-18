@@ -26,8 +26,15 @@ describe('plan mode', () => {
     const readOnly = new Set(['files_read'])
     for (const tool of ['read', 'grep', 'wiki_read', 'files_read', 'ask_user']) expect(planRefusal(tool, readOnly), tool).toBeNull()
     for (const tool of ['bash', 'write', 'edit', 'memory_append', 'wiki_propose', 'spawn_subagent', 'mcp_call_tool', 'files_write']) {
-      expect(planRefusal(tool, readOnly), tool).toContain('Plan mode is read-only')
+      expect(planRefusal(tool, readOnly), tool).toContain('Plan mode is research-only')
     }
+  })
+
+  it('allows only provider calls whose arguments are explicitly classified as research-safe', () => {
+    const safeBrowserCall = (input: Record<string, unknown>) => input.op === 'navigate' || input.op === 'scroll'
+    expect(planRefusal('browser', new Set(), { op: 'navigate' }, safeBrowserCall)).toBeNull()
+    expect(planRefusal('browser', new Set(), { op: 'click' }, safeBrowserCall)).toContain('research-only')
+    expect(planRefusal('browser', new Set(), { op: 'submit' }, safeBrowserCall)).toContain('research-only')
   })
 
   it('adds its instructions while on, withdraws them once after, and is absent otherwise', () => {

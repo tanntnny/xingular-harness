@@ -13,12 +13,18 @@ import { claimTerminalControl, controlCall } from './control'
 import { SUBAGENT_OWNER, SUBAGENT_RECEIPT, SUBAGENT_RESULTS, subagentHistory, type SubagentReceipt } from '../sessions/subagents'
 import { askUserTool } from '../tools/askUser'
 import type { QuestionAnswer } from '../sessions/registry'
+import { PLAN_INSTRUCTIONS, planRefusal } from '../sessions/planMode'
 
 interface SocketTool {
   name: string
   label: string
   description: string
   parameters: Record<string, unknown>
+}
+
+export interface TerminalPlanRunState {
+  active: boolean
+  allowedTools: ReadonlySet<string>
 }
 
 /** How much text a tool handed back to the model. */
@@ -35,7 +41,7 @@ async function withParentCancellation<T>(signal: AbortSignal | undefined, work: 
   try { return await work() } finally { signal?.removeEventListener('abort', stop) }
 }
 
-export default async function (pi: ExtensionAPI) {
+export default async function (pi: ExtensionAPI, planRun?: TerminalPlanRunState) {
   await terminalCall('startup', { phase: 'Pi extension loaded' })
   let context: ExtensionContext | null = null
   let nativeSubagents = false
@@ -167,6 +173,10 @@ export default async function (pi: ExtensionAPI) {
       await controlCall('terminal.subagents.register', { tools: pi.getActiveTools(), model: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : null, effort: pi.getThinkingLevel(), history: subagentHistory(ctx.sessionManager.getBranch()) })
       subagentParent = true
     }
+    if (planRun && event.messageType === 'user') {
+      if (planRun.active) event.systemPromptOptions.sections.plan = PLAN_INSTRUCTIONS
+      else delete event.systemPromptOptions.sections.plan
+    }
   })
   const deliverChildren = async (event: any, ctx: ExtensionContext, settle: boolean) => {
     if (!nativeSubagents || (settle && event.outcome !== 'completed') || ctx.signal?.aborted) return
@@ -224,6 +234,10 @@ export default async function (pi: ExtensionAPI) {
     requestStartedAt = Date.now()
   })
   pi.on('tool_call', async (event) => {
+    if (planRun?.active && !planRun.allowedTools.has(event.toolName)) {
+      const reason = planRefusal(event.toolName, new Set()) ?? `Plan mode is research-only: ${event.toolName} is not available in this session.`
+      return { block: true, reason }
+    }
     try {
       const policy = await controlCall<{ allowed: boolean; reason?: string; requiresApproval?: boolean }>('terminal.policy', { tool: event.toolName, args: event.input })
       if (policy.requiresApproval) {
@@ -280,10 +294,10 @@ export default async function (pi: ExtensionAPI) {
   pi.registerTool({
     name: 'ask_user_question',
     label: 'Ask a question',
-    description: 'Ask the user a question and wait for their answer.',
+    description: 'Ask the user a question and wait for their answer. Recommendations are visual only and never preselect answers; submitted choices keep their labels. Mark options with recommended: true, at most one for single-choice questions or several when multiSelect is true.',
     parameters: Type.Object({
       question: Type.String(),
-      options: Type.Optional(Type.Array(Type.Object({ label: Type.String(), description: Type.Optional(Type.String()) }))),
+      options: Type.Optional(Type.Array(Type.Object({ label: Type.String(), description: Type.Optional(Type.String()), recommended: Type.Optional(Type.Boolean()) }))),
       multiSelect: Type.Optional(Type.Boolean())
     }),
     async execute(id, input) {

@@ -43,6 +43,7 @@ import { SOCKET_ENV, TOKEN_ENV } from './client'
 import { TerminalController, type PolicyReply } from './controller'
 import { resolvePiCommand, terminalCommandFiles } from './launch'
 import { SessionSocket, socketPath } from './socket'
+import { harnessLogInfo, readHarnessLogChunk } from './logs'
 import { listTerminalTrajectoryRuns, readTerminalTrajectory } from './trajectory'
 
 /** Identity of the exact resource decision that this terminal was prepared with. */
@@ -543,6 +544,16 @@ export class Terminals {
         broker,
         terminal: { accept: (event, data) => live.controller.accept(event, data), disconnected: () => live.controller.disconnected(), control: async (call, params) => {
           if (call.startsWith('terminal.subagents.')) return this.subagentsCall(live, call, params)
+          if (call === 'terminal.logs.info') return harnessLogInfo(this.options.stateDir)
+          if (call === 'terminal.logs.read') {
+            const { snapshotSize, offset } = params
+            if (typeof snapshotSize !== 'number' || !Number.isSafeInteger(snapshotSize) || snapshotSize < 0 || typeof offset !== 'number' || !Number.isSafeInteger(offset) || offset < 0 || offset >= snapshotSize) {
+              throw invalid('A valid diagnostics snapshot size and byte offset are required.')
+            }
+            const current = harnessLogInfo(this.options.stateDir).size
+            if (current === null || snapshotSize > current) throw invalid('The diagnostics snapshot is no longer available.')
+            return readHarnessLogChunk(this.options.stateDir, snapshotSize, offset)
+          }
           if (call.startsWith('terminal.trajectory.')) return this.trajectoryCall(live, call, params)
           if (call === 'terminal.permissions.get') {
             const policy = this.options.approvals.read()

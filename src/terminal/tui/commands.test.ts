@@ -31,8 +31,9 @@ function setup() {
     session: () => session, runtime: () => runtime as unknown as ReturnType<TerminalCommandHost['runtime']>, ui,
     cwd: () => '/isolated/project', sessionDirectory: () => '/isolated/account/history',
     refresh: vi.fn(), changed: vi.fn(), shutdown: vi.fn(), setEditorText: vi.fn(), copyText: vi.fn(async () => {}),
-    planMode: () => false, setPlanMode: vi.fn(),
+    plan: vi.fn(),
     hotkeys: () => 'Escape: interrupt', changelog: async () => 'Harness release notes',
+    logs: { read: vi.fn(async () => '[harness] diagnostic') },
     trajectory: {
       list: vi.fn(async () => [trajectoryRun]),
       read: vi.fn(async () => ({ run: trajectoryRun, events: [] }))
@@ -59,10 +60,22 @@ describe('owned terminal commands', () => {
   it('populates completion from builtins and loaded resources', () => {
     const { commands } = setup()
     const names = commands.completions().map(item => item.name)
-    expect(names).toEqual(expect.arrayContaining(['model', 'resume', 'accounts', 'review', 'effort', 'trajectory', 'permissions']))
+    expect(names).toEqual(expect.arrayContaining(['model', 'resume', 'accounts', 'review', 'effort', 'trajectory', 'log', 'permissions']))
     expect(names).not.toContain('thinking')
     expect(names).not.toContain('skill:diagnose')
     expect(new Set(names).size).toBe(names.length)
+  })
+
+  it('runs one plan request from /plan <brief> and rejects toggle syntax', async () => {
+    const { commands, host, ui } = setup()
+    expect(await commands.execute('/plan inspect the current implementation')).toBe(true)
+    expect(host.plan).toHaveBeenCalledWith('inspect the current implementation')
+    expect(await commands.execute('/plan')).toBe(true)
+    expect(await commands.execute('/plan on')).toBe(true)
+    expect(await commands.execute('/plan toggle')).toBe(true)
+    expect(host.plan).toHaveBeenCalledOnce()
+    expect(ui.notify).toHaveBeenLastCalledWith('Use /plan <plan brief>.', 'error')
+    expect(commands.completions().find(item => item.name === 'plan')?.description).toContain('/plan <brief>')
   })
 
   it('invokes a loaded skill as $name, and leaves other text for the SDK', () => {
@@ -158,6 +171,17 @@ describe('owned terminal commands', () => {
 
     await commands.execute('/trajectory run-1')
     expect(host.trajectory.read).toHaveBeenLastCalledWith('run-1')
+  })
+
+  it('opens a full-screen snapshot combining diagnostics and current-conversation run events', async () => {
+    const { commands, host, ui } = setup()
+    await commands.execute('/log')
+    expect(host.logs.read).toHaveBeenCalledOnce()
+    expect(host.trajectory.list).toHaveBeenCalledOnce()
+    expect(host.trajectory.read).toHaveBeenCalledWith('run-1')
+    expect(ui.custom).toHaveBeenCalledWith(expect.any(Function), {
+      overlay: true, overlayOptions: { width: '100%', maxHeight: '100%', anchor: 'top-left' }
+    })
   })
 
   it('shows shared tool grants and confirms Full Permission before enabling it', async () => {

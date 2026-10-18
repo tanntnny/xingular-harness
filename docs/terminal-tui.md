@@ -1,6 +1,6 @@
 # Harness terminal frontend
 
-Status: implemented in the working tree; publication is separate. Last updated: 2026-10-18.
+Status: implemented in the 2.1.2 release candidate; publication follows the tagged CI workflow. Last updated: 2026-10-19.
 Decision: [ADR-0001](decisions/ADR-0001-owned-terminal.md).
 
 ## Native subagents (2026-10-18)
@@ -87,22 +87,24 @@ The decision and its consequences are recorded in
 
 ## Plan mode and thinking keys
 
-Use `/plan`, `/plan on`, or `/plan off` to switch between normal and plan mode. The switch is
-announced in the transcript. Plan mode narrows the session to read-only inspection (`read`, `grep`, `find`, `ls`),
-questions (`ask_user`, `ask_user_question`) and recall (history and Wiki reads, `memory_facts`). Edits,
-writes, shell commands, memory writes, subagents and connected-app tools are withdrawn until plan mode
-is switched off, and switching back restores the tools the session had. Plan mode belongs to the open
-conversation: a new or resumed session starts in normal mode.
+Use `/plan <brief>` for one read-only planning request. A plan waits outside Pi's native follow-up
+queue until the active response settles, then runs by itself. Later messages remain behind it, even
+when Pi's follow-up mode is `all`. During that run the session narrows to read-only inspection
+(`read`, `grep`, `find`, `ls`), web search/page reading, questions (`ask_user`, `ask_user_question`)
+and recall (history and Wiki reads, `memory_facts`). Providers may mark individual calls as safe for
+research; every other call is blocked before approval. Edits, writes, shell commands, memory writes,
+subagents and connected-app tools remain unavailable. The plan instructions arrive as a
+request-scoped prompt section, which the next ordinary request withdraws. `/plan` without a brief
+and the old on/off/toggle forms are rejected.
 
 While typing, a recognized leading slash command uses the selected theme's link color. This
 includes built-in commands, loaded extension and prompt commands, and enabled skill invocations
 written as `/skill:name`. Unknown slash tokens keep the normal text color.
 
-SDK session runs can receive plan instructions as a dynamic context update, leaving the stable
-system prompt unchanged; their session gate refuses calls outside the read-only set. The standalone
-terminal still narrows Pi's active tools directly and does not yet deliver plan instructions through
-the prompt. Shift+Up and Shift+Down step the thinking level within the levels the model supports,
-and do not wrap.
+SDK session runs receive plan instructions as a dynamic context update, leaving the stable system
+prompt unchanged; their session gate refuses calls outside the read-only set. The standalone
+terminal applies the same one-run instructions and tool restrictions. Shift+Up and Shift+Down step
+the thinking level within the levels the model supports, and do not wrap.
 
 ## Reference and reproduced presentation
 
@@ -216,7 +218,10 @@ restores readiness while retaining the same process control claim.
 
 The bridge exposes the shared `ask_user` batch tool alongside the existing single-question
 `ask_user_question` contract. Registry events project the actual batch IDs, order, summaries,
-choices and descriptions into the terminal inbox. The frontend stages answers locally and
+choices, descriptions and optional recommendation metadata into the terminal inbox. Its custom
+picker places recommended choices first and marks them in yellow without changing their labels or
+preselecting them; a single-choice question allows at most one recommendation, while multi-select
+questions may recommend several. The frontend stages answers locally and
 submits them together through protected `terminal.answers`; the registry validates the entire
 batch before resolving any question. Escape interrupts a pending question; cancelling optional
 text entry returns to the choices and preserves selections. Disappearing requests abort their
@@ -241,7 +246,20 @@ events, PageUp/PageDown scrolls event details, and `c` copies the selected event
 refresh while the overlay is open. The protected terminal socket scopes both the run list and event
 reads to the current terminal and native session file.
 
+`/log` opens a static full-screen snapshot with separate Harness diagnostics and current-conversation
+run-event views. The diagnostic file is read at its captured size in bounded socket chunks. Tab/Shift+Tab
+or left/right switches views; arrows, PageUp/PageDown, Home and End scroll; Escape closes. Fetch
+diagnostics retain available error stacks and safe request metadata, while the viewer redacts secrets
+and URL queries and omits response bodies, prompts and message contents. Embedded hosts without a
+`harness.log` still show the conversation's recorded run events.
+
 ## Verification and remaining limits
+
+Release-candidate verification, 2026-10-19: clean `npm ci` and `npm run ci` passed—541 tests
+(two skipped), typecheck, build and standalone proof. In the sibling App, typecheck, layer check and
+sidecar build passed; its renderer tests passed (561), but one sidecar screenshot assertion and two
+Rust tests failed in the broader in-progress App worktree. Those failures do not touch the Harness
+release files; the App changes were not included in this package.
 
 Fullscreen layout verification, 2026-10-18: [`screen.test.ts`](../src/terminal/tui/screen.test.ts)
 covers the dock on the last rows as the transcript grows and scrolls, notice clipping, regular

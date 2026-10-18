@@ -1,12 +1,16 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { memorySecretStore } from '../accounts/secrets'
 import type { ToolSession, ToolSpec } from '../tools/types'
 import { isPublicAddress, publicLookup, safeRequest, webAddress, type WebRequest, type WebResponse } from './safeRequest'
 import { WEB_SEARCH_KEY, webTools } from './tools'
+import { setLogSink } from '../core/bus'
 import { htmlToText } from './text'
 
 const session = {} as ToolSession
+
+beforeEach(() => setLogSink(() => {}))
+afterEach(() => setLogSink(null))
 
 function tool(name: string, request?: WebRequest, secrets = memorySecretStore()): ToolSpec {
   const spec = webTools({ secrets, request })(session) as ToolSpec[]
@@ -74,6 +78,11 @@ describe('page text', () => {
 })
 
 describe('web_search', () => {
+  it('marks search and fetching as read-only research tools', () => {
+    expect(tool('web_search').readOnly).toBe(true)
+    expect(tool('web_fetch').readOnly).toBe(true)
+  })
+
   it('says so, without asking the network, when no key is saved', async () => {
     let asked = false
     const result = await tool('web_search', async () => {
@@ -120,6 +129,22 @@ describe('web_fetch', () => {
     const page = tool('web_fetch', async () => response({ text: '<title>Glama</title><p>MCP servers</p>' }))
     const result = JSON.parse(await page.execute({ url: 'https://glama.ai/' }) as string)
     expect(result).toMatchObject({ title: 'Glama', text: 'MCP servers', status: 200, truncated: false })
+  })
+
+  it('records fetch failures with stack and safe request metadata', async () => {
+    const lines: string[] = []
+    setLogSink((text) => void lines.push(text))
+    try {
+      const page = tool('web_fetch', async () => { throw new Error('request failed for https://example.com/private?token=secret-value') })
+      await page.execute({ url: 'https://example.com/path?key=secret-value' })
+      expect(lines.join('\\n')).toContain('web_fetch failed')
+      expect(lines.join('\\n')).toContain('"stack"')
+      expect(lines.join('\\n')).toContain('"durationMs"')
+      expect(lines.join('\\n')).toContain('https://example.com/path')
+      expect(lines.join('\\n')).not.toContain('secret-value')
+    } finally {
+      setLogSink(null)
+    }
   })
 
   it('does not read addresses with credentials', async () => {

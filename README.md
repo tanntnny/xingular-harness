@@ -281,7 +281,9 @@ changing or reloading a session. Full OMP visual parity is not established by th
 verification. `/permissions` reviews device-local Pi terminal grants and the Full Permission switch;
 tool grants apply across terminal sessions sharing this Harness state, and Full Permission requires
 confirmation. `/trajectory` opens recorded runs for the current native conversation, with event
-navigation and a detail inspector. See [terminal architecture and evidence](docs/terminal-tui.md),
+navigation and a detail inspector. `/log` shows a static, redacted snapshot of Harness diagnostics
+and run events for the current conversation; press Escape to close. See
+[terminal architecture and evidence](docs/terminal-tui.md),
 [the decision](docs/decisions/ADR-0001-owned-terminal.md), and [third-party notices](NOTICE.md).
 
 ### `/accounts` in the terminal

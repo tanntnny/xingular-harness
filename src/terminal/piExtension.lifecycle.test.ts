@@ -11,7 +11,8 @@ vi.mock('./client', () => ({
   terminalCall: transport.telemetry
 }))
 
-import terminalExtension from './piExtension'
+import terminalExtension, { type TerminalPlanRunState } from './piExtension'
+import { PLAN_INSTRUCTIONS } from '../sessions/planMode'
 
 function extension() {
   const handlers = new Map<string, (...args: unknown[]) => unknown>()
@@ -28,6 +29,32 @@ function extension() {
 afterEach(() => vi.useRealTimers())
 
 describe('terminal bridge lifecycle', () => {
+  it('adds plan instructions as a one-run context section and withdraws them on the next user request', async () => {
+    const state: TerminalPlanRunState = { active: true, allowedTools: new Set(['read']) }
+    const { api, ctx, handlers } = extension()
+    await terminalExtension(api, state)
+    const planned = { messageType: 'user', prompt: 'inspect this', systemPrompt: 'stable prefix', systemPromptOptions: { sections: { identity: 'identity' } } }
+    await handlers.get('before_agent_start')!(planned, ctx)
+    expect(planned.systemPromptOptions.sections).toEqual({ identity: 'identity', plan: PLAN_INSTRUCTIONS })
+    expect(planned.systemPrompt).toBe('stable prefix')
+
+    state.active = false
+    const ordinary = { messageType: 'user', prompt: 'now implement', systemPrompt: 'stable prefix', systemPromptOptions: { sections: { identity: 'identity', plan: PLAN_INSTRUCTIONS } } }
+    await handlers.get('before_agent_start')!(ordinary, ctx)
+    expect(ordinary.systemPromptOptions.sections).toEqual({ identity: 'identity' })
+    expect(ordinary.systemPrompt).toBe('stable prefix')
+  })
+
+  it('blocks tools outside the active plan allowlist before consulting terminal policy', async () => {
+    const state: TerminalPlanRunState = { active: true, allowedTools: new Set(['read']) }
+    const { api, ctx, handlers } = extension()
+    await terminalExtension(api, state)
+    const policyCalls = transport.socket.mock.calls.filter(([, call]) => call === 'terminal.policy').length
+    const result = await handlers.get('tool_call')!({ toolName: 'bash', toolCallId: 'call-1', input: { command: 'touch unsafe' } }, ctx)
+    expect(result).toMatchObject({ block: true, reason: expect.stringContaining('Plan mode is research-only') })
+    expect(transport.socket.mock.calls.filter(([, call]) => call === 'terminal.policy')).toHaveLength(policyCalls)
+  })
+
   it('keeps one private control claim while replacing native session pollers and restoring readiness', async () => {
     vi.useFakeTimers()
     const first = extension()

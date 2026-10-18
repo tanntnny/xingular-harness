@@ -1,3 +1,4 @@
+import { Type } from 'typebox'
 import { expect, test } from 'vitest'
 
 import type { ActiveRun, QuestionInput } from '../sessions/registry'
@@ -16,22 +17,41 @@ test('ask_user requests one to five summarized questions and returns answers in 
   } as unknown as ActiveRun)
 
   const response = await tool.execute({ questions: [
-    { summary: 'Navigation style', question: 'Which navigation?', options: [{ label: 'Keyboard', description: 'Move through controls with keys.' }, { label: 'Pointer', description: 'Select controls with a mouse or trackpad.' }], multiSelect: true },
+    { summary: 'Navigation style', question: 'Which navigation?', options: [{ label: 'Keyboard', description: 'Move through controls with keys.', recommended: true }, { label: 'Pointer', description: 'Select controls with a mouse or trackpad.', recommended: true }], multiSelect: true },
     { summary: 'Delivery timing', question: 'When?', options: [{ label: 'Today', description: 'Start immediately.' }, { label: 'Next week', description: 'Start after the current week.' }], allowText: true }
   ] })
 
   expect(requested).toMatchObject([
-    { summary: 'Navigation style', question: 'Which navigation?', multiSelect: true, allowText: true },
+    { summary: 'Navigation style', question: 'Which navigation?', options: [{ label: 'Keyboard', recommended: true }, { label: 'Pointer', recommended: true }], multiSelect: true, allowText: true },
     { summary: 'Delivery timing', question: 'When?', multiSelect: false, allowText: true }
   ])
   expect(response).toContain('Navigation style: The user chose: Keyboard. Their note for Keyboard: Keep it accessible.')
   expect(response).toContain('Delivery timing: The user answered: Next week')
 })
 
+test('ask_user exposes optional recommendation metadata in its option schema', () => {
+  const tool = askUserTool({ requestAnswers: async () => [] } as unknown as ActiveRun)
+  const schema = tool.parameters(Type) as any
+  const option = schema.properties.questions.items.properties.options.items
+  expect(option.properties.recommended).toMatchObject({ type: 'boolean' })
+  expect(option.required).not.toContain('recommended')
+})
+
 test('ask_user rejects empty questions and summaries', async () => {
   const tool = askUserTool({ requestAnswers: async () => [] } as unknown as ActiveRun)
   await expect(tool.execute({ questions: [] })).resolves.toBe('Ask between one and five questions.')
   await expect(tool.execute({ questions: [{ summary: '', question: 'Pick one' }] })).resolves.toBe('Each question needs a short summary of no more than 100 characters.')
+})
+
+test('ask_user rejects multiple recommendations on a single-choice question', async () => {
+  let requested = false
+  const tool = askUserTool({ requestAnswers: async () => { requested = true; return [] } } as unknown as ActiveRun)
+  await expect(tool.execute({ questions: [{
+    summary: 'Plan choice',
+    question: 'Which plan?',
+    options: [{ label: 'Plan A', description: 'First plan.', recommended: true }, { label: 'Plan B', description: 'Second plan.', recommended: true }]
+  }] })).resolves.toBe('A single-choice question may recommend at most one option.')
+  expect(requested).toBe(false)
 })
 
 test('ask_user requires a description for every choice', async () => {
@@ -62,6 +82,7 @@ test('ask_user treats 25 words as guidance for questions and choice descriptions
   expect(response).toContain('Reply detail: The user chose: Detailed.')
   expect(tool.description).toContain('aim to keep each question to 25 words or fewer')
   expect(tool.description).toContain('every option must include a helpful description of 25 words or fewer')
+  expect(tool.description).toContain('recommended: true')
 })
 
 test('describeAnswer includes choice-specific notes', () => {

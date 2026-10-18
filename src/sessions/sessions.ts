@@ -278,6 +278,8 @@ export class Sessions {
       ]
       if (input.providers !== false) for (const provider of this.providers) tools.push(...(await provider(session)))
       const readOnly = new Set(tools.filter((tool) => tool.readOnly).map((tool) => tool.name))
+      const planModeSafety = new Map<string, NonNullable<ToolSpec['planModeSafe']>>()
+      for (const tool of tools) if (tool.planModeSafe) planModeSafety.set(tool.name, tool.planModeSafe)
       const params: TurnParams = {
         runId,
         restrictTools: input.run.relation === 'subagent',
@@ -307,7 +309,7 @@ export class Sessions {
             ...gate,
             check: (name: string, args: unknown) => {
               if (input.run.relation === 'subagent' && !capabilities.tools.includes(name)) return Promise.resolve('This tool is outside the child capability snapshot.')
-              const refusal = input.plan ? planRefusal(name, readOnly) : null
+              const refusal = input.plan ? planRefusal(name, readOnly, args, planModeSafety.get(name)) : null
               return refusal ? Promise.resolve(refusal) : gate.check(name, args)
             }
           }

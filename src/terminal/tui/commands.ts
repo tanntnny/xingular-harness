@@ -6,6 +6,7 @@ import { promisify } from 'node:util'
 import { ModelSelectorComponent, TreeSelectorComponent, SessionManager, type AgentSession, type ExtensionUIContext } from '@earendil-works/pi-coding-agent'
 import { SettingsPanel, type TerminalSettingItem } from './settings'
 import { DialogPanel, SearchableSelect } from './dialogs'
+import { LogPanel, formatRunEventLog } from './logPanel'
 import { TrajectoryPanel } from './trajectoryPanel'
 import { expandSkillInvocation, type SkillEntry } from './skillInvocation'
 import manifest from '../../../package.json'
@@ -21,8 +22,7 @@ export interface TerminalCommandHost {
   sessionDirectory(): string
   refresh(): void
   changed(): void
-  planMode(): boolean
-  setPlanMode(enabled: boolean): void
+  plan(brief: string): void
   shutdown(): void
   setEditorText(text: string): void
   copyText(text: string): Promise<void>
@@ -31,6 +31,7 @@ export interface TerminalCommandHost {
   suspend?(): Promise<void>
   hotkeys?(): string
   changelog?(): Promise<string>
+  logs: { read(): Promise<string> }
   trajectory: {
     list(): Promise<TerminalTrajectoryRun[]>
     read(runId: string, afterSequence?: number): Promise<TerminalTrajectorySnapshot>
@@ -41,7 +42,7 @@ export interface TerminalCommandCompletion { name: string; description?: string 
 
 const BUILTINS: TerminalCommandCompletion[] = [
   { name: 'help', description: 'Available terminal commands' },
-  { name: 'plan', description: 'Toggle read-only plan mode' },
+  { name: 'plan', description: 'Run one read-only plan request: /plan <brief>' },
   { name: 'new', description: 'Start a new session' },
   { name: 'resume', description: 'Resume a session in this account and folder' },
   { name: 'tree', description: 'Navigate the session tree' },
@@ -55,6 +56,7 @@ const BUILTINS: TerminalCommandCompletion[] = [
   { name: 'name', description: 'Name the current session' },
   { name: 'session', description: 'Current session statistics' },
   { name: 'trajectory', description: 'Inspect recorded runs for this native session' },
+  { name: 'log', description: 'View Harness diagnostics and this conversation run events' },
   { name: 'compact', description: 'Compact the current context' },
   { name: 'reload', description: 'Reload trusted resources and keyboard bindings' },
   { name: 'trust', description: 'Review plugin code and project trust' },
@@ -231,6 +233,18 @@ export function createTerminalCommands(host: TerminalCommandHost) {
     }, { overlay: true, overlayOptions: { width: '100%', maxHeight: '90%' } })
   }
 
+  async function logs() {
+    const [diagnostics, runs] = await Promise.all([host.logs.read(), host.trajectory.list()])
+    const snapshots = await Promise.all(runs.map(run => host.trajectory.read(run.id)))
+    const sections = [
+      { title: 'Harness diagnostics', text: diagnostics || 'No Harness diagnostics have been captured by this host.' },
+      { title: 'Conversation run events', text: formatRunEventLog(snapshots) }
+    ]
+    await host.ui.custom<void>((tui, theme, _keys, done) => new LogPanel({
+      tui, theme, sections, close: () => done(undefined), changed: host.changed
+    }), { overlay: true, overlayOptions: { width: '100%', maxHeight: '100%', anchor: 'top-left' } })
+  }
+
   async function permissions() {
     for (;;) {
       const runtime = host.runtime()
@@ -290,10 +304,8 @@ export function createTerminalCommands(host: TerminalCommandHost) {
       switch (name) {
         case 'help': notify(completions().map(item => `/${item.name}  ${item.description ?? ''}`).join('\n')); break
         case 'plan': {
-          const current = host.planMode()
-          const next = !argument || argument === 'toggle' ? !current : argument === 'on' ? true : argument === 'off' ? false : null
-          if (next === null) throw new Error('Use /plan, /plan on, /plan off, or /plan toggle.')
-          host.setPlanMode(next)
+          if (!argument || ['on', 'off', 'toggle'].includes(argument.toLowerCase())) throw new Error('Use /plan <plan brief>.')
+          host.plan(argument)
           break
         }
         case 'quit': host.shutdown(); break
@@ -390,6 +402,7 @@ export function createTerminalCommands(host: TerminalCommandHost) {
         }
         case 'session': notify(JSON.stringify(session.getSessionStats(), null, 2)); break
         case 'trajectory': await trajectory(argument); break
+        case 'log': await logs(); break
         case 'compact': await session.compact(argument || undefined); break
         case 'reload': await host.runtime().reload(); notify('Trusted resources reloaded'); break
         case 'trust': {

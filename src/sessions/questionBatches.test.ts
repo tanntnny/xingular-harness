@@ -42,7 +42,7 @@ test('question batches validate all answers before resolving and retain choice n
   expect(() => run.requestAnswers(Array.from({ length: 6 }, () => ({ question: 'Q', options: [], multiSelect: false, allowText: true })))).toThrow(/between one and five/)
 
   const result = run.requestAnswers([
-    { summary: 'Project scope', question: 'What should change?', options: [{ label: 'UI' }, { label: 'API' }], multiSelect: true, allowText: true },
+    { summary: 'Project scope', question: 'What should change?', options: [{ label: 'UI', recommended: true }, { label: 'API', recommended: true }], multiSelect: true, allowText: true },
     { summary: 'Target date', question: 'When should it ship?', options: [{ label: 'Soon' }, { label: 'Later' }], multiSelect: false, allowText: false }
   ])
   let settled = false
@@ -50,8 +50,8 @@ test('question batches validate all answers before resolving and retain choice n
 
   const requested = readEvents(root, 'run-1').filter((event) => event.type === 'question.requested')
   expect(requested).toHaveLength(2)
-  const [first, second] = requested.map((event) => event.payload as { questionId: string; summary: string; batchId: string; batchIndex: number; batchCount: number })
-  expect(first).toMatchObject({ summary: 'Project scope', batchIndex: 1, batchCount: 2 })
+  const [first, second] = requested.map((event) => event.payload as { questionId: string; summary: string; batchId: string; batchIndex: number; batchCount: number; options: { label: string; recommended?: boolean }[] })
+  expect(first).toMatchObject({ summary: 'Project scope', batchIndex: 1, batchCount: 2, options: [{ label: 'UI', recommended: true }, { label: 'API', recommended: true }] })
   expect(second).toMatchObject({ summary: 'Target date', batchId: first.batchId, batchIndex: 2, batchCount: 2 })
   expect(() => registry.answerQuestion('run-1', first.questionId, { selected: ['UI'] })).toThrow(/together/)
 
@@ -81,11 +81,23 @@ test('question batches validate all answers before resolving and retain choice n
   })
 })
 
+test('recommendation limits are checked before any question in a batch is emitted', () => {
+  const { root, run } = fixture()
+  const base = { question: 'Which?', options: [{ label: 'A' }, { label: 'B' }], multiSelect: false, allowText: true }
+  expect(() => run.requestAnswers([
+    { ...base, options: [{ label: 'A' }] },
+    { ...base, options: [{ label: 'B', recommended: true }, { label: 'C', recommended: true }] }
+  ])).toThrow(/single-choice question can recommend at most one/)
+  expect(() => run.requestAnswer({ ...base, options: [{ label: 'A', recommended: true }, { label: 'B', recommended: true }] })).toThrow(/single-choice question can recommend at most one/)
+  expect(readEvents(root, 'run-1').filter((event) => event.type === 'question.requested')).toHaveLength(0)
+})
+
 test('legacy single questions remain valid alongside batch event metadata', () => {
   const { root, registry, run } = fixture()
   const answer = run.requestAnswer({ question: 'Continue?', options: [{ label: 'Yes' }], multiSelect: false, allowText: false })
   const request = readEvents(root, 'run-1').find((event) => event.type === 'question.requested')!
   expect(runEventPayloadSchemas['question.requested'].safeParse(request.payload).success).toBe(true)
+  expect(runEventPayloadSchemas['question.requested'].safeParse({ ...(request.payload as object), options: [{ label: 'Yes', recommended: true }] }).success).toBe(true)
   expect(runEventPayloadSchemas['question.requested'].safeParse({ ...(request.payload as object), batchId: 'partial' }).success).toBe(false)
   registry.answerQuestion('run-1', (request.payload as { questionId: string }).questionId, { selected: ['Yes'] })
   return expect(answer).resolves.toEqual({ selected: ['Yes'] })

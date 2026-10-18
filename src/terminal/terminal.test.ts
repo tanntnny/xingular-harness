@@ -15,6 +15,7 @@ import { rootWithProject, writeFile } from '../../tests/helpers'
 import { parseCli } from './cli'
 import { SOCKET_ENV, TOKEN_ENV, socketCall, type SocketConnection } from './client'
 import { SessionSocket } from './socket'
+import { LOG_READ_CHUNK_BYTES } from './logs'
 
 const open: Harness[] = []
 afterEach(async () => {
@@ -465,6 +466,25 @@ describe('decisions in the Harness-owned frontend', () => {
     await tell('ready', { nativeSessionId: '/history/another.jsonl' })
     await expect(socketCall(connection, 'terminal.trajectory.events', { runId }, 1000, key)).rejects.toMatchObject({ code: 'not_found' })
     await expect(socketCall(connection, 'terminal.trajectory.list', {}, 1000, key)).resolves.toEqual({ runs: [] })
+  })
+
+  it('serves a bounded diagnostic snapshot only through the private terminal control channel', async () => {
+    const { connection, harness } = await setup()
+    await expect(socketCall(connection, 'terminal.logs.info')).rejects.toMatchObject({ code: 'unauthorized' })
+    const { key } = await socketCall<{ key: string }>(connection, 'control.claim')
+    await expect(socketCall(connection, 'terminal.logs.info', {}, 1000, key)).resolves.toEqual({ size: null })
+    await expect(socketCall(connection, 'terminal.logs.read', { snapshotSize: 1, offset: 0 }, 1000, key)).rejects.toMatchObject({ code: 'invalid_request' })
+
+    const text = `${'a'.repeat(LOG_READ_CHUNK_BYTES - 1)}🧠tail`
+    writeFileSync(join(harness.stateDir, 'harness.log'), text)
+    const { size } = await socketCall<{ size: number }>(connection, 'terminal.logs.info', {}, 1000, key)
+    expect(size).toBe(Buffer.byteLength(text))
+    await expect(socketCall(connection, 'terminal.logs.read', { snapshotSize: size, offset: size }, 1000, key)).rejects.toMatchObject({ code: 'invalid_request' })
+    const first = await socketCall<{ data: string; nextOffset: number }>(connection, 'terminal.logs.read', { snapshotSize: size, offset: 0 }, 1000, key)
+    const second = await socketCall<{ data: string; nextOffset: number }>(connection, 'terminal.logs.read', { snapshotSize: size, offset: first.nextOffset }, 1000, key)
+    expect(first.nextOffset).toBe(LOG_READ_CHUNK_BYTES)
+    expect(second.nextOffset).toBe(size)
+    expect(Buffer.concat([Buffer.from(first.data, 'base64'), Buffer.from(second.data, 'base64')]).toString('utf8')).toBe(text)
   })
 
   it('requires the private input-owner key for pending decisions and exact draft state', async () => {

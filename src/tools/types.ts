@@ -22,6 +22,8 @@ export interface ToolSpec {
   parameters: (type: typeof import('typebox').Type) => unknown
   /** Only reads or asks; such a tool stays callable in plan mode. */
   readOnly?: boolean
+  /** Whether this particular call is safe for plan-mode research. Refusals happen before approvals. */
+  planModeSafe?: (input: Record<string, unknown>) => boolean
   execute: (input: Record<string, unknown>) => Promise<string | ToolResult>
 }
 

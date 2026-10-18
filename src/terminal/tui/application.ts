@@ -16,7 +16,6 @@ import { HARNESS_KEYBINDINGS, terminalKeybindings } from './keybindings'
 import { loadPiAdapter, setPiTheme } from './piAdapter'
 import { createTerminalRuntime, type TerminalDecision, type TerminalRuntime } from './runtime'
 import { createDock, createTerminalScreen, mountTerminalLayout, readScreenPreferences, scrollbackLines, writeScrollback, type ScreenHooks, type ScreenPreferences, type TerminalScreen } from './screen'
-import { planModeTools } from './planMode'
 import { renderStatusBand, singleLine } from './status'
 import { skillCompletions } from './skillInvocation'
 import { createHarnessLightTheme, createHarnessTheme } from './theme'
@@ -26,10 +25,12 @@ import { chooseWorkingVerb, createCompletionStatus, getWorkingSpinnerFrames, SPI
 import { HarnessWelcome } from './welcome'
 import { answerTerminalQuestion } from './questions'
 import type { QuestionAnswer } from '../../sessions/registry'
+import { readHarnessLogSnapshot, type HarnessLogChunk, type HarnessLogInfo } from '../logs'
 import type { TerminalTrajectoryRun, TerminalTrajectorySnapshot } from '../trajectory'
 
 const exec = promisify(execFile)
 type Mounted = Component & { dispose?(): void }
+type DeferredTerminalInput = { kind: 'plan'; text: string } | { kind: 'prompt'; text: string; followUp: boolean }
 type EditorFactory = Parameters<ExtensionUIContext['setEditorComponent']>[0]
 type HeaderFactory = Parameters<ExtensionUIContext['setHeader']>[0]
 type FooterFactory = Parameters<ExtensionUIContext['setFooter']>[0]
@@ -102,8 +103,11 @@ export class TerminalApplication {
   private phase?: string
   private viewport?: ScrollView
   private toolsExpanded = false
-  private planMode = false
-  private normalTools?: string[]
+  private deferredInputs: DeferredTerminalInput[] = []
+  private planBarrierOpen = false
+  private planActive = false
+  private drainingDeferred = false
+  private activeDeferredKind?: DeferredTerminalInput['kind']
   private stopped = false
   private initialized = false
   private closing?: Promise<void>
@@ -184,9 +188,13 @@ export class TerminalApplication {
         session: () => this.session, runtime: () => this.runtime!, ui: this.ui,
         cwd: () => this.runtime!.cwd, sessionDirectory: () => this.runtime!.sessionDirectory,
         refresh: () => this.refresh(), shutdown: () => { void this.shutdown() }, setEditorText: text => { this.editor.setText(text); this.syncDraft(text) },
-        planMode: () => this.planMode, setPlanMode: enabled => this.setPlanMode(enabled),
+        plan: brief => this.enqueuePlan(brief),
         copyText: copyToClipboard, openExternal,
         changed: this.change,
+        logs: { read: () => readHarnessLogSnapshot(
+          () => controlCall<HarnessLogInfo>('terminal.logs.info'),
+          (snapshotSize, offset) => controlCall<HarnessLogChunk>('terminal.logs.read', { snapshotSize, offset })
+        ) },
         trajectory: {
           list: async () => (await controlCall<{ runs: TerminalTrajectoryRun[] }>('terminal.trajectory.list')).runs,
           read: (runId, afterSequence) => controlCall<TerminalTrajectorySnapshot>('terminal.trajectory.events', { runId, ...(afterSequence === undefined ? {} : { afterSequence }) })
@@ -202,7 +210,7 @@ export class TerminalApplication {
       })
       this.cleanup.push(this.runtime.subscribe(event => this.accept(event)))
       this.cleanup.push(this.runtime.onBeforeSessionChange(() => this.resetPresentation()))
-      this.cleanup.push(this.runtime.onSessionChange(() => { this.keybindings.reload(); this.resetWorkingStatus(); this.scrollToLatest(); this.planMode = false; this.normalTools = undefined; this.refresh(true) }))
+      this.cleanup.push(this.runtime.onSessionChange(() => { this.keybindings.reload(); this.resetWorkingStatus(); this.scrollToLatest(); this.refresh(true) }))
       this.initialized = true
       this.phase = undefined
       this.refresh(true)
@@ -307,20 +315,46 @@ export class TerminalApplication {
     this.completionStatus = undefined
     this.phase = undefined
   }
-  /** Plan mode narrows the session to read-only tools; leaving it restores the set the session had before. */
-  private setPlanMode(enabled: boolean): void {
-    if (!this.runtime) return
-    if (this.planMode === enabled) return
-    if (this.planMode) {
-      this.session.setActiveToolsByName(this.normalTools ?? this.session.getActiveToolNames())
-      this.normalTools = undefined
-    } else {
-      this.normalTools = this.session.getActiveToolNames()
-      this.session.setActiveToolsByName(planModeTools(this.normalTools))
-    }
-    this.planMode = enabled
-    this.notify(this.planMode ? 'Plan mode: only read-only tools are available. Use /plan off to return to normal.' : 'Normal mode: all tools are available.')
+  private enqueuePlan(brief: string): void {
+    const text = brief.trim()
+    if (!text) { this.notify('Use /plan <plan brief>.', 'error'); return }
+    const waiting = !this.session.isIdle
+    this.planBarrierOpen = true
+    this.deferredInputs.push({ kind: 'plan', text })
+    this.notify(waiting ? 'Plan request queued to run by itself after the current response.' : 'Plan request queued as an isolated run.')
     this.change()
+    this.drainDeferred()
+  }
+  private drainDeferred(): void {
+    if (this.drainingDeferred || !this.planBarrierOpen || !this.runtime || !this.session.isIdle || !this.deferredInputs.length) return
+    this.drainingDeferred = true
+    void (async () => {
+      try {
+        while (this.deferredInputs.length && !this.stopped && this.runtime && this.session.isIdle) {
+          const next = this.deferredInputs.shift()!
+          this.activeDeferredKind = next.kind
+          this.change()
+          try {
+            if (next.kind === 'plan') {
+              this.planActive = true
+              await this.runtime.submitPlan(next.text)
+            } else {
+              await this.runtime.submit(next.text, next.followUp)
+            }
+          } catch (error) {
+            this.notify(error instanceof Error ? error.message : String(error), 'error')
+          } finally {
+            if (next.kind === 'plan') this.planActive = false
+            this.activeDeferredKind = undefined
+          }
+        }
+      } finally {
+        this.drainingDeferred = false
+        if (!this.deferredInputs.length && !this.planActive) this.planBarrierOpen = false
+        this.change()
+        if (this.deferredInputs.length && this.runtime?.session.isIdle) this.drainDeferred()
+      }
+    })()
   }
   private scrollToLatest(): void { this.viewport?.scrollToEnd() }
   private async chooseApproval(request: TerminalDecision, signal: AbortSignal): Promise<{ decision: 'approved' | 'denied'; alwaysAllow: boolean }> {
@@ -397,7 +431,9 @@ export class TerminalApplication {
   private queuedMessages(width: number): string[] {
     if (!this.ui) return []
     const state = this.runtime?.snapshot()
-    return state ? [...state.queue.steering.map(text => `Steering: ${text}`), ...state.queue.followUp.map(text => `Follow-up: ${text}`)].flatMap(text => wrapTextWithAnsi(this.theme.fg('muted', text), width)) : []
+    const native = state ? [...state.queue.steering.map(text => `Steering: ${text}`), ...state.queue.followUp.map(text => `Follow-up: ${text}`)] : []
+    const deferred = this.deferredInputs.map(input => input.kind === 'plan' ? `Plan: /plan ${input.text}` : `Queued: ${input.text}`)
+    return [...native, ...deferred].flatMap(text => wrapTextWithAnsi(this.theme.fg('muted', text), width))
   }
   private statusLines(width: number): string[] {
     return this.statuses.size ? wrapTextWithAnsi([...this.statuses.values()].join('  '), width) : []
@@ -427,7 +463,13 @@ export class TerminalApplication {
         if (this.stopped) return
         if (command && await this.commands.execute(text)) return
         if (text.trimStart().startsWith('!')) throw new Error('Use the bash tool so this action can be checked.')
-        await this.runtime!.submit(this.commands.expandSkill(text), followUp)
+        const expanded = this.commands.expandSkill(text)
+        if (this.planBarrierOpen) {
+          this.deferredInputs.push({ kind: 'prompt', text: expanded, followUp })
+          this.change()
+          return
+        }
+        await this.runtime!.submit(expanded, followUp)
       } finally { if (command) this.commandBusy = false }
     })
   }
@@ -455,7 +497,14 @@ export class TerminalApplication {
     else if (is('app.tools.expand')) this.ui.setToolsExpanded(!this.toolsExpanded)
     else if (is('app.thinking.toggle')) { const hidden = !this.session.settingsManager.getHideThinkingBlock(); this.session.settingsManager.setHideThinkingBlock(hidden); this.transcript.setThinking(hidden) }
     else if (is('app.message.followUp')) this.submit(this.editor.getExpandedText?.() ?? this.editor.getText(), true)
-    else if (is('app.message.dequeue')) { const pending = this.session.clearQueue(); this.editor.setText([...pending.steering, ...pending.followUp, this.editor.getText()].filter(Boolean).join('\n')); this.syncDraft(this.editor.getText()) }
+    else if (is('app.message.dequeue')) {
+      const pending = this.session.clearQueue()
+      const deferred = this.deferredInputs.map(input => input.kind === 'plan' ? `/plan ${input.text}` : input.text)
+      this.deferredInputs = []
+      this.planBarrierOpen = this.planActive || this.activeDeferredKind === 'plan'
+      this.editor.setText([...pending.steering, ...pending.followUp, ...deferred, this.editor.getText()].filter(Boolean).join('\n'))
+      this.syncDraft(this.editor.getText())
+    }
     else if (is('app.editor.external')) this.attempt(() => this.externalEditor())
     else if (is('app.message.copy')) this.attempt(() => this.commands.execute('/copy'))
     else if (is('app.clipboard.pasteImage')) this.attempt(() => this.pasteClipboard())
@@ -498,6 +547,7 @@ export class TerminalApplication {
       this.requestStartedAt = null
       this.phase = undefined
       this.terminal.setProgress(false)
+      queueMicrotask(() => this.drainDeferred())
     }
     if (event.type === 'compaction_start') this.phase = 'Compacting context…'
     if (event.type === 'compaction_end') { this.phase = undefined; this.transcript.bind(this.session); if (event.errorMessage) this.notify(event.errorMessage, 'error') }
@@ -527,6 +577,7 @@ export class TerminalApplication {
   }
   private resetPresentation(): void {
     this.pendingAbort?.abort(); this.dismissedDecisions.clear()
+    this.deferredInputs = []; this.planBarrierOpen = false; this.planActive = false; this.activeDeferredKind = undefined
     this.resetWorkingStatus()
     this.requestStartedAt = null; this.lastTokensPerSecond = null
     this.transcript.clearSession()

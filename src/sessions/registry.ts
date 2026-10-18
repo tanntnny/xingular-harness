@@ -41,6 +41,12 @@ export interface QuestionAnswer {
   notes?: Record<string, string>
 }
 
+function validateQuestionRecommendations(input: QuestionInput): void {
+  if (!input.multiSelect && input.options.filter((option) => option.recommended).length > 1) {
+    throw new HarnessError('invalid_request', 'A single-choice question can recommend at most one option.')
+  }
+}
+
 interface QuestionBatchMetadata {
   batchId: string
   batchIndex: number
@@ -141,6 +147,7 @@ export class RunRegistry {
       const { requestId, ...payload } = input
       const questionId = requestId ?? randomUUID()
       if (finished || finishing || this.nativeCleared.delete(questionId)) return Promise.resolve({ selected: [] })
+      validateQuestionRecommendations(input)
       if (this.questions.has(questionId)) throw new HarnessError('invalid_request', 'This question id is already pending.')
       return new Promise<QuestionAnswer>((resolve) => {
         this.questions.set(questionId, {
@@ -217,6 +224,7 @@ export class RunRegistry {
         if (!Array.isArray(inputs) || inputs.length < 1 || inputs.length > 5) {
           throw new HarnessError('invalid_request', 'A question batch must contain between one and five questions.')
         }
+        inputs.forEach(validateQuestionRecommendations)
         const requestedIds = inputs.flatMap((input) => input.requestId ? [input.requestId] : [])
         if (new Set(requestedIds).size !== requestedIds.length || requestedIds.some((id) => this.questions.has(id))) {
           throw new HarnessError('invalid_request', 'Question ids in a batch must be unique and not already pending.')
