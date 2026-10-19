@@ -2,7 +2,7 @@
 // stores remain the source of truth; this module gives hosts one capability-shaped contract.
 import { invalid } from '../core/errors'
 import type { Harness } from '../harness'
-import type { CallerContext } from '../memory/caller'
+import type { CallerContext } from '../core/caller'
 import type { Launch } from '../prompt/compile'
 import * as pluginApi from '../plugins/api'
 import type { Plugin } from '../plugins/types'

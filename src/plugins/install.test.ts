@@ -83,7 +83,7 @@ describe('installing a package', () => {
   it('refuses a folder that is not there, and a plugin that was not installed', async () => {
     const { base, call } = setup()
     await expect(call('plugins.install', { source: join(base, 'missing') })).rejects.toThrow('does not exist')
-    await expect(call('plugins.remove', { pluginId: 'memory' })).rejects.toThrow('was not installed as a package')
+    await expect(call('plugins.remove', { pluginId: 'wiki' })).rejects.toThrow('was not installed as a package')
     await expect(call('plugins.update', { pluginId: 'nope' })).rejects.toThrow()
   })
 

@@ -1,13 +1,11 @@
 // Every plugin there is, from every source, as one list. Building it reads files and settings;
 // it runs no plugin's code and changes nothing.
-import { basename, dirname, join } from 'node:path'
+import { basename, dirname } from 'node:path'
 
 import { projectsOrNone } from '../core/projects'
 import { compareText } from '../core/text'
 import type { Connection } from '../mcp/types'
-import * as registry from '../skills/registry'
 import { attached, describe, type Attachment, type Attachments, type AttachScope } from './attachments'
-import { INCLUDED_PLUGIN, YOURS_PLUGIN } from './builtin'
 import { settingValue } from './firstParty'
 import { BUILTIN_PREFIX, type Found } from './discover'
 import { registrationHash } from './runtime'
@@ -39,8 +37,6 @@ export interface CatalogueInput {
   /** Whose list this is. With an agent or a project, each state is what that caller gets. */
   caller: AttachScope
 }
-
-const REGISTRY_KINDS: Record<string, ContributionKind> = { rules: 'instruction', skills: 'skill', prompts: 'command' }
 
 const contribution = (plugin: string, kind: ContributionKind, name: string, rest: Partial<Contribution> = {}): Contribution => ({
   id: contributionId(plugin, kind, name),
@@ -96,24 +92,6 @@ function scopeWords(attachment: Attachment, projects: Map<string, string>): stri
   }
   const parts = [...named(attachment.on.projectIds, projects), counted(attachment.on.agentIds.length, 'agent')].filter(Boolean)
   return parts.length ? parts.join(', ') : null
-}
-
-/** A person's registry items, and the built-in ones, as contributions with who each is on for. */
-function registryContributions(input: CatalogueInput, projects: Map<string, string>): { yours: Contribution[]; included: Contribution[] } {
-  const yours: Contribution[] = []
-  const included: Contribution[] = []
-  const scoped = !!(input.caller.agentId || input.caller.projectId)
-  for (const item of registry.list(input.root)) {
-    const kind = REGISTRY_KINDS[item.kind]
-    if (!kind) continue
-    // A registry item's choices are stored under its own id, whichever plugin lists it.
-    const attachment = describe(input.attachments, item.id, !!item.builtin)
-    const scope = scopeWords(attachment, projects)
-    const on = scoped ? attached(input.attachments, [item.id], input.caller, !!item.builtin) : scope !== null
-    const plugin = item.builtin ? INCLUDED_PLUGIN.id : YOURS_PLUGIN.id
-    ;(item.builtin ? included : yours).push({ ...contribution(plugin, kind, item.name, { description: item.description, path: item.path, state: on ? 'on' : 'off', scope, attachment }), id: `${plugin}/${item.id}` })
-  }
-  return { yours, included }
 }
 
 /** A connection keeps its own scope; this is the same shape for a screen. */
@@ -177,16 +155,8 @@ const empty = (id: string, title: string, description: string, source: PluginSou
 
 export function catalogue(input: CatalogueInput): Plugin[] {
   const plugins = new Map<string, Plugin>()
-  for (const descriptor of input.descriptors) plugins.set(descriptor.id, fromDescriptor(descriptor, descriptor.id === 'pi' ? 'pi' : descriptor.id === YOURS_PLUGIN.id ? 'yours' : input.application.has(descriptor.id) ? 'application' : 'builtin', input.attachments, input.caller))
+  for (const descriptor of input.descriptors) plugins.set(descriptor.id, fromDescriptor(descriptor, descriptor.id === 'pi' ? 'pi' : input.application.has(descriptor.id) ? 'application' : 'builtin', input.attachments, input.caller))
 
-  const projects = new Map(projectsOrNone(input.root).map((project) => [project.id, project.name]))
-  const items = registryContributions(input, projects)
-  const yours = plugins.get(YOURS_PLUGIN.id)
-  if (yours) {
-    yours.path = join(input.root, 'registry')
-    yours.contributions.push(...items.yours)
-  }
-  if (items.included.length) plugins.set(INCLUDED_PLUGIN.id, { ...fromDescriptor(INCLUDED_PLUGIN, 'builtin'), contributions: items.included })
 
   const apps = plugins.get('connected-apps')
   if (apps) {
@@ -196,6 +166,7 @@ export function catalogue(input: CatalogueInput): Plugin[] {
     }
   }
 
+  const projects = new Map(projectsOrNone(input.root).map((project) => [project.id, project.name]))
   const loading = input.loading
   const trusted = trustedBy(loading)
   for (const item of loading?.found ?? []) {

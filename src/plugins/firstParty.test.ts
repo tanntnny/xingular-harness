@@ -23,7 +23,7 @@ async function setup() {
   const root = rootWithProject()
   const base = mkdtempSync(join(tmpdir(), 'first-party-'))
   // The background upkeep would ask the scripted model too; it is not what is tested here.
-  const harness = createHarness({ dataRoot: root, stateDir: join(base, 'state'), secrets: memorySecretStore(), maintainerFactory: async () => ({ prompt: async () => undefined, dispose: () => undefined, error: () => null }) })
+  const harness = createHarness({ dataRoot: root, stateDir: join(base, 'state'), secrets: memorySecretStore() })
   open.push(harness)
   harness.accounts.create('Main', 'apiKey')
   const model = await fauxModel(harness)

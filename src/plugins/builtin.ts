@@ -3,12 +3,11 @@
 import { CONNECTION_TOOLS, NATIVE_GROUP } from '../prompt/compile'
 import { ASK_USER } from '../tools/askUser'
 import { SPAWN_SUBAGENT, WAIT_SUBAGENTS } from '../sessions/subagents'
-import { PLUGIN_PROPOSE } from '../tools/pluginPropose'
-import { MEMORY_TOOLS, RECALL_TOOLS, TRAJECTORY_TOOLS, WIKI_TOOLS, type WikiToolDefinition } from '../tools/definitions'
+import { RECALL_TOOLS, SKILL_TOOLS, TRAJECTORY_TOOLS, WIKI_READ_TOOLS, WIKI_WRITE_TOOLS, type HarnessToolDefinition } from '../tools/definitions'
 import { FIRST_PARTY_PLUGINS } from './firstParty'
 import type { PluginDescriptor } from './types'
 
-const tools = (definitions: readonly WikiToolDefinition[]): PluginDescriptor['tools'] => definitions.map((tool) => ({ name: tool.name, description: tool.label }))
+const tools = (definitions: readonly HarnessToolDefinition[]): PluginDescriptor['tools'] => definitions.map((tool) => ({ name: tool.name, description: tool.label }))
 
 /** Pi itself. Its command's built-in extensions are added to it as they are found. */
 export const PI_PLUGIN: PluginDescriptor = {
@@ -20,55 +19,39 @@ export const PI_PLUGIN: PluginDescriptor = {
   toolGroups: ['Native']
 }
 
-/** A person's own registry. It owns the rules and skills sections even while it is empty. */
-export const YOURS_PLUGIN: PluginDescriptor = {
-  id: 'yours',
-  title: 'Yours',
-  description: 'Rules, skills and prompts you wrote, kept as files in the registry folder.',
-  manage: 'registry',
+/** The harness tree: the eight components that shape what an agent is told and can do. */
+export const HARNESS_TREE_PLUGIN: PluginDescriptor = {
+  id: 'harness',
+  title: 'Harness',
+  description: 'The agent\'s own harness: system prompt, guardrails, memory and tool guidance in every prompt; skills, scripts and subagents on demand; plugins in the tool loop. Versioned, and refined from evidence.',
+  required: 'Every agent runs on its harness.',
   sections: [
-    { id: 'rules', name: 'Rules', description: 'The full text of every rule that is on.' },
-    { id: 'skills', name: 'Skills list', description: 'One line for each skill that is on.' }
+    { id: 'system', name: 'System prompt', description: 'c1: role and procedure.' },
+    { id: 'guardrails', name: 'Guardrails', description: 'c2: standing rules.' },
+    { id: 'memory', name: 'Memory', description: 'c3: durable facts about this kind of work.' },
+    { id: 'subagents', name: 'Subagents', description: 'c5: the list of this harness\'s subagents.' },
+    { id: 'scripts', name: 'Scripts', description: 'c7: where this harness\'s scripts are.' }
   ],
-  tools: WIKI_TOOLS.filter((tool) => tool.name === 'skill_load').map((tool) => ({ name: tool.name, description: tool.label }))
+  tools: tools(SKILL_TOOLS)
 }
-
-export const INCLUDED_PLUGIN: PluginDescriptor = { id: 'included', title: 'Included', description: 'Rules, skills and prompts that ship with the app.', manage: 'registry' }
 
 export const HARNESS_PLUGINS: readonly PluginDescriptor[] = [
   PI_PLUGIN,
   { id: 'subagents', title: 'Subagents', description: 'Isolated child runs of the same caller, bounded by parent capabilities and nesting depth.', required: 'Availability is selected by the session host; child runs retain the parent permission boundary.', tools: [{ name: SPAWN_SUBAGENT, description: 'Start a subagent' }, { name: WAIT_SUBAGENTS, description: 'Wait for subagents' }] },
-  {
-    id: 'memory',
-    title: 'Memory',
-    description: 'Blocks of text that are always in context and that the agent edits as it works.',
-    required: 'Every agent keeps its own memory, and the background upkeep depends on it.',
-    // Facts are memory too: what the agent wrote down, recalled on request.
-    tools: tools([...MEMORY_TOOLS, ...WIKI_TOOLS.filter((tool) => tool.name === 'memory_facts')]),
-    sections: [{ id: 'blocks', name: 'Memory blocks', description: 'Every block attached to the caller, in full.' }],
-    toolGroups: ['Memory']
-  },
+  HARNESS_TREE_PLUGIN,
   {
     id: 'wiki',
     title: 'Wiki',
-    description: 'Pages and facts the agent searches, reads, and proposes changes to.',
-    required: 'What was learned is recorded and checked here.',
-    // `WIKI_TOOLS` is every memory tool; the Wiki's own are the ones that are not Memory's or History's.
-    tools: tools(WIKI_TOOLS.filter((tool) => tool.name.startsWith('wiki_'))),
+    description: 'Notes about projects, linked to each other, that agents search and read.',
+    required: 'Project notes are reached through it.',
+    tools: tools([...WIKI_READ_TOOLS, ...WIKI_WRITE_TOOLS]),
     sections: [
-      { id: 'knowledge', name: 'Knowledge map', description: 'Project pages, the Library count, and facts that match the request.' },
-      { id: 'references', name: 'Selected references', description: 'Pages and skills pinned to one request.' }
+      { id: 'wiki', name: 'Wiki', description: 'The current project\'s notes.' },
+      { id: 'references', name: 'Selected references', description: 'Notes pinned to one request.' }
     ],
-    toolGroups: ['Knowledge']
+    toolGroups: ['Wiki']
   },
-  { id: 'history', title: 'History', description: 'Search earlier conversations and inspect recorded run trajectories.', required: 'Earlier runs are how an agent picks up where work stopped.', tools: tools([...RECALL_TOOLS, ...TRAJECTORY_TOOLS]) },
-  {
-    id: 'plugin-proposals',
-    title: 'Plugin proposals',
-    description: 'Lets an agent propose a plugin. You accept it in the Inbox, switch it on, and trust its code; an agent can do none of those.',
-    required: 'It only proposes. Nothing is saved or run until you decide.',
-    tools: [{ name: PLUGIN_PROPOSE, description: 'Propose a plugin' }]
-  },
+  { id: 'history', title: 'History', description: 'Search earlier conversations and inspect recorded run trajectories.', required: 'Earlier runs are how an agent picks up where work stopped.', tools: tools([...RECALL_TOOLS, ...TRAJECTORY_TOOLS]), toolGroups: ['History'] },
   { id: 'ask-user', title: 'Ask the user', description: 'Lets the agent stop and ask a question with choices.', required: 'An agent must be able to stop and ask you.', tools: [{ name: ASK_USER }] },
   {
     id: 'connected-apps',
@@ -79,6 +62,5 @@ export const HARNESS_PLUGINS: readonly PluginDescriptor[] = [
     tools: CONNECTION_TOOLS.map((name) => ({ name })),
     toolGroups: ['Connections']
   },
-  YOURS_PLUGIN,
   ...FIRST_PARTY_PLUGINS
 ]

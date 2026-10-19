@@ -1,6 +1,6 @@
 // A tool as the harness holds it: described without Pi imports, so a provider can be written
 // against this package alone. The session turns each one into a Pi tool.
-import type { CallerContext } from '../memory/caller'
+import type { CallerContext } from '../core/caller'
 import type { CapabilitySet } from '../capabilities/types'
 import type { ActiveRun } from '../sessions/registry'
 import type { ToolAttachmentRef } from '../sessions/contracts'

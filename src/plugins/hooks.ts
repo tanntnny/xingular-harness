@@ -7,7 +7,7 @@
 // and what it throws is recorded and shown on its plugin. It reaches outside only through
 // `ctx.call`, which the harness limits to connected-app tools a person marked to run without asking.
 import { chmodSync } from 'node:fs'
-import { join, sep } from 'node:path'
+import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 import type { Bus } from '../core/bus'
@@ -16,12 +16,12 @@ import { onChange, type Change } from '../core/changes'
 import * as frontmatter from '../core/frontmatter'
 import { now, readJsonOr, writeJson } from '../core/fs'
 
-export const HOOK_EVENTS = ['memory.saved', 'memory.block.changed', 'wiki.page.saved', 'history.run.ended'] as const
+export const HOOK_EVENTS = ['wiki.page.saved', 'history.run.ended'] as const
 export type HookEventType = (typeof HOOK_EVENTS)[number]
 
-/** A fact, a memory block, or a page, as it is after the change. */
+/** A Wiki note, as it is after the change. */
 export interface EntryEvent {
-  type: 'memory.saved' | 'memory.block.changed' | 'wiki.page.saved'
+  type: 'wiki.page.saved'
   id: string
   path: string
   title: string
@@ -58,7 +58,7 @@ export interface HookContext {
 
 type Handler = (event: HookEvent, context: HookContext) => unknown
 
-/** What a hooks file is given: `export default function (harness) { harness.on('memory.saved', …) }`. */
+/** What a hooks file is given: `export default function (harness) { harness.on('wiki.page.saved', …) }`. */
 export interface HookApi {
   on(event: HookEventType, handler: Handler): void
 }
@@ -100,8 +100,7 @@ interface Loaded extends HookTarget {
 
 /** Which event a written file is, from where it is in the Wiki. */
 export function entryEvent(change: Change): EntryEvent {
-  const within = change.path.startsWith(`${change.wiki}${sep}`) ? change.path.slice(change.wiki.length + 1).split(sep) : []
-  const type = within[0] === 'facts' ? 'memory.saved' : within[0] === 'blocks' ? 'memory.block.changed' : 'wiki.page.saved'
+  const type = 'wiki.page.saved' as const
   const parsed = frontmatter.parse(change.text)
   const front = (parsed?.front ?? {}) as Record<string, unknown>
   const title = typeof front.title === 'string' ? front.title : typeof front.label === 'string' ? front.label : change.id

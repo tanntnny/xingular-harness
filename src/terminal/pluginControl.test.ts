@@ -80,21 +80,20 @@ describe('plugin control from a terminal session', () => {
     const { key } = await socketCall<{ key: string }>(connection, 'control.claim')
     const call = <T>(method: string, params?: Record<string, unknown>) => socketCall<T>(connection, method, params ?? {}, 5_000, key)
     const rows = menuRows(await call<Plugin[]>('plugins.list'), 'p1')
-    expect(rows.map((row) => row.label)).toEqual(['● review-kit · code not trusted', '○ Run tests · instruction in Yours', '○ Budget guard · runs code', '○ Output trim · runs code'])
+    expect(rows.map((row) => row.label)).toEqual(['● review-kit · code not trusted', '○ Budget guard · runs code', '○ Output trim · runs code'])
     expect(rowActions(rows[0], 'p1')).toEqual(['Switch off for this project', 'Switch off everywhere', 'Trust its code', 'Back'])
     expect(rowActions(rows[1], null)).toEqual(['Switch on everywhere', 'Back'])
     // A part that ships with the harness needs no trust: it is the harness's own code.
-    expect(rowActions(rows[2], 'p1')).toEqual(['Switch on for this project', 'Switch on everywhere', 'Back'])
+    expect(rowActions(rows[1], 'p1')).toEqual(['Switch on for this project', 'Switch on everywhere', 'Back'])
 
-    // Declining the trust question leaves the code untrusted; then they trust it, switch a rule on, and leave.
-    const { ui, shown, said } = person(['● review-kit · code not trusted', 'Trust its code', false, '● review-kit · code not trusted', 'Trust its code', true, '○ Run tests · instruction in Yours', 'Switch on for this project', 'Done'])
+    // Declining the trust question leaves the code untrusted; then they trust it and leave.
+    const { ui, shown, said } = person(['● review-kit · code not trusted', 'Trust its code', false, '● review-kit · code not trusted', 'Trust its code', true, 'Done'])
     await runPluginsMenu(ui, call, 'p1')
     expect(shown.find((line) => line.startsWith('Trust this code?'))).toContain('extensions/guard.ts')
     expect(shown.find((line) => line.startsWith('Trust this code?'))).toContain('can do anything this app can')
     expect(said).toEqual(['Saved. It applies when this session restarts.'])
     const after = await call<Plugin[]>('plugins.list')
     expect(after.find((plugin) => plugin.id === 'package:review-kit')).toMatchObject({ trust: 'trusted' })
-    expect(after.flatMap((plugin) => plugin.contributions).find((entry) => entry.id === 'yours/rules/tests')).toMatchObject({ state: 'on', scope: 'App' })
     expect(harness.plugins.trust.list()).toHaveLength(1)
 
     // Leaving at once changes nothing and says nothing.
@@ -113,7 +112,7 @@ describe('the plugins command', () => {
     const last = (): string => lines.at(-1) ?? ''
 
     expect(await run(['list'])).toBe(0)
-    expect(last()).toMatch(/^memory\s+required\s+Memory$/m)
+    expect(last()).toMatch(/^harness\s+required\s+Harness$/m)
     expect(await run(['install', join(base, 'kit')])).toBe(0)
     expect(last()).toContain('Installed, switched off.')
     expect(last()).toContain('trust its code with "plugins trust <id>"')
@@ -134,8 +133,8 @@ describe('the plugins command', () => {
     expect(last()).toContain('Code (trusted)')
     expect(last()).toContain('● skill audit (package:review-kit/skill/audit)')
 
-    expect(await run(['detach', 'memory'])).toBe(1)
-    expect(last()).toContain('Memory cannot be switched off.')
+    expect(await run(['detach', 'harness'])).toBe(1)
+    expect(last()).toContain('Harness cannot be switched off.')
     expect(await run(['untrust', 'package:review-kit'])).toBe(0)
     expect(await run(['remove', 'package:review-kit'])).toBe(0)
     expect(await run(['show', 'package:review-kit'])).toBe(1)

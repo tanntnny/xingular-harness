@@ -1,6 +1,6 @@
 // What the embedding application decides about a session's tool calls. The harness asks; it
 // never assumes: with no policy, every enabled tool may run and gated tools ask the user.
-import type { CallerContext } from '../memory/caller'
+import type { CallerContext } from '../core/caller'
 import type { ApprovalFacts } from './approvals'
 import type { RunRecord } from './contracts'
 

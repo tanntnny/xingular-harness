@@ -8,16 +8,17 @@ layout. The family-level guide is [`../../AGENTS.md`](../../AGENTS.md).
 This package is consumed as source by Xingular Agent's sidecar, and is meant to be embedded by
 other applications. A change here changes every application built on it.
 
-- Belongs here: Pi sessions and accounts, the prompt compiler and its delivery, memory and the
-  Wiki, recall, skills, the tool gate and standing approvals, connectors (MCP), terminal
-  sessions and their owned standalone frontend, and the server protocol.
+- Belongs here: Pi sessions and accounts, harness trees (the eight components) and refinement
+  (Propose–Probe–Compose, selection, the experience library), the prompt compiler and its
+  delivery, project notes (the Wiki), recall, the tool gate and standing approvals, connectors
+  (MCP), terminal sessions and their owned standalone frontend, and the server protocol.
 - Stays in the application: agents, groups, conversations, tasks and coordination, projects and
   worktrees, files, browser and computer use, windows, the PTY, the keychain, and application UI.
 - **No application's name in a string.** Text a model or a person sees uses `env.productName`
   (`{product}` in a tool description, filled by `describeTool`). The default is `Xingular Harness`.
 - **No imports from an application, and no application nouns.** The harness knows a *caller*
   (`CallerContext`), a *session*, and a *run*. It does not know what an agent's role is, what a
-  group is, or what a task is. `agentId` is an opaque id that owns memory blocks; names come in
+  group is, or what a task is. `agentId` and a harness `scope` are opaque ids; names come in
   through `Directory` or `CallerContext.agentName`.
 - When an application needs the harness to do something new, add an extension point (a prompt
   section, a tool provider, a policy hook, a plugin description, an option). Do not add an application-name check or a
@@ -40,19 +41,25 @@ The capability snapshot and attachment-scope migration shipped in `@xingular/har
 
 - **Style.** TypeScript, two-space indent, single quotes, no semicolons, comments only where the
   reason is not obvious.
-- **Memory and the prompt are synchronous.** Node is single-threaded, so a synchronous function
-  is a critical section: nothing else can write the Wiki while it runs. Keep `memory/`,
-  `skills/`, and `prompt/` synchronous; only accounts, Pi, and MCP are async.
+- **Trees and the prompt are synchronous.** Node is single-threaded, so a synchronous function
+  is a critical section. Keep `tree/`, `wiki/` and `prompt/` synchronous; accounts, Pi, MCP and
+  refinement (which runs sessions) are async.
+- **A harness tree is the only thing that shapes an agent's instructions.** Its always-on files
+  (c1–c4) are capped and validated when saved (`tree/tree.ts::validate`); a version is never
+  edited, only superseded (`tree/store.ts`). A run pins one version and records it.
+- **Refinement is answer-free.** No rubric, score, grader output or reviewer verdict may reach an
+  improver or the selector: `refine/evidence.ts` guards every evidence folder. Keep the R=4k /
+  P=3k identity (`refine/ledger.ts`); a change to the method changes both modes and the tests.
+- **Refinement never acts in the world.** Executions are unattended `probe` runs in a folder the
+  `RefineHost` prepared; anything that needs approval is refused. Improvers have file tools only
+  and work on a copy of the evidence.
 - **The prompt is assembled only in `src/prompt/compile.ts`.** Sessions use `sessionLaunch`
   (stable system prefix plus a context update); terminal sessions use `compile` + `render`.
   Nothing else builds model instructions.
-- **Keep the stable prefix stable.** Identity, role, rules, skills, and tool guidance are the
-  system prompt. `blocks`, `references`, `work`, `knowledge`, and any section marked `dynamic` go
-  into the hidden `xingular-context` message appended to native history. Moving changing state
-  into the prefix invalidates cached input.
-- **Golden fixtures guard the bytes.** `tests/golden/` holds what the compiler and the memory
-  tools produced before the split. `tests/golden.test.ts` must keep passing; change a fixture
-  only when the text is meant to change, and say so.
+- **Keep the stable prefix stable.** Identity, role, the tree's sections and tool guidance are
+  the system prompt. `references`, `wiki`, `work`, and any section marked `dynamic` go into the
+  hidden `xingular-context` message appended to native history. Moving changing state into the
+  prefix invalidates cached input.
 - **The harness is the only loader.** A session or terminal loads the extensions, skills, prompts
   and themes that `Plugins.loading` (`src/plugins/`) chose, with Pi's own discovery switched off.
   Do not pass a session a loader that discovers on its own, and do not load a working folder's
@@ -61,14 +68,12 @@ The capability snapshot and attachment-scope migration shipped in `@xingular/har
   declared by a `PluginDescriptor` (`src/plugins/builtin.ts` for the harness's own), or
   `plugins.inventory` reports it as unattributed.
 - **A hook is told, never asked.** `src/plugins/hooks.ts` runs a plugin's hooks after a write,
-  in the background. Memory code only calls `noteChange` once the file is in place; it never
+  in the background. The Wiki only calls `noteChange` once the file is in place; it never
   waits for a hook, and a hook's failure never reaches it. A new write point that should be
   heard calls `noteChange` too. Do not add a hook that can stop or change a write.
-- **A plugin reaches people through the Inbox, or through the agent that wrote it.** `plugin_propose`
-  parks a proposal; a person does the rest. `plugin_write` (the registry-write plugin) saves a
-  plugin, switches it on for the calling agent only, and records trust for the exact code it wrote
-  (trust is kept by content hash, so that code runs wherever it is later switched on). It never
-  adopts, switches on or trusts anything else. Keep it that way.
+- **Code waits for a person.** A tree's plugins (c8) load only when their exact code is trusted
+  (`tree/trust.ts`); refinement probes may run improver-written code only for a scope whose
+  person allowed it, and adopting such a tree still needs the code trusted.
 - **One store says what is switched on.** `src/plugins/attachments.ts` holds every choice about
   a plugin or a contribution, per scope (everywhere, an agent, a project). Do not add a second
   enablement file for a new kind of thing; give it a default and read it with `attached`.
@@ -76,9 +81,6 @@ The capability snapshot and attachment-scope migration shipped in `@xingular/har
   `~/.pi`. An account is never exchanged for another: a pinned session that cannot use its
   account fails. A terminal's `/accounts` goes through the session socket's `accounts.*` calls,
   and every one of them needs the session's control key, as `/plugins` does.
-- **Evidence only with an excerpt.** A fact or page proposed by a model is saved only when the
-  harness finds the quoted evidence in the named run or source. Recall indexes runs; consolidation
-  never turns a run into a page.
 - **Token accounting.** `inputTokens` is uncached input; cache reads and writes are separate;
   reasoning tokens are part of output. `usage.updated` values are cumulative for the run.
 - **The index is rebuildable.** `index.sqlite` migrations are append-only once written.
@@ -97,8 +99,7 @@ npm run prove     # after changing the server, the CLI, or startup
 
 After a change, also run the checks of Xingular Agent (`npm run typecheck`, `npm test`,
 `npm run check:layers`, `cd src-tauri && cargo test` in `../App`). Its sidecar
-tests include one that parses every reply of this package with the interface's schemas, and one
-that compares the tool table in `src/tools/definitions.ts` with the copy its interface shows.
+tests include one that parses every reply of this package with the interface's schemas.
 
 Tests use a fake Pi session and never make a model request. Whether a prompt change keeps the
 provider's cache has to be measured with real requests from the application

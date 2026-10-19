@@ -24,19 +24,20 @@ import { HarnessError, invalid } from '../core/errors'
 import { newId, now } from '../core/fs'
 import { prependSearchPath, searchPath } from '../core/path'
 import type { BrokerSession, ConnectedApps } from '../mcp/service'
-import type { CallerContext } from '../memory/caller'
-import { dispatch } from '../memory/dispatch'
+import type { CallerContext } from '../core/caller'
+import { dispatch } from '../tools/dispatch'
+import { materialise, type HarnessChoice } from '../tree/materialise'
+import type { TreeTrust } from '../tree/trust'
 import type { AttachParams, PluginScope } from '../plugins/api'
 import type { Loading, Plugins } from '../plugins/plugins'
 import type { Plugin } from '../plugins/types'
 import type { Hub } from '../hub/hub'
-import { compile, copyToRun, memoryDelta, record, render, saveForSession, type Launch } from '../prompt/compile'
+import { compile, copyToRun, record, render, saveForSession, type Launch } from '../prompt/compile'
 import type { RunRecord } from '../sessions/contracts'
 import { isActiveStatus } from '../sessions/contracts'
 import type { ToolPolicy } from '../sessions/policy'
 import type { ActiveRun, RunRegistry } from '../sessions/registry'
 import { findRun, loadRun, saveRun, updateRun } from '../sessions/runStore'
-import { resources } from '../skills/registry'
 import type { ToolSpec } from '../tools/types'
 import { APPS_COMMAND, WIKI_COMMAND } from './cli'
 import { SOCKET_ENV, TOKEN_ENV } from './client'
@@ -87,6 +88,8 @@ export interface TerminalPrepareInput {
   readOnly?: boolean
   /** What the application adds to the instructions, and which of its tools it describes. */
   launch?: Launch
+  /** The harness tree the session runs; its version is pinned for the session. */
+  harness?: HarnessChoice | null
   /** Give the session the connected-apps broker. Defaults to yes. */
   connections?: boolean
   /** Fields copied onto each run this session records. */
@@ -112,6 +115,8 @@ interface Live {
 }
 
 export interface TerminalsOptions {
+  /** Which plugin code in harness trees a person trusted. */
+  trust?: TreeTrust | null
   subagents?: Subagents
   resolveCapabilities?: (caller: CallerContext, tools: readonly string[], cwd: string) => Promise<CapabilitySet>
   env: HarnessEnv
@@ -144,6 +149,8 @@ const READ_ONLY_TOOLS = new Set(['read', 'grep', 'find', 'ls'])
 
 export class Terminals {
   private readonly sessions = new Map<string, Live>()
+  /** The harness tree each live session runs, for loading its skills. */
+  private readonly treeDirs = new Map<string, string>()
   private readonly socket: SessionSocket
   private readonly assets: TerminalAssets
   /** A session's `/accounts` switch, taken once its Pi process has ended. */
@@ -167,7 +174,7 @@ export class Terminals {
       }
     })
     this.socket = new SessionSocket(socketPath(options.stateDir), {
-      memory: (caller, call, params) => dispatch(options.env, caller, call, params),
+      memory: (caller, call, params) => dispatch(options.env, caller, call, params, { treeDir: (caller.sessionId && this.treeDirs.get(caller.sessionId)) || null }),
       apps: (session, call, params) => this.appsCall(session, call, params),
       plugins: (grant, call, params, control) => this.pluginsCall(grant.sessionId, call, params, control),
       accounts: (grant, call, params, control) => this.accountsCall(grant.sessionId, call, params, control)
@@ -513,8 +520,10 @@ export class Terminals {
       const broker = input.connections === false ? null : apps.grant({ sessionId, runId: null, caller, readOnly: !!input.readOnly, depth: 0 })
       // The session keeps these instructions; each of its runs records a copy, and a memory
       // block that changes later is sent along as a note.
-      const pack = compile(env, caller, { input: '', ...input.launch })
-      record(root, caller, pack)
+      const tree = input.harness ? materialise(root, input.harness, { trust: this.options.trust ?? null }) : null
+      if (tree) this.treeDirs.set(sessionId, tree.dir)
+      const pack = compile(env, caller, input.launch ?? {}, tree)
+      record(root, pack)
       mkdirSync(this.historyDir(input), { recursive: true })
       saveForSession(input.sessionFolder, pack)
 
@@ -584,10 +593,9 @@ export class Terminals {
       if (loading) {
         // Pi's own discovery is off: the terminal loads what the harness found and nothing else.
         args.push('--no-extensions', '--no-skills', '--no-prompt-templates', '--no-themes')
-        const enabled = resources(root, input.projectId ?? null)
-        for (const path of [...loading.extensionPaths, ...loading.builtins]) args.push('--extension', path)
-        for (const path of [...enabled.skillPaths, ...loading.skillPaths]) args.push('--skill', path)
-        for (const path of [...enabled.promptPaths, ...loading.promptPaths]) args.push('--prompt-template', path)
+        for (const path of [...loading.extensionPaths, ...loading.builtins, ...(tree?.extensionPaths ?? [])]) args.push('--extension', path)
+        for (const path of [...(tree?.skillPaths ?? []), ...loading.skillPaths]) args.push('--skill', path)
+        for (const path of loading.promptPaths) args.push('--prompt-template', path)
         for (const path of loading.themePaths) args.push('--theme', path)
       }
       // Last, so its gate sees a tool call as every other extension left it.
@@ -626,10 +634,9 @@ export class Terminals {
     const runId = input.runId || newId()
     if (findRun(root, runId)) throw invalid('This run already exists.')
     saveRun(root, this.runRecord(live, runId, input.text))
-    const note = memoryDelta(env, live.input.sessionFolder, { ...live.caller, runId })
     copyToRun(root, live.input.sessionFolder, runId)
     try {
-      await live.controller.send(runId, note ? `${note}\n\n${input.text}` : input.text)
+      await live.controller.send(runId, input.text)
     } catch (error) {
       updateRun(root, runId, (run) => {
         if (!isActiveStatus(run.status)) return

@@ -13,7 +13,7 @@ import { log } from '../core/bus'
 import { HarnessError, toErrorShape } from '../core/errors'
 import { newId } from '../core/fs'
 import type { BrokerSession } from '../mcp/service'
-import type { CallerContext } from '../memory/caller'
+import type { CallerContext } from '../core/caller'
 
 /** What a token stands for. */
 export interface SocketGrant {
@@ -27,7 +27,7 @@ export interface SocketGrant {
 }
 
 export interface SocketHandlers {
-  /** `wiki.*`, `memory.*`, `recall.*`. */
+  /** `wiki.*`, `skill.*`, `recall.*`, `trajectory.*`. */
   memory(caller: CallerContext, call: string, params: Record<string, unknown>): string
   /** `mcp.list`, `mcp.call`, `mcp.revision`, `tools.list`, `tools.call`. */
   apps(session: BrokerSession, call: string, params: Record<string, unknown>): Promise<unknown>
@@ -147,7 +147,7 @@ export class SessionSocket {
       }
       const call = typeof request.call === 'string' ? request.call : ''
       const params = (request.params && typeof request.params === 'object' ? request.params : {}) as Record<string, unknown>
-      if (['wiki.', 'memory.', 'recall.'].some((prefix) => call.startsWith(prefix))) return { result: this.handlers.memory(grant.caller(), call, params) }
+      if (['wiki.', 'skill.', 'recall.', 'trajectory.'].some((prefix) => call.startsWith(prefix))) return { result: this.handlers.memory(grant.caller(), call, params) }
       if (call === 'tools.list' && !grant.broker) return { result: { tools: [] } }
       if (['mcp.', 'tools.'].some((prefix) => call.startsWith(prefix))) {
         if (!grant.broker) throw new HarnessError('mcp_unauthorized', 'Connected apps are not available to this session.')

@@ -24,6 +24,8 @@ export interface SubagentInput {
   brief: string
   tools?: string[]
   wait?: boolean
+  /** One of the parent harness's subagents (c5) by name; its instructions frame the child. */
+  agent?: string
 }
 
 export interface SubagentSelection {

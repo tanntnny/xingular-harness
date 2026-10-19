@@ -1,15 +1,13 @@
 // Whole replies, through everything the harness does for one: the compiled prompt, the plugins
 // it chose to load, the gate, the run's events. Pi is real and so are the extensions; only the
 // model is scripted, so no request leaves the machine.
-import { existsSync, mkdtempSync } from 'node:fs'
+import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { memorySecretStore } from '../accounts/secrets'
 import { createHarness, type Harness } from '../harness'
-import { listInbox } from '../memory/operations'
-import { wikiDir } from '../memory/store'
 import type { Plugin } from '../plugins/types'
 import { methods } from '../server/methods'
 import { fauxModel } from '../../tests/faux'
@@ -33,7 +31,7 @@ export default function (pi) {
 async function setup() {
   const root = rootWithProject()
   const base = mkdtempSync(join(tmpdir(), 'conversation-'))
-  const harness = createHarness({ dataRoot: root, stateDir: join(base, 'state'), secrets: memorySecretStore(), maintainerFactory: async () => ({ prompt: async () => undefined, dispose: () => undefined, error: () => null }) })
+  const harness = createHarness({ dataRoot: root, stateDir: join(base, 'state'), secrets: memorySecretStore() })
   open.push(harness)
   harness.accounts.create('Main', 'apiKey')
   const model = await fauxModel(harness)
@@ -179,29 +177,6 @@ describe('a whole reply, with a scripted model', () => {
     harness.runs.resolveApproval(third, (of(third).find((event) => event.type === 'approval.requested')!.payload as { approvalId: string }).approvalId, 'denied')
     await until(() => settled(third))
     expect(model.lastToolResults().at(-1)).toMatch(/denied/)
-  })
-
-  it('lets the agent propose a plugin, which reaches the Inbox and nothing else', async () => {
-    const { root, model, start, until, settled, of } = await setup()
-    model.script([
-      model.calls(['plugin_propose', { name: 'Memory to Docs', description: 'Copies each saved memory to the team document.', extends: ['memory'] as never, files: [{ path: 'hooks.mjs', content: "export default function (harness) { harness.on('memory.saved', async () => {}) }\n" }] as never }]),
-      model.says('I proposed it; it is in your Inbox.')
-    ])
-    const id = await start()
-    await until(() => settled(id))
-    expect(model.lastToolResults().at(-1)).toContain('The plugin "memory-to-docs" is waiting in the Inbox')
-    expect(listInbox(wikiDir(root)).map((item) => item.title)).toEqual(['Proposed plugin "Memory to Docs"'])
-    expect(existsSync(join(root, 'plugins'))).toBe(false)
-    // Proposing is not something a person is asked to approve: it changes nothing until they accept.
-    expect(of(id).some((event) => event.type === 'approval.requested')).toBe(false)
-  })
-
-  it('has no plugin proposal tool in unattended work', async () => {
-    const { model, start, until, settled } = await setup()
-    model.script([model.calls(['plugin_propose', { name: 'x', description: 'y', files: [] as never }]), model.says('Done.')])
-    const id = await start({ automatic: true })
-    await until(() => settled(id))
-    expect(model.lastToolResults().at(-1)).not.toContain('waiting in the Inbox')
   })
 
   it('delivers a message sent during a tool call after that call, before the next request', async () => {

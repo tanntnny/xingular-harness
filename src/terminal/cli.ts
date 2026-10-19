@@ -1,6 +1,6 @@
-// `xagent-wiki` and `xagent-mcp`: the harness's memory, Wiki, and connected apps as commands,
-// for a `pi` terminal session's shell. Each command maps onto one call to the session socket.
-import type { WikiCall } from '../tools/definitions'
+// `xagent-wiki` and `xagent-mcp`: the harness's notes, skills, history and connected apps as
+// commands, for a `pi` terminal session's shell. Each command maps onto one call to the session socket.
+import type { HarnessCall } from '../tools/definitions'
 import { connectionFromEnv, socketCall } from './client'
 
 export const WIKI_COMMAND = 'xagent-wiki'
@@ -8,22 +8,14 @@ export const APPS_COMMAND = 'xagent-mcp'
 
 export const USAGE = `Usage: ${WIKI_COMMAND} <command> [arguments]
 
-  entrypoint                         Your context pack: memory blocks, rules, skills, project map
-  search <query> [--kind K] [--namespace NS]
-                                     Search every namespace (K: page, fact, skill, rule, prompt)
-  read <id or path>                  Read one page, fact, skill, rule, or prompt
-  list [namespace] [--kind K]        List namespaces and pages, or all entries of a kind
-  skill [name]                       Load a skill, or list skills
-  facts [query] [--namespace NS]     Recall facts (also: memory)
+  search <query> [--project SLUG]    Search the Wiki's project notes
+  read <path>                        Read one note, e.g. projects/<slug>/decisions
+  list [project slug | library]      List notes
+  write <path> <text | ->            Save a note (when this session may write the Wiki)
+  skill [name]                       Load one of your skills, or list them
   history <query> [--scope all] [--since YYYY-MM-DD]
                                      Search earlier conversations and runs (also: recall)
   history-read <run id>              Read one earlier run (also: recall-read)
-  block append <label> <text>        Add to a memory block (user, project, or a shared block)
-  block replace <label> --old <text> --new <text>
-                                     Replace one exact passage in a memory block
-  block rethink <label> <text>       Rewrite a whole memory block
-  propose <json | ->                 Record knowledge, e.g. {"kind":"fact","title":"…","body":"…",
-                                     "type":"preference","sourceRefs":[{"kind":"run","ref":"current"}]}
 `
 
 export const APPS_USAGE = `Usage: ${APPS_COMMAND} <command>
@@ -33,15 +25,15 @@ export const APPS_USAGE = `Usage: ${APPS_COMMAND} <command>
                                      Use one of them
 `
 
-export type CliCommand = { kind: 'call'; call: WikiCall; params: Record<string, unknown> } | { kind: 'help' } | { kind: 'stdin-propose' }
+export type CliCommand = { kind: 'call'; call: HarnessCall; params: Record<string, unknown> } | { kind: 'help' } | { kind: 'stdin-write'; path: string }
 
 function options(args: string[]): { positional: string[]; flags: Record<string, string> } {
   const positional: string[] = []
   const flags: Record<string, string> = {}
   for (let index = 0; index < args.length; index += 1) {
-    const arg = args[index]
+    const arg = args[index]!
     if (arg.startsWith('--') && index + 1 < args.length) {
-      flags[arg.slice(2)] = args[index + 1]
+      flags[arg.slice(2)] = args[index + 1]!
       index += 1
     } else {
       positional.push(arg)
@@ -55,21 +47,23 @@ export function parseCli(argv: string[]): CliCommand {
   const { positional, flags } = options(rest)
   const joined = positional.join(' ').trim()
   switch (command) {
-    case 'entrypoint':
-      return { kind: 'call', call: 'wiki.entrypoint', params: {} }
     case 'search':
       if (!joined) return { kind: 'help' }
-      return { kind: 'call', call: 'wiki.search', params: { query: joined, ...(flags.kind ? { kinds: [flags.kind] } : {}), ...(flags.namespace ? { namespace: flags.namespace } : {}) } }
+      return { kind: 'call', call: 'wiki.search', params: { query: joined, ...(flags.project ? { project: flags.project } : {}) } }
     case 'read':
       if (!joined) return { kind: 'help' }
-      return { kind: 'call', call: 'wiki.read', params: { id: joined } }
+      return { kind: 'call', call: 'wiki.read', params: { path: joined } }
     case 'list':
-      return { kind: 'call', call: 'wiki.list', params: { ...(joined ? { namespace: joined } : {}), ...(flags.kind ? { kind: flags.kind } : {}) } }
+      return { kind: 'call', call: 'wiki.list', params: joined ? { project: joined } : {} }
+    case 'write': {
+      const [path, ...words] = positional
+      if (!path) return { kind: 'help' }
+      if (words.join(' ').trim() === '-') return { kind: 'stdin-write', path }
+      if (!words.length) return { kind: 'help' }
+      return { kind: 'call', call: 'wiki.write', params: { path, text: words.join(' ') } }
+    }
     case 'skill':
-      return { kind: 'call', call: 'wiki.skill', params: joined ? { name: joined } : {} }
-    case 'facts':
-    case 'memory':
-      return { kind: 'call', call: 'wiki.memory', params: { ...(joined ? { query: joined } : {}), ...(flags.namespace ? { namespace: flags.namespace } : {}) } }
+      return { kind: 'call', call: 'skill.load', params: joined ? { name: joined } : {} }
     case 'history':
     case 'recall':
       if (!joined) return { kind: 'help' }
@@ -78,24 +72,6 @@ export function parseCli(argv: string[]): CliCommand {
     case 'recall-read':
       if (!joined) return { kind: 'help' }
       return { kind: 'call', call: 'recall.read', params: { run: joined } }
-    case 'block': {
-      const [action, label, ...words] = positional
-      const body = words.join(' ').trim()
-      if (action === 'append' && label && body) return { kind: 'call', call: 'memory.append', params: { block: label, text: body } }
-      if (action === 'rethink' && label && body) return { kind: 'call', call: 'memory.rethink', params: { block: label, body } }
-      if (action === 'replace' && label && flags.old !== undefined && flags.new !== undefined) return { kind: 'call', call: 'memory.replace', params: { block: label, old: flags.old, new: flags.new } }
-      return { kind: 'help' }
-    }
-    case 'propose': {
-      if (joined === '-') return { kind: 'stdin-propose' }
-      try {
-        const params = JSON.parse(joined) as unknown
-        if (params && typeof params === 'object' && !Array.isArray(params)) return { kind: 'call', call: 'wiki.propose', params: params as Record<string, unknown> }
-      } catch {
-        // Falls through to help.
-      }
-      return { kind: 'help' }
-    }
     default:
       return { kind: 'help' }
   }
@@ -119,8 +95,8 @@ export async function runWikiCli(argv: string[]): Promise<number> {
   try {
     const connection = connectionFromEnv()
     const result =
-      command.kind === 'stdin-propose'
-        ? await socketCall<string>(connection, 'wiki.propose', JSON.parse(await readStdin()) as Record<string, unknown>)
+      command.kind === 'stdin-write'
+        ? await socketCall<string>(connection, 'wiki.write', { path: command.path, text: await readStdin() })
         : await socketCall<string>(connection, command.call, command.params)
     process.stdout.write(`${typeof result === 'string' ? result : JSON.stringify(result)}\n`)
     return 0

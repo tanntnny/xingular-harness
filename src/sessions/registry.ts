@@ -104,8 +104,12 @@ export class RunRegistry {
   constructor(private readonly options: RegistryOptions) {}
 
   /** Observers see events after they are persisted, in order. */
-  listen(listener: RunListener): void {
+  listen(listener: RunListener): () => void {
     this.listeners.push(listener)
+    return () => {
+      const at = this.listeners.indexOf(listener)
+      if (at >= 0) this.listeners.splice(at, 1)
+    }
   }
 
   private deliver(event: RunEvent): boolean {

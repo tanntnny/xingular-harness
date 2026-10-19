@@ -194,7 +194,7 @@ describe('session turns on Pi', () => {
     await tick()
     const snapshot = events.find((event) => event.type === 'context.snapshot')!.payload as { systemPrompt: string; contextUpdate: string; tools: unknown[] }
     expect(snapshot.systemPrompt).toContain('## Context updates')
-    expect(snapshot.contextUpdate).toContain('<block label="persona"')
+    expect(snapshot.contextUpdate).toContain('[App context update')
     expect(snapshot.tools).toEqual([{ name: 'read', description: 'Read a file', parameters: { type: 'object', properties: { path: { type: 'string' } } } }])
   })
 
@@ -443,7 +443,7 @@ describe('session turns on Pi', () => {
     expect(loadRun(harness.env.root, 'run-3').status).toBe('interrupted')
   })
 
-  it('gives every session the memory, recall and Wiki tools, a question tool, and the application\'s tools in order', async () => {
+  it('gives every session the history, Wiki and skill tools, a question tool, and the application\'s tools in order', async () => {
     let received: Parameters<SessionFactory>[0] | null = null
     const { run, harness } = setup(async (input) => {
       received = input
@@ -452,11 +452,38 @@ describe('session turns on Pi', () => {
     harness.sessions.provide(() => [{ name: 'react', label: 'React', description: 'React', parameters: (Type) => Type.Object({}), execute: async () => 'ok' }])
     await run('run-5', { tools: { allow: ['react'] } })
     await tick()
-    expect(received!.allow.slice(0, 3)).toEqual(['react', 'ask_user', 'plugin_propose'])
-    expect(received!.allow).toEqual(expect.arrayContaining(['memory_append', 'history_search', 'wiki_search', 'wiki_read', 'wiki_propose']))
-    expect(received!.tools.map((tool) => tool.name)).toEqual(['memory_append', 'memory_replace', 'memory_rethink', 'history_search', 'history_read', 'wiki_search', 'wiki_read', 'wiki_list', 'skill_load', 'memory_facts', 'wiki_propose', 'trajectory_search', 'trajectory_read', 'ask_user', 'plugin_propose', 'spawn_subagent', 'wait_subagents', 'react'])
-    expect(await received!.tools[0].execute({ block: 'notes', text: 'Remember this.' })).toContain('Updated the notes block')
+    expect(received!.allow.slice(0, 2)).toEqual(['react', 'ask_user'])
+    expect(received!.allow).toEqual(expect.arrayContaining(['history_search', 'wiki_search', 'wiki_read', 'skill_load', 'trajectory_read']))
+    expect(received!.allow).not.toContain('wiki_write')
+    expect(received!.tools.map((tool) => tool.name)).toEqual(['history_search', 'history_read', 'trajectory_search', 'trajectory_read', 'wiki_search', 'wiki_read', 'wiki_list', 'wiki_write', 'skill_load', 'ask_user', 'spawn_subagent', 'wait_subagents', 'react'])
+    expect(await received!.tools.find((tool) => tool.name === 'skill_load')!.execute({})).toBe('You have no skills.')
     expect(received!.params.system).toContain('# Xingular Harness context')
+  })
+
+  it('runs on a pinned harness tree: its sections, its skills, and its version on the run', async () => {
+    let received: Parameters<SessionFactory>[0] | null = null
+    const { run, harness } = setup(async (input) => {
+      received = input
+      return fakeSession(async () => undefined, input.gate)
+    })
+    const { commit, head } = await import('../tree/store')
+    commit(harness.env.root, 'agent-1', {
+      'systemprompt.md': 'You review pull requests.\n',
+      'guardrails.md': '- When a diff is large, load the `triage` skill.\n',
+      'memory.md': '',
+      'tool_guidance.md': '',
+      'skills/triage/SKILL.md': '---\nname: triage\ndescription: a diff is large\n---\nSplit it by folder.\n',
+      'plugins/guard.ts': 'export default function (pi) {}\n'
+    }, { kind: 'seed' })
+    await run('run-tree', { harness: { scope: 'agent-1' } })
+    await tick()
+    const record = loadRun(harness.env.root, 'run-tree')
+    expect(record).toMatchObject({ harnessScope: 'agent-1', harnessVersion: head(harness.env.root, 'agent-1')!.fingerprint })
+    expect(received!.params.system).toContain('You review pull requests.')
+    expect(received!.params.resources!.skillPaths[0]).toMatch(/versions\/[0-9a-f]{16}\/tree\/skills$/)
+    // Plugin code waits for trust.
+    expect(received!.params.treeExtensions).toEqual([])
+    expect(await received!.tools.find((tool) => tool.name === 'skill_load')!.execute({ name: 'triage' })).toContain('Split it by folder.')
   })
 
   it('refuses missing continuation history before creating a run or opening a session', async () => {

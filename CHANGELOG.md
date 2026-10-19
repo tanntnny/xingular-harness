@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## 3.0.0 - 2026-10-19
+
+Rebuilt on recursive harnessing (Harness², Apache-2.0, Google LLC). Breaking.
+
+- Add harness trees (`src/tree/`): each caller scope has a versioned tree of eight components — system prompt, guardrails, memory, tool guidance, subagents, skills, scripts and plugins — that is validated, content-addressed, and pinned for a whole run. `SessionRunInput.harness` and `TerminalPrepareInput.harness` choose one; run records carry `harnessScope` and `harnessVersion`. Plugin code in a tree loads only after it is trusted (`TreeTrust`).
+- Add refinement (`src/refine/`): Propose–Probe–Compose in parallel and sequential modes with the R=4k/P=3k budget identity, blind answer-free selection, reflection into a per-scope experience library, and adoption of the chosen tree. Executions and improver sessions are ordinary recorded runs, marked by the `probe` and `improver` triggers. `harness.refine`, `refine.*` and `library.*` RPC methods, and `xingular-harness refine demo|run`.
+- Add the seventh extension point, `RefineHost`: where an execution works, as whom, with which tools, and what it produced.
+- `spawn_subagent` takes `agent`, naming one of the tree's subagents; that child works from its own definition.
+- Replace the Wiki with project notes (`src/wiki/`): linked Markdown under `wiki/`, versions, search, and `wiki_search`, `wiki_read`, `wiki_list` and a switchable `wiki_write`. An earlier Wiki's memory blocks, facts, revisions and Inbox are moved once to `legacy/wiki-<time>/`; nothing is deleted.
+- Remove memory blocks, facts, proposals and the evidence gate, maintenance and the maintainer, curation, context profiles, the skills/rules/prompts registry as a source of prompt text, `registry_write`, `plugin_write` and `plugin_propose`. `harnesses.seed` builds a caller's first tree from what shaped it before (instructions, its rules, its memory blocks, its skills). `registry/` stays as a component library the Hub installs into and a tree can take items from.
+- Hook events are `wiki.page.saved` and `history.run.ended`.
+
 ## 2.1.2 - 2026-10-19
 
 - Add `/log`, a full-screen snapshot of redacted Harness diagnostics and current-conversation run events.

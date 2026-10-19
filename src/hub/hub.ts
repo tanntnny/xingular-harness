@@ -8,7 +8,7 @@ import { atomicWrite, now, readJson, readJsonOr, writeJson } from '../core/fs'
 import type { Harness } from '../harness'
 import * as pluginApi from '../plugins/api'
 import * as packages from '../plugins/install'
-import * as registry from '../skills/registry'
+import * as registry from '../tree/components'
 import * as attachments from '../plugins/attachments'
 import { version as harnessVersion } from '../../package.json'
 import bundled from './catalog.json'
@@ -244,7 +244,7 @@ export class Hub {
           const payload = JSON.parse(text)
           const previous = new Set(registry.list(root).map((item) => item.id))
           const imported = registry.importItems(root, delivery.registryKind, payload.items)
-          receipt.resourceIds = imported.items.filter((item) => !previous.has(item.id)).map((item) => item.id)
+          receipt.resourceIds = imported.filter((item) => !previous.has(item.id)).map((item) => item.id)
           const choices = structuredClone(choicesBefore)
           const ids = new Set(receipt.resourceIds)
           for (const scope of [choices.global, ...Object.values(choices.agents), ...Object.values(choices.projects)]) {

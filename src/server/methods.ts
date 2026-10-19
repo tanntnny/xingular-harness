@@ -1,42 +1,34 @@
 // Everything a host process can ask of the harness, by name. Each method takes one JSON object
 // and returns JSON; the in-process API these call is the same one a Node application uses
 // directly. Methods are grouped by the part of the harness they belong to.
-import { readFileSync, statSync } from 'node:fs'
-import { basename } from 'node:path'
-
 import { ensureSharedDir, nativeConfig } from '../accounts/env'
 import { audit, readAudit, summaryAuthentication } from '../accounts/store'
 import { HarnessError, invalid } from '../core/errors'
-import { projectsOrNone } from '../core/projects'
 import * as capabilities from '../capabilities/api'
 import { loadRun as loadCapabilitySnapshot } from '../capabilities/runSnapshot'
 import { capabilitySet } from '../capabilities/runSnapshot'
 import type { Harness } from '../harness'
-import * as blocks from '../memory/blocks'
 import { validateScopeIds } from '../mcp/connections'
-import { callerBlocks, type CallerContext } from '../memory/caller'
-import { dispatch } from '../memory/dispatch'
-import * as facts from '../memory/facts'
-import * as graph from '../memory/graph'
-import * as health from '../memory/health'
-import { listInbox, dismissInboxItem } from '../memory/operations'
-import { writeIndex } from '../memory/proposals'
-import * as recall from '../memory/recall'
-import * as references from '../memory/references'
-import { readRunContext } from '../memory/runContext'
-import * as store from '../memory/store'
-import * as wiki from '../memory/wiki'
-import { reindexQuietly, reindexWiki } from '../memory/wikiIndex'
+import type { CallerContext } from '../core/caller'
+import * as recall from '../history/recall'
 import * as plugins from '../plugins/api'
 import * as install from '../plugins/install'
-import { comparison, compile, CONTEXT_PROFILES, load, profiles, render, setProfile, type ContextProfile, type Launch } from '../prompt/compile'
+import { compile, load, render, type Launch } from '../prompt/compile'
+import { readSummary } from '../refine/runner'
 import { selectHistory } from '../sessions/history'
 import { runsSince } from '../sessions/runIndex'
 import { findRun, listRuns, loadRun, pendingDecisions, readEvents, runFamily, snapshot } from '../sessions/runStore'
 import type { SubagentInput, SubagentSelection } from '../sessions/subagents'
 import type { SessionRunInput } from '../sessions/sessions'
-import * as registry from '../skills/registry'
 import type { TerminalPrepareInput } from '../terminal/terminals'
+import { dispatch } from '../tools/dispatch'
+import * as components from '../tree/components'
+import { materialise, type HarnessChoice } from '../tree/materialise'
+import { seedTree } from '../tree/seed'
+import * as trees from '../tree/store'
+import { PI_SURFACE, type Tree } from '../tree/surface'
+import { applyEdit, autotrigger, TreeError, validate } from '../tree/tree'
+import * as notes from '../wiki/notes'
 import type { Handler } from './rpc'
 
 type Params = Record<string, any>
@@ -59,27 +51,35 @@ const questionAnswer = (value: unknown): { selected: string[]; text?: string; no
 }
 const pluginScope = (params: Params): plugins.PluginScope => ({ cwd: optional(params, 'cwd'), accountId: optional(params, 'accountId'), agentId: optional(params, 'agentId'), projectId: optional(params, 'projectId') })
 
-/** Sources larger than this are not imported. */
-const MAX_SOURCE_BYTES = 50 * 1024 * 1024
+const treeOf = (value: unknown): Tree => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw invalid('tree must be an object of path → text.')
+  const out: Tree = {}
+  for (const [path, body] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof body !== 'string') throw invalid(`${path} must be text.`)
+    out[path] = body
+  }
+  return out
+}
+
+/** Validates a tree without throwing: its census, or every problem. */
+function check(tree: Tree): { ok: true; census: ReturnType<typeof validate> } | { ok: false; problems: string[] } {
+  try {
+    return { ok: true, census: validate(PI_SURFACE, tree) }
+  } catch (error) {
+    return { ok: false, problems: error instanceof TreeError ? error.problems : [error instanceof Error ? error.message : String(error)] }
+  }
+}
 
 export function methods(harness: Harness): Record<string, Handler> {
-  const { accounts, approvals, apps, runs, sessions, maintenance, terminals, env } = harness
+  const { accounts, approvals, apps, runs, sessions, terminals, env } = harness
   const root = (): string => env.root
-  const wikiDir = (): string => store.wikiDir(env.root)
-  const changed = (): void => {
-    reindexQuietly(env.root)
-    harness.bus.emit({ type: 'wiki.changed' })
-  }
+  const harnessesChanged = (scope: string): void => harness.bus.emit({ type: 'harnesses.changed', scope })
 
   return {
     // ---- The harness itself --------------------------------------------------------------------
     'harness.status': () => ({ dataRoot: harness.dataRoot, productName: env.productName, recovery: harness.recovery, activeRuns: runs.activeRunIds() }),
     'harness.open': (params: Params) => harness.open(text(params, 'dataRoot'), Array.isArray(params.agentIds) ? params.agentIds : []),
     'harness.rebuildIndex': () => harness.rebuildIndex(),
-    'maintenance.list': (params: Params) => maintenance.jobs().filter((job) => params.runId ? job.runId === params.runId || (Array.isArray(params.ids) && params.ids.includes(job.id)) : params.includeCompleted === true || !['completed', 'rejected'].includes(job.status)).map(({ prepared: _prepared, hashes: _hashes, ...job }) => job),
-    'maintenance.review': (params: Params) => { maintenance.enqueue({ kind: 'review', requestId: optional(params, 'requestId') ?? String(Date.now()), manual: params.manual === true }); return { queued: true } },
-    'maintenance.failRun': (params: Params) => { maintenance.finishRun(text(params, 'runId'), true); return null },
-    'maintenance.retry': (params: Params) => maintenance.retry(text(params, 'id')),
     'hub.list': (params: Params) => harness.hub.list(params.refresh === true),
     'hub.get': (params: Params) => harness.hub.get(text(params, 'id'), text(params, 'version'), params.preview === true),
     'hub.install': (params: Params) => harness.hub.install(text(params, 'id'), text(params, 'version')),
@@ -140,91 +140,124 @@ export function methods(harness: Harness): Record<string, Handler> {
     'connections.appClients': () => apps.appClients(),
     'connections.validateScope': (params: Params) => validateScopeIds(apps.connections.list(), { agentId: optional(params, 'agentId'), projectId: optional(params, 'projectId') }, Array.isArray(params.ids) ? params.ids : []),
 
-    // ---- Wiki: what a person browses and edits ---------------------------------------------------
-    'wiki.pages': (params: Params) => wiki.listPages(root(), optional(params, 'namespace')),
-    'wiki.page': (params: Params) => wiki.loadPage(root(), text(params, 'pageId')),
-    'wiki.find': (params: Params) => wiki.searchEntries(root(), typeof params.query === 'string' ? params.query : '', params.options ?? {}),
-    'wiki.entry': (params: Params) => wiki.loadEntry(root(), text(params, 'entryId')),
-    'wiki.backlinks': (params: Params) => wiki.backlinks(root(), text(params, 'entryId')),
-    'wiki.namespaces': () => wiki.namespaces(root()),
-    'wiki.revisions': (params: Params) => wiki.listRevisions(root(), text(params, 'entryId')),
-    'wiki.revision': (params: Params) => wiki.loadRevision(root(), text(params, 'entryId'), text(params, 'revisionId')),
-    'wiki.restore': (params: Params) => {
-      wiki.restore(root(), text(params, 'entryId'), text(params, 'revisionId'))
-      changed()
+    // ---- Harness trees: the eight components that shape an agent ---------------------------------
+    'harnesses.surface': () => PI_SURFACE,
+    'harnesses.list': () => trees.scopes(root()).map((scope) => {
+      const head = trees.head(root(), scope)
+      return { scope, head, version: head ? trees.versionRecord(root(), scope, head.fingerprint) : null }
+    }),
+    'harnesses.get': (params: Params) => {
+      const scope = text(params, 'scope')
+      const head = trees.head(root(), scope)
+      const fp = optional(params, 'version') ?? head?.fingerprint ?? null
+      if (!fp) return { scope, head: null, version: null, tree: null, plugins: [] }
+      const tree = trees.readVersion(root(), scope, fp)
+      return { scope, head, version: trees.versionRecord(root(), scope, fp), tree, plugins: harness.trust.review(tree), probeCode: harness.trust.probeCode(scope) }
     },
-    // A project was added: it gets its namespace, its fixed pages, and its brief.
-    'wiki.ensureProject': (params: Params) => {
-      store.ensureProjectNamespace(root(), text(params, 'slug'), text(params, 'name'))
-      blocks.ensureProject(wikiDir(), text(params, 'slug'), text(params, 'name'))
-      writeIndex(wikiDir())
-      changed()
+    'harnesses.lineage': (params: Params) => trees.lineage(root(), text(params, 'scope')),
+    'harnesses.compare': (params: Params) => trees.compare(root(), text(params, 'scope'), text(params, 'from'), text(params, 'to')),
+    'harnesses.validate': (params: Params) => {
+      const tree = treeOf(params.tree)
+      const repaired = params.repair === true ? autotrigger(PI_SURFACE, tree) : []
+      return { ...check(tree), repaired, tree }
     },
-    // Files changed outside the harness (an editor, a sync client): bring the index up to date.
-    'wiki.reindex': () => {
-      const pages = reindexWiki(root())
-      harness.bus.emit({ type: 'wiki.changed' })
-      return pages
+    // A whole tree, or an edit of the head that names only the files it changes (null removes one).
+    'harnesses.save': (params: Params) => {
+      const scope = text(params, 'scope')
+      const base = trees.headTree(root(), scope)?.tree ?? {}
+      const tree = params.tree !== undefined ? treeOf(params.tree) : applyEdit(base, (params.edit ?? {}) as Record<string, string | null>)
+      if (params.repair === true) autotrigger(PI_SURFACE, tree)
+      const record = trees.commit(root(), scope, tree, { kind: params.source === 'import' ? 'import' : 'edit', note: optional(params, 'note') ?? undefined, components: Array.isArray(params.components) ? params.components : undefined })
+      harnessesChanged(scope)
+      return record
     },
-    'wiki.sources': () => store.listSources(wikiDir()),
-    'wiki.ingest': (params: Params) => {
+    'harnesses.restore': (params: Params) => {
+      const scope = text(params, 'scope')
+      const head = trees.restore(root(), scope, text(params, 'version'), optional(params, 'note') ?? undefined)
+      harnessesChanged(scope)
+      return head
+    },
+    // A first version: the tree given, or one built from what shaped the caller before harness trees.
+    'harnesses.seed': (params: Params) => {
+      const scope = text(params, 'scope')
+      const tree = params.tree !== undefined ? treeOf(params.tree) : seedTree(root(), { agentId: optional(params, 'agentId') ?? scope, projectId: optional(params, 'projectId'), instructions: typeof params.instructions === 'string' ? params.instructions : '' })
+      const head = trees.seed(root(), scope, tree, optional(params, 'note') ?? undefined)
+      harnessesChanged(scope)
+      return head
+    },
+    'harnesses.legacy': (params: Params) => seedTree(root(), { agentId: optional(params, 'agentId'), projectId: optional(params, 'projectId'), instructions: typeof params.instructions === 'string' ? params.instructions : '' }),
+    'harnesses.trusted': () => harness.trust.list(),
+    'harnesses.trust': (params: Params) => {
+      const scope = text(params, 'scope')
+      const tree = trees.headTree(root(), scope)?.tree ?? {}
       const path = text(params, 'path')
-      if (statSync(path).size > MAX_SOURCE_BYTES) throw invalid('Sources larger than 50 MB are not imported.')
-      const source = maintenance.ingest(optional(params, 'name') ?? basename(path), readFileSync(path), optional(params, 'namespace') ?? store.LIBRARY_NAMESPACE)
-      harness.bus.emit({ type: 'wiki.changed' })
-      return source
+      const body = typeof params.text === 'string' ? params.text : tree[path]
+      if (typeof body !== 'string') throw invalid('That plugin file is not in the harness.')
+      const entry = harness.trust.grant(body, path, scope)
+      harnessesChanged(scope)
+      return entry
     },
-    'wiki.log': () => wiki.recentLog(root()),
-    'wiki.graph': () => graph.build(env),
-    'wiki.health': () => health.check(root()),
-    'wiki.inbox': () => listInbox(wikiDir()),
-    'wiki.inboxDismiss': (params: Params) => {
-      dismissInboxItem(wikiDir(), text(params, 'itemId'))
-      harness.bus.emit({ type: 'wiki.changed' })
+    'harnesses.untrust': (params: Params) => {
+      harness.trust.revoke(text(params, 'hash'))
+      harness.bus.emit({ type: 'harnesses.changed' })
     },
-    'wiki.inboxAccept': async (params: Params) => {
-      // An accepted plugin must arrive untrusted: packages that loaded before are taken over first, never together with it.
-      await plugins.ensureAdopted(harness)
-      const message = maintenance.acceptInboxItem(text(params, 'itemId'))
-      harness.bus.emit({ type: 'plugins.changed' })
-      return message
+    'harnesses.setProbeCode': (params: Params) => {
+      const scope = text(params, 'scope')
+      harness.trust.setProbeCode(scope, params.on === true)
+      harnessesChanged(scope)
     },
-    'wiki.undoOperation': (params: Params) => maintenance.undoOperation(text(params, 'operationId')),
-    'wiki.runContext': (params: Params) => readRunContext(root(), text(params, 'runId')),
+    // The component library (skills, rules and prompts kept as files), and adding one to a tree.
+    'harnesses.components': () => components.list(root()),
+    'harnesses.importComponents': (params: Params) => components.importItems(root(), (optional(params, 'kind') ?? 'skills') as components.ComponentKind, Array.isArray(params.items) ? params.items : []),
+    'harnesses.addComponent': (params: Params) => {
+      const scope = text(params, 'scope')
+      const base = params.tree !== undefined ? treeOf(params.tree) : trees.headTree(root(), scope)?.tree ?? {}
+      const tree = components.addToTree(root(), base, text(params, 'id'))
+      return { tree, ...check(tree) }
+    },
+    'harnesses.materialise': (params: Params) => {
+      const built = materialise(root(), params.harness as HarnessChoice, { trust: harness.trust })
+      return { ...built, tree: undefined }
+    },
 
-    // ---- Facts and memory blocks -----------------------------------------------------------------
-    'facts.list': () => facts.loadMemories(wikiDir()).map((memory) => facts.response(wikiDir(), memory)),
-    'facts.save': (params: Params) => {
-      const saved = facts.saveAsUser(wikiDir(), params.input)
-      changed()
-      return saved
+    // ---- Refinement: improving a harness from evidence -------------------------------------------
+    'refine.start': (params: Params) => harness.refine.start({ task: params.task, k: typeof params.k === 'number' ? params.k : 1, mode: params.mode === 'sequential' ? 'sequential' : 'parallel', improver: params.improver ?? {}, baseVersion: optional(params, 'baseVersion'), id: optional(params, 'id') ?? undefined }),
+    'refine.get': (params: Params) => harness.refine.get(text(params, 'id')),
+    'refine.list': (params: Params) => harness.refine.list({ scope: optional(params, 'scope'), limit: typeof params.limit === 'number' ? params.limit : undefined }),
+    'refine.running': () => harness.refine.running(),
+    'refine.cancel': async (params: Params) => {
+      await harness.refine.cancel(text(params, 'id'))
+      return readSummary(root(), text(params, 'id'))
     },
-    'blocks.list': (params: Params) => {
-      // Defaults exist for the user, each agent the application names, and each project.
-      const directory = wikiDir()
-      blocks.ensureUser(directory)
-      for (const agentId of Array.isArray(params.agentIds) ? params.agentIds : []) blocks.ensureAgent(directory, String(agentId))
-      for (const project of projectsOrNone(root())) blocks.ensureProject(directory, project.slug, project.name)
-      return blocks.loadAll(directory).map((block) => blocks.response(directory, block))
-    },
-    'blocks.save': (params: Params) => {
-      const saved = blocks.response(wikiDir(), blocks.saveAsUser(wikiDir(), params.input))
+    'refine.candidates': (params: Params) => harness.refine.candidates(text(params, 'id')),
+    'refine.adopt': (params: Params) => harness.refine.adopt(text(params, 'id'), { label: optional(params, 'label') }),
+    'library.list': (params: Params) => harness.refine.library(text(params, 'scope')),
+    'library.read': (params: Params) => harness.refine.libraryEntry(text(params, 'scope'), text(params, 'area'), text(params, 'task')),
+    'library.forget': (params: Params) => harness.refine.forget(text(params, 'scope'), text(params, 'area'), Array.isArray(params.tasks) ? params.tasks : []),
+
+    // ---- The Wiki: project notes ------------------------------------------------------------------
+    'wiki.list': (params: Params) => notes.list(root(), params.project === undefined ? {} : { project: optional(params, 'project') }),
+    'wiki.read': (params: Params) => notes.read(root(), text(params, 'path')),
+    'wiki.write': (params: Params) => {
+      const note = notes.write(root(), text(params, 'path'), typeof params.text === 'string' ? params.text : '', { expectedUpdatedAt: optional(params, 'expectedUpdatedAt') })
       harness.bus.emit({ type: 'wiki.changed' })
-      return saved
+      return note
     },
-    'blocks.undo': (params: Params) => {
-      const block = blocks.response(wikiDir(), blocks.undoLast(wikiDir(), text(params, 'blockId')))
+    'wiki.remove': (params: Params) => {
+      notes.remove(root(), text(params, 'path'))
       harness.bus.emit({ type: 'wiki.changed' })
-      return block
+    },
+    'wiki.search': (params: Params) => notes.search(root(), typeof params.query === 'string' ? params.query : '', { project: optional(params, 'project'), limit: typeof params.limit === 'number' ? params.limit : undefined }),
+    'wiki.graph': () => notes.graph(root()),
+    'wiki.versions': (params: Params) => notes.versions(root(), text(params, 'path')),
+    'wiki.version': (params: Params) => notes.version(root(), text(params, 'path'), text(params, 'id')),
+    'wiki.ensureProject': () => {
+      notes.ensureLayout(root(), env.productName)
+      harness.bus.emit({ type: 'wiki.changed' })
     },
 
     // ---- What a session calls, on behalf of a caller the host names -------------------------------
-    'memory.permissions': (params: Params) => {
-      const context = (params.context ?? {}) as CallerContext
-      const { caller, attached } = callerBlocks(env, context)
-      return attached.map((block) => ({ id: block.id, writable: blocks.editRefusal(caller, block) === null, reason: blocks.editRefusal(caller, block) }))
-    },
-    'memory.call': (params: Params) => dispatch(env, (params.context ?? {}) as CallerContext, text(params, 'call'), params.params ?? {}),
+    'harness.call': (params: Params) => dispatch(env, (params.context ?? {}) as CallerContext, text(params, 'call'), params.params ?? {}, { treeDir: optional(params, 'treeDir') }),
 
     // ---- Recall ------------------------------------------------------------------------------------
     'recall.search': (params: Params) => recall.searchAll(env, typeof params.query === 'string' ? params.query : '', params.filter ?? {}),
@@ -232,30 +265,11 @@ export function methods(harness: Harness): Record<string, Handler> {
 
     // ---- The compiled prompt -----------------------------------------------------------------------
     'context.compile': (params: Params) => {
-      const pack = compile(env, (params.context ?? {}) as CallerContext, (params.launch ?? {}) as Launch)
+      const tree = params.harness ? materialise(root(), params.harness as HarnessChoice, { trust: harness.trust }) : null
+      const pack = compile(env, (params.context ?? {}) as CallerContext, (params.launch ?? {}) as Launch, tree)
       return params.render ? { pack, text: render(env, pack) } : pack
     },
     'context.runPack': (params: Params) => load(root(), text(params, 'runId')),
-    'context.profiles': () => ({ profiles: profiles(root()), stats: comparison(root()) }),
-    'context.setProfile': (params: Params) => {
-      const profile = params.profile as ContextProfile
-      if (!CONTEXT_PROFILES.includes(profile)) throw invalid('Unknown context profile.')
-      setProfile(root(), text(params, 'subject'), profile)
-    },
-    'references.pin': (params: Params) => references.pinAll(root(), (Array.isArray(params.items) ? params.items : []).map((item: Params) => ({ kind: item.kind === 'skill' ? ('skill' as const) : ('page' as const), id: text(item, 'id') }))),
-    'references.body': (params: Params) => references.body(root(), text(params, 'id'), optional(params, 'revision')),
-
-    // ---- Skills, prompts, rules --------------------------------------------------------------------
-    'skills.list': () => registry.state(root()),
-    'skills.setEnabled': (params: Params) => {
-      const state = registry.setEnabled(root(), optional(params, 'projectId'), Array.isArray(params.ids) ? params.ids : [])
-      // The same choices are what the plugin list shows.
-      harness.bus.emit({ type: 'plugins.changed' })
-      return state
-    },
-    'skills.create': (params: Params) => registry.create(root(), text(params, 'kind'), text(params, 'name')),
-    'skills.import': (params: Params) => registry.importSkills(root(), Array.isArray(params.skills) ? params.skills : []),
-    'skills.enabledFor': (params: Params) => registry.enabledFor(root(), optional(params, 'projectId')),
 
     // ---- Plugins: everything that shapes a session, and the trust a working folder's code needs ---
     // A host that is not a Node program describes its own parts here instead of in the options.
@@ -273,7 +287,7 @@ export function methods(harness: Harness): Record<string, Handler> {
     'plugins.update': (params: Params) => install.update(harness, { ...pluginScope(params), pluginId: optional(params, 'pluginId') }),
     'plugins.configure': (params: Params) => plugins.configure(harness, { ...pluginScope(params), pluginId: text(params, 'pluginId'), settings: (params.settings && typeof params.settings === 'object' ? params.settings : {}) as Record<string, unknown> }),
     'plugins.forgetAgent': (params: Params) => plugins.forgetAgent(harness, text(params, 'agentId')),
-    'plugins.inventory': (params: Params) => plugins.inventoryFor(harness, { ...pluginScope(params), context: (params.context ?? {}) as CallerContext, launch: (params.launch ?? {}) as Launch, tools: params.tools, connections: params.connections }),
+    'plugins.inventory': (params: Params) => plugins.inventoryFor(harness, { ...pluginScope(params), context: (params.context ?? {}) as CallerContext, launch: (params.launch ?? {}) as Launch, tools: params.tools, connections: params.connections, harness: (params.harness ?? null) as HarnessChoice | null }),
     'plugins.trust': (params: Params) => plugins.trust(harness, { cwd: optional(params, 'cwd'), accountId: optional(params, 'accountId'), hash: text(params, 'hash') }),
     'plugins.untrust': (params: Params) => plugins.untrust(harness, { cwd: optional(params, 'cwd'), accountId: optional(params, 'accountId'), hash: text(params, 'hash') }),
 

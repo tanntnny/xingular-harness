@@ -1,11 +1,13 @@
-// @xingular/harness: a Pi agent harness. Multi-account Pi sessions, a compiled system prompt
-// with stable-prefix delivery, a memory lifecycle (Wiki, blocks, facts, recall, sleep-time
-// consolidation), tools with a gate and standing approvals, connected apps over MCP, and
-// skills (a person's own and built-in).
+// @xingular/harness: a Pi agent harness built on recursive harnessing (Harness², Apache-2.0,
+// Google LLC). Each agent runs on a versioned harness tree of eight components (system prompt,
+// guardrails, memory, tool guidance, subagents, skills, scripts, plugins); refinement improves a
+// tree from evidence through Propose–Probe–Compose, blind selection and an experience library.
+// Around it: multi-account Pi sessions, a compiled prompt with stable-prefix delivery, project
+// notes (the Wiki), history, tools with a gate and standing approvals, and connected apps.
 //
 // An application embeds it with `createHarness` and extends it through prompt sections, tool
-// providers, a tool policy, a secret store, a directory of its own names, and a description of
-// its own parts as plugins. Everything else is reachable by path, e.g. `@xingular/harness/memory/wiki`.
+// providers, a tool policy, a secret store, a directory of its own names, a description of its
+// own parts as plugins, and a refinement host. Everything else is reachable by path.
 export { createHarness, Harness, type HarnessOptions, type Recovery } from './harness'
 export { hubCatalogSchema, hubEntrySchema, hubOverviewSchema, hubReceiptSchema, type HubCatalog, type HubEntry, type HubOverview, type HubReceipt } from './hub/schema'
 
@@ -20,8 +22,8 @@ export type { AccountLoginSnapshot, ModelOption } from './accounts/accounts'
 export type { Capability, CapabilityCatalogue, CapabilityKind, CapabilityScope, CapabilitySet } from './capabilities/types'
 export type { RunCapabilitySnapshot } from './capabilities/runSnapshot'
 
-export type { CallerContext } from './memory/caller'
-export { dispatch as memoryCall } from './memory/dispatch'
+export type { CallerContext } from './core/caller'
+export { dispatch as harnessCall } from './tools/dispatch'
 
 export {
   compile,
@@ -30,7 +32,6 @@ export {
   CONTEXT_MESSAGE_TYPE,
   CONTEXT_SNAPSHOT_KEY,
   type ContextPack,
-  type ContextProfile,
   type HostSection,
   type HostToolGroup,
   type Launch,
@@ -45,19 +46,32 @@ export type { ActiveRun, ApprovalDecision, ApprovalInput, QuestionAnswer, Questi
 export type { RunFields, SessionRunInput } from './sessions/sessions'
 export type { Effort } from './sessions/runner'
 
-export { describeTool, WIKI_TOOLS, WIKI_TOOL_NAMES, type WikiCall, type WikiToolDefinition } from './tools/definitions'
+export { describeTool, HARNESS_TOOLS, DEFAULT_TOOL_NAMES, WIKI_WRITE, type HarnessCall, type HarnessToolDefinition } from './tools/definitions'
 export type { ToolProvider, ToolResult, ToolSession, ToolSpec } from './tools/types'
 export { SPAWN_SUBAGENT, SUBAGENT_RELATION } from './tools/spawnSubagent'
-export { maintenanceTools, MAINTENANCE_PLUGIN, MAINTENANCE_TOOL_NAMES } from './tools/maintenance'
-export type { CurationJob } from './memory/curation'
 export { webTools, WEB_PLUGIN, WEB_SEARCH_KEY, type WebToolOptions } from './web/tools'
-export { registryTools, REGISTRY_WRITE, PLUGIN_WRITE, REGISTRY_WRITE_PLUGIN, type RegistryToolOptions } from './tools/registryWrite'
 export { safeRequest, type WebRequest, type WebResponse } from './web/safeRequest'
 
 export type { BrokeredTools, BrokerSession, BrokerTool } from './mcp/service'
 export type { Connection, ConnectionInput, AppOAuthClients } from './mcp/types'
 
-export { configureBuiltins, type RegistryItem, type RegistryState, type SkillBundleInput } from './skills/registry'
+export { configureBuiltins, type ComponentItem, type SkillBundleInput } from './tree/components'
+
+// The harness tree and refinement.
+export { PI_SURFACE, componentOf, type ComponentGroup, type ComponentId, type ComponentInfo, type SurfaceSpec, type Tree } from './tree/surface'
+export { validate as validateTree, autotrigger, diffSummary, TreeError, type TreeCensus, type TreeDiff } from './tree/tree'
+export { fingerprint, type Head, type VersionRecord, type VersionSource } from './tree/store'
+export { materialise, type HarnessChoice, type Materialised } from './tree/materialise'
+export { seedTree, type SeedInput } from './tree/seed'
+export type { TrustedPlugin } from './tree/trust'
+export { DEFAULT_REFINE_HOST, defaultDeliverable, type RefineHost, type RolloutSession, type RolloutWorkspace } from './refine/host'
+export { PROBE_TRIGGER, IMPROVER_TRIGGER, type ImproverSettings } from './refine/pi'
+export type { CandidateView, StartInput as RefineStartInput } from './refine/service'
+export type { RefineEvent, RefineStatus, RefineSummary } from './refine/runner'
+export type { Executor, Improver, RecursionMode, RefineTask, Rollout } from './refine/types'
+export type { WorkPrompts } from './refine/prompts'
+export type { Experience } from './refine/library'
+export type { Note, NoteSummary } from './wiki/notes'
 
 export type { TerminalAssets, TerminalLaunch, TerminalPrepareInput } from './terminal/terminals'
 

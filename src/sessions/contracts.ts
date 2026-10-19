@@ -299,6 +299,9 @@ export interface RunRecord {
   agentId: string | null
   /** What started the run. */
   trigger: string | null
+  /** The harness tree the run used: its scope and version fingerprint. */
+  harnessScope?: string | null
+  harnessVersion?: string | null
 }
 
 const text = z.string().nullish().transform((value) => value ?? null)
@@ -326,7 +329,9 @@ export const runRecordSchema = z.object({
   handoffId: text,
   accountId: text,
   agentId: text,
-  trigger: text
+  trigger: text,
+  harnessScope: text.optional(),
+  harnessVersion: text.optional()
 }) satisfies z.ZodType<RunRecord, unknown>
 
 export const ACTIVE_STATUSES: readonly string[] = ['queued', 'running', 'waiting_for_approval', 'waiting_for_input']

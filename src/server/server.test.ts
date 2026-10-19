@@ -84,7 +84,7 @@ describe('the harness served to a host', () => {
 
     const status = await request('harness.status')
     expect(status).toMatchObject({ dataRoot: harness.env.root, productName: 'Xingular Harness', activeRuns: [] })
-    expect(await request<string[]>('harness.methods')).toEqual(expect.arrayContaining(['accounts.list', 'sessions.run', 'sessions.spawnSubagent', 'subagents.spawn', 'subagents.wait', 'subagents.results', 'wiki.pages', 'terminal.prepare', 'skills.list', 'skills.import', 'connections.list', 'harness.shutdown']))
+    expect(await request<string[]>('harness.methods')).toEqual(expect.arrayContaining(['accounts.list', 'sessions.run', 'sessions.spawnSubagent', 'subagents.spawn', 'subagents.wait', 'subagents.results', 'wiki.list', 'wiki.write', 'terminal.prepare', 'harnesses.seed', 'harnesses.save', 'refine.start', 'refine.adopt', 'library.list', 'connections.list', 'harness.shutdown']))
 
     await expect(request('sessions.spawnSubagent', { parentRunId: 'missing', brief: 'Review' })).rejects.toMatchObject({ code: 'run_not_active' })
 
@@ -95,14 +95,11 @@ describe('the harness served to a host', () => {
     await expect(request('accounts.rename', {})).rejects.toMatchObject({ code: 'invalid_request', message: 'accountId is required.' })
     await expect(request('nope.nothing')).rejects.toMatchObject({ code: 'unknown_method' })
 
-    expect((await request<any[]>('wiki.namespaces')).map((entry) => entry.namespace)).toEqual(expect.arrayContaining(['/projects/app']))
-    const blocks = await request<any[]>('blocks.list', { agentIds: ['a1'] })
-    expect(blocks.map((block) => block.label)).toEqual(expect.arrayContaining(['user', 'persona', 'notes']))
-    expect(await request('memory.call', { context: { agentId: 'a1', agentName: 'Helper', actor: 'Chat' }, call: 'memory.append', params: { block: 'notes', text: 'Ship on Fridays.' } })).toContain('notes')
+    await request('wiki.write', { path: 'projects/app/decisions', text: '# Decisions\n\nShip on Fridays.\n' })
     expect(notices).toContainEqual({ type: 'wiki.changed' })
-    const compiled = await request('context.compile', { context: { agentId: 'a1', agentName: 'Helper', actor: 'Chat' }, render: true })
-    expect(compiled.text).toContain('Ship on Fridays.')
-    expect(await request('context.profiles')).toEqual({ profiles: {}, stats: [] })
+    expect(await request('harness.call', { context: { agentId: 'a1', agentName: 'Helper', actor: 'Chat', projectId: 'p1' }, call: 'wiki.search', params: { query: 'Fridays' } })).toContain('projects/app/decisions')
+    const compiled = await request('context.compile', { context: { agentId: 'a1', agentName: 'Helper', actor: 'Chat', projectId: 'p1' }, render: true })
+    expect(compiled.text).toContain('projects/app/decisions — Decisions')
 
     const started = await request('sessions.run', { run: { id: 'r1', sessionId: 'a1' }, cwd: harness.env.root, sessionDir: join(harness.env.root, 'sessions', 'a1'), text: 'hello', caller: { agentId: 'a1', agentName: 'Helper', actor: 'Chat' }, tools: { allow: ['read'] } })
     expect(started).toEqual({ runId: 'r1', nativeSessionId: 'native-1' })
@@ -110,7 +107,7 @@ describe('the harness served to a host', () => {
     expect(events.map((event) => event.type)).toEqual(['started', 'status.changed', 'context.snapshot', 'completed'])
     expect((await request('runs.load', { runId: 'r1' })).run).toMatchObject({ id: 'r1', status: 'completed' })
     expect((await request<any[]>('runs.list', { filter: { sessionId: 'a1' } })).map((run) => run.id)).toEqual(['r1'])
-    expect((await request('context.profiles')).stats).toMatchObject([{ subject: 'a1', mode: 'chat', contextProfile: 'full', runs: 1, completed: 1, runIds: ['r1'] }])
+    expect((await request('context.runPack', { runId: 'r1' })).sections.map((section: { id: string }) => section.id)).toContain('tools')
   })
 
   it('lets a host that is not a Node program supply secrets, policy, names, and tools over the protocol', async () => {
@@ -163,31 +160,41 @@ describe('the harness served to a host', () => {
   })
 })
 
-describe('built-in skills', () => {
-  it('are on everywhere until switched off, and a person\'s own item of the same name replaces one', async () => {
+describe('harness trees over the wire', () => {
+  it('seeds, edits, validates, restores, and adds a built-in component, then compiles the tree', async () => {
     const builtins = mkdtempSync(join(tmpdir(), 'builtin-'))
-    writeFile(join(builtins, 'skills', 'review', 'SKILL.md'), '---\nname: review\ndescription: Review a change before it ships\n---\nRead the diff first.\n')
-    writeFile(join(builtins, 'rules', 'plain.md'), '---\nname: Plain words\ndescription: Write plainly\n---\nUse plain words.\n')
-    const { transport, request } = host()
+    writeFile(join(builtins, 'skills', 'review', 'SKILL.md'), '---\nname: review\ndescription: reviewing a change before it ships\n---\nRead the diff first.\n')
+    writeFile(join(builtins, 'rules', 'plain.md'), '---\nname: Plain words\n---\nUse plain words.\n')
+    const { transport, request, notices } = host()
     const harness = createHarness({ dataRoot: rootWithProject(), stateDir: mkdtempSync(join(tmpdir(), 'hs-')), secrets: memorySecretStore(), builtins: [builtins] })
     open.push(harness)
     serve(harness, transport)
 
-    const state = await request('skills.list')
-    expect(state.items).toMatchObject([{ id: 'rules/plain', builtin: true }, { id: 'skills/review', builtin: true }])
-    expect(state.enabled.global).toEqual(['rules/plain', 'skills/review'])
-    expect((await request<any[]>('skills.enabledFor', { projectId: 'p1' })).map((item) => item.id)).toEqual(['rules/plain', 'skills/review'])
-    expect((await request('context.compile', { context: { projectId: 'p1', actor: 'Code' }, render: true })).text).toContain('Use plain words.')
+    const seeded = await request('harnesses.seed', { scope: 'a1', instructions: 'You help with releases.' })
+    expect(seeded.fingerprint).toMatch(/^[0-9a-f]{16}$/)
+    expect(notices).toContainEqual({ type: 'harnesses.changed', scope: 'a1' })
+    const first = await request('harnesses.get', { scope: 'a1' })
+    expect(first.tree['systemprompt.md']).toBe('You help with releases.\n')
 
-    const off = await request('skills.setEnabled', { projectId: null, ids: ['skills/review'] })
-    expect(off.enabled).toMatchObject({ global: ['skills/review'], builtinOff: ['rules/plain'] })
-    expect((await request<any[]>('skills.enabledFor', {})).map((item) => item.id)).toEqual(['skills/review'])
+    const library = await request<any[]>('harnesses.components')
+    expect(library.map((item) => item.id)).toEqual(['rules/plain', 'skills/review'])
+    const added = await request('harnesses.addComponent', { scope: 'a1', id: 'skills/review' })
+    expect(added.ok).toBe(true)
+    expect(added.tree['guardrails.md']).toContain('load the `review` skill')
+    const saved = await request('harnesses.save', { scope: 'a1', tree: added.tree, note: 'Added review' })
+    expect(saved.parent).toBe(seeded.fingerprint)
 
-    writeFile(join(harness.env.root, 'registry', 'skills', 'review', 'SKILL.md'), '---\nname: review\ndescription: My own review steps\n---\nMine.\n')
-    const mine = (await request('skills.list')).items.find((item: any) => item.id === 'skills/review')
-    expect(mine).toMatchObject({ description: 'My own review steps' })
-    expect(mine.builtin).toBeUndefined()
-    // A person's own item is enabled the usual way, not by default.
-    expect((await request<any[]>('skills.enabledFor', {})).map((item) => item.id)).toEqual([])
+    const bad = await request('harnesses.validate', { tree: { ...added.tree, 'plugins/x.ts': 'nothing' } })
+    expect(bad).toMatchObject({ ok: false })
+    expect(bad.problems.join(' ')).toContain('default export')
+    await expect(request('harnesses.save', { scope: 'a1', edit: { 'plugins/x.ts': 'nothing' } })).rejects.toMatchObject({ code: 'harness_invalid' })
+
+    const edited = await request('harnesses.save', { scope: 'a1', edit: { 'memory.md': 'Releases ship on Tuesdays.\n' } })
+    expect((await request<any[]>('harnesses.lineage', { scope: 'a1' })).map((version) => version.fingerprint)).toEqual([edited.fingerprint, saved.fingerprint, seeded.fingerprint])
+    const compiled = await request('context.compile', { context: { agentId: 'a1', actor: 'Chat' }, harness: { scope: 'a1' }, render: true })
+    expect(compiled.text).toContain('Releases ship on Tuesdays.')
+    await request('harnesses.restore', { scope: 'a1', version: seeded.fingerprint })
+    expect((await request('harnesses.get', { scope: 'a1' })).head.fingerprint).toBe(seeded.fingerprint)
+    expect(await request('refine.list', { scope: 'a1' })).toEqual([])
   })
 })

@@ -1,5 +1,27 @@
 # Third-party notices
 
+## Harness²
+
+The harness tree (`src/tree/`) and refinement (`src/refine/`) port the method of Harness²:
+Recursive Agent Harnessing for an Open World (Xu, Chen, CuiZhu, Dalvi Mishra, Ming, Yu, Han,
+Lee, Pfister; arXiv:2610.14224). The component surface and its validation, Propose–Probe–Compose
+in parallel and sequential modes with its budget identity, blind answer-free selection, the
+reflection record and the experience library, and the improver, selector and reflector prompts
+are adapted from its reference implementation (`harness2/core`, `harness2/substrate`) for Pi.
+
+Upstream: https://github.com/google-research/harness2 (Copyright 2026 Google LLC)
+
+Licensed under the Apache License, Version 2.0 (the "License"); you may not use these files
+except in compliance with the License. You may obtain a copy of the License at
+https://www.apache.org/licenses/LICENSE-2.0. Unless required by applicable law or agreed to in
+writing, software distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. Changes from upstream: ported
+from Python to TypeScript; the OpenCode and Codex surfaces replaced by one Pi surface; executors
+and improvers run as recorded harness sessions; benchmark adapters replaced by a host-supplied
+`RefineHost`; prompt text that named a framework rewritten for Pi.
+
+## Oh My Pi
+
 The Harness terminal presentation adapts the titanium color palette, five-row Pi logo,
 diagonal gradient and related terminal presentation conventions from Oh My Pi 18.11.3,
 particularly `@oh-my-pi/pi-tui/src/theme/defaults/titanium.json` and

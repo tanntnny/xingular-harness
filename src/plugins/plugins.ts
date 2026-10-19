@@ -1,11 +1,10 @@
 // The harness decides what a Pi session loads. Pi's own discovery is switched off for sessions
 // and terminals; they receive the paths chosen here, so nothing reaches a model unlisted.
-import { chmodSync, readdirSync } from 'node:fs'
+import { chmodSync, lstatSync, readdirSync, rmSync, unlinkSync } from 'node:fs'
 import { join } from 'node:path'
 
 import type { Bus } from '../core/bus'
 import { now, readJsonOr, writeJson } from '../core/fs'
-import { removeLinkedSkills } from '../skills/registry'
 import { attached, type Attachments, type AttachScope } from './attachments'
 import { piResolver, type Found, type ResolveInput, type Resolver } from './discover'
 import { foundIds, pluginIdOf } from './identity'
@@ -185,5 +184,42 @@ export class Plugins {
     writeJson(this.registeredPath, stored)
     chmodSync(this.registeredPath, 0o600)
     this.options.bus.emit({ type: 'plugins.changed' })
+  }
+}
+
+// Prefix of the entries an earlier version of the harness linked into a Pi agent folder's `skills/`.
+const LINKED_SKILL_PREFIX = 'agentx-'
+
+function isLinkedSkill(path: string): boolean {
+  let meta
+  try {
+    meta = lstatSync(path)
+  } catch {
+    return false
+  }
+  if (meta.isSymbolicLink()) return true
+  if (!meta.isDirectory()) return false
+  // A single-file skill was linked as `agentx-<name>/SKILL.md` inside a folder the harness made.
+  try {
+    const entries = readdirSync(path)
+    return entries.length === 1 && entries[0] === 'SKILL.md' && lstatSync(join(path, 'SKILL.md')).isSymbolicLink()
+  } catch {
+    return false
+  }
+}
+
+/** Removes the skill links an earlier version of the harness kept in a Pi agent folder's `skills/`. */
+export function removeLinkedSkills(skillsDir: string): void {
+  let names: string[]
+  try {
+    names = readdirSync(skillsDir)
+  } catch {
+    return
+  }
+  for (const name of names) {
+    const path = join(skillsDir, name)
+    if (!name.startsWith(LINKED_SKILL_PREFIX) || !isLinkedSkill(path)) continue
+    if (lstatSync(path).isSymbolicLink()) unlinkSync(path)
+    else rmSync(path, { recursive: true, force: true })
   }
 }

@@ -42,7 +42,9 @@ function ordered(record: RunRecord): RunRecord {
     handoffId: record.handoffId,
     accountId: record.accountId,
     agentId: record.agentId,
-    trigger: record.trigger
+    trigger: record.trigger,
+    ...(record.harnessScope ? { harnessScope: record.harnessScope } : {}),
+    ...(record.harnessVersion ? { harnessVersion: record.harnessVersion } : {})
   }
 }
 

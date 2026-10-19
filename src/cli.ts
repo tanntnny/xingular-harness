@@ -4,7 +4,8 @@
 //   xingular-harness serve --state <dir> [--data <dir>] [--name <product>] [--builtins <dir>]…
 //                          [--host-secrets] [--host-policy] [--host-tools] [--host-directory]
 //       Serves the harness to a host process over stdin/stdout (newline-delimited JSON).
-//   xingular-harness wiki <command>     Memory and Wiki, from inside a terminal session.
+//   xingular-harness wiki <command>     Project notes, skills and history, from inside a terminal session.
+//   xingular-harness refine <command>   Refine a harness tree from evidence (refine demo needs no model).
 //   xingular-harness mcp <command>      Connected apps, from inside a terminal session.
 //   xingular-harness plugins <command>  List, install, switch and trust plugins.
 import { resolve } from 'node:path'
@@ -13,6 +14,7 @@ import { log } from './core/bus'
 import { createHarness, type HarnessOptions } from './harness'
 import { runPluginsCli, terminalAsk } from './plugins/cli'
 import { runHubCli } from './hub/cli'
+import { runRefineCli } from './refine/cli'
 import { remoteDirectory, remotePolicy, remoteSecrets, remoteTools } from './server/remote'
 import { RpcPeer, stdioTransport } from './server/rpc'
 import { attach } from './server/serve'
@@ -20,17 +22,18 @@ import { runAppsCli, runWikiCli } from './terminal/cli'
 import { runStandaloneTerminal, standaloneArguments } from './terminal/standalone'
 
 const USAGE = `Usage: xingular-harness [--data <dir>] [--state <dir>]
-       xingular-harness <terminal | serve | wiki | mcp | plugins | hub> [arguments]
+       xingular-harness <terminal | serve | wiki | mcp | plugins | hub | refine> [arguments]
 
   (no command)       Start the interactive Harness terminal
   terminal           Start the interactive Harness terminal
   serve --state <dir> [--data <dir>] [--name <product>] [--builtins <dir>]
         [--host-secrets] [--host-policy] [--host-tools] [--host-directory]
                      Serve the harness over newline-delimited JSON
-  wiki <command>     Memory and Wiki commands for a terminal session
+  wiki <command>     Wiki, skill and history commands for a terminal session
   mcp <command>      Connected-app commands for a terminal session
   plugins <command>  List, install, switch and trust plugins (plugins help)
   hub <command>      Browse and install curated items (hub help)
+  refine <command>   Refine a harness from evidence (refine demo, refine run)
 
 Standalone terminal options:
   --data <dir>       Data directory (default: ~/.xingular-harness/data)
@@ -105,6 +108,7 @@ async function main(): Promise<number> {
   if (command === 'mcp') return runAppsCli(rest)
   if (command === 'plugins') return runPluginsCli(rest, { ask: terminalAsk() })
   if (command === 'hub') return runHubCli(rest)
+  if (command === 'refine') return runRefineCli(rest)
   process.stdout.write(USAGE)
   return command ? 2 : 0
 }

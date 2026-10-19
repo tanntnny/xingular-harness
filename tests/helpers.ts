@@ -3,12 +3,12 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 
 import { writeJson } from '../src/core/fs'
-import { ensureLayout, wikiDir } from '../src/memory/store'
+import { ensureLayout, wikiDir } from '../src/wiki/notes'
 
 /** A throwaway data root with the Wiki skeleton. */
 export function dataRoot(): string {
   const root = mkdtempSync(join(tmpdir(), 'harness-root-'))
-  ensureLayout(root)
+  ensureLayout(root, 'Test')
   return root
 }
 

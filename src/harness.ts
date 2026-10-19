@@ -1,6 +1,7 @@
-// The harness, assembled: Pi sessions on isolated accounts, a compiled prompt, a memory
-// lifecycle, tools, connected apps, and skills. An application embeds one of these and adds
-// its own prompt sections, tools, and policy; nothing here knows what that application is.
+// The harness, assembled: Pi sessions on isolated accounts, versioned harness trees that shape
+// them, refinement that improves those trees from evidence, a compiled prompt, project notes,
+// tools, and connected apps. An application embeds one of these and adds its own prompt
+// sections, tools, and policy; nothing here knows what that application is.
 import { Subagents } from './sessions/subagentService'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
@@ -15,18 +16,15 @@ import { DEFAULT_PRODUCT_NAME, EMPTY_DIRECTORY, type Directory, type HarnessEnv 
 import { HarnessError } from './core/errors'
 import { readJsonOr } from './core/fs'
 import { closeIndex } from './core/index'
-import { projectsOrNone } from './core/projects'
 import { ConnectedApps } from './mcp/service'
 import type { AppOAuthClients } from './mcp/types'
 import { migrateConnectionScopes } from './mcp/scopeMigration'
-import type { MaintainerFactory } from './memory/maintainer'
-import { Maintenance } from './memory/maintenance'
-import * as migrate from './memory/migrate'
-import { writeIndex } from './memory/proposals'
-import * as recall from './memory/recall'
-import * as store from './memory/store'
-import { countPages } from './memory/wiki'
-import * as wikiIndex from './memory/wikiIndex'
+import * as recall from './history/recall'
+import type { RefineHost } from './refine/host'
+import { Refinements } from './refine/service'
+import { configureBuiltins } from './tree/components'
+import { TreeTrust } from './tree/trust'
+import * as notes from './wiki/notes'
 import * as pluginApi from './plugins/api'
 import * as attachments from './plugins/attachments'
 import { HARNESS_PLUGINS } from './plugins/builtin'
@@ -40,7 +38,6 @@ import { RunRegistry } from './sessions/registry'
 import { markInterruptedRuns } from './sessions/runStore'
 import type { SessionFactory } from './sessions/runner'
 import { Sessions } from './sessions/sessions'
-import * as registry from './skills/registry'
 import { Terminals, type TerminalAssets } from './terminal/terminals'
 
 export interface HarnessOptions {
@@ -57,19 +54,13 @@ export interface HarnessOptions {
   policy?: ToolPolicy
   /** Replaces Pi, for tests. */
   sessionFactory?: SessionFactory
-  maintainerFactory?: MaintainerFactory
-  /** Delegate maintenance execution to the embedding host through durable requests. */
-  externalMaintenance?: boolean
-  maintenanceExcludedTriggers?: string[]
-  /** Queue consolidation after every settled run (the default). False leaves memory to explicit proposals and scheduled merges. */
-  maintenanceRunTrigger?: boolean
-  /** How long the maintenance queue stays empty before full memory blocks are condensed. */
-  idleMs?: number
+  /** Where refinement executions work and with what; without it, a temporary copy of the task's source and Pi's own tools. */
+  refineHost?: RefineHost
   /** Where the built commands a terminal session runs are, when they are not beside this package. */
   assets?: TerminalAssets
   /** Optional legacy executable override. The default is the Harness-owned terminal frontend. */
   piProgram?: () => string | null
-  /** Folders of built-in skills, prompts, and rules, each laid out like `registry/`. */
+  /** Folders of built-in skills, prompts, and rules for the component library, each laid out like `registry/`. */
   builtins?: string[]
   /**
    * The application's own parts, described as plugins: which tools, prompt sections and tool
@@ -90,7 +81,10 @@ export interface HarnessOptions {
 /** What starting on a data root found and repaired. */
 export interface Recovery {
   interruptedRuns: number
+  /** Notes in the Wiki. */
   reindexedPages: number
+  /** Where an earlier Wiki's memory, facts and revisions were moved, when they were. */
+  legacyWiki?: string | null
   /** Set when the storage migration failed; the old data is left as it was. */
   migrationError: string | null
 }
@@ -133,7 +127,11 @@ export class Harness {
   applicationPlugins: ReadonlySet<string> = new Set()
   readonly subagents: Subagents
   readonly sessions: Sessions
-  readonly maintenance: Maintenance
+  /** Which plugin code in harness trees a person trusted. */
+  readonly trust: TreeTrust
+  /** Refinement: improving a harness tree from evidence of how it ran. */
+  readonly refine: Refinements
+  refineHost: RefineHost | null
   readonly terminals: Terminals
   /** Resolves when what was loaded in the background at construction is in place. */
   readonly ready: Promise<void>
@@ -147,7 +145,9 @@ export class Harness {
     this.env = new Env(options.dataRoot || null, options.directory ?? EMPTY_DIRECTORY, options.productName ?? DEFAULT_PRODUCT_NAME, this.bus)
     this.hub = new Hub(this, options.hub)
     this.policy = options.policy ?? {}
-    registry.configureBuiltins(options.builtins ?? [])
+    configureBuiltins(options.builtins ?? [])
+    this.trust = new TreeTrust(this.stateDir)
+    this.refineHost = options.refineHost ?? null
     const secrets = options.secrets ?? fileSecretStore(join(this.stateDir, 'secrets.json'))
     this.accounts = new Accounts({ dir: join(this.stateDir, 'accounts'), secrets, bus: this.bus })
     this.approvals = new Approvals(this.stateDir, this.bus)
@@ -200,10 +200,11 @@ export class Harness {
       broker: this.apps,
       plugins: this.plugins,
       resolveCapabilities: (caller, tools, cwd) => capabilities.resolve(this, { agentId: caller.agentId ?? null, projectId: caller.projectId ?? null, cwd, tools }),
-      factory: options.sessionFactory
+      factory: options.sessionFactory,
+      trust: this.trust
     })
-    this.maintenance = new Maintenance({ env: this.env, bus: this.bus, accounts: this.accounts, factory: options.maintainerFactory, idleMs: options.idleMs, external: options.externalMaintenance, excludedTriggers: options.maintenanceExcludedTriggers, runTrigger: options.maintenanceRunTrigger })
-    this.terminals = new Terminals({ subagents: this.subagents, resolveCapabilities: (caller, tools, cwd) => capabilities.resolve(this, { agentId: caller.agentId ?? null, projectId: caller.projectId ?? null, cwd, tools }), env: this.env, stateDir: this.stateDir, accounts: this.accounts, runs: this.runs, approvals: this.approvals, apps: this.apps, policy: this.policy, bus: this.bus, plugins: this.plugins, pluginControl: { list: (scope) => pluginApi.list(this, scope), attach: (params, on) => pluginApi.attach(this, params, on), trust: (scope) => pluginApi.trust(this, scope), untrust: (scope) => pluginApi.untrust(this, scope) }, assets: options.assets, program: options.piProgram, hub: this.hub })
+    this.refine = new Refinements({ root: () => this.env.root, bus: this.bus, trust: this.trust, host: () => this.refineHost, runtime: { root: () => this.env.root, runs: this.runs, run: (input) => this.sessions.run(input) } })
+    this.terminals = new Terminals({ trust: this.trust, subagents: this.subagents, resolveCapabilities: (caller, tools, cwd) => capabilities.resolve(this, { agentId: caller.agentId ?? null, projectId: caller.projectId ?? null, cwd, tools }), env: this.env, stateDir: this.stateDir, accounts: this.accounts, runs: this.runs, approvals: this.approvals, apps: this.apps, policy: this.policy, bus: this.bus, plugins: this.plugins, pluginControl: { list: (scope) => pluginApi.list(this, scope), attach: (params, on) => pluginApi.attach(this, params, on), trust: (scope) => pluginApi.trust(this, scope), untrust: (scope) => pluginApi.untrust(this, scope) }, assets: options.assets, program: options.piProgram, hub: this.hub })
     this.ready = this.apps.start().catch((error) => log('connected apps', error instanceof Error ? error.message : String(error)))
     this.runs.listen((event, run) => {
       this.accounts.onRunEvent(event, run)
@@ -212,8 +213,6 @@ export class Harness {
       if ((event.type === 'completed' || event.type === 'failed') && run) {
         this.hooks.emit({ type: 'history.run.ended', runId: run.id, sessionId: run.sessionId, status: run.status, goal: run.goal ?? null, agentId: run.agentId ?? null, projectId: run.projectId ?? null, startedAt: run.startedAt, endedAt: run.endedAt ?? null, at: event.timestamp })
       }
-      if (event.type === 'completed' || event.type === 'failed' || (event.type === 'status.changed' && (event.payload as { status?: string }).status === 'interrupted')) this.maintenance.finishRun(event.runId, event.type !== 'completed')
-      this.maintenance.onRunEvent(event)
     })
   }
 
@@ -230,27 +229,28 @@ export class Harness {
   }
 
   /**
-   * Opens a data root: brings its Wiki to the current layout, settles runs that never ended,
-   * and refreshes the index. `agentIds` are the agents that get their own memory blocks when an
-   * older Wiki is migrated.
+   * Opens a data root: moves an earlier Wiki's memory and facts aside (once), lays out the Wiki,
+   * settles runs that never ended, and refreshes the history index. `agentIds` is accepted for
+   * hosts written against earlier versions and is not used.
    */
-  open(dataRoot: string, agentIds: readonly string[] = []): Recovery {
+  open(dataRoot: string, _agentIds: readonly string[] = []): Recovery {
     if (this.hub.busy && this.env.dataRoot !== dataRoot) throw new HarnessError('hub_busy', 'Wait for the hub installation before changing the data location.')
     if (this.env.dataRoot && this.env.dataRoot !== dataRoot) closeIndex(this.env.dataRoot)
     this.env.dataRoot = dataRoot
     this.hub.watch(dataRoot)
     const root = dataRoot
-    this.hooks.watch(store.wikiDir(root))
+    this.hooks.watch(notes.wikiDir(root))
     void this.hooks.reload()
-    for (const folder of ['registry/skills', 'registry/prompts', 'registry/rules', 'config', 'runs']) mkdirSync(join(root, folder), { recursive: true })
+    for (const folder of ['registry/skills', 'registry/prompts', 'registry/rules', 'config', 'runs', 'harnesses']) mkdirSync(join(root, folder), { recursive: true })
     let migrationError: string | null = null
-    let wikiMigrationError: string | null = null
+    let legacyWiki: string | null = null
     try {
-      if (migrate.run(this.env, agentIds)) log(`started Wiki storage version ${migrate.WIKI_VERSION}; the earlier Wiki is kept as a backup in the data root`)
+      legacyWiki = notes.moveLegacy(root)
+      if (legacyWiki) log(`moved the earlier Wiki's memory, facts and revisions to ${legacyWiki}`)
+      notes.ensureLayout(root, this.env.productName)
     } catch (error) {
       migrationError = error instanceof Error ? error.message : String(error)
-      wikiMigrationError = migrationError
-      log('Wiki migration failed', migrationError)
+      log('Wiki layout', migrationError)
     }
     try {
       migrateConnectionScopes(root, this.stateDir)
@@ -259,59 +259,48 @@ export class Harness {
       migrationError = migrationError ? `${migrationError}; connector scope migration: ${detail}` : detail
       log('connector scope migration failed', detail)
     }
-    if (!wikiMigrationError) {
-      try {
-        store.ensureLayout(root, this.env.productName)
-        // Every project has its fixed pages, and the generated indexes match the files.
-        for (const project of projectsOrNone(root)) store.ensureProjectNamespace(root, project.slug, project.name)
-        writeIndex(store.wikiDir(root))
-      } catch (error) {
-        log('Wiki layout', error instanceof Error ? error.message : String(error))
-      }
-    }
     let interruptedRuns = 0
     try {
       interruptedRuns = markInterruptedRuns(root, `${this.env.productName} stopped before the run settled.`)
     } catch (error) {
       log('run recovery', error instanceof Error ? error.message : String(error))
     }
-    let reindexedPages: number
     try {
-      reindexedPages = wikiIndex.ensure(root)
-    } catch (error) {
-      log('index', error instanceof Error ? error.message : String(error))
-      reindexedPages = countPages(root)
-    }
-    try {
-      // Runs recorded while nothing was running, or before recall existed, become searchable.
+      // Runs recorded while nothing was running become searchable.
       recall.sync(root)
     } catch (error) {
       log('recall', error instanceof Error ? error.message : String(error))
     }
-    this.recovery = { interruptedRuns, reindexedPages, migrationError }
-    this.maintenance.start()
+    this.recovery = { interruptedRuns, reindexedPages: safeCount(root), migrationError, legacyWiki }
     return this.recovery
   }
 
-  /** Deletes the index and rebuilds it from the files. Returns the pages indexed. */
+  /** Rebuilds the history index from the run records. Returns the notes in the Wiki. */
   rebuildIndex(): number {
-    const pages = wikiIndex.rebuild(this.env.root)
     recall.sync(this.env.root)
-    this.recovery = { ...this.recovery, reindexedPages: pages }
-    return pages
+    const count = safeCount(this.env.root)
+    this.recovery = { ...this.recovery, reindexedPages: count }
+    return count
   }
 
-  /** Stops live runs and releases the index. */
+  /** Stops live runs and refinements and releases the index. */
   async close(): Promise<void> {
     this.hub.close()
-    this.maintenance.stop()
+    await this.refine.close()
     await this.terminals.close()
     await this.runs.interruptAll()
-    await this.maintenance.settled()
     await this.hooks.settled().catch(() => undefined)
     this.hooks.close()
     await this.apps.close()
     if (this.env.dataRoot) closeIndex(this.env.dataRoot)
+  }
+}
+
+function safeCount(root: string): number {
+  try {
+    return notes.paths(root).length
+  } catch {
+    return 0
   }
 }
 

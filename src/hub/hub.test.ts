@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Bus } from '../core/bus'
 import { Harness } from '../harness'
 import { memorySecretStore } from '../accounts/secrets'
-import * as registry from '../skills/registry'
+import * as registry from '../tree/components'
 import { Hub } from './hub'
 import { hubCatalogSchema, hubEntrySchema, type HubEntry } from './schema'
 import { runHubMenu } from '../terminal/hubMenu'
@@ -47,7 +47,7 @@ describe('Hub installation', () => {
     const { hub, root } = fixture([entry('registry', skill())])
     const receipt = await hub.install('example/review', '1.0.0')
     expect(receipt.resourceIds).toEqual(['skills/review'])
-    expect(registry.enabledFor(root, null)).toEqual([])
+    expect(registry.list(root).map((item) => item.id)).toContain('skills/review')
     const content = readFileSync(join(root, 'registry', 'skills', 'review', 'SKILL.md'), 'utf8')
     const collision = { ...entry('registry', skill()), id: 'other/review' }
     const another = new Hub(({ dataRoot: root, env: { root }, stateDir: join(root, 'state'), bus: new Bus() }) as Harness, { catalog: { schemaVersion: 1, entries: [collision] } })
@@ -67,7 +67,7 @@ describe('Hub installation', () => {
       const { hub, root } = fixture([item])
       await hub.install(item.id, item.version)
       expect(readFileSync(join(root, 'registry', kind, 'review.md'), 'utf8')).toContain('Read evidence')
-      expect(registry.enabledFor(root, null)).toEqual([])
+      expect(registry.list(root).map((entry) => entry.id)).toContain(`${kind}/review`)
     }
   })
   it('does not commit a download with the wrong digest', async () => {
@@ -140,12 +140,11 @@ describe('Hub installation', () => {
   it('can reinstall deleted resources and clears stale attachment grants', async () => {
     const { hub, root } = fixture([entry('registry', skill())])
     await hub.install('example/review', '1.0.0')
-    registry.setEnabled(root, null, ['skills/review'])
     rmSync(join(root, 'registry', 'skills', 'review'), { recursive: true })
     expect((await hub.list()).installed[0]).toMatchObject({ state: 'incomplete' })
     await hub.uninstall('example/review', '1.0.0')
     await hub.install('example/review', '1.0.0')
-    expect(registry.enabledFor(root, null)).toEqual([])
+    expect(registry.list(root).map((entry) => entry.id)).toEqual(['skills/review'])
     expect((await hub.list()).installed).toHaveLength(1)
   })
   it('preserves corrupt installation records rather than overwriting them', async () => {

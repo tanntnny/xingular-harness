@@ -14,8 +14,10 @@ afterEach(async () => { for (const harness of open.splice(0)) await harness.clos
 
 function setup() {
   const finish = new Map<string, (text: string) => void>()
+  const systems = new Map<string, string>()
   const root = mkdtempSync(join(tmpdir(), 'native-subagents-'))
   const harness = createHarness({ dataRoot: join(root, 'data'), stateDir: join(root, 'state'), secrets: memorySecretStore(), sessionFactory: async ({ params }) => {
+    systems.set(params.runId, params.system)
     let emit: (event: any) => void = () => {}
     let done: () => void = () => {}
     return { sessionId: 'native-history', subscribe: (listener) => { emit = listener; return () => {} }, sendCustomMessage: async () => {},
@@ -29,9 +31,28 @@ function setup() {
     run: { id, sessionId: 'opaque-parent' }, caller: { agentId: 'caller', actor: 'Chat' }, cwd: root,
     sessionDir: join(root, 'history'), text: 'Parent', tools: { allow: ['read'] }, ...extra
   })
-  return { harness, finish, start }
+  return { harness, finish, start, systems }
 }
 const empty = () => ({ owners: [], receipts: [] })
+
+describe('subagents a harness defines (c5)', () => {
+  it('starts one by name with its own instructions instead of the parent\'s, and refuses a name the harness lacks', async () => {
+    const { harness, start, systems } = setup()
+    const { commit } = await import('../tree/store')
+    commit(harness.env.root, 'caller', { 'systemprompt.md': 'You coordinate releases.\n', 'guardrails.md': '', 'memory.md': '', 'tool_guidance.md': '', 'sub_agents/reader/AGENT.md': '---\ndescription: reads long logs and answers briefly\n---\nRead the log and answer in three lines.\n' }, { kind: 'seed' })
+    await start('parent', { harness: { scope: 'caller' }, tools: { allow: ['read', 'spawn_subagent', 'wait_subagents'] } })
+    expect(systems.get('parent')).toContain('You coordinate releases.')
+    expect(systems.get('parent')).toContain('- reader — reads long logs and answers briefly')
+    const child = await harness.subagents.spawn({ parentRunId: 'parent', brief: 'Summarise build.log', agent: 'reader' })
+    expect(systems.get(child.runId)).toContain('Read the log and answer in three lines.')
+    expect(systems.get(child.runId)).not.toContain('You coordinate releases.')
+    // A plain child keeps the parent's harness, pinned to the same version.
+    const copy = await harness.subagents.spawn({ parentRunId: 'parent', brief: 'Check the tests' })
+    expect(systems.get(copy.runId)).toContain('You coordinate releases.')
+    expect(loadRun(harness.env.root, copy.runId).harnessVersion).toBe(loadRun(harness.env.root, 'parent').harnessVersion)
+    await expect(harness.subagents.spawn({ parentRunId: 'parent', brief: 'x', agent: 'writer' })).rejects.toThrow('There is no subagent named writer.')
+  })
+})
 
 describe('native subagent ownership and delivery', () => {
   it('spawns asynchronously, joins selected children, and rejects foreign handles', async () => {

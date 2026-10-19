@@ -1,8 +1,8 @@
 {
   "name": "@xingular/harness",
-  "version": "2.1.2",
+  "version": "3.0.0",
   "type": "module",
-  "description": "Xingular Harness — a Pi agent harness with multi-account sign-in, a compiled system prompt, a memory lifecycle (Wiki), tools, MCP, and skills",
+  "description": "Xingular Harness — a Pi agent harness built on recursive harnessing (Harness²): versioned eight-component harness trees, refinement from evidence, multi-account sessions, a compiled prompt, project notes, tools, and MCP",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/tanntnny/xingular-harness.git"

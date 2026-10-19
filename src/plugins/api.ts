@@ -6,10 +6,10 @@ import { ensureSharedDir, sharedDir } from '../accounts/env'
 import { invalid, notFound } from '../core/errors'
 import { findProject } from '../core/projects'
 import type { Harness } from '../harness'
-import type { CallerContext } from '../memory/caller'
+import type { CallerContext } from '../core/caller'
 import type { Launch } from '../prompt/compile'
+import { materialise, type HarnessChoice } from '../tree/materialise'
 import * as attachments from './attachments'
-import { INCLUDED_PLUGIN, YOURS_PLUGIN } from './builtin'
 import { catalogue } from './catalogue'
 import { inventory } from './inventory'
 import type { Loading } from './plugins'
@@ -67,6 +67,8 @@ export interface InventoryParams extends PluginScope {
   launch?: Launch
   tools?: string[]
   connections?: boolean
+  /** The harness tree the caller runs, so what it adds is listed too. */
+  harness?: HarnessChoice | null
 }
 
 export async function inventoryFor(harness: Harness, params: InventoryParams): Promise<Inventory> {
@@ -79,7 +81,8 @@ export async function inventoryFor(harness: Harness, params: InventoryParams): P
     // What is switched off for the caller is not in what reaches it.
     plugins: await list(harness, { ...params, agentId: params.agentId ?? params.context?.agentId ?? null, projectId: params.projectId ?? params.context?.projectId ?? null }),
     descriptors: harness.descriptors,
-    saved: harness.apps.connections.list()
+    saved: harness.apps.connections.list(),
+    tree: params.harness ? materialise(harness.env.root, params.harness, { trust: harness.trust }) : null
   })
 }
 
@@ -129,13 +132,12 @@ export async function attach(harness: Harness, params: AttachParams, on: boolean
   if (contribution?.kind === 'connection') {
     harness.apps.attach(contribution.id.slice(`${plugin.id}/connection/`.length), scope, on)
   } else {
-    const registryItem = plugin.id === YOURS_PLUGIN.id || plugin.id === INCLUDED_PLUGIN.id
-    // A registry item's choice is stored under its own id; anything found, under its id and then its plugin's.
-    const ids = registryItem ? [contribution!.id.slice(plugin.id.length + 1)] : contribution ? [contribution.id, plugin.id] : [plugin.id]
-    // What it is until a person says otherwise: a built-in registry item is on, a person's own is
-    // off, a part that ships switched off is off, and anything found on disk is on.
+    // A choice is stored under the contribution's id and then its plugin's.
+    const ids = contribution ? [contribution.id, plugin.id] : [plugin.id]
+    // What it is until a person says otherwise: a part that ships switched off is off, and
+    // anything found on disk is on.
     const shipped = harness.descriptors.find((descriptor) => descriptor.id === plugin.id)?.switchable
-    const fallback = registryItem ? plugin.id === INCLUDED_PLUGIN.id : shipped ? shipped.on : true
+    const fallback = shipped ? shipped.on : true
     const choices = attachments.load(root)
     attachments.set(choices, ids, scope, on, fallback)
     attachments.save(root, choices)

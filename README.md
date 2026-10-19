@@ -1,22 +1,38 @@
 # Xingular Harness
 
-A Pi agent harness, as one TypeScript package (`@xingular/harness`). It is everything a model
-needs to work for someone over time, and nothing about any particular application:
+A Pi agent harness built on **recursive harnessing** ([Harness²](https://arxiv.org/abs/2610.14224),
+Apache-2.0, Google LLC), as one TypeScript package (`@xingular/harness`). The harness — what a
+model is told and can do — is the object that improves, with model weights fixed:
+
+- **A harness is a tree of eight components** (c1–c8): system prompt, guardrails, memory and tool
+  guidance (always in the prompt, capped), subagents, skills and scripts (on demand), and plugins
+  (in the tool loop). Each caller scope has versioned, validated trees; a run pins one version.
+- **Task-level recursion** refines a tree on one task through *Propose–Probe–Compose*: k base
+  executions, improvers that edit the tree from the evidence (INV: how the agent works; DOM: what a
+  practitioner knows), a probe execution of each candidate, and compositions built from the
+  behavioural contrasts. Parallel mode explores wider; sequential mode refines deeper. Each costs
+  4k executions and 3k improver sessions.
+- **Blind, answer-free selection** picks one final output from anonymised candidates; no rubric,
+  score or reviewer verdict ever reaches an improver.
+- **Harnessing-level recursion** keeps an experience library per scope: each adopted tree with
+  what each edit did and one evidence-backed lesson, read by the next task's improvers.
 
 | Part | Folder | What it does |
 |---|---|---|
+| Harness trees | `src/tree/` | The eight-component surface, validation and repair, content-addressed versions and lineage, materialising a tree for Pi, plugin-code trust, seeding a first tree, the component library. |
+| Refinement | `src/refine/` | Evidence folders, the prompt pack, parallel and sequential recursion, the budget ledger, selection, reflection, the experience library, Pi-backed executor and improver, and the `refine` service. |
 | Accounts | `src/accounts/` | Several isolated Pi accounts and pools, sign-in, model lists, health and limits. A session keeps the account it started with. |
-| Sessions | `src/sessions/` | Pi SDK turns, run records and `events.jsonl`, interrupt, approvals, questions, recovery after a crash. |
-| Prompt | `src/prompt/` | The system prompt compiled from sections with budgets and profiles; a stable prefix, and changing state delivered as updates in native history. |
-| Memory | `src/memory/` | The Wiki: pages, facts, memory blocks, revisions, proposals with an evidence gate, undo, an Inbox, history recall, run trajectory inspection, and sleep-time consolidation. |
-| Skills | `src/skills/` | Skills, prompts, and rules: a person's own in the data root, and built-in ones shipped with the harness or the application. |
+| Sessions | `src/sessions/` | Pi SDK turns on a pinned harness tree, run records and `events.jsonl`, interrupt, approvals, questions, subagents (named by a tree's c5), recovery after a crash. |
+| Prompt | `src/prompt/` | The system prompt compiled from the tree's sections and the application's, with budgets; a stable prefix, and changing state delivered as updates in native history. |
+| Wiki | `src/wiki/` | Project notes: linked Markdown, versions, search. Reference material, not instructions. |
+| History | `src/history/` | Recall over earlier runs and bounded trajectory reads. |
 | Plugins | `src/plugins/` | What a Pi session loads, chosen by the harness and never by Pi's own discovery; trust for a working folder's code; the list of every plugin and what reaches one caller. |
-| Tools | `src/tools/` | Tool definitions, the memory tools, `ask_user`; a gate that asks the application's policy, then standing approvals, then the person. |
+| Tools | `src/tools/` | Tool definitions, History/Wiki/skill tools, `ask_user`; a gate that asks the application's policy, then standing approvals, then the person. |
 | Connected apps | `src/mcp/` | MCP connections, OAuth, per-session grants, redaction, a trace of what each call returned. |
-| Terminal | `src/terminal/` | A Harness-owned terminal frontend over persistent Pi sessions, isolated accounts, compiled instructions, the tool gate and telemetry bridge, native history, plugin UI, `/plugins`, `/hub`, `/accounts`, and the existing session socket. |
+| Terminal | `src/terminal/` | A Harness-owned terminal frontend over persistent Pi sessions on a harness tree. |
 | Server | `src/server/` | The same API over newline-delimited JSON, for a host that is not a Node program. |
 
-It was split out of Xingular Agent, which is now an application built on it.
+Try refinement with no model and no credentials: `npm run build && node dist/cli.js refine demo --k 2`.
 The [documentation index](docs/README.md) links current terminal architecture and decisions.
 
 ### Session options for applications
@@ -26,8 +42,9 @@ The [documentation index](docs/README.md) links current terminal architecture an
 - The model's `spawn_subagent` returns immediately by default; `wait: true` returns an inline result. `wait_subagents` joins selected children. The SDK and standalone terminal share this execution service. Terminal calls use its private control channel, including when connected apps are disabled.
 - Parents receive results at native turn boundaries and join outstanding children before completing. Typed native-history receipts prevent duplicate automatic delivery; explicit waits can reread results. Ownership is recorded before startup so an explicit resume can recover even a lost spawn return. Startup reservations without a run become interrupted outcomes. A restarted Harness never restarts model work automatically. Recovery requires the same recorded account, caller, working folder, and selected history branch. Session IDs are opaque; consumers follow `parentRunId` and `relation`.
 - `providers: false` runs a session with the harness's own tools only.
-- On the caller, `vaultAccess: 'propose'` writes no memory directly, and `recallExcludeAgents` hides those agents' conversations from history and trajectory tools.
-- `maintenanceRunTrigger: false` (a harness option) leaves memory to explicit proposals and scheduled merges.
+- `harness: { scope }` runs the session on that scope's head tree (or `{ scope, version }`, or `{ dir }` for a tree on disk). The version is pinned for the run and recorded on it.
+- On the caller, `recallExcludeAgents` hides those agents' conversations from history and trajectory tools.
+- `harnessTools: false` runs a session without the History, Wiki and skill tools.
 
 Every session also gets `trajectory_search` and `trajectory_read` from the built-in History plugin.
 Search lists runs in the current data root, including active runs, with filters and a continuation
@@ -44,15 +61,18 @@ They report recorded evidence without scoring runs, and do not backfill older re
 import { createHarness } from '@xingular/harness'
 
 const harness = createHarness({
-  dataRoot: '/path/to/data',        // knowledge and history: wiki/, registry/, runs/, index.sqlite
+  dataRoot: '/path/to/data',        // harnesses/, library/, refine/, wiki/, registry/, runs/, index.sqlite
   stateDir: '/path/to/state',       // device-local: accounts, approvals, connections, sockets
   productName: 'My App',            // how the harness names itself to a model (default 'Xingular Harness')
   secrets,                          // SecretStore; defaults to an owner-only file in stateDir
   policy,                           // ToolPolicy: what a run may do, and what needs a person
   directory,                        // names for the ids the application uses
   builtins: ['/path/to/builtin'],   // folders of built-in skills, prompts, and rules
-  plugins: [myPlugin]               // the application's own parts, described as plugins
+  plugins: [myPlugin],              // the application's own parts, described as plugins
+  refineHost                        // where refinement executions work, as whom, with which tools
 })
+
+harness.refine.start({ task: { id, scope: 'agent-1', prompt }, k: 1, mode: 'parallel' })
 
 harness.sessions.provide((session) => myTools(session))   // the application's own tools
 harness.runs.listen((event, run) => show(event))            // every run event, after it is saved
@@ -61,6 +81,7 @@ await harness.sessions.run({
   run: { id, sessionId },
   cwd, sessionDir, text,
   caller: { agentId, agentName, actor: 'Chat' },
+  harness: { scope: 'agent-1' },
   launch: { sections: [{ id: 'identity', title: 'Identity', body, budget: 2000, order: 10 }] },
   tools: { allow: ['read', 'bash', 'my_tool'], gated: ['bash'] }
 })
@@ -68,14 +89,14 @@ await harness.sessions.run({
 
 ## How an application extends it
 
-The harness knows a caller (an opaque id that owns memory), never an agent, a group, or a task.
-An application adds what it knows through six points:
+The harness knows a caller and a harness scope (opaque ids), never an agent, a group, or a task.
+An application adds what it knows through seven points:
 
 1. **Prompt sections** (`Launch.sections`, `Launch.toolGroups`, `Launch.references`). Each
-   section has an `order` and may be `dynamic`. The harness adds its own (`blocks` 30, `rules` 40,
-   `references` 50, `skills` 60, `knowledge` 80, `tools` 90), applies budgets and the caller's
-   context profile, keeps stable sections in the system prompt, and sends dynamic ones as
-   updates.
+   section has an `order` and may be `dynamic`. The harness adds its own (`system` 25,
+   `guardrails` 40, `memory` 45, `references` 50, `subagents` 64, `scripts` 66, `wiki` 80,
+   `tools` 90), applies budgets, keeps stable sections in the system prompt, and sends dynamic
+   ones as updates.
 2. **Tool providers** (`harness.sessions.provide`). A provider returns `ToolSpec`s for a session;
    only the names in the session's `allow` list are registered, in that order.
    A tool may return `attachments` as `{ id, name, mimeType }` references. The harness records
@@ -84,9 +105,6 @@ An application adds what it knows through six points:
    The harness provides the web tools itself: `webTools({ secrets })` gives `web_search` (Brave Search,
    key read from the secret store) and `web_fetch` (checked reads of public pages). An application
    passes it to `harness.sessions.provide` and switches the names on for each agent.
-   `registryTools({ harness })` gives `registry_write` (a skill, rule, or prompt) and `plugin_write`
-   (a plugin). Each writes for the calling agent only: the item is on for that agent, and a plugin's
-   code is trusted once written. An item others already use goes to the Inbox instead.
 3. **`ToolPolicy`**. `scope` says whether a call is inside what the run may do (or needs one
    approval). A decision with `humanOnly` is for a person alone: the always-approve switch and
    remembered answers do not apply to it. `authorize` says whether the tool is still switched on;
@@ -99,6 +117,11 @@ An application adds what it knows through six points:
    the application and says which tools, prompt sections and tool groups it provides. It is data:
    it changes what `plugins.list` and `plugins.inventory` report, never what runs. `WEB_PLUGIN`
    describes the web tools. A host that is not a Node program sends them with `plugins.describe`.
+7. **`RefineHost`** (`HarnessOptions.refineHost`). Where a refinement execution works
+   (`prepareWorkspace`: an isolated folder, such as a git worktree), as whom and with which tools
+   (`session`), and what it produced (`deliverable`). Executions run as unattended runs with
+   trigger `probe`, so a `ToolPolicy` can refuse anything with effects outside that folder;
+   improver sessions run with trigger `improver`, file tools only, on a copy of the evidence.
 
 `apps.expose(...)` additionally offers the application's tools through the connected-apps
 broker (`mcp_list_tools`, `mcp_call_tool`), which is how a terminal session reaches them.
@@ -107,7 +130,7 @@ broker (`mcp_list_tools`, `mcp_call_tool`), which is how a terminal session reac
 
 A plugin is a bundle with a title, a description and contributions: instructions, skills,
 commands, tools, connections, code (a Pi extension) and themes. A Pi package is a plugin as it
-is; so are the harness's own parts (Memory, Wiki, History, Ask the user, Connected apps, Pi), the
+is; so are the harness's own parts (Harness, Wiki, History, Subagents, Ask the user, Connected apps, Pi), the
 application's, a person's registry ("Yours"), the folder every account shares, and what a
 working folder brings.
 
@@ -141,11 +164,10 @@ working folder brings.
   input does so before the gate sees it. Every resource reload revalidates the parent's original
   trusted selection; changed or revoked code requires review and a fresh terminal.
 - **A required part can be extended.** A package names the part it adds to and, optionally, a
-  hooks file: `"harness": { "extends": ["memory"], "hooks": "./hooks.mjs" }`. The harness runs
-  hooks itself (`src/plugins/hooks.ts`), in its own process, because most memory is written while
-  no session is open. `export default function (harness) { harness.on('memory.saved', async
-  (event, ctx) => …) }`; the events are `memory.saved`, `memory.block.changed`,
-  `wiki.page.saved` and `history.run.ended`. A hook is told after the write and cannot stop it,
+  hooks file: `"harness": { "extends": ["wiki"], "hooks": "./hooks.mjs" }`. The harness runs
+  hooks itself (`src/plugins/hooks.ts`), in its own process, because notes are often written while
+  no session is open. `export default function (harness) { harness.on('wiki.page.saved', async
+  (event, ctx) => …) }`; the events are `wiki.page.saved` and `history.run.ended`. A hook is told after the write and cannot stop it,
   has 30 seconds, and what it throws is kept in `plugin-hooks.json` and shown on its plugin. It
   runs only while its plugin is switched on for everyone and trusted; what is loaded is checked
   against that before each delivery. `ctx.call(connection, tool, args)` reaches a connected app
@@ -172,7 +194,8 @@ working folder brings.
   Outside a session, `xingular-harness plugins list | show | install | remove | update | attach |
   detach | trust | untrust` acts directly, as the person who typed it; `trust` shows the files
   and wants a typed yes or `--yes`. It does not open the data root, so it settles no run.
-- **Unattended runs and memory maintenance load no extension**, as before.
+- **Unattended runs load no extension found on disk.** A harness tree's own trusted plugins still
+  load, so a refinement probe runs the plugin it is testing.
 - **A person switches things on and off for a scope.** `plugins.attach` and `plugins.detach`
   take a plugin's or a contribution's `id` and a `scope` (`{}` for everywhere, `{ agentId }`, or
   `{ projectId }`). The narrowest scope that says something wins: an agent, then a project, then
@@ -216,7 +239,8 @@ table. With the `--host-*` flags the harness calls the host for `secrets.get|set
 `policy.scope|authorize|approval|connections`, and `tools.call`; the host registers its tools
 with `tools.register` and its names with `directory.set`.
 
-`skills.import` accepts complete user-owned skill folders:
+`harnesses.importComponents` adds complete skill folders, or single-file rules and prompts, to the
+component library:
 
 ```ts
 { skills: [{ name, files: [{ path, content, encoding }] }] }
@@ -227,7 +251,8 @@ It validates bounded relative paths and file encodings, requires a root
 has no knowledge of the application feature that may call it.
 
 `npm run prove` starts that server on a throwaway data root, with no application present, and
-exercises accounts, memory, skills, the prompt, connected apps, and a recorded session.
+exercises accounts, harness trees, the Wiki, the prompt, connected apps, a recorded session, a
+plugin hook, and the refinement demo end to end.
 
 ## Run it as a standalone Harness terminal
 
@@ -309,19 +334,25 @@ command. The explicit `terminal` command is an alias for the default launch. Use
 
 ```
 <data root>/
-  wiki/             home.md, library/, projects/<slug>/, facts/, blocks/, revisions, inbox, log
-  registry/         skills/, prompts/, rules/   (a person's own; never copied)
+  harnesses/<scope>/  versions/<fingerprint>/tree/, head.json, lineage.jsonl   (the eight components)
+  refine/<id>/      summary.json, task.json, harnesses/<label>/, rollouts/, context/, selection/, reflection/, improver/
+  library/<scope>/<area>/  INDEX.md, harnesses/<task>/{harness/, EXPERIENCE.md}   (the experience library)
+  wiki/             home.md, library/, projects/<slug>/   (project notes)
+  wiki-history/     earlier versions of notes
+  legacy/           what an earlier Wiki kept (memory blocks, facts, revisions, Inbox), moved once
+  registry/         skills/, prompts/, rules/   (the component library; the Hub installs here)
   plugins/<name>/   packages kept with a person's data; each is found as an installed plugin
   runs/<id>/        run.json, events.jsonl, context.json, caller.json, subagents.json (reserved child IDs)
-  config/           context profiles, what is switched on for whom (plugin-attachments.json),
+  config/           what is switched on for whom (plugin-attachments.json),
                     settings the harness reads
-  index.sqlite      a rebuildable index of Wiki entries and runs (FTS5)
+  index.sqlite      a rebuildable index of runs for recall (FTS5)
   projects.json     read only: the application owns it
 
 <state dir>/
   accounts/         registry, per-account Pi agent folders, audit log
   approvals.json    standing approvals
   plugin-trust.json       the code a person trusted, by hash, and whether earlier packages were taken over
+  tree-plugin-trust.json  harness-tree plugin code a person trusted, and scopes whose probes may run improver code
   plugin-registered.json  what each extension registered the last time a session loaded it
   plugin-hooks.json       what each hooks file listens for and how its last run went
   connections.json  connected apps (secrets are in the SecretStore)

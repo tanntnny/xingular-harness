@@ -7,13 +7,12 @@ import type { HarnessEnv } from '../core/env'
 import { charCount } from '../core/text'
 import { allowed } from '../mcp/connections'
 import type { Connection } from '../mcp/types'
-import type { CallerContext } from '../memory/caller'
+import type { CallerContext } from '../core/caller'
 import { BUILT_IN_DYNAMIC, compile, toolGroups, type Launch } from '../prompt/compile'
-import * as registry from '../skills/registry'
+import type { Materialised } from '../tree/materialise'
 import { ASK_USER } from '../tools/askUser'
-import { PLUGIN_PROPOSE } from '../tools/pluginPropose'
-import { WIKI_TOOL_NAMES } from '../tools/definitions'
-import { INCLUDED_PLUGIN, YOURS_PLUGIN } from './builtin'
+import { DEFAULT_TOOL_NAMES } from '../tools/definitions'
+import { HARNESS_TREE_PLUGIN } from './builtin'
 import type { Contribution, Inventory, InventoryItem, Plugin, PluginDescriptor } from './types'
 
 export interface InventoryInput {
@@ -28,6 +27,8 @@ export interface InventoryInput {
   plugins: readonly Plugin[]
   descriptors: readonly PluginDescriptor[]
   saved: readonly Connection[]
+  /** The harness tree the caller runs, when it has one. */
+  tree?: Materialised | null
 }
 
 const size = (path: string | null): number | null => {
@@ -47,10 +48,8 @@ export function inventory(input: InventoryInput): Inventory {
     items.push({ pluginId, contributionId: null, kind, name, delivery, chars, cut: false, ...rest })
   }
 
-  const pack = compile(env, context, launch)
+  const pack = compile(env, context, launch, input.tree ?? null)
   const dynamic = new Set([...BUILT_IN_DYNAMIC.map((entry) => entry.id), ...(launch.sections ?? []).filter((section) => section.dynamic).map((section) => section.id)])
-  const active = registry.enabledFor(env.root, context.projectId ?? null, context.agentId ?? null)
-  const owner = (entry: registry.RegistryItem): string => (entry.builtin ? INCLUDED_PLUGIN.id : YOURS_PLUGIN.id)
   let systemChars = 0
   let contextChars = 0
 
@@ -68,26 +67,28 @@ export function inventory(input: InventoryInput): Inventory {
       }
       continue
     }
-    if (section.id === 'rules') {
-      for (const rule of active.filter((entry) => entry.kind === 'rules')) {
-        item(owner(rule), 'instruction', rule.name, delivery, charCount(`### ${rule.name} (${rule.id})\n\n${registry.itemBody(rule).trim()}`), { contributionId: `${owner(rule)}/${rule.id}`, cut: section.cut })
-      }
-      continue
-    }
     const plugin = descriptors.find((descriptor) => descriptor.sections?.some((declared) => declared.id === section.id))
     if (!plugin) unattributed.push({ kind: 'section', id: section.id })
     const name = plugin?.sections?.find((declared) => declared.id === section.id)?.name ?? section.title
     item(plugin?.id ?? '', 'instruction', name, delivery, section.size, { contributionId: plugin ? `${plugin.id}/instruction/${name}` : null, cut: section.cut })
   }
 
-  // A skill's or a prompt's own text is loaded only when it is used.
-  for (const entry of active.filter((candidate) => candidate.kind === 'skills' || candidate.kind === 'prompts')) {
-    item(owner(entry), entry.kind === 'skills' ? 'skill' : 'command', entry.name, 'on-demand', size(entry.path), { contributionId: `${owner(entry)}/${entry.id}` })
+  // The harness tree's skills are loaded only when used; its plugins run in the tool loop.
+  const tree = input.tree ?? null
+  if (tree) {
+    for (const rel of Object.keys(tree.tree).filter((path) => /^skills\/[^/]+\/SKILL\.md$/.test(path)).sort()) {
+      const name = rel.split('/')[1]!
+      item(HARNESS_TREE_PLUGIN.id, 'skill', name, 'on-demand', charCount(tree.tree[rel]!), { contributionId: `${HARNESS_TREE_PLUGIN.id}/skill/${name}` })
+    }
+    for (const path of tree.extensionPaths) {
+      const name = path.split('/').pop()!
+      item(HARNESS_TREE_PLUGIN.id, 'code', name, 'code', size(path), { contributionId: `${HARNESS_TREE_PLUGIN.id}/code/${name}` })
+    }
   }
 
   const names = [...input.tools]
   const extensionToolNames = new Set(input.plugins.filter((plugin) => ['project', 'package', 'shared', 'home'].includes(plugin.source)).flatMap((plugin) => plugin.contributions.filter((entry) => entry.kind === 'tool' && entry.state === 'on').map((entry) => entry.name)))
-  for (const name of [ASK_USER, PLUGIN_PROPOSE, ...WIKI_TOOL_NAMES, ...(input.connections ? ['mcp_list_tools', 'mcp_call_tool'] : [])]) if (!names.includes(name)) names.push(name)
+  for (const name of [ASK_USER, ...DEFAULT_TOOL_NAMES, ...(input.connections ? ['mcp_list_tools', 'mcp_call_tool'] : [])]) if (!names.includes(name)) names.push(name)
   for (const name of names) {
     if (extensionToolNames.has(name)) continue
     const plugin = descriptors.find((descriptor) => descriptor.tools?.some((tool) => tool.name === name))

@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { memorySecretStore } from '../accounts/secrets'
 import { createHarness, type Harness } from '../harness'
 import { methods } from '../server/methods'
-import { WIKI_TOOLS } from '../tools/definitions'
+import { HARNESS_TOOLS } from '../tools/definitions'
 import { WEB_PLUGIN } from '../web/tools'
 import { rootWithProject, writeFile } from '../../tests/helpers'
 import { HARNESS_PLUGINS } from './builtin'
@@ -68,12 +68,11 @@ describe('the plugin list', () => {
       ['project', 'project', ['code:local.ts:untrusted', 'instruction:AGENTS.md:on']],
       ['package:review-kit', 'package', ['code:guard.ts:on', 'command:guard:on', 'skill:audit:on']],
       ['home', 'home', ['skill:deploy:on']],
-      ['yours', 'yours', ['instruction:Rules:on', 'instruction:Skills list:on', 'tool:skill_load:on', 'command:review:on', 'instruction:Run tests:on', 'skill:Release notes:on', 'skill:unused:off']],
       ['app-identity', 'application', ['instruction:Identity line:on']],
       ['app-tasks', 'application', ['tool:start_task:on']],
       ['web', 'application', ['tool:web_search:on', 'tool:web_fetch:on']]
     ])
-    expect(plugins.filter((plugin) => plugin.source === 'builtin').map((plugin) => plugin.id)).toEqual(['ask-user', 'budget-guard', 'connected-apps', 'history', 'memory', 'output-trim', 'plugin-proposals', 'subagents', 'wiki'])
+    expect(plugins.filter((plugin) => plugin.source === 'builtin').map((plugin) => plugin.id)).toEqual(['ask-user', 'budget-guard', 'connected-apps', 'harness', 'history', 'output-trim', 'subagents', 'wiki'])
 
     const kit = plugins.find((plugin) => plugin.id === 'package:review-kit')!
     // It was there when trust was first asked per package, so it was taken over as trusted.
@@ -81,8 +80,6 @@ describe('the plugin list', () => {
     expect(kit.contributions[0].description).toBe('Adds commands /guard; hooks tool_call.')
     const project = plugins.find((plugin) => plugin.id === 'project')!
     expect(project).toMatchObject({ runsCode: true, trust: 'untrusted', code: { files: ['.pi/extensions/local.ts'] } })
-    const yours = plugins.find((plugin) => plugin.id === 'yours')!
-    expect(yours.contributions.map((entry) => entry.scope)).toEqual([null, null, null, 'App', 'Everywhere', 'App', null])
     const pi = plugins.find((plugin) => plugin.id === 'pi')!
     expect(pi.required).toBe('Pi runs every session.')
     expect(pi.contributions.filter((entry) => entry.kind === 'code').map((entry) => [entry.name, entry.state])).toEqual([['mcp', 'on'], ['llama.cpp', 'off']])
@@ -94,7 +91,7 @@ describe('the plugin list', () => {
       expect(names.filter((name, index) => names.indexOf(name) !== index)).toEqual([])
     }
     const declared = HARNESS_PLUGINS.flatMap((plugin) => (plugin.tools ?? []).map((tool) => tool.name))
-    expect(WIKI_TOOLS.map((tool) => tool.name).filter((name) => !declared.includes(name))).toEqual([])
+    expect(HARNESS_TOOLS.map((tool) => tool.name).filter((name) => !declared.includes(name))).toEqual([])
   })
 
   it('lists nothing a folder brings when no folder is named, and what every account shares even before the first account exists', async () => {
@@ -133,20 +130,21 @@ describe('what reaches one caller', () => {
   }
 
   it('attributes every prompt section, tool group and tool to a plugin', async () => {
-    const { call, cwd } = setup()
-    const result = await call<Inventory>('plugins.inventory', { cwd, context: { agentId: 'a1', projectId: 'p1' }, launch, tools: ['read', 'bash', 'start_task', 'web_search'] })
+    const { call, cwd, harness } = setup()
+    const { commit } = await import('../tree/store')
+    commit(harness.env.root, 'a1', { 'systemprompt.md': 'You review changes.\n', 'guardrails.md': '- When writing release notes, load the `release` skill.\n', 'memory.md': '', 'tool_guidance.md': 'Prefer grep.\n', 'skills/release/SKILL.md': '---\nname: release\ndescription: writing release notes\n---\nSteps.\n' }, { kind: 'seed' })
+    const result = await call<Inventory>('plugins.inventory', { cwd, context: { agentId: 'a1', projectId: 'p1' }, launch, tools: ['read', 'bash', 'start_task', 'web_search'], harness: { scope: 'a1' } })
     expect(result.unattributed).toEqual([])
     const of = (plugin: string) => result.items.filter((item) => item.pluginId === plugin).map((item) => `${item.kind}:${item.name}:${item.delivery}`)
     expect(of('app-identity')).toEqual(['instruction:Identity line:system'])
     expect(of('app-tasks')).toEqual(['instruction:Tool guidance: Tasks:system', 'tool:start_task:tool'])
-    expect(of('yours')).toEqual(['instruction:Run tests:system', 'instruction:Skills list:system', 'command:review:on-demand', 'skill:Release notes:on-demand', 'tool:skill_load:tool'])
-    // Facts are memory: recalling them is a memory tool, though it is defined beside the Wiki's.
-    expect(of('memory')).toEqual(['instruction:Memory blocks:context', 'instruction:Tool guidance: Memory:system', 'tool:memory_append:tool', 'tool:memory_replace:tool', 'tool:memory_rethink:tool', 'tool:memory_facts:tool'])
+    expect(of('harness')).toEqual(['instruction:System prompt:system', 'instruction:Guardrails:system', 'skill:release:on-demand', 'tool:skill_load:tool'])
+    expect(of('wiki')).toEqual(['instruction:Wiki:context', 'instruction:Tool guidance: Wiki:system', 'tool:wiki_search:tool', 'tool:wiki_read:tool', 'tool:wiki_list:tool'])
+    expect(of('history')).toEqual(['instruction:Tool guidance: History:system', 'tool:history_search:tool', 'tool:history_read:tool', 'tool:trajectory_search:tool', 'tool:trajectory_read:tool'])
     expect(of('pi')).toEqual(['instruction:Tool guidance: Native:system', 'tool:read:tool', 'tool:bash:tool', 'instruction:Base prompt:system'])
     // The working folder's code is not trusted, so only its instruction file reaches the caller.
     expect(of('project')).toEqual(['instruction:AGENTS.md:system'])
     expect(of('package:review-kit')).toEqual(['code:guard.ts:code', 'skill:audit:on-demand'])
-    expect(result.items.find((item) => item.name === 'Run tests')).toMatchObject({ contributionId: 'yours/rules/tests', cut: false })
     expect(result.items.find((item) => item.name === 'AGENTS.md')?.chars).toBe(10)
     expect(result.systemChars).toBeGreaterThan(0)
     expect(result.contextChars).toBeGreaterThan(0)
@@ -177,31 +175,6 @@ describe('what reaches one caller', () => {
 })
 
 describe('switching a plugin on and off', () => {
-  const state = (plugins: Plugin[], id: string) => plugins.flatMap((plugin) => plugin.contributions).find((entry) => entry.id === id)?.state
-
-  it('switches a registry item for one agent, and the agent then gets it in its prompt', async () => {
-    const { call } = setup()
-    const compiled = async (agentId: string) => (await call<{ text: string }>('context.compile', { context: { agentId, actor: 'Chat' }, render: true })).text
-    expect(await compiled('a1')).not.toContain('Release notes')
-    const after = await call<Plugin[]>('plugins.attach', { id: 'yours/skills/release', scope: { agentId: 'a1' } })
-    const release = after.flatMap((plugin) => plugin.contributions).find((entry) => entry.id === 'yours/skills/release')!
-    expect(release.attachment).toEqual({ global: false, on: { agentIds: ['a1'], projectIds: ['p1'] }, off: { agentIds: [], projectIds: [] } })
-    expect(release.scope).toBe('App, 1 agent')
-    expect(await compiled('a1')).toContain('Release notes')
-    expect(await compiled('a2')).not.toContain('Release notes')
-    // The earlier calls read the same choices.
-    expect((await call<any>('skills.list')).enabled).toEqual({ global: ['rules/tests'], p1: ['skills/release', 'prompts/review'] })
-
-    // A rule that is on everywhere is switched off for one agent only.
-    await call('plugins.detach', { id: 'yours/rules/tests', scope: { agentId: 'a1' } })
-    expect(await compiled('a1')).not.toContain('Always run the test suite')
-    expect(await compiled('a2')).toContain('Always run the test suite')
-    expect(state(await call<Plugin[]>('plugins.list', { agentId: 'a1' }), 'yours/rules/tests')).toBe('off')
-    expect(state(await call<Plugin[]>('plugins.list', { agentId: 'a2' }), 'yours/rules/tests')).toBe('on')
-
-    await call('plugins.forgetAgent', { agentId: 'a1' })
-    expect(await compiled('a1')).toContain('Always run the test suite')
-  })
 
   it('stops a found plugin, or one item of it, from loading for the caller it was switched off for', async () => {
     const { call, harness, cwd, base } = setup()
@@ -230,13 +203,12 @@ describe('switching a plugin on and off', () => {
 
   it('refuses a required part, an application part, and a file Pi reads itself, and says why', async () => {
     const { call, cwd } = setup()
-    await expect(call('plugins.detach', { id: 'memory' })).rejects.toThrow('Memory cannot be switched off. Every agent keeps its own memory')
-    await expect(call('plugins.detach', { id: 'memory/tool/memory_append' })).rejects.toThrow('cannot be switched off')
+    await expect(call('plugins.detach', { id: 'harness' })).rejects.toThrow('Harness cannot be switched off. Every agent runs on its harness')
+    await expect(call('plugins.detach', { id: 'wiki/tool/wiki_read' })).rejects.toThrow('cannot be switched off')
     await expect(call('plugins.detach', { id: 'app-tasks' })).rejects.toThrow('switched by the application')
-    await expect(call('plugins.detach', { id: 'yours' })).rejects.toThrow('one item at a time')
     await expect(call('plugins.detach', { cwd, id: 'project/instruction/AGENTS.md' })).rejects.toThrow('cannot be switched on its own')
     await expect(call('plugins.detach', { id: 'no-such-plugin' })).rejects.toThrow()
-    await expect(call('plugins.attach', { id: 'yours/skills/release', scope: { projectId: 'nope' } })).rejects.toThrow()
+    await expect(call('plugins.attach', { id: 'package:review-kit', scope: { projectId: 'nope' } })).rejects.toThrow()
   })
 
   it('switches a connected app for one agent through its own scope', async () => {

@@ -3,7 +3,7 @@
 // on a throwaway data root and drives it over newline-delimited JSON, the way a host written
 // in any language would. No model request is made: the scripted session has no credentials,
 // so the proof is that it is recorded and fails cleanly.
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -12,7 +12,8 @@ import { fileURLToPath } from 'node:url'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const scratch = mkdtempSync(join(tmpdir(), 'harness-proof-'))
-const child = spawn(process.execPath, [join(here, '..', 'dist', 'cli.js'), 'serve', '--state', join(scratch, 'state'), '--data', join(scratch, 'data'), '--name', 'Proof Host'], { stdio: ['pipe', 'pipe', 'inherit'] })
+const cli = join(here, '..', 'dist', 'cli.js')
+const child = spawn(process.execPath, [cli, 'serve', '--state', join(scratch, 'state'), '--data', join(scratch, 'data'), '--name', 'Proof Host'], { stdio: ['pipe', 'pipe', 'inherit'] })
 
 const waiting = new Map()
 const events = []
@@ -62,21 +63,25 @@ try {
   check('keeps several isolated Pi accounts', overview.accounts.length === 2 && overview.accounts[0].provider === 'pi', overview.accounts.map((account) => account.label).join(', '))
 
   const caller = { agentId: 'proof-agent', agentName: 'Prover', actor: 'Chat' }
-  await request('blocks.list', { agentIds: ['proof-agent'] })
-  await request('memory.call', { context: caller, call: 'memory.append', params: { block: 'notes', text: 'The proof ran.' } })
-  // A fact with no evidence the harness can find is parked for a person, never saved.
-  await request('memory.call', { context: caller, call: 'wiki.propose', params: { kind: 'memory', title: 'Unsupported claim', body: 'Nothing backs this.', type: 'fact', sourceRefs: [{ kind: 'user', ref: 'proof script' }] } })
-  const inbox = await request('wiki.inbox')
-  await request('facts.save', { input: { title: 'Proof fact', kind: 'fact', body: 'The harness runs on its own.' } })
-  const found = await request('wiki.find', { query: 'harness runs', options: {} })
-  check('runs the memory lifecycle: blocks, facts, search, and an evidence gate', found.length > 0 && inbox.length === 1, `${found.length} hit; ${inbox.length} proposal parked in the Inbox`)
+  // The agent's harness: a versioned tree of the eight components.
+  const seeded = await request('harnesses.seed', { scope: 'proof-agent', tree: { 'systemprompt.md': 'You prove the harness runs on its own.\n', 'guardrails.md': '- When asked for a proof, load the `proof` skill.\n', 'memory.md': 'The proof ran.\n', 'tool_guidance.md': '', 'skills/proof/SKILL.md': '---\nname: proof\ndescription: asked for a proof\n---\nList each check.\n' } })
+  const edited = await request('harnesses.save', { scope: 'proof-agent', edit: { 'tool_guidance.md': 'Read before you write.\n' }, note: 'proof edit' })
+  let refused = ''
+  try {
+    await request('harnesses.save', { scope: 'proof-agent', edit: { 'skills/orphan/SKILL.md': '---\nname: orphan\ndescription: never named\n---\nx\n' } })
+  } catch (error) {
+    refused = error.message
+  }
+  const lineage = await request('harnesses.lineage', { scope: 'proof-agent' })
+  check('keeps a versioned harness tree and refuses an invalid one', lineage.length === 2 && edited.parent === seeded.fingerprint && refused.includes('never named in the always-on text'), `${lineage.length} versions`)
 
-  await request('skills.create', { kind: 'skills', name: 'Proof skill' })
-  const skills = await request('skills.setEnabled', { projectId: null, ids: ['skills/proof-skill'] })
-  check('holds skills and their enablement', skills.items.some((item) => item.id === 'skills/proof-skill'))
+  await request('wiki.write', { path: 'library/proof', text: '# Proof\n\nThe harness runs on its own. See [[home]].\n' })
+  const found = await request('wiki.search', { query: 'harness runs' })
+  const graph = await request('wiki.graph')
+  check('keeps linked project notes in the Wiki', found.length > 0 && graph.edges.some((edge) => edge.from === 'library/proof' && edge.to === 'home'), `${found.length} hit; ${graph.edges.length} link`)
 
-  const compiled = await request('context.compile', { context: caller, launch: { sections: [{ id: 'identity', title: 'Identity', body: 'You are the Prover.', budget: 1000, order: 10 }] }, render: true })
-  check('compiles a prompt from the host\'s sections and its own', compiled.text.includes('You are the Prover.') && compiled.text.includes('The proof ran.') && compiled.text.includes('proof-skill'), `${compiled.pack.sections.map((section) => section.id).join(', ')}`)
+  const compiled = await request('context.compile', { context: caller, harness: { scope: 'proof-agent' }, launch: { sections: [{ id: 'identity', title: 'Identity', body: 'You are the Prover.', budget: 1000, order: 10 }] }, render: true })
+  check('compiles a prompt from the host\'s sections and the harness tree', compiled.text.includes('You are the Prover.') && compiled.text.includes('The proof ran.') && compiled.text.includes('Read before you write.'), `${compiled.pack.sections.map((section) => section.id).join(', ')}`)
 
   const connections = await request('connections.list')
   check('lists connected apps', Array.isArray(connections), `${connections.length} configured`)
@@ -90,36 +95,39 @@ try {
     await new Promise((resolve) => setTimeout(resolve, 100))
   }
   check('records a scripted session as a run with events (no credentials, so it fails cleanly)', run.status === 'failed' && events.some((event) => event.runId === 'proof-run'), `status ${run.status}; ${events.length} events relayed`)
-  check('tells the host when state changes', ['accounts.changed', 'wiki.changed'].every((type) => notices.some((notice) => notice.type === type)))
+  check('tells the host when state changes', ['accounts.changed', 'wiki.changed', 'harnesses.changed'].every((type) => notices.some((notice) => notice.type === type)))
 
-  // A plugin that extends memory with a hook: installed from a folder, it hears nothing until it
-  // is switched on and trusted, then every saved fact; changed code is read again once trusted.
+  // A plugin that extends the Wiki with a hook: installed from a folder, it hears nothing until it
+  // is switched on and trusted, then every saved note; changed code is read again once trusted.
   const pluginDir = join(scratch, 'mirror')
   const heard = join(scratch, 'heard.log')
-  const hooksFile = (label) => `import { appendFileSync } from 'node:fs'\nexport default function (harness) { harness.on('memory.saved', (event) => appendFileSync(${JSON.stringify(heard)}, '${label}:' + event.title + '\\n')) }\n`
+  const hooksFile = (label) => `import { appendFileSync } from 'node:fs'\nexport default function (harness) { harness.on('wiki.page.saved', (event) => appendFileSync(${JSON.stringify(heard)}, '${label}:' + event.title + '\\n')) }\n`
   mkdirSync(pluginDir, { recursive: true })
-  writeFileSync(join(pluginDir, 'package.json'), JSON.stringify({ name: 'mirror', version: '1.0.0', description: 'Copies each saved fact.', harness: { extends: ['memory'], hooks: './hooks.mjs' } }))
+  writeFileSync(join(pluginDir, 'package.json'), JSON.stringify({ name: 'mirror', version: '1.0.0', description: 'Copies each saved note.', harness: { extends: ['wiki'], hooks: './hooks.mjs' } }))
   writeFileSync(join(pluginDir, 'hooks.mjs'), hooksFile('v1'))
   const toldSoFar = () => (existsSync(heard) ? readFileSync(heard, 'utf8').trim().split('\n').filter(Boolean) : [])
   const settle = () => new Promise((resolve) => setTimeout(resolve, 400))
   const mirror = (plugins) => plugins.find((plugin) => plugin.id === 'package:mirror')
   const installed = mirror(await request('plugins.install', { source: pluginDir }))
-  await request('facts.save', { input: { title: 'Before', kind: 'fact', body: 'Not heard.' } })
+  await request('wiki.write', { path: 'library/before', text: '---\ntitle: Before\n---\n\nNot heard.\n' })
   await settle()
   const quiet = toldSoFar().length === 0
   await request('plugins.attach', { id: 'package:mirror' })
   await request('plugins.trust', { hash: installed.code.hash })
   await settle()
-  await request('facts.save', { input: { title: 'First', kind: 'fact', body: 'Heard by version one.' } })
+  await request('wiki.write', { path: 'library/first', text: '---\ntitle: First\n---\n\nHeard by version one.\n' })
   await settle()
   writeFileSync(join(pluginDir, 'hooks.mjs'), hooksFile('v2'))
-  await request('facts.save', { input: { title: 'While changed', kind: 'fact', body: 'Changed code is not trusted.' } })
+  await request('wiki.write', { path: 'library/while-changed', text: '---\ntitle: While changed\n---\n\nChanged code is not trusted.\n' })
   await settle()
   await request('plugins.trust', { hash: mirror(await request('plugins.list')).code.hash })
   await settle()
-  await request('facts.save', { input: { title: 'Second', kind: 'fact', body: 'Heard by version two.' } })
+  await request('wiki.write', { path: 'library/second', text: '---\ntitle: Second\n---\n\nHeard by version two.\n' })
   await settle()
-  check('runs a plugin hook after memory is saved, only while it is switched on and its code is trusted', quiet && installed.extends.join() === 'memory' && toldSoFar().join() === 'v1:First,v2:Second', toldSoFar().join(', ') || 'nothing heard')
+  check('runs a plugin hook after a note is saved, only while it is switched on and its code is trusted', quiet && installed.extends.join() === 'wiki' && toldSoFar().join() === 'v1:First,v2:Second', toldSoFar().join(', ') || 'nothing heard')
+
+  const demo = spawnSync(process.execPath, [cli, 'refine', 'demo', '--k', '2', '--out', join(scratch, 'demo')], { encoding: 'utf8' })
+  check('refines a harness end to end: Propose–Probe–Compose, blind selection, and a library entry', demo.status === 0 && (demo.stdout.match(/R=8\/8 executions, P=6\/6 improver sessions/g) ?? []).length === 2 && demo.stdout.includes('library: ledger-1, ledger-2'), demo.stdout.split('\n')[0] || demo.stderr)
 
   await request('harness.shutdown')
 } catch (error) {

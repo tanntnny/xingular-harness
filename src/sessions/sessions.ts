@@ -12,18 +12,18 @@ import { capabilitySet as parseCapabilitySet, freezeRun } from '../capabilities/
 import type { CapabilitySet } from '../capabilities/types'
 import { now, writeJson } from '../core/fs'
 import { takeChars } from '../core/text'
-import type { CallerContext } from '../memory/caller'
-import type { DispatchEnv } from '../memory/dispatch'
+import type { CallerContext } from '../core/caller'
+import type { DispatchEnv } from '../tools/dispatch'
 import type { Plugins } from '../plugins/plugins'
 import { sessionLaunch, type Launch } from '../prompt/compile'
 import * as attachments from '../plugins/attachments'
 import { FIRST_PARTY_PLUGINS, firstPartyExtensions, type InlineExtension } from '../plugins/firstParty'
-import * as registry from '../skills/registry'
+import { materialise, type HarnessChoice, type Materialised } from '../tree/materialise'
+import type { TreeTrust } from '../tree/trust'
 import { ASK_USER, askUserTool } from '../tools/askUser'
-import { PLUGIN_PROPOSE, pluginProposeTool } from '../tools/pluginPropose'
 import { subagentTools } from '../tools/spawnSubagent'
-import { WIKI_TOOL_NAMES } from '../tools/definitions'
-import { memoryTools } from '../tools/memoryTools'
+import { DEFAULT_TOOL_NAMES } from '../tools/definitions'
+import { harnessTools } from '../tools/harnessTools'
 import type { ToolProvider, ToolSession, ToolSpec } from '../tools/types'
 import type { RunRecord } from './contracts'
 import { SPAWN_SUBAGENT, WAIT_SUBAGENTS, subagentDepth, subagentHistory, subagentNesting, type SubagentInput, type SubagentOptions } from './subagents'
@@ -58,8 +58,13 @@ export interface SessionRunInput {
   preamble?: string | null
   /** Unattended: no project extensions, no context files, nothing may ask a person. */
   automatic?: boolean
-  /** Who the session works as, for memory and the prompt. */
+  /** Who the session works as, for history, the Wiki and the prompt. */
   caller: CallerContext
+  /**
+   * The harness tree the session runs: a scope's head (or a version of it), or a tree on disk.
+   * Its version is pinned for the whole run and recorded on it.
+   */
+  harness?: HarnessChoice | null
   /** What the application adds to the prompt, and which tools it describes. */
   launch?: Launch
   /** The tools switched on, in the order the model sees them, and those that ask before each call. */
@@ -74,6 +79,8 @@ export interface SessionRunInput {
   subagents?: SubagentOptions | null
   /** Ask the application's tool providers for tools (the default). False runs with the harness's own tools only. */
   providers?: boolean
+  /** Give the session the harness's own tools: History, the Wiki, skills, and asking the user (the default). */
+  harnessTools?: boolean
   /**
    * Plan mode: the run may only read, search, recall and ask, and is told to end with a
    * `<proposed_plan>` block. Other calls are refused at the gate; the tool list is unchanged.
@@ -99,6 +106,8 @@ export interface SessionsOptions {
   /** Resolves the caller's capability set from the harness's stores. */
   resolveCapabilities?: (caller: CallerContext, tools: readonly string[], cwd: string) => Promise<CapabilitySet>
   factory?: SessionFactory
+  /** Which plugin code in harness trees a person trusted. */
+  trust?: TreeTrust | null
 }
 
 /** The harness's own plugins a person switched on for this caller, with the numbers they set. */
@@ -178,15 +187,13 @@ export class Sessions {
     const account = this.options.accounts.resolve(input.accountId, input.poolId)
     const context = this.options.accounts.context(account)
     const runId = input.run.id
-    const caller: CallerContext = { ...input.caller, maintenanceJobIds: input.caller.maintenanceJobIds?.slice(), runId, sessionId: input.caller.sessionId ?? input.run.sessionId }
+    const caller: CallerContext = { ...input.caller, runId, sessionId: input.caller.sessionId ?? input.run.sessionId }
     const broker = input.connections ? this.options.broker : null
     const depth = input.depth ?? 0
     const canSpawn = input.subagents !== null && (!input.automatic || input.subagents !== undefined) && subagentNesting(root, input.run) < subagentDepth(input.subagents ?? undefined)
     const requestedTools = [...new Set([
       ...input.tools.allow.filter((name) => name !== SPAWN_SUBAGENT && name !== WAIT_SUBAGENTS),
-      ASK_USER,
-      ...(input.automatic ? [] : [PLUGIN_PROPOSE]),
-      ...WIKI_TOOL_NAMES,
+      ...(input.harnessTools === false ? [] : [ASK_USER, ...DEFAULT_TOOL_NAMES]),
       ...(broker?.toolNames ?? []),
       ...(canSpawn ? [SPAWN_SUBAGENT, WAIT_SUBAGENTS] : [])
     ])]
@@ -201,6 +208,16 @@ export class Sessions {
       contributions: available.contributions.filter((id) => requested.contributions.includes(id))
     }
     freezeRun(root, runId, caller, capabilities)
+
+    // The harness is resolved once and pinned: a child run or a later turn of this run uses the
+    // same files even if the head moves meanwhile.
+    let tree: Materialised | null = null
+    if (input.harness) {
+      const scope = input.harness.scope ?? null
+      const trust = this.options.trust ?? null
+      tree = materialise(root, input.harness, { trust, probeCode: input.run.trigger === 'probe' && Boolean(scope && trust?.probeCode(scope)), subagents: capabilities.tools.includes(SPAWN_SUBAGENT) })
+      input.harness = { dir: tree.dir, scope: tree.scope }
+    }
 
     saveRun(root, {
       resumedFromRunId: input.run.resumedFromRunId ?? null,
@@ -225,7 +242,9 @@ export class Sessions {
       handoffId: input.run.handoffId ?? null,
       accountId: account.id,
       agentId: input.run.agentId ?? caller.agentId ?? null,
-      trigger: input.run.trigger ?? null
+      trigger: input.run.trigger ?? null,
+      harnessScope: tree?.scope ?? null,
+      harnessVersion: tree?.fingerprint ?? null
     })
 
     // What the session is, kept with the run so later consolidation knows which memory it had.
@@ -254,7 +273,7 @@ export class Sessions {
         connectionTools: (launch.connectionTools ?? []).filter((name) => capabilities.tools.includes(name)),
         toolGroups: launch.toolGroups?.map((group) => ({ ...group, tools: group.tools.filter((name) => capabilities.tools.includes(name)) })).filter((group) => group.tools.length > 0)
       }
-      ;({ system, update } = sessionLaunch(this.env, caller, effectiveLaunch, historyFile, capabilities.contributions))
+      ;({ system, update } = sessionLaunch(this.env, caller, effectiveLaunch, historyFile, tree))
     } catch (error) {
       fail(error)
       throw error
@@ -262,6 +281,9 @@ export class Sessions {
 
     const run = this.options.runs.start(input.run.sessionId, runId)
     if (run.finished) return { runId, nativeSessionId: null }
+    if (tree?.untrustedPlugins.length) {
+      run.emit('extension.notice', { kind: 'notify', level: 'warning', text: `Harness plugins not loaded until their code is trusted: ${tree.untrustedPlugins.join(', ')}.` })
+    }
     // What every session has, after the tools the caller switched on and in a fixed order.
     const allow = capabilities.tools
     const session: ToolSession = { run, caller, allow, depth, cwd: input.cwd, capabilities }
@@ -271,9 +293,7 @@ export class Sessions {
     try {
       const tools: ToolSpec[] = [
         ...(broker ? broker.tools(session, { readOnly: typeof input.connections === 'object' && input.connections.readOnly === true }) : []),
-        ...memoryTools(this.options.env, caller, capabilities.contributions),
-        askUserTool(run),
-        pluginProposeTool(this.options.env, caller),
+        ...(input.harnessTools === false ? [] : [...harnessTools(this.options.env, caller, { treeDir: tree?.dir ?? null }), askUserTool(run)]),
         ...subagentTools(this.options.subagents, runId).filter(tool => allow.includes(tool.name))
       ]
       if (input.providers !== false) for (const provider of this.providers) tools.push(...(await provider(session)))
@@ -294,7 +314,8 @@ export class Sessions {
         preamble: input.preamble ?? null,
         automatic: input.automatic,
         account: context,
-        resources: registry.resources(root, caller.projectId ?? null, caller.agentId ?? null, capabilities.contributions),
+        resources: { ids: [], skillPaths: tree?.skillPaths ?? [], promptPaths: [] },
+        treeExtensions: tree?.extensionPaths ?? [],
         inline: [...firstPartyFor(root, capabilities.contributions), runLineageJoin(root, runId), this.options.subagents.extension(runId)],
         ...(plugins ? { plugins: { loading: () => plugins.loading({ cwd: input.cwd, agentDir: context.configDir, install: true, caller: { agentId: caller.agentId ?? null, projectId: caller.projectId ?? null }, contributions: capabilities.contributions }), loaded: (extensions) => plugins.loaded(extensions) } } : {}),
         system,

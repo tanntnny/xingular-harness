@@ -107,11 +107,8 @@ describe('a pi terminal session', () => {
     expect(`${result.stdout}${result.stderr}`).toMatch(/usage|options|pi coding agent/i)
   })
 
-  it('passes what the harness found as paths, the enabled registry items with them, and its own extension last', async () => {
+  it('passes what the harness found as paths, the harness tree\'s skills and trusted plugins with them, and its own extension last', async () => {
     const root = rootWithProject()
-    writeFile(join(root, 'registry/skills/release/SKILL.md'), '# Release\n')
-    writeFile(join(root, 'registry/prompts/review.md'), 'Review this.\n')
-    writeFile(join(root, 'config/registry-enabled.json'), JSON.stringify({ p1: ['skills/release', 'prompts/review'] }))
     writeFile(join(root, '.pi/extensions/local.ts'), 'export default function () {}\n')
     const item = (kind: Found['kind'], path: string, origin: Found['origin'], enabled = true): Found => ({ kind, path, origin, project: origin === 'project', packageRoot: null, source: null, enabled })
     const found = [
@@ -126,12 +123,17 @@ describe('a pi terminal session', () => {
     const harness = createHarness({ dataRoot: root, stateDir: mkdtempSync(join(tmpdir(), 'hs-')), secrets: memorySecretStore(), piProgram: () => '/opt/pi/bin/pi', assets: { node: '/opt/node', cli: '/opt/harness/cli.js', piExtension: '/opt/harness/terminal-pi.js' }, resolver: async () => found })
     open.push(harness)
     const account = harness.accounts.create('Main', 'apiKey').accounts[0]
-    const prepare = async () => (await harness.terminals.prepare({ sessionId: 'term-1', accountId: account.id, projectId: 'p1', cwd: root, sessionFolder: join(root, 'sessions', 'p1', 'term-1') })).args.slice(2)
+    const tree = { 'systemprompt.md': 'Ship releases.\n', 'guardrails.md': '- When cutting a release, load the `release` skill.\n', 'memory.md': '', 'tool_guidance.md': '', 'skills/release/SKILL.md': '---\nname: release\ndescription: cutting a release\n---\nTag it.\n', 'plugins/guard.ts': 'export default function (pi) {}\n' }
+    const { commit, versionPath, head } = await import('../tree/store')
+    commit(root, 'term-agent', tree, { kind: 'seed' })
+    harness.trust.grant(tree['plugins/guard.ts'], 'plugins/guard.ts', 'term-agent')
+    const version = versionPath(root, 'term-agent', head(root, 'term-agent')!.fingerprint)
+    const prepare = async () => (await harness.terminals.prepare({ sessionId: 'term-1', accountId: account.id, projectId: 'p1', cwd: root, sessionFolder: join(root, 'sessions', 'p1', 'term-1'), harness: { scope: 'term-agent' } })).args.slice(2)
 
     const loaded = [
-      '--extension', '/shared/extensions/mine.ts', '--extension', 'builtin:mcp',
-      '--skill', join(root, 'registry/skills/release/SKILL.md'), '--skill', '/shared/skills/alpha/SKILL.md',
-      '--prompt-template', join(root, 'registry/prompts/review.md'), '--prompt-template', '/shared/prompts/p.md',
+      '--extension', '/shared/extensions/mine.ts', '--extension', 'builtin:mcp', '--extension', join(version, 'plugins/guard.ts'),
+      '--skill', join(version, 'skills'), '--skill', '/shared/skills/alpha/SKILL.md',
+      '--prompt-template', '/shared/prompts/p.md',
       '--theme', '/shared/themes/dark.json',
       '--extension', '/opt/harness/terminal-pi.js', '--session-dir', join(root, 'sessions', 'p1', 'term-1', 'pi')
     ]
@@ -189,24 +191,6 @@ describe('a pi terminal session', () => {
     await harness.runs.interrupt('reserved')
     expect(await tell('poll')).toEqual({ command: { type: 'interrupt' } })
     expect(loadRun(root, 'reserved').status).toBe('interrupted')
-  })
-
-  it('sends a memory block that changed since the session started along with the next instruction', async () => {
-    const { tell, harness, connection } = await setup()
-    await tell('ready', {})
-    await socketCall(connection, 'memory.append', { block: 'project', text: 'Prefers pnpm.' })
-    const first = harness.terminals.send({ sessionId: 'term-1', text: 'Continue' })
-    let delivered = ''
-    await vi.waitFor(async () => {
-      const { command } = await tell('poll')
-      expect(command?.type).toBe('send')
-      delivered = command.text
-    })
-    await tell('begin', { text: delivered })
-    await first
-    expect(delivered.startsWith('[Memory updated since this session')).toBe(true)
-    expect(delivered).toContain('Prefers pnpm.')
-    expect(delivered.endsWith('\n\nContinue')).toBe(true)
   })
 
   it('will not send over a draft the person is typing, and fails a delivery the native session never acknowledges', async () => {
@@ -389,11 +373,11 @@ describe('a pi terminal session', () => {
     expect(harness.terminals.state('term-1').ready).toBe(false)
   })
 
-  it('serves memory and connected apps to the session over the socket, until the terminal ends', async () => {
+  it('serves the Wiki, skills and connected apps to the session over the socket, until the terminal ends', async () => {
     const { connection, harness, tell } = await setup()
     await tell('ready', {})
-    expect(await socketCall<string>(connection, 'wiki.entrypoint')).toContain('# Xingular Harness context')
-    expect(await socketCall<string>(connection, 'wiki.list')).toContain('library')
+    expect(await socketCall<string>(connection, 'skill.load')).toBe('You have no skills.')
+    expect(await socketCall<string>(connection, 'wiki.list')).toContain('home')
     const listed = await socketCall<{ tools: { name: string; parameters: { type: string } }[] }>(connection, 'tools.list')
     expect(listed.tools.map((tool) => tool.name)).toEqual(['mcp_list_tools', 'mcp_call_tool'])
     expect(listed.tools[0].parameters.type).toBe('object')
@@ -429,19 +413,17 @@ describe('the session socket', () => {
 })
 
 describe('xagent-wiki command', () => {
-  it('maps commands onto memory and Wiki calls', () => {
-    expect(parseCli(['search', 'deploy', 'steps', '--kind', 'page'])).toEqual({ kind: 'call', call: 'wiki.search', params: { query: 'deploy steps', kinds: ['page'] } })
-    expect(parseCli(['read', '/projects/app/arch'])).toEqual({ kind: 'call', call: 'wiki.read', params: { id: '/projects/app/arch' } })
+  it('maps commands onto Wiki, skill and history calls', () => {
+    expect(parseCli(['search', 'deploy', 'steps', '--project', 'app'])).toEqual({ kind: 'call', call: 'wiki.search', params: { query: 'deploy steps', project: 'app' } })
+    expect(parseCli(['read', 'projects/app/arch'])).toEqual({ kind: 'call', call: 'wiki.read', params: { path: 'projects/app/arch' } })
     expect(parseCli(['list'])).toEqual({ kind: 'call', call: 'wiki.list', params: {} })
-    expect(parseCli(['skill', 'review'])).toEqual({ kind: 'call', call: 'wiki.skill', params: { name: 'review' } })
-    expect(parseCli(['memory', '--namespace', '/projects/app'])).toEqual({ kind: 'call', call: 'wiki.memory', params: { namespace: '/projects/app' } })
+    expect(parseCli(['list', 'library'])).toEqual({ kind: 'call', call: 'wiki.list', params: { project: 'library' } })
+    expect(parseCli(['write', 'library/notes', 'Use', 'pnpm.'])).toEqual({ kind: 'call', call: 'wiki.write', params: { path: 'library/notes', text: 'Use pnpm.' } })
+    expect(parseCli(['write', 'library/notes', '-'])).toEqual({ kind: 'stdin-write', path: 'library/notes' })
+    expect(parseCli(['skill', 'review'])).toEqual({ kind: 'call', call: 'skill.load', params: { name: 'review' } })
     expect(parseCli(['recall', 'the', 'outage', '--scope', 'all'])).toEqual({ kind: 'call', call: 'recall.search', params: { query: 'the outage', scope: 'all' } })
-    expect(parseCli(['propose', '{"kind":"memory","title":"t","body":"b"}'])).toMatchObject({ kind: 'call', call: 'wiki.propose', params: { kind: 'memory' } })
-    expect(parseCli(['propose', '-'])).toEqual({ kind: 'stdin-propose' })
-    expect(parseCli(['block', 'append', 'project', 'Uses', 'pnpm.'])).toEqual({ kind: 'call', call: 'memory.append', params: { block: 'project', text: 'Uses pnpm.' } })
-    expect(parseCli(['block', 'replace', 'project', '--old', 'npm', '--new', 'pnpm'])).toEqual({ kind: 'call', call: 'memory.replace', params: { block: 'project', old: 'npm', new: 'pnpm' } })
     expect(parseCli(['search'])).toEqual({ kind: 'help' })
-    expect(parseCli(['nonsense'])).toEqual({ kind: 'help' })
+    expect(parseCli(['block', 'append', 'x', 'y'])).toEqual({ kind: 'help' })
   })
 })
 
