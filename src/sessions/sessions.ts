@@ -151,6 +151,8 @@ export class Sessions {
           return error instanceof Error ? error.message : 'Tool unavailable in the app settings.'
         }
         if (scope.allowed && !scope.humanOnly && (scope.automatic || !gated.has(tool))) return null
+        // Refinement runs have nobody to ask: what would need a person is refused, never queued.
+        if (call.run.trigger === 'probe' || call.run.trigger === 'improver') return scope.reason ? `Refused in a refinement run: ${scope.reason}` : 'Refused in a refinement run: this call needs a person to approve it.'
         // A call outside the scope is approved one at a time; a gated tool may be remembered, unless only a person may decide it.
         const decision = await run.requestApproval({
           target: tool,

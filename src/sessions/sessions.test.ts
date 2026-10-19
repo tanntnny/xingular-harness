@@ -460,6 +460,18 @@ describe('session turns on Pi', () => {
     expect(received!.params.system).toContain('# Xingular Harness context')
   })
 
+  it('refuses, never asks, when a refinement run reaches a call that needs a person', async () => {
+    let check: ((name: string, input: unknown) => Promise<string | null>) | null = null
+    const { run, events } = setup(async (input) => {
+      check = input.gate.check
+      return fakeSession(async () => undefined, input.gate)
+    })
+    await run('probe-1', { run: { id: 'probe-1', sessionId: 'agent-1', trigger: 'probe' }, tools: { allow: ['read', 'bash'], gated: ['bash'] }, automatic: true })
+    await tick()
+    expect(await check!('bash', { command: 'rm -rf /' })).toMatch(/^Refused in a refinement run/)
+    expect(events.some((event) => event.type === 'approval.requested')).toBe(false)
+  })
+
   it('runs on a pinned harness tree: its sections, its skills, and its version on the run', async () => {
     let received: Parameters<SessionFactory>[0] | null = null
     const { run, harness } = setup(async (input) => {
