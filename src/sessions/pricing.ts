@@ -1,6 +1,8 @@
 // List-price cost of token usage, for when a provider reports tokens but no cost.
 import type { ModelRuntime } from '@earendil-works/pi-coding-agent'
 
+import { loadPi } from '../pi/runtime'
+
 /** Dollars per million tokens. */
 export interface PriceRates {
   input: number
@@ -39,7 +41,7 @@ type Catalogue = { getModel(provider: string, model: string): { cost?: PriceRate
 let catalogue: Promise<Catalogue> | null = null
 
 async function loadCatalogue(): Promise<Catalogue> {
-  const { ModelRuntime } = await import('@earendil-works/pi-coding-agent')
+  const { ModelRuntime } = await loadPi()
   const none = { read: async () => undefined, list: async () => [], modify: async () => undefined, delete: async () => undefined }
   return (await ModelRuntime.create({ credentials: none, modelsPath: null, refreshOnCreate: false })) as ModelRuntime as unknown as Catalogue
 }

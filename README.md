@@ -343,7 +343,7 @@ Node 22.19 or newer.
 
 ## Images
 
-`SessionRunInput.requiresImageInput` optionally requires a vision-capable resolved Pi model before a prompt is delivered. The check includes direct `images` input, and the generic tool wrapper rejects image results on text-only models. Direct prompt images use Pi's `{ type: 'image', data, mimeType }` content shape. Applications own file formats, attachment selection, extraction and image preparation; the Harness only transports typed image content and validates model capability.
+`SessionRunInput.requiresImageInput` optionally requires a vision-capable resolved Pi model before a prompt is delivered. The check includes direct `images` input, and the generic tool wrapper rejects image results on text-only models. Direct prompt images use Pi's `{ type: 'image', data, mimeType }` content shape. Applications own attachment selection, extraction and image preparation; the Harness transports typed image content and validates model capability. In the standalone terminal, pasting Finder-copied HEIC/HEIF files on macOS converts them to temporary PNGs so Pi can read their pixels. See [the terminal guide](docs/terminal-tui.md#clipboard-image-paste).
 
 ## Curated Hub
 

@@ -5,6 +5,7 @@ import { homedir } from 'node:os'
 import { join, sep } from 'node:path'
 
 import { log } from '../core/bus'
+import { loadPi } from '../pi/runtime'
 import { packageManifest } from './manifest'
 
 /**
@@ -82,7 +83,7 @@ export async function withoutInstallScripts<T>(action: () => Promise<T>): Promis
 }
 
 export const piResolver: Resolver = async ({ cwd, agentDir, install, packages }) => {
-  const pi = await import('@earendil-works/pi-coding-agent')
+  const pi = await loadPi()
   const settings = pi.SettingsManager.create(cwd, agentDir)
   const shared = new Set((settings.getGlobalSettings().packages ?? []).map((entry) => (typeof entry === 'string' ? entry : entry.source)))
   const manager = (): InstanceType<typeof pi.DefaultPackageManager> => new pi.DefaultPackageManager({ cwd, agentDir, settingsManager: settings, builtinExtensions: [...PI_BUILTINS] })

@@ -6,6 +6,7 @@ import type { ModelRuntime } from '@earendil-works/pi-coding-agent'
 
 import type { AccountContext } from '../accounts/env'
 import { HarnessError } from '../core/errors'
+import { loadPi } from '../pi/runtime'
 import { MEMORY_KINDS } from './facts'
 import { LINK_TYPES, PAGE_TYPES } from './store'
 
@@ -156,7 +157,7 @@ export type MaintainerFactory = (input: {
 }) => Promise<MaintainerSession>
 
 export const piMaintainerFactory: MaintainerFactory = async ({ cwd, kind, product, account, runtime, collect }) => {
-  const pi = await import('@earendil-works/pi-coding-agent')
+  const pi = await loadPi()
   const { Type } = await import('typebox')
   const agentDir = account.configDir
   const resourceLoader = new pi.DefaultResourceLoader({ cwd, agentDir, noExtensions: true, noSkills: true, noPromptTemplates: true, noContextFiles: true, appendSystemPromptOverride: (base) => [...base, instructions(kind, product)] })

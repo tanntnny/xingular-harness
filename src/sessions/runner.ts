@@ -6,6 +6,7 @@ import type { CreateAgentSessionOptions, ModelRuntime, SettingsManager } from '@
 import { classifyMessage } from '../accounts/accounts'
 import type { AccountContext } from '../accounts/env'
 import { HarnessError } from '../core/errors'
+import { loadPi } from '../pi/runtime'
 import type { InlineExtension } from '../plugins/firstParty'
 import type { Loading, Registered } from '../plugins/plugins'
 import { CONTEXT_MESSAGE_TYPE, CONTEXT_SNAPSHOT_KEY, type ContextUpdate } from '../prompt/compile'
@@ -520,7 +521,7 @@ export function registeredBy(loader: { getExtensions(): { extensions: readonly u
 
 /** Opens a Pi session for one turn: the account's runtime, the compiled prompt, and the gated tools. */
 export const piSessionFactory: SessionFactory = async ({ params, allow, gate, tools, runtime: loadRuntime, extensions: host }) => {
-  const pi = await import('@earendil-works/pi-coding-agent')
+  const pi = await loadPi()
   const { Type } = await import('typebox')
   const runtime = await loadRuntime()
 

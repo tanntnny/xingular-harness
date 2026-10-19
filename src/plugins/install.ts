@@ -10,6 +10,7 @@ import { ensureSharedDir } from '../accounts/env'
 import { invalid, notFound } from '../core/errors'
 import { now } from '../core/fs'
 import type { Harness } from '../harness'
+import { loadPi } from '../pi/runtime'
 import { ensureAdopted, list, type PluginScope } from './api'
 import * as attachments from './attachments'
 import { withoutInstallScripts } from './discover'
@@ -26,7 +27,7 @@ export function normalizeSource(input: string): string {
 }
 
 async function manager(harness: Harness) {
-  const pi = await import('@earendil-works/pi-coding-agent')
+  const pi = await loadPi()
   // The shared folder is where `settings.json` really is; an account's own is a link to it.
   const agentDir = ensureSharedDir(harness.accounts.dir)
   const settings = pi.SettingsManager.create(harness.stateDir, agentDir)

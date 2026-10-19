@@ -148,11 +148,17 @@ Full upstream copyright and MIT permission notices are in [NOTICE.md](../NOTICE.
 ## Runtime compatibility adapter
 
 Most integration uses public Pi exports. [`piAdapter.ts`](../src/terminal/tui/piAdapter.ts)
-contains the remaining implementation dependencies and requires exactly Pi **1.2.0** before
-loading them:
+contains the remaining presentation dependencies and requires exactly Pi **1.2.0** before
+loading them. The shared [`runtime.ts`](../src/pi/runtime.ts) loader imports Pi first, then invokes
+the same HTTP dispatcher hook as Pi's CLI before any Harness Pi runtime is used. This reapplies
+the process `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY` settings after Pi's bundled Undici has
+loaded. Account and model checks, sessions, maintenance, plugin discovery and installation,
+pricing, and the standalone terminal all use this loader. It is process-wide and coalesces
+concurrent initialization.
 
 | Internal dependency | Reason |
 |---|---|
+| `dist/bundle/chunks/chunk-TJXZSVTD.js:configureHttpDispatcher` | Restore Pi's environment-aware HTTP proxy dispatcher after the SDK import |
 | `dist/extensions/index.js` builtin inventory | Preserve selected `llama.cpp`, `codemode`, `tool-search` and MCP builtins with the CLI's replacement semantics |
 | `dist/modes/interactive/theme/theme.js:setThemeInstance` | Keep public native rich components on the same active theme as the Harness screen |
 | `dist/core/tools/renderers/index.js:withBuiltInRenderers` | Preserve existing read/edit/bash/write formatting without replacing tool execution |
@@ -160,7 +166,20 @@ loading them:
 
 The adapter is initialized once; its global theme setter and renderer lookup are synchronous
 thereafter. A Pi dependency upgrade must update this adapter deliberately and rerun the
-terminal compatibility tests. These module imports do not instantiate `InteractiveMode`.
+terminal compatibility tests. The dispatcher compatibility check also pins the private Pi bundle
+chunk and fails with a clear error if that hook moves or disappears. A local proxy fixture test
+checks that a Pi HTTP request reaches the configured proxy without contacting an external host.
+These module imports do not instantiate `InteractiveMode`.
+
+## Clipboard image paste
+
+The standalone terminal reads Finder-copied file paths before checking clipboard image pixels.
+On macOS, `.heic` and `.heif` files are converted with `/usr/bin/sips` to private temporary PNGs,
+preserving the copied path order and leaving the originals untouched. The temporary files are
+removed when the terminal shuts down. A failed or invalid conversion reports an error and leaves
+the composer unchanged. Clipboard image pixels continue through Pi's native adapter, which reads
+PNG/TIFF on macOS and normalizes TIFF to PNG. This path is terminal-emulator independent; direct
+Warp clipboard acceptance still requires a manual check in Warp.
 
 ## Accounts, history and resource trust
 
@@ -324,9 +343,10 @@ a successful response or tool execution. Harness persisted the failed run and re
 terminal; the source sign-in file was unchanged and the disposable credentials were deleted.
 The [live report and capture](evidence/terminal-2026-10-17-followup/live-codex/README.md) retain
 this quota failure explicitly. Successful live streaming/tool acceptance remains open until
-account capacity is available. GitHub gist publication, actual OS clipboard/image transfer,
-Windows behavior and every terminal emulator remain unverified. Rich image/diff rendering and clipboard adapters have
-focused compatibility tests; that does not establish OS interaction. These changes shipped in
+account capacity is available. GitHub gist publication, actual OS clipboard pixel transfer,
+Windows behavior and every terminal emulator remain unverified. HEIC/HEIF file staging has focused
+conversion tests; that does not establish Finder or Warp OS interaction. Rich image/diff rendering
+and clipboard adapters have focused compatibility tests; that does not establish OS interaction. These changes shipped in
 `@xingular/harness` 2.0.0 (commit `44471bc`), while the complete plan's acceptance remains
 open pending the required integration and provider evidence.
 

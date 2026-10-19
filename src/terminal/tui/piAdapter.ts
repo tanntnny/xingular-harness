@@ -1,9 +1,11 @@
 // Pi 1.2.0 omits CLI builtins, rich builtin renderers, clipboard reads and the global theme setter
 // from its public exports. Keep those version-sensitive presentation hooks here; session/runtime
 // work uses public APIs. Clipboard helpers are only called for an explicit user paste.
-import { getPackageDir, VERSION, type InlineExtension, type Theme, type ToolRenderers } from '@earendil-works/pi-coding-agent'
+import type { InlineExtension, Theme, ToolRenderers } from '@earendil-works/pi-coding-agent'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
+
+import { loadPi, PINNED_PI_VERSION } from '../../pi/runtime'
 
 export interface PiAdapter {
   builtins: InlineExtension[]
@@ -19,13 +21,14 @@ let adapter: PiAdapter | undefined
 let loading: Promise<PiAdapter> | undefined
 
 export function assertPiAdapterVersion(version: string): void {
-  if (version !== '1.2.0') throw new Error(`The Harness terminal adapter requires Pi 1.2.0; found ${version}. Install the Harness package's pinned dependencies.`)
+  if (version !== PINNED_PI_VERSION) throw new Error(`The Harness terminal adapter requires Pi ${PINNED_PI_VERSION}; found ${version}. Install the Harness package's pinned dependencies.`)
 }
 
 export function loadPiAdapter(): Promise<PiAdapter> {
   loading ??= (async () => {
-    assertPiAdapterVersion(VERSION)
-    const root = getPackageDir()
+    const pi = await loadPi()
+    assertPiAdapterVersion(pi.VERSION)
+    const root = pi.getPackageDir()
     const [extensions, theme, renderers, clipboard, images] = await Promise.all([
       import(pathToFileURL(join(root, 'dist/extensions/index.js')).href),
       import(pathToFileURL(join(root, 'dist/modes/interactive/theme/theme.js')).href),

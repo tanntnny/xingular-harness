@@ -11,6 +11,7 @@ import terminalExtension, { type TerminalPlanRunState } from '../piExtension'
 import { planModeTools } from './planMode'
 import { claimTerminalControl, controlCall } from '../control'
 import { loadPiAdapter } from './piAdapter'
+import { loadPi } from '../../pi/runtime'
 import type { SessionAccount } from '../accountsMenu'
 import type { QuestionAnswer } from '../../sessions/registry'
 import type { TerminalQuestion } from './questions'
@@ -174,6 +175,7 @@ export async function createTerminalRuntime(args: string[], host: TerminalRuntim
     assertTerminalSessionScope(resume, cwd)
   }
 
+  await loadPi()
   // Claim before loading any plugin code and retain it in the trusted process across reloads.
   await claimTerminalControl()
   const identity = await controlCall<SessionAccount>('accounts.session').catch(() => null)

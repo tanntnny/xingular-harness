@@ -24,6 +24,7 @@ import { createTerminalUi, type TerminalUi } from './ui'
 import { chooseWorkingVerb, createCompletionStatus, getWorkingSpinnerFrames, SPINNER_INTERVAL_MS, spinnerFrameAt } from './workingStatus'
 import { HarnessWelcome } from './welcome'
 import { answerTerminalQuestion } from './questions'
+import { stageClipboardFiles } from './clipboardFiles'
 import type { QuestionAnswer } from '../../sessions/registry'
 import { readHarnessLogSnapshot, type HarnessLogChunk, type HarnessLogInfo } from '../logs'
 import type { TerminalTrajectoryRun, TerminalTrajectorySnapshot } from '../trajectory'
@@ -114,7 +115,7 @@ export class TerminalApplication {
   private failure?: Error
   private finish!: () => void
   private done = new Promise<void>(resolve => { this.finish = resolve })
-  private cleanup: (() => void)[] = []
+  private cleanup: (() => void | Promise<void>)[] = []
   private finalCleanup: (() => void)[] = []
   private draftSync = Promise.resolve()
   private lastInput = ''
@@ -648,7 +649,9 @@ export class TerminalApplication {
     const files = await adapter.readClipboardFilePaths()
     if (files?.length) {
       if (files.some(file => /[\x00-\x1f\x7f]/.test(file))) throw new Error('Clipboard file paths contain control characters.')
-      this.ui.pasteToEditor(files.join('\n'))
+      const staged = await stageClipboardFiles(files)
+      if (staged.cleanup) this.cleanup.push(staged.cleanup)
+      this.ui.pasteToEditor(staged.paths.join('\n'))
       return
     }
     const image = await adapter.readClipboardImage()
@@ -656,7 +659,7 @@ export class TerminalApplication {
       const directory = await mkdtemp(join(tmpdir(), 'harness-clipboard-'))
       const file = join(directory, `${randomUUID()}.${adapter.extensionForImageMimeType(image.mimeType) ?? 'png'}`)
       await writeFile(file, image.bytes, { mode: 0o600 })
-      this.cleanup.push(() => { void rm(directory, { recursive: true, force: true }) })
+      this.cleanup.push(() => rm(directory, { recursive: true, force: true }))
       this.ui.pasteToEditor(file)
       return
     }
@@ -689,12 +692,15 @@ export class TerminalApplication {
       this.stopped = true
       protect(() => this.pendingAbort?.abort())
       protect(() => this.ui?.dispose())
-      for (const cleanup of this.cleanup.splice(0)) protect(cleanup)
       // Captured while the runtime and its components still exist; written only after the alternate screen is left.
       const scrollback = this.exitScrollback()
       try { await this.runtime?.dispose() }
       catch (error) { this.failure ??= error instanceof Error ? error : new Error(String(error)) }
       finally {
+        for (const cleanup of this.cleanup.splice(0)) {
+          try { await cleanup() }
+          catch (error) { this.failure ??= error instanceof Error ? error : new Error(String(error)) }
+        }
         await this.terminal.drainInput(200, 30).catch(() => {})
         protect(() => this.tui.stop())
         if (scrollback) protect(() => writeScrollback(this.terminal, scrollback))

@@ -10,6 +10,7 @@ import type { ModelRuntime } from '@earendil-works/pi-coding-agent'
 import { log, type Bus } from '../core/bus'
 import { HarnessError, invalid } from '../core/errors'
 import { atomicWrite, now, readJson, safeId } from '../core/fs'
+import { loadPi } from '../pi/runtime'
 import type { RunEvent, RunRecord } from '../sessions/contracts'
 import * as env from './env'
 import { secretKey, type SecretStore } from './secrets'
@@ -222,7 +223,7 @@ export class Accounts {
   }
 
   private async loadInstallationDeviceId(): Promise<string> {
-    const { SettingsManager } = await import('@earendil-works/pi-coding-agent')
+    const { SettingsManager } = await loadPi()
     const settings = SettingsManager.create(process.cwd(), env.ensureSharedDir(this.dir))
     const deviceId = settings.getOrCreateDeviceId()
     await settings.flush()
@@ -237,7 +238,7 @@ export class Accounts {
     let runtime = this.runtimes.get(id)
     if (!runtime) {
       const configDir = 'configDir' in account ? account.configDir : env.ensureHome(this.dir, account)
-      runtime = import('@earendil-works/pi-coding-agent')
+      runtime = loadPi()
         .then(({ ModelRuntime }) => ModelRuntime.create({ credentials: this.credentialStore(id) as never, modelsPath: join(configDir, 'models.json') }))
         .catch((error: unknown) => {
           this.runtimes.delete(id)
@@ -275,7 +276,7 @@ export class Accounts {
 
   /** Providers Pi can sign in to (OAuth) or take a key for, independent of any account. */
   async providers(): Promise<{ id: string; name: string; oauth: boolean; oauthLabel: string | null; subscription: boolean; apiKey: boolean }[]> {
-    const { ModelRuntime } = await import('@earendil-works/pi-coding-agent')
+    const { ModelRuntime } = await loadPi()
     const none = { read: async () => undefined, list: async () => [], modify: async () => undefined, delete: async () => undefined }
     const runtime = await ModelRuntime.create({ credentials: none, modelsPath: null, refreshOnCreate: false })
     return runtime

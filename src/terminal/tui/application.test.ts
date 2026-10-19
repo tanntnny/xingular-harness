@@ -3,7 +3,17 @@ import { stripTerminalSequences } from '@earendil-works/pi-tui'
 import { describe, expect, it, vi } from 'vitest'
 
 vi.mock('../control', () => ({ controlCall: vi.fn(async () => ({})) }))
+vi.mock('./piAdapter', async importOriginal => ({
+  ...await importOriginal<typeof import('./piAdapter')>(),
+  loadPiAdapter: vi.fn()
+}))
+vi.mock('./clipboardFiles', async importOriginal => ({
+  ...await importOriginal<typeof import('./clipboardFiles')>(),
+  stageClipboardFiles: vi.fn()
+}))
 import { controlCall } from '../control'
+import { loadPiAdapter, type PiAdapter } from './piAdapter'
+import { stageClipboardFiles } from './clipboardFiles'
 import { TerminalApplication } from './application'
 import { createTerminalCommands } from './commands'
 import type { TerminalDecision } from './runtime'
@@ -62,6 +72,54 @@ function setup() {
 }
 
 describe('the owned terminal application', () => {
+  it('pastes staged Finder image paths and removes their temporary files on shutdown', async () => {
+    const { application, app, ui } = setup()
+    const paths = ['/Photos/portrait.heic', '/work/notes.md']
+    const pasteToEditor = vi.fn()
+    const shutdownOrder: string[] = []
+    const cleanup = vi.fn(async () => { shutdownOrder.push('clipboard files removed') })
+    const adapter = {
+      builtins: [], setTheme: vi.fn(), withBuiltInRenderers: vi.fn(),
+      readClipboardText: vi.fn(async () => null), readClipboardFilePaths: vi.fn(async () => paths),
+      readClipboardImage: vi.fn(async () => null), extensionForImageMimeType: vi.fn(() => null)
+    }
+    Object.assign(ui, { pasteToEditor })
+    vi.mocked(loadPiAdapter).mockResolvedValue(adapter as unknown as PiAdapter)
+    vi.mocked(stageClipboardFiles).mockResolvedValue({ paths: ['/tmp/prepared.png', paths[1]!], cleanup })
+    app.runtime.dispose.mockImplementation(async () => { shutdownOrder.push('runtime disposed') })
+
+    await (application as unknown as { pasteClipboard(): Promise<void> }).pasteClipboard()
+
+    expect(stageClipboardFiles).toHaveBeenCalledWith(paths)
+    expect(adapter.readClipboardImage).not.toHaveBeenCalled()
+    expect(pasteToEditor).toHaveBeenCalledWith(`/tmp/prepared.png\n${paths[1]}`)
+    await application.shutdown()
+    expect(cleanup).toHaveBeenCalledOnce()
+    expect(shutdownOrder).toEqual(['runtime disposed', 'clipboard files removed'])
+  })
+
+  it('leaves the prompt unchanged and reports an error when clipboard staging fails', async () => {
+    const { application, app, ui } = setup()
+    const message = 'Could not prepare HEIC image "portrait.heic" for the terminal.'
+    const adapter = {
+      builtins: [], setTheme: vi.fn(), withBuiltInRenderers: vi.fn(),
+      readClipboardText: vi.fn(async () => null), readClipboardFilePaths: vi.fn(async () => ['/Photos/portrait.heic']),
+      readClipboardImage: vi.fn(async () => null), extensionForImageMimeType: vi.fn(() => null)
+    }
+    const pasteToEditor = vi.fn()
+    const notice = vi.spyOn(app.transcript, 'notice')
+    Object.assign(ui, { pasteToEditor })
+    vi.mocked(loadPiAdapter).mockResolvedValue(adapter as unknown as PiAdapter)
+    vi.mocked(stageClipboardFiles).mockRejectedValueOnce(new Error(message))
+    const pasteClipboard = (application as unknown as { pasteClipboard(): Promise<void> }).pasteClipboard.bind(application)
+    ;(application as unknown as { attempt(action: () => Promise<void>): void }).attempt(() => pasteClipboard())
+
+    await vi.waitFor(() => expect(notice).toHaveBeenCalledWith(message, 'error'))
+
+    expect(pasteToEditor).not.toHaveBeenCalled()
+    await application.shutdown()
+  })
+
   it('shows a stable animated verb, then keeps completion status until the next turn', async () => {
     const { application, app } = setup()
     let now = 1000
