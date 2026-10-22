@@ -18,6 +18,7 @@ import type { Plugins } from '../plugins/plugins'
 import { sessionLaunch, type Launch } from '../prompt/compile'
 import * as attachments from '../plugins/attachments'
 import { FIRST_PARTY_PLUGINS, firstPartyExtensions, type InlineExtension } from '../plugins/firstParty'
+import { imagePruning } from '../world/images'
 import { materialise, type VariantChoice, type Materialised } from '../variant/materialise'
 import type { VariantTrust } from '../variant/trust'
 import { ASK_USER, askUserTool } from '../tools/askUser'
@@ -369,7 +370,17 @@ export class Sessions {
         ...(input.harnessTools === false ? [] : [...harnessTools(this.options.env, caller, { variantDir: variant?.dir ?? null }), askUserTool(run), checklistTool(run)]),
         ...subagentTools(this.options.subagents, runId).filter(tool => allow.includes(tool.name))
       ]
-      if (input.providers !== false) for (const provider of this.providers) tools.push(...(await provider(session)))
+      if (input.providers !== false) {
+        const named = new Set(tools.map((tool) => tool.name))
+        for (const provider of this.providers) {
+          for (const tool of await provider(session)) {
+            // The first tool of a name wins: the harness's own world tools are asked first.
+            if (named.has(tool.name)) continue
+            named.add(tool.name)
+            tools.push(tool)
+          }
+        }
+      }
       const readOnly = new Set(tools.filter((tool) => tool.readOnly).map((tool) => tool.name))
       const planModeSafety = new Map<string, NonNullable<ToolSpec['planModeSafe']>>()
       for (const tool of tools) if (tool.planModeSafe) planModeSafety.set(tool.name, tool.planModeSafe)
@@ -403,7 +414,7 @@ export class Sessions {
         account: context,
         resources: { ids: [], skillPaths: variant?.skillPaths ?? [], promptPaths: [] },
         variantExtensions: variant?.extensionPaths ?? [],
-        inline: [...firstPartyFor(root, capabilities.contributions), runLineageJoin(root, runId), this.options.subagents.extension(runId)],
+        inline: [...firstPartyFor(root, capabilities.contributions), runLineageJoin(root, runId), this.options.subagents.extension(runId), { name: 'image-pruning', factory: imagePruning() }],
         ...(plugins ? { plugins: { loading: () => plugins.loading({ cwd: input.cwd, agentDir: context.configDir, install: true, caller: { agentId: caller.agentId ?? null, projectId: caller.projectId ?? null }, contributions: capabilities.contributions }), loaded: (extensions) => plugins.loaded(extensions) } } : {}),
         system,
         update

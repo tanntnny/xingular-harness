@@ -6,6 +6,7 @@ import { CHECKLIST_WRITE } from '../tools/checklist'
 import { SPAWN_SUBAGENT, WAIT_SUBAGENTS } from '../sessions/subagents'
 import { RECALL_TOOLS, SKILL_TOOLS, TRAJECTORY_TOOLS, WIKI_READ_TOOLS, WIKI_WRITE_TOOLS, type HarnessToolDefinition } from '../tools/definitions'
 import { FIRST_PARTY_PLUGINS } from './firstParty'
+import { WEB_PLUGIN } from '../web/tools'
 import type { PluginDescriptor } from './types'
 
 const tools = (definitions: readonly HarnessToolDefinition[]): PluginDescriptor['tools'] => definitions.map((tool) => ({ name: tool.name, description: tool.label }))
@@ -65,5 +66,6 @@ export const HARNESS_PLUGINS: readonly PluginDescriptor[] = [
     tools: CONNECTION_TOOLS.map((name) => ({ name })),
     toolGroups: ['Connections']
   },
+  WEB_PLUGIN,
   ...FIRST_PARTY_PLUGINS
 ]

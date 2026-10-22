@@ -80,7 +80,7 @@ describe('plugin control from a terminal session', () => {
     const { key } = await socketCall<{ key: string }>(connection, 'control.claim')
     const call = <T>(method: string, params?: Record<string, unknown>) => socketCall<T>(connection, method, params ?? {}, 5_000, key)
     const rows = menuRows(await call<Plugin[]>('plugins.list'), 'p1')
-    expect(rows.map((row) => row.label)).toEqual(['● review-kit · code not trusted', '○ Budget guard · runs code', '○ Lessons · runs code', '○ Output trim · runs code'])
+    expect(rows.map((row) => row.label)).toEqual(['● review-kit · code not trusted', '○ Budget guard · runs code', '○ Lessons · runs code', '○ Output trim · runs code', '● Web'])
     expect(rowActions(rows[0], 'p1')).toEqual(['Switch off for this project', 'Switch off everywhere', 'Trust its code', 'Back'])
     expect(rowActions(rows[1], null)).toEqual(['Switch on everywhere', 'Back'])
     // A part that ships with the harness needs no trust: it is the harness's own code.

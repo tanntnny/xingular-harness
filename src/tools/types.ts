@@ -10,6 +10,8 @@ export interface ToolResult {
   /** Native-history metadata; never interpreted as model instructions. */
   details?: Record<string, unknown>
   image?: { data: string; mimeType: string }
+  /** Further images, after `image`. A screenshot tool returns one; a comparison may return several. */
+  images?: { data: string; mimeType: string }[]
   /** References to content stored by the provider; bytes never enter the run-event stream. */
   attachments?: ToolAttachmentRef[]
 }

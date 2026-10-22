@@ -372,7 +372,7 @@ describe('a pi terminal session', () => {
     expect(await socketCall<string>(connection, 'skill.load')).toBe('You have no skills.')
     expect(await socketCall<string>(connection, 'wiki.list')).toContain('home')
     const listed = await socketCall<{ tools: { name: string; parameters: { type: string } }[] }>(connection, 'tools.list')
-    expect(listed.tools.map((tool) => tool.name)).toEqual(['mcp_list_tools', 'mcp_call_tool'])
+    expect(listed.tools.map((tool) => tool.name)).toEqual(['mcp_list_tools', 'mcp_call_tool', 'web_search', 'web_fetch'])
     expect(listed.tools[0].parameters.type).toBe('object')
     // Account calls exist, but only the session's extension holds the key that unlocks them.
     await expect(socketCall(connection, 'accounts.list')).rejects.toMatchObject({ code: 'unauthorized' })

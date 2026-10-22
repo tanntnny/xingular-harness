@@ -41,6 +41,8 @@ import type { ToolPolicy } from '../sessions/policy'
 import type { ActiveRun, RunRegistry } from '../sessions/registry'
 import { findRun, loadRun, saveRun, updateRun } from '../sessions/runStore'
 import type { ToolSpec } from '../tools/types'
+import { contributionId } from '../plugins/identity'
+import type { World } from '../world/world'
 import { APPS_COMMAND, WIKI_COMMAND } from './cli'
 import { SOCKET_ENV, TOKEN_ENV } from './client'
 import { TerminalController, type PolicyReply } from './controller'
@@ -142,6 +144,8 @@ export interface TerminalsOptions {
   pluginControl?: PluginControl
   hub?: Hub
   assets?: TerminalAssets
+  /** Web, browser and computer tools, offered when their plugins are on. */
+  world?: World
 }
 
 /** What `/plugins` in a terminal can do. Each takes the session's folder, account and project. */
@@ -158,6 +162,9 @@ export class Terminals {
   private readonly sessions = new Map<string, Live>()
   /** The variant each live session runs, for loading its skills. */
   private readonly variantDirs = new Map<string, string>()
+  /** The world tools each session was given, so a call can only reach one of them. */
+  private readonly worldNames = new Map<string, Set<string>>()
+  private readonly worldReadOnly = new Set<string>()
   private readonly socket: SessionSocket
   private readonly assets: TerminalAssets
   /** A session's `/accounts` switch, taken once its Pi process has ended. */
@@ -218,8 +225,38 @@ export class Terminals {
     return bin
   }
 
-  private tools(session: BrokerSession): ToolSpec[] {
-    return this.options.apps.brokerTools(session)
+  /** The broker's tools, then the world tools whose plugins are on for this session. */
+  private async tools(session: BrokerSession, listing: boolean): Promise<ToolSpec[]> {
+    const brokered = this.options.apps.brokerTools(session)
+    const live = this.sessions.get(session.sessionId)
+    const { world } = this.options
+    if (!world || !live) return brokered
+    const context = { run: live.controller.activeRun, caller: live.caller, attended: true, subagent: false, sessionKey: session.sessionId, cwd: live.input.cwd }
+    if (!listing) return [...brokered, ...world.tools(context, (_plugin, tool) => this.worldNames.get(session.sessionId)?.has(tool) ?? false)]
+    const on = await this.worldOn(live)
+    const tools = world.tools(context, (plugin, tool) => on(plugin, tool))
+    this.worldNames.set(session.sessionId, new Set(tools.map((tool) => tool.name)))
+    for (const tool of tools) if (tool.readOnly) this.worldReadOnly.add(tool.name)
+    return [...brokered, ...tools]
+  }
+
+  /** The world tools a new session will have, named in its instructions. */
+  private async worldToolNames(input: TerminalPrepareInput, account: Account): Promise<string[]> {
+    const { world } = this.options
+    if (!world || input.connections === false) return []
+    const list = this.options.pluginControl?.list
+    const plugins = list ? await list({ cwd: input.cwd, accountId: account.id, projectId: input.projectId ?? null }) : null
+    const on = plugins ? new Set(plugins.flatMap((plugin) => plugin.contributions.filter((item) => item.state === 'on').map((item) => item.id))) : null
+    return world.plugins.flatMap((plugin) => (plugin.tools ?? []).map((tool) => tool.name).filter((name) => !on || on.has(contributionId(plugin.id, 'tool', name))))
+  }
+
+  /** Whether a world tool's plugin is switched on for a session's folder, account and project. */
+  private async worldOn(live: Live): Promise<(plugin: string, tool: string) => boolean> {
+    const list = this.options.pluginControl?.list
+    if (!list) return () => true
+    const plugins = await list({ cwd: live.input.cwd, accountId: live.account.id, projectId: live.input.projectId ?? null })
+    const on = new Set(plugins.flatMap((plugin) => plugin.contributions.filter((item) => item.state === 'on').map((item) => item.id)))
+    return (plugin, tool) => on.has(contributionId(plugin, 'tool', tool))
   }
 
   private async appsCall(session: BrokerSession, call: string, params: Record<string, unknown>): Promise<unknown> {
@@ -233,13 +270,15 @@ export class Terminals {
         return apps.revision(session)
       case 'tools.list': {
         const { Type } = await import('typebox')
-        return { tools: this.tools(session).map((tool) => ({ name: tool.name, label: tool.label, description: tool.description, parameters: tool.parameters(Type) })) }
+        return { tools: (await this.tools(session, true)).map((tool) => ({ name: tool.name, label: tool.label, description: tool.description, parameters: tool.parameters(Type) })) }
       }
       case 'tools.call': {
-        const tool = this.tools(session).find((candidate) => candidate.name === params.name)
+        const tool = (await this.tools(session, false)).find((candidate) => candidate.name === params.name)
         if (!tool) throw new HarnessError('unknown_method', `Unknown tool ${String(params.name)}.`)
         const result = await tool.execute((params.input && typeof params.input === 'object' ? params.input : {}) as Record<string, unknown>)
-        return { text: typeof result === 'string' ? result : result.text }
+        if (typeof result === 'string') return { text: result }
+        const images = [...(result.image ? [result.image] : []), ...(result.images ?? [])]
+        return { text: result.text, ...(images.length ? { images } : {}), ...(result.details ? { details: result.details } : {}) }
       }
       default:
         throw new HarnessError('unknown_method', `Unknown call ${call}.`)
@@ -451,7 +490,7 @@ export class Terminals {
     }
     // With no application policy: reads run, a read-only session refuses the rest, and anything else asks.
     const name = tool.toLowerCase()
-    if (name === SPAWN_SUBAGENT || name === WAIT_SUBAGENTS || READ_ONLY_TOOLS.has(name) || this.options.apps.toolNames.includes(name as never)) return { allowed: true }
+    if (name === SPAWN_SUBAGENT || name === WAIT_SUBAGENTS || READ_ONLY_TOOLS.has(name) || this.worldReadOnly.has(name) || this.options.apps.toolNames.includes(name as never)) return { allowed: true }
     if (live.input.readOnly) return { allowed: false, reason: 'This session is read-only.' }
     return { allowed: false, requiresApproval: true, rememberable: true, reason: 'This native action requires approval.' }
   }
@@ -580,7 +619,8 @@ export class Terminals {
       // block that changes later is sent along as a note.
       const variant = input.variant ? materialise(root, input.variant, { trust: this.options.trust ?? null }) : null
       if (variant) this.variantDirs.set(sessionId, variant.dir)
-      const pack = compile(env, caller, input.launch ?? {}, variant)
+      const worldTools = await this.worldToolNames(input, account)
+      const pack = compile(env, caller, worldTools.length ? { ...input.launch, tools: [...(input.launch?.tools ?? []), ...worldTools] } : input.launch ?? {}, variant)
       record(root, pack)
       mkdirSync(this.historyDir(input), { recursive: true })
       saveForSession(input.sessionFolder, pack)
@@ -725,6 +765,8 @@ export class Terminals {
     const live = this.sessions.get(sessionId)
     if (!live) return
     this.sessions.delete(sessionId)
+    this.worldNames.delete(sessionId)
+    void this.options.world?.release(sessionId).catch(() => undefined)
     live.controller.dispose()
     this.socket.revoke(live.token)
     this.options.apps.revokeSession(sessionId)

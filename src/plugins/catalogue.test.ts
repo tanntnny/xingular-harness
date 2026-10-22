@@ -69,10 +69,11 @@ describe('the plugin list', () => {
       ['package:review-kit', 'package', ['code:guard.ts:on', 'command:guard:on', 'skill:audit:on']],
       ['home', 'home', ['skill:deploy:on']],
       ['app-identity', 'application', ['instruction:Identity line:on']],
-      ['app-tasks', 'application', ['tool:start_task:on']],
-      ['web', 'application', ['tool:web_search:on', 'tool:web_fetch:on']]
+      ['app-tasks', 'application', ['tool:start_task:on']]
     ])
-    expect(plugins.filter((plugin) => plugin.source === 'builtin').map((plugin) => plugin.id)).toEqual(['ask-user', 'budget-guard', 'checklist', 'connected-apps', 'history', 'lessons', 'output-trim', 'subagents', 'variant', 'wiki'])
+    expect(plugins.filter((plugin) => plugin.source === 'builtin').map((plugin) => plugin.id)).toEqual(['ask-user', 'budget-guard', 'checklist', 'connected-apps', 'history', 'lessons', 'output-trim', 'subagents', 'variant', 'web', 'wiki'])
+    // An application that still describes the web tools is ignored: they are the harness's own now.
+    expect(plugins.find((plugin) => plugin.id === 'web')?.source).toBe('builtin')
 
     const kit = plugins.find((plugin) => plugin.id === 'package:review-kit')!
     // It was there when trust was first asked per package, so it was taken over as trusted.

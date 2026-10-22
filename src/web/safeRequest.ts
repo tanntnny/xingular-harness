@@ -14,6 +14,8 @@ export interface WebResponse {
   truncated: boolean
   /** The address finally read, after any redirects. */
   url: URL
+  /** Set when the address redirected to another site and `sameOrigin` stopped there. */
+  redirectedTo?: URL
 }
 
 export interface WebRequestOptions {
@@ -22,6 +24,10 @@ export interface WebRequestOptions {
   timeoutMs: number
   maxBytes: number
   maxRedirects?: number
+  /** A JSON body sends a POST (search services); without one the request is a GET. */
+  json?: unknown
+  /** Stop at a redirect to another origin and report it, instead of following it. */
+  sameOrigin?: boolean
 }
 
 /** Makes one read. Tests replace it; the default is `safeRequest`. */
@@ -107,7 +113,10 @@ export const safeRequest: WebRequest = async (start, options) => {
     const response = await readOnce(url, options)
     if (REDIRECT_CODES.has(response.status) && response.location) {
       if (hop >= (options.maxRedirects ?? 5)) throw new Error('The address redirected too many times.')
-      url = webAddress(new URL(response.location, url).toString())
+      const next = webAddress(new URL(response.location, url).toString())
+      // Another site is a new decision: the caller reads it with its own call.
+      if (options.sameOrigin && next.origin !== url.origin) return { status: response.status, contentType: '', body: Buffer.alloc(0), truncated: false, url, redirectedTo: next }
+      url = next
       continue
     }
     return { status: response.status, contentType: response.contentType, body: response.body, truncated: response.truncated, url }
@@ -130,9 +139,10 @@ function readOnce(url: URL, options: WebRequestOptions): Promise<WebResponse & {
       clearTimeout(total)
       reject(error)
     }
+    const payload = options.json === undefined ? null : Buffer.from(JSON.stringify(options.json))
     const request = start(url, {
-      method: 'GET',
-      headers: { 'user-agent': USER_AGENT, accept: 'text/html,text/plain,application/json;q=0.9,*/*;q=0.5', ...options.headers },
+      method: payload ? 'POST' : 'GET',
+      headers: { 'user-agent': USER_AGENT, accept: 'text/html,text/plain,application/json;q=0.9,*/*;q=0.5', ...(payload ? { 'content-type': 'application/json', 'content-length': String(payload.length) } : {}), ...options.headers },
       lookup: publicLookup,
       timeout: options.timeoutMs
     }, (response: IncomingMessage) => {
@@ -166,6 +176,16 @@ function readOnce(url: URL, options: WebRequestOptions): Promise<WebResponse & {
     const total = setTimeout(() => request.destroy(new Error('The address took too long to answer.')), options.timeoutMs * 3)
     request.on('timeout', () => request.destroy(new Error('The address took too long to answer.')))
     request.on('error', fail)
-    request.end()
+    request.end(payload ?? undefined)
   })
+}
+
+/** A body as text, in the character set its content type declares (UTF-8 when it declares none). */
+export function decodeBody(body: Buffer, contentType: string): string {
+  const label = /charset\s*=\s*"?([^";\s]+)/i.exec(contentType)?.[1]?.toLowerCase() ?? 'utf-8'
+  try {
+    return new TextDecoder(label).decode(body)
+  } catch {
+    throw new Error(`The page uses a character set that cannot be read: ${label}.`)
+  }
 }

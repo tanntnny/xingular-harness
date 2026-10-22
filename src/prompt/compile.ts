@@ -15,6 +15,7 @@ import { isDir, now, readJson, safeId, writeJson } from '../core/fs'
 import { charCount, compareText, lines, takeChars } from '../core/text'
 import type { Materialised } from '../variant/materialise'
 import * as notes from '../wiki/notes'
+import { isWorldTool, WORLD_GUIDANCE } from '../world/untrusted'
 
 const WIKI_BUDGET = 2500
 const TOOLS_BUDGET = 8000
@@ -133,7 +134,7 @@ export const HISTORY_GROUP = ['history_search', 'history_read', 'trajectory_sear
 export const WIKI_GROUP = ['wiki_search', 'wiki_read', 'wiki_list', 'wiki_write']
 export const NATIVE_GROUP = ['read', 'grep', 'find', 'ls', 'edit', 'write', 'bash']
 export const CONNECTION_TOOLS = ['mcp_list_tools', 'mcp_call_tool']
-const GROUP_ORDER = { History: 10, Wiki: 20, Native: 60, Connections: 70, placeholder: 90 } as const
+const GROUP_ORDER = { History: 10, Wiki: 20, Native: 60, World: 65, Connections: 70, placeholder: 90 } as const
 
 /** Cuts `text` to `budget` characters at a paragraph (or line) boundary and appends `pointer`. */
 export function fit(text: string, budget: number, pointer: string): { body: string; cut: boolean } {
@@ -223,6 +224,8 @@ export function toolGroups(context: CallerContext, launch: Launch): OrderedGroup
       order: GROUP_ORDER.Native,
       guidance: session ? "Files and shell: your harness's own tools, within this session's working folder and access level." : `Files (${native.join(', ')}): work in your own folder; edits and commands ask the user first unless already allowed.`
     },
+    // Web, browser and computer tools: the harness's own, and their results are untrusted (world/untrusted.ts).
+    { group: 'World', tools: enabled.filter((name) => isWorldTool(name) && !(launch.toolGroups ?? []).some((group) => group.tools.includes(name))), order: GROUP_ORDER.World, guidance: `Web, browser and screen: ${WORLD_GUIDANCE}` },
     ...(launch.toolGroups ?? []).map((group) => ({ group: group.group, tools: group.tools, order: group.order, guidance: group.guidance }))
   ]
   if (launch.connections?.trim()) {

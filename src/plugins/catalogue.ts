@@ -76,7 +76,7 @@ function fromDescriptor(descriptor: PluginDescriptor, source: PluginSource, atta
     contributions: [
       ...(descriptor.code ?? []).map((code) => contribution(descriptor.id, 'code', code.name, { description: code.description, state: on ? 'on' : 'off' })),
       ...(descriptor.sections ?? []).map((section) => contribution(descriptor.id, 'instruction', section.name, { description: section.description ?? '' })),
-      ...(descriptor.tools ?? []).map((tool) => contribution(descriptor.id, 'tool', tool.name, { description: tool.description ?? '' }))
+      ...(descriptor.tools ?? []).map((tool) => contribution(descriptor.id, 'tool', tool.name, { description: tool.description ?? '', ...(switchable ? { state: on ? 'on' as const : 'off' as const } : {}) }))
     ]
   }
 }

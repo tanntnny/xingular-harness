@@ -650,9 +650,10 @@ export const piSessionFactory: SessionFactory = async ({ params, allow, gate, to
         execute: async (_toolCallId, input) => {
           const result = await spec.execute(input as Record<string, unknown>)
           const output = typeof result === 'string' ? { text: result } : result
-          if (output.image && !supportsImageInput) throw new HarnessError('image_input_unsupported', 'This model cannot inspect images. Choose a model that supports image input.')
+          const images = [...(output.image ? [output.image] : []), ...(output.images ?? [])]
+          if (images.length && !supportsImageInput) throw new HarnessError('image_input_unsupported', 'This model cannot inspect images. Choose a model that supports image input.')
           return {
-            content: [{ type: 'text', text: output.text }, ...(output.image ? [{ type: 'image', data: output.image.data, mimeType: output.image.mimeType }] : [])] as never,
+            content: [{ type: 'text', text: output.text }, ...images.map((image) => ({ type: 'image', data: image.data, mimeType: image.mimeType }))] as never,
             details: { ...output.details, ...(output.attachments?.length ? { attachments: output.attachments } : {}) }
           }
         }

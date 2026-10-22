@@ -14,6 +14,7 @@ import { SUBAGENT_OWNER, SUBAGENT_RECEIPT, SUBAGENT_RESULTS, subagentHistory, ty
 import { askUserTool } from '../tools/askUser'
 import type { QuestionAnswer } from '../sessions/registry'
 import { PLAN_INSTRUCTIONS, planRefusal } from '../sessions/planMode'
+import { pruneToolImages } from '../world/images'
 
 interface SocketTool {
   name: string
@@ -119,8 +120,9 @@ export default async function (pi: ExtensionAPI, planRun?: TerminalPlanRunState,
         description: tool.description,
         parameters: Type.Unsafe(tool.parameters),
         async execute(_id, input) {
-          const result = await socketCall<{ text: string }>(connection, 'tools.call', { name: tool.name, input: input as Record<string, unknown> }, 1_230_000)
-          return { content: [{ type: 'text', text: result.text }], details: undefined }
+          const result = await socketCall<{ text: string; images?: { data: string; mimeType: string }[]; details?: Record<string, unknown> }>(connection, 'tools.call', { name: tool.name, input: input as Record<string, unknown> }, 1_230_000)
+          const images = (result.images ?? []).map((image) => ({ type: 'image' as const, data: image.data, mimeType: image.mimeType }))
+          return { content: [{ type: 'text' as const, text: result.text }, ...images], details: result.details }
         }
       })
     }
@@ -137,6 +139,12 @@ export default async function (pi: ExtensionAPI, planRun?: TerminalPlanRunState,
     await terminalCall('startupFailed', { reason: `${stage} failed: ${error instanceof Error ? error.message : 'Unavailable'}` }).catch(() => {})
     throw error
   }
+
+  // Only the latest screenshots stay in what the model sees (world/images.ts).
+  pi.on('context', (event) => {
+    const messages = pruneToolImages(event.messages as never[])
+    return messages === (event.messages as never[]) ? undefined : { messages: messages as never }
+  })
 
   pi.on('session_start', async (_event, ctx) => {
     context = ctx
