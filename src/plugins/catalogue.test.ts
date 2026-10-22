@@ -72,7 +72,7 @@ describe('the plugin list', () => {
       ['app-tasks', 'application', ['tool:start_task:on']],
       ['web', 'application', ['tool:web_search:on', 'tool:web_fetch:on']]
     ])
-    expect(plugins.filter((plugin) => plugin.source === 'builtin').map((plugin) => plugin.id)).toEqual(['ask-user', 'budget-guard', 'checklist', 'connected-apps', 'harness', 'history', 'lessons', 'output-trim', 'subagents', 'wiki'])
+    expect(plugins.filter((plugin) => plugin.source === 'builtin').map((plugin) => plugin.id)).toEqual(['ask-user', 'budget-guard', 'checklist', 'connected-apps', 'history', 'lessons', 'output-trim', 'subagents', 'variant', 'wiki'])
 
     const kit = plugins.find((plugin) => plugin.id === 'package:review-kit')!
     // It was there when trust was first asked per package, so it was taken over as trusted.
@@ -131,14 +131,14 @@ describe('what reaches one caller', () => {
 
   it('attributes every prompt section, tool group and tool to a plugin', async () => {
     const { call, cwd, harness } = setup()
-    const { commit } = await import('../tree/store')
+    const { commit } = await import('../variant/store')
     commit(harness.env.root, 'a1', { 'systemprompt.md': 'You review changes.\n', 'guardrails.md': '- When writing release notes, load the `release` skill.\n', 'memory.md': '', 'tool_guidance.md': 'Prefer grep.\n', 'skills/release/SKILL.md': '---\nname: release\ndescription: writing release notes\n---\nSteps.\n' }, { kind: 'seed' })
-    const result = await call<Inventory>('plugins.inventory', { cwd, context: { agentId: 'a1', projectId: 'p1' }, launch, tools: ['read', 'bash', 'start_task', 'web_search'], harness: { scope: 'a1' } })
+    const result = await call<Inventory>('plugins.inventory', { cwd, context: { agentId: 'a1', projectId: 'p1' }, launch, tools: ['read', 'bash', 'start_task', 'web_search'], variant: { scope: 'a1' } })
     expect(result.unattributed).toEqual([])
     const of = (plugin: string) => result.items.filter((item) => item.pluginId === plugin).map((item) => `${item.kind}:${item.name}:${item.delivery}`)
     expect(of('app-identity')).toEqual(['instruction:Identity line:system'])
     expect(of('app-tasks')).toEqual(['instruction:Tool guidance: Tasks:system', 'tool:start_task:tool'])
-    expect(of('harness')).toEqual(['instruction:System prompt:system', 'instruction:Guardrails:system', 'instruction:Reporting:system', 'skill:release:on-demand', 'tool:skill_load:tool'])
+    expect(of('variant')).toEqual(['instruction:System prompt:system', 'instruction:Guardrails:system', 'instruction:Reporting:system', 'skill:release:on-demand', 'tool:skill_load:tool'])
     expect(of('wiki')).toEqual(['instruction:Wiki:context', 'instruction:Tool guidance: Wiki:system', 'tool:wiki_search:tool', 'tool:wiki_read:tool', 'tool:wiki_list:tool'])
     expect(of('history')).toEqual(['instruction:Tool guidance: History:system', 'tool:history_search:tool', 'tool:history_read:tool', 'tool:trajectory_search:tool', 'tool:trajectory_read:tool'])
     expect(of('pi')).toEqual(['instruction:Tool guidance: Native:system', 'tool:read:tool', 'tool:bash:tool', 'instruction:Base prompt:system'])
@@ -203,7 +203,7 @@ describe('switching a plugin on and off', () => {
 
   it('refuses a required part, an application part, and a file Pi reads itself, and says why', async () => {
     const { call, cwd } = setup()
-    await expect(call('plugins.detach', { id: 'harness' })).rejects.toThrow('Harness cannot be switched off. Every agent runs on its harness')
+    await expect(call('plugins.detach', { id: 'variant' })).rejects.toThrow('Variant cannot be switched off. Every agent runs on a variant')
     await expect(call('plugins.detach', { id: 'wiki/tool/wiki_read' })).rejects.toThrow('cannot be switched off')
     await expect(call('plugins.detach', { id: 'app-tasks' })).rejects.toThrow('switched by the application')
     await expect(call('plugins.detach', { cwd, id: 'project/instruction/AGENTS.md' })).rejects.toThrow('cannot be switched on its own')

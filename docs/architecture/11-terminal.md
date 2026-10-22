@@ -3,7 +3,7 @@
 ## Purpose
 
 The harness owns a generic interactive terminal application (`xharness`) over a
-persistent Pi session on a harness tree. It is the standalone way to use the harness, and an
+persistent Pi session on a variant. It is the standalone way to use the harness, and an
 embedding application can host it in its own PTY. Detail, screen layout and verification evidence
 are in [`../terminal-tui.md`](../terminal-tui.md); this page states the binding parts.
 

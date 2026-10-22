@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 import { memorySecretStore } from '../accounts/secrets'
 import { createHarness, type Harness } from '../harness'
-import { headTree, lineage, seed, versionRecord } from '../tree/store'
+import { headVariant, lineage, seed, versionRecord } from '../variant/store'
 import { rootWithProject, writeFile } from '../../tests/helpers'
 import { SOCKET_ENV, TOKEN_ENV, socketCall, type SocketConnection } from './client'
 
@@ -25,7 +25,7 @@ async function setup(scope: string | null = 'components-scope') {
   const launch = await harness.terminals.prepare({
     sessionId: 'component-terminal', accountId: account.id, cwd: root,
     sessionFolder: join(root, 'sessions', 'component-terminal'),
-    ...(scope ? { harness: { scope } } : {})
+    ...(scope ? { variant: { scope } } : {})
   })
   const connection: SocketConnection = { socket: String(launch.env[SOCKET_ENV]), token: String(launch.env[TOKEN_ENV]) }
   const { key } = await socketCall<{ key: string }>(connection, 'control.claim')
@@ -45,14 +45,14 @@ describe('person-controlled components in a terminal', () => {
     const first = await call<{ fingerprint: string; alreadyPresent: boolean }>('terminal.components.add', { id: 'skills/review' })
     expect(first.alreadyPresent).toBe(false)
     expect(first.fingerprint).not.toBe(listed.fingerprint)
-    expect(headTree(root, scope!)?.tree['skills/review/SKILL.md']).toContain('Check the diff.')
+    expect(headVariant(root, scope!)?.variant['skills/review/SKILL.md']).toContain('Check the diff.')
     expect(versionRecord(root, scope!, first.fingerprint)?.source).toMatchObject({ kind: 'edit', components: ['skills/review'] })
 
     const duplicate = await call<{ fingerprint: string; alreadyPresent: boolean }>('terminal.components.add', { id: 'skills/review' })
     expect(duplicate).toEqual({ fingerprint: first.fingerprint, alreadyPresent: true })
     const second = await call<{ fingerprint: string; alreadyPresent: boolean }>('terminal.components.add', { id: 'rules/testing' })
     expect(second.alreadyPresent).toBe(false)
-    expect(headTree(root, scope!)?.tree['guardrails.md']).toContain('Run the focused tests before shipping.')
+    expect(headVariant(root, scope!)?.variant['guardrails.md']).toContain('Run the focused tests before shipping.')
     expect(lineage(root, scope!).map(item => item.source.kind)).toEqual(['edit', 'edit', 'seed'])
     await expect(call('terminal.components.add', { id: 'prompts/outline' })).rejects.toMatchObject({ code: 'invalid_request' })
     await expect(call('terminal.components.add', { id: 'skills/missing' })).rejects.toMatchObject({ code: 'invalid_request' })

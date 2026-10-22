@@ -16,8 +16,8 @@ export type DispatchEnv = HarnessEnv & { bus?: Bus }
 export type Params = Record<string, unknown>
 
 export interface DispatchOptions {
-  /** The run's harness tree on disk, for `skill_load`. */
-  treeDir?: string | null
+  /** The run's variant on disk, for `skill_load`. */
+  variantDir?: string | null
 }
 
 function str(params: Params, key: string): string {
@@ -59,20 +59,20 @@ export function dispatch(env: DispatchEnv, context: CallerContext, call: Harness
       return `Saved ${note.path}.`
     }
     case 'skill.load':
-      return loadSkill(options.treeDir ?? null, str(params, 'name'))
+      return loadSkill(options.variantDir ?? null, str(params, 'name'))
     default:
       throw new HarnessError('unknown_method', `Unknown harness call ${call}.`)
   }
 }
 
-/** A skill's text from the run's harness tree, or the list of its skills. */
-export function loadSkill(treeDir: string | null, name: string): string {
-  const skills = treeDir && existsSync(join(treeDir, 'skills')) ? readdirSync(join(treeDir, 'skills'), { withFileTypes: true }).filter((entry) => entry.isDirectory() && existsSync(join(treeDir, 'skills', entry.name, 'SKILL.md'))).map((entry) => entry.name).sort() : []
+/** A skill's text from the run's variant, or the list of its skills. */
+export function loadSkill(variantDir: string | null, name: string): string {
+  const skills = variantDir && existsSync(join(variantDir, 'skills')) ? readdirSync(join(variantDir, 'skills'), { withFileTypes: true }).filter((entry) => entry.isDirectory() && existsSync(join(variantDir, 'skills', entry.name, 'SKILL.md'))).map((entry) => entry.name).sort() : []
   const wanted = name.trim().replace(/^skills\//, '').replace(/`/g, '')
   if (!wanted) return skills.length ? `Your skills: ${skills.join(', ')}. Load one with skill_load and its name.` : 'You have no skills.'
   if (!/^[a-z0-9][a-z0-9_-]*$/.test(wanted)) throw invalid('A skill name is lowercase letters, digits, _ or -.')
   if (!skills.includes(wanted)) return `There is no skill named ${wanted}.${skills.length ? ` Your skills: ${skills.join(', ')}.` : ''}`
-  const dir = join(treeDir!, 'skills', wanted)
+  const dir = join(variantDir!, 'skills', wanted)
   const helpers = existsSync(join(dir, 'scripts')) ? readdirSync(join(dir, 'scripts')) : []
   return `${readFileSync(join(dir, 'SKILL.md'), 'utf8')}${helpers.length ? `\n\n(This skill's helpers are in ${join(dir, 'scripts')}: ${helpers.join(', ')}.)` : ''}`
 }

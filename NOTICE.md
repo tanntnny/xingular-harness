@@ -2,7 +2,7 @@
 
 ## Harness²
 
-The harness tree (`src/tree/`) and refinement (`src/refine/`) port the method of Harness²:
+The variant (`src/variant/`) and refinement (`src/refine/`) port the method of Harness²:
 Recursive Agent Harnessing for an Open World (Xu, Chen, CuiZhu, Dalvi Mishra, Ming, Yu, Han,
 Lee, Pfister; arXiv:2610.14224). The component surface and its validation, Propose–Probe–Compose
 in parallel and sequential modes with its budget identity, blind answer-free selection, the

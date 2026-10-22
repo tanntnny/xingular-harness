@@ -50,7 +50,7 @@ the switch and global tools.
 
 - **INV-GATE-1** Every tool call of every run passes the gate. No tool source bypasses it,
   including extension-registered tools (which ask before every call) and the initial Bash command.
-- **INV-GATE-2** The gate is the last extension loaded, after disk, tree and inline extensions, so
+- **INV-GATE-2** The gate is the last extension loaded, after disk, variant and inline extensions, so
   it sees the final input of every call.
 - **INV-GATE-3** Order is fixed: capability and plan-mode refusals, then the policy's scope and
   authorize, then standing approvals, then the person, then authorize again.

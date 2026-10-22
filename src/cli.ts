@@ -5,7 +5,7 @@
 //                  [--host-secrets] [--host-policy] [--host-tools] [--host-directory]
 //       Serves the harness to a host process over stdin/stdout (newline-delimited JSON).
 //   xharness wiki <command>     Project notes, skills and history, from inside a terminal session.
-//   xharness refine <command>   Refine a harness tree from evidence (refine demo needs no model).
+//   xharness refine <command>   Refine a variant from evidence (refine demo needs no model).
 //   xharness mcp <command>      Connected apps, from inside a terminal session.
 //   xharness plugins <command>  List, install, switch and trust plugins.
 import { resolve } from 'node:path'

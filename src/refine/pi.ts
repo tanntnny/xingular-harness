@@ -120,7 +120,7 @@ export class PiExecutor implements Executor {
     private readonly options: ExecutorOptions = {}
   ) {}
 
-  async execute(task: RefineTask, harnessDir: string | null, label: string, runId: string): Promise<Rollout> {
+  async execute(task: RefineTask, variantDir: string | null, label: string, runId: string): Promise<Rollout> {
     const started = Date.now()
     const dir = join(this.dir, 'rollouts', label)
     rmSync(dir, { recursive: true, force: true })
@@ -145,7 +145,7 @@ export class PiExecutor implements Executor {
         tools: settings.tools,
         connections: settings.connections,
         providers: settings.providers,
-        harness: harnessDir ? { dir: harnessDir, scope: task.scope } : { scope: task.scope }
+        variant: variantDir ? { dir: variantDir, scope: task.scope } : { scope: task.scope }
       })
       const status = await settled(this.runtime, runId, this.signal)
       const recorded = events(this.runtime, runId)
@@ -241,7 +241,7 @@ export class PiImprover implements Improver {
         caller: { runId, sessionId: runId, actor: 'Code' },
         launch: { sections: [{ id: 'identity', title: 'Identity', body: this.role.identity ?? IMPROVER_IDENTITY, budget: 1000, order: 10 }] },
         tools: { allow: this.role.tools ?? IMPROVER_TOOLS },
-        harness: null
+        variant: null
       })
       const status = await settled(this.runtime, runId, input.signal ?? this.signal)
       const recorded = events(this.runtime, runId)

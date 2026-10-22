@@ -13,7 +13,7 @@ import type { RunRegistry } from './registry'
 import type { Effort } from './runner'
 import type { SessionRunInput } from './sessions'
 import { isActiveStatus } from './contracts'
-import { subagentOf } from '../tree/materialise'
+import { subagentOf } from '../variant/materialise'
 import { findRun, loadRun, readEvents, recordedSubagents, recordSubagent, saveRun } from './runStore'
 import { SPAWN_SUBAGENT, SUBAGENT_RELATION, SUBAGENT_OWNER, SUBAGENT_RECEIPT, SUBAGENT_RESULTS, subagentHistory, type SubagentInput, type SubagentReceipt, type SubagentResult, type SubagentSelection } from './subagents'
 
@@ -105,15 +105,15 @@ export class Subagents {
     if (outside.length) throw invalid(`A subagent cannot have tools you do not have: ${outside.join(', ')}.`)
     const tools = capabilities.tools.filter((name) => !request.tools || request.tools.includes(name))
     await until(parent.ready, parent.stopped.signal)
-    let harness = input.harness ?? null
+    let variant = input.variant ?? null
     let launch = input.launch
     if (request.agent !== undefined) {
       if (typeof request.agent !== 'string' || !request.agent.trim()) throw invalid('agent must be the name of one of your subagents.')
-      const dir = harness && 'dir' in harness ? harness.dir : null
+      const dir = variant && 'dir' in variant ? variant.dir : null
       const definition = dir ? subagentOf(dir, request.agent.trim()) : null
       if (!definition) throw invalid(`There is no subagent named ${request.agent.trim()}.`)
       // A named subagent works from its own definition, not from the parent's instructions.
-      harness = null
+      variant = null
       launch = { ...(input.launch ?? {}), sections: [...(input.launch?.sections ?? []).filter((section) => section.id !== 'subagent'), { id: 'subagent', title: `Your role: ${definition.name}`, body: definition.instructions || definition.description, budget: 16_000, order: 22 }] }
     }
     const runId = randomUUID()
@@ -127,7 +127,7 @@ export class Subagents {
       caller: { ...input.caller, runId: undefined, sessionId },
       tools: { allow: tools, gated: (input.tools.gated ?? []).filter((name) => tools.includes(name)) },
       capabilities: { ...capabilities, tools }, depth: (input.depth ?? 0) + 1,
-      harness, launch
+      variant, launch
     }
     const started = this.launch(child).catch((error) => {
       if (!findRun(this.env.root, runId)) {

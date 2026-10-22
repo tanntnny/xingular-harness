@@ -2,7 +2,7 @@ import type { Theme } from '@earendil-works/pi-coding-agent'
 import { stripTerminalSequences } from '@earendil-works/pi-tui'
 import { describe, expect, it, vi } from 'vitest'
 
-import type { ComponentItem } from '../../../tree/components'
+import type { ComponentItem } from '../../../variant/components'
 import { createHarnessTheme } from '../theme'
 import { ComponentsPage, type ComponentLibrarySnapshot } from './componentsPage'
 
@@ -56,12 +56,12 @@ describe('the Components page', () => {
     expect(notify).toHaveBeenCalledWith('Saved for the next session · version new-version', 'info')
   })
 
-  it('keeps prompts browse-only and refuses to add them to a tree', async () => {
+  it('keeps prompts browse-only and refuses to add them to a variant', async () => {
     const { page, calls, notify } = await ready()
     page.handleInput('\t')
     page.handleInput('\r')
     expect(calls.some(([method]) => method === 'terminal.components.add')).toBe(false)
-    expect(notify).toHaveBeenCalledWith('Prompts stay in the library and cannot be added to a Harness tree.', 'info')
+    expect(notify).toHaveBeenCalledWith('Prompts stay in the library and cannot be added to a Variant.', 'info')
   })
 
   it('keeps the library browse-only when no writable scope is attached', async () => {
@@ -77,6 +77,6 @@ describe('the Components page', () => {
     page.handleInput('\r')
     expect(ui.confirm).not.toHaveBeenCalled()
     expect(calls.some(([method]) => method === 'terminal.components.add')).toBe(false)
-    expect(notify).toHaveBeenCalledWith('This item is already in the current Harness tree.', 'info')
+    expect(notify).toHaveBeenCalledWith('This item is already in the current Variant.', 'info')
   })
 })

@@ -26,10 +26,10 @@ import { prependSearchPath, searchPath } from '../core/path'
 import type { BrokerSession, ConnectedApps } from '../mcp/service'
 import type { CallerContext } from '../core/caller'
 import { dispatch } from '../tools/dispatch'
-import { materialise, type HarnessChoice } from '../tree/materialise'
-import * as componentLibrary from '../tree/components'
-import * as treeStore from '../tree/store'
-import type { TreeTrust } from '../tree/trust'
+import { materialise, type VariantChoice } from '../variant/materialise'
+import * as componentLibrary from '../variant/components'
+import * as variantStore from '../variant/store'
+import type { VariantTrust } from '../variant/trust'
 import type { AttachParams, PluginScope } from '../plugins/api'
 import type { Loading, Plugins } from '../plugins/plugins'
 import type { Plugin } from '../plugins/types'
@@ -97,8 +97,8 @@ export interface TerminalPrepareInput {
   readOnly?: boolean
   /** What the application adds to the instructions, and which of its tools it describes. */
   launch?: Launch
-  /** The harness tree the session runs; its version is pinned for the session. */
-  harness?: HarnessChoice | null
+  /** The variant the session runs; its version is pinned for the session. */
+  variant?: VariantChoice | null
   /** Give the session the connected-apps broker. Defaults to yes. */
   connections?: boolean
   /** Fields copied onto each run this session records. */
@@ -124,8 +124,8 @@ interface Live {
 }
 
 export interface TerminalsOptions {
-  /** Which plugin code in harness trees a person trusted. */
-  trust?: TreeTrust | null
+  /** Which plugin code in variants a person trusted. */
+  trust?: VariantTrust | null
   subagents?: Subagents
   resolveCapabilities?: (caller: CallerContext, tools: readonly string[], cwd: string) => Promise<CapabilitySet>
   env: HarnessEnv
@@ -156,8 +156,8 @@ const READ_ONLY_TOOLS = new Set(['read', 'grep', 'find', 'ls'])
 
 export class Terminals {
   private readonly sessions = new Map<string, Live>()
-  /** The harness tree each live session runs, for loading its skills. */
-  private readonly treeDirs = new Map<string, string>()
+  /** The variant each live session runs, for loading its skills. */
+  private readonly variantDirs = new Map<string, string>()
   private readonly socket: SessionSocket
   private readonly assets: TerminalAssets
   /** A session's `/accounts` switch, taken once its Pi process has ended. */
@@ -181,7 +181,7 @@ export class Terminals {
       }
     })
     this.socket = new SessionSocket(socketPath(options.stateDir), {
-      memory: (caller, call, params) => dispatch(options.env, caller, call, params, { treeDir: (caller.sessionId && this.treeDirs.get(caller.sessionId)) || null }),
+      memory: (caller, call, params) => dispatch(options.env, caller, call, params, { variantDir: (caller.sessionId && this.variantDirs.get(caller.sessionId)) || null }),
       apps: (session, call, params) => this.appsCall(session, call, params),
       plugins: (grant, call, params, control) => this.pluginsCall(grant.sessionId, call, params, control),
       accounts: (grant, call, params, control) => this.accountsCall(grant.sessionId, call, params, control)
@@ -499,15 +499,15 @@ export class Terminals {
 
   private componentsCall(live: Live, call: string, params: Record<string, unknown>): unknown {
     const root = this.options.env.root
-    const choice = live.input.harness
+    const choice = live.input.variant
     const scope = choice && 'scope' in choice ? choice.scope ?? null : null
-    const head = scope ? treeStore.headTree(root, scope) : null
+    const head = scope ? variantStore.headVariant(root, scope) : null
     const items = componentLibrary.list(root)
 
     if (call === 'terminal.components.list') {
       return {
         items,
-        addedIds: head ? items.filter(item => componentLibrary.isInTree(root, head.tree, item.id)).map(item => item.id) : [],
+        addedIds: head ? items.filter(item => componentLibrary.isInVariant(root, head.variant, item.id)).map(item => item.id) : [],
         writable: Boolean(scope && head),
         fingerprint: head?.fingerprint ?? null
       }
@@ -517,15 +517,15 @@ export class Terminals {
       if (!scope || !head) throw invalid('This terminal has no writable Harness scope.')
       const item = items.find(candidate => candidate.id === params.id)
       if (!item) throw invalid('That component is no longer in the library.')
-      if (item.kind === 'prompts') throw invalid('Prompts stay in the library and cannot be added to a Harness tree.')
-      if (componentLibrary.isInTree(root, head.tree, item.id)) {
+      if (item.kind === 'prompts') throw invalid('Prompts stay in the library and cannot be added to a Variant.')
+      if (componentLibrary.isInVariant(root, head.variant, item.id)) {
         return { fingerprint: head.fingerprint, alreadyPresent: true }
       }
-      const tree = componentLibrary.addToTree(root, head.tree, item.id)
-      const record = treeStore.commit(root, scope, tree, {
+      const variant = componentLibrary.addToVariant(root, head.variant, item.id)
+      const record = variantStore.commit(root, scope, variant, {
         kind: 'edit', note: 'Added library component ' + item.id, components: [item.id]
       })
-      this.options.bus.emit({ type: 'harnesses.changed', scope })
+      this.options.bus.emit({ type: 'variants.changed', scope })
       return { fingerprint: record.fingerprint, alreadyPresent: false }
     }
     throw new HarnessError('unknown_method', 'Unknown terminal component operation.')
@@ -578,9 +578,9 @@ export class Terminals {
       const broker = input.connections === false ? null : apps.grant({ sessionId, runId: null, caller, readOnly: !!input.readOnly, depth: 0 })
       // The session keeps these instructions; each of its runs records a copy, and a memory
       // block that changes later is sent along as a note.
-      const tree = input.harness ? materialise(root, input.harness, { trust: this.options.trust ?? null }) : null
-      if (tree) this.treeDirs.set(sessionId, tree.dir)
-      const pack = compile(env, caller, input.launch ?? {}, tree)
+      const variant = input.variant ? materialise(root, input.variant, { trust: this.options.trust ?? null }) : null
+      if (variant) this.variantDirs.set(sessionId, variant.dir)
+      const pack = compile(env, caller, input.launch ?? {}, variant)
       record(root, pack)
       mkdirSync(this.historyDir(input), { recursive: true })
       saveForSession(input.sessionFolder, pack)
@@ -652,8 +652,8 @@ export class Terminals {
       if (loading) {
         // Pi's own discovery is off: the terminal loads what the harness found and nothing else.
         args.push('--no-extensions', '--no-skills', '--no-prompt-templates', '--no-themes')
-        for (const path of [...loading.extensionPaths, ...loading.builtins, ...(tree?.extensionPaths ?? [])]) args.push('--extension', path)
-        for (const path of [...(tree?.skillPaths ?? []), ...loading.skillPaths]) args.push('--skill', path)
+        for (const path of [...loading.extensionPaths, ...loading.builtins, ...(variant?.extensionPaths ?? [])]) args.push('--extension', path)
+        for (const path of [...(variant?.skillPaths ?? []), ...loading.skillPaths]) args.push('--skill', path)
         for (const path of loading.promptPaths) args.push('--prompt-template', path)
         for (const path of loading.themePaths) args.push('--theme', path)
       }

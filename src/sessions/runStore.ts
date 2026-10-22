@@ -8,7 +8,7 @@ import { join } from 'node:path'
 import { notFound } from '../core/errors'
 import { newId, now, readJson, readJsonOr, safeId, writeJson } from '../core/fs'
 import { compareText, lines } from '../core/text'
-import { isActiveStatus, runEventSchema, runRecordSchema, usagePayloadSchema, type RunEvent, type RunRecord, type UsagePayload } from './contracts'
+import { isActiveStatus, runEventSchema, runRecordSchema, upgradeRunRecord, usagePayloadSchema, type RunEvent, type RunRecord, type UsagePayload } from './contracts'
 import { readAllRuns, recordRun, runsForSession } from './runIndex'
 
 export function runDir(root: string, runId: string): string {
@@ -43,8 +43,8 @@ function ordered(record: RunRecord): RunRecord {
     accountId: record.accountId,
     agentId: record.agentId,
     trigger: record.trigger,
-    ...(record.harnessScope ? { harnessScope: record.harnessScope } : {}),
-    ...(record.harnessVersion ? { harnessVersion: record.harnessVersion } : {})
+    ...(record.variantScope ? { variantScope: record.variantScope } : {}),
+    ...(record.variantVersion ? { variantVersion: record.variantVersion } : {})
   }
 }
 
@@ -80,7 +80,7 @@ export function saveRun(root: string, record: RunRecord): void {
 }
 
 function readRecord(path: string): RunRecord | null {
-  const parsed = runRecordSchema.safeParse(readJson(path))
+  const parsed = runRecordSchema.safeParse(upgradeRunRecord(readJson(path)))
   return parsed.success ? parsed.data : null
 }
 

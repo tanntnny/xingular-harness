@@ -3,7 +3,7 @@ import {
 } from 'solid-js'
 import { createStore, reconcile } from 'solid-js/store'
 import {
-  SyntaxStyle, TextAttributes, type KeyBinding, type KeyEvent, type MouseEvent, type ScrollBoxRenderable, type TextareaRenderable
+  RGBA, SyntaxStyle, TextAttributes, type KeyBinding, type KeyEvent, type MouseEvent, type OptimizedBuffer, type ScrollBoxRenderable, type TextareaRenderable
 } from '@opentui/core'
 import { useKeyboard, useRenderer, useSelectionHandler, useTerminalDimensions, type SpanProps } from '@opentui/solid'
 
@@ -23,6 +23,23 @@ import { statusBarText } from './statusBar'
 import { workingLineParts, workingLineText, workingVerbShimmerProfile } from './workingLine'
 
 const theme = opentuiTheme
+const scrollbarColor = RGBA.fromHex(theme.dim)
+const transparent = RGBA.fromValues(0, 0, 0, 0)
+
+function drawTranscriptScrollbar(buffer: OptimizedBuffer, scroll: ScrollBoxRenderable | undefined): void {
+  if (!scroll) return
+  const trackHeight = Math.floor(scroll.viewport.height)
+  const contentHeight = scroll.scrollHeight
+  const scrollRange = contentHeight - trackHeight
+  if (trackHeight < 1 || scrollRange <= 0) return
+
+  const thumbHeight = Math.max(1, Math.min(trackHeight, Math.round(trackHeight * trackHeight / contentHeight)))
+  const thumbTop = Math.round((scroll.scrollTop / scrollRange) * (trackHeight - thumbHeight))
+  const x = Math.round(scroll.x + scroll.width - 1)
+  for (let row = 0; row < thumbHeight; row++) {
+    buffer.drawText('▕', x, Math.round(scroll.y + thumbTop + row), scrollbarColor, transparent)
+  }
+}
 
 /** The host names the product it embeds; this package's own default stays the fallback. */
 const productName = () => (process.env.XINGULAR_HARNESS_NAME ?? '')
@@ -997,7 +1014,8 @@ export function OpenTuiRoot(props: { app: OpenTuiApplication }) {
               stickyScroll={true}
               stickyStart='bottom'
               scrollY={true}
-              verticalScrollbarOptions={{ width: 1, trackOptions: { backgroundColor: 'transparent' } }}
+              verticalScrollbarOptions={{ width: 1, trackOptions: { backgroundColor: 'transparent', foregroundColor: 'transparent' } }}
+              renderAfter={buffer => drawTranscriptScrollbar(buffer, scroll)}
               backgroundColor='transparent'
               paddingBottom={1}
               onMouseScroll={scheduleTranscriptScrollState}

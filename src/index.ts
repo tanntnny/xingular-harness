@@ -1,7 +1,7 @@
 // @xingular/harness: a Pi agent harness built on recursive harnessing (Harness², Apache-2.0,
-// Google LLC). Each agent runs on a versioned harness tree of eight components (system prompt,
+// Google LLC). Each agent runs on a versioned variant of eight components (system prompt,
 // guardrails, memory, tool guidance, subagents, skills, scripts, plugins); refinement improves a
-// tree from evidence through Propose–Probe–Compose, blind selection and an experience library.
+// variant from evidence through Propose–Probe–Compose, blind selection and an experience library.
 // Around it: multi-account Pi sessions, a compiled prompt with stable-prefix delivery, project
 // notes (the Wiki), history, tools with a gate and standing approvals, and connected apps.
 //
@@ -58,15 +58,15 @@ export { safeRequest, type WebRequest, type WebResponse } from './web/safeReques
 export type { BrokeredTools, BrokerSession, BrokerTool } from './mcp/service'
 export type { Connection, ConnectionInput, AppOAuthClients } from './mcp/types'
 
-export { configureBuiltins, type ComponentItem, type SkillBundleInput } from './tree/components'
+export { configureBuiltins, type ComponentItem, type SkillBundleInput } from './variant/components'
 
-// The harness tree and refinement.
-export { PI_SURFACE, componentOf, type ComponentGroup, type ComponentId, type ComponentInfo, type SurfaceSpec, type Tree } from './tree/surface'
-export { validate as validateTree, autotrigger, diffSummary, TreeError, type TreeCensus, type TreeDiff } from './tree/tree'
-export { fingerprint, type Head, type VersionRecord, type VersionSource } from './tree/store'
-export { materialise, type HarnessChoice, type Materialised } from './tree/materialise'
-export { seedTree, type SeedInput } from './tree/seed'
-export type { TrustedPlugin } from './tree/trust'
+// The variant and refinement.
+export { PI_SURFACE, componentOf, type ComponentGroup, type ComponentId, type ComponentInfo, type SurfaceSpec, type Variant } from './variant/surface'
+export { validate as validateVariant, autotrigger, diffSummary, VariantError, type VariantCensus, type VariantDiff } from './variant/variant'
+export { fingerprint, type Head, type VersionRecord, type VersionSource } from './variant/store'
+export { materialise, type VariantChoice, type Materialised } from './variant/materialise'
+export { seedVariant, type SeedInput } from './variant/seed'
+export type { TrustedPlugin } from './variant/trust'
 export { DEFAULT_REFINE_HOST, defaultDeliverable, type RefineHost, type RolloutSession, type RolloutWorkspace } from './refine/host'
 export { PROBE_TRIGGER, IMPROVER_TRIGGER, type ImproverSettings } from './refine/pi'
 export type { CandidateView, StartInput as RefineStartInput } from './refine/service'

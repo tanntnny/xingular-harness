@@ -23,6 +23,15 @@ Everything you build here must follow it.
 
 When unsure whether a change alters the architecture, write the proposal.
 
+## Foundation and variants
+
+The harness has a fixed half, the **foundation**, and a mutating half, a **variant** (one c1–c8
+tree for one scope). Refinement and improvers change only a variant, through one validated door
+(`INV-FND-1`, `INV-FND-2`). Before a change, decide which half it is: if an agent or improver could
+legitimately change it, it is variant data; if it needs a release, it is the foundation. Use the
+two words in code, docs, data and the protocol; do not write "harness tree". See
+[Foundation and variants](docs/architecture/00-overview.md#foundation-and-variants).
+
 ## Where the rules are
 
 | Area | Spec page |
@@ -30,7 +39,7 @@ When unsure whether a change alters the architecture, write the proposal.
 | What belongs in the harness, layers, no application names | [00 Overview](docs/architecture/00-overview.md) |
 | The seven extension points | [01 Extension points](docs/architecture/01-extension-points.md) |
 | Sessions, runs, events, subagents, plan mode, token accounting, the run writer | [02 Sessions and runs](docs/architecture/02-sessions-and-runs.md) |
-| Harness trees c1–c8, versions, plugin-code trust | [03 Harness trees](docs/architecture/03-tree.md) |
+| Variants c1–c8, versions, plugin-code trust | [03 Variants](docs/architecture/03-variants.md) |
 | The prompt compiler, stable prefix, context updates | [04 Prompt](docs/architecture/04-prompt.md) |
 | Refinement: answer-free, R=4k/P=3k, never acts in the world | [05 Refinement](docs/architecture/05-refinement.md) |
 | The only loader, trust, attachments, hooks, capability sets | [06 Plugins and capabilities](docs/architecture/06-plugins-and-capabilities.md) |
@@ -47,9 +56,9 @@ The rules agents break most often, in brief (the pages are authoritative):
   `Directory` (`INV-BND-2`).
 - The prompt is assembled only in `src/prompt/compile.ts`; changing state never enters the system
   prompt (`INV-PRM-1`, `INV-PRM-2`).
-- Trees, the prompt and the Wiki stay synchronous (`INV-BND-4`).
+- Variants, the prompt and the Wiki stay synchronous (`INV-BND-4`).
 - The harness is the only loader, and the gate is the last extension (`INV-PLG-1`, `INV-GATE-2`).
-- A run pins its account, tree version and capability set (`INV-RUN-1`).
+- A run pins its account, variant version and capability set (`INV-RUN-1`).
 - Refinement is answer-free and never acts in the world (`INV-REF-1`, `INV-REF-4`).
 
 ## Style

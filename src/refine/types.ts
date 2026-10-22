@@ -5,7 +5,7 @@
 //
 // Shaped after Harness² (Apache-2.0, Google LLC; `core/spec.py`, `substrate/base.py`,
 // `core/proposer.py`).
-import type { Tree } from '../tree/surface'
+import type { Variant } from '../variant/surface'
 import type { WorkPrompts } from './prompts'
 
 export type RecursionMode = 'parallel' | 'sequential'
@@ -16,7 +16,7 @@ export interface RefineTask {
   id: string
   /** The request, as the agent received it, with any expected answer stripped. */
   prompt: string
-  /** The harness scope: whose tree this is and whose library it reads and grows. */
+  /** The harness scope: whose variant this is and whose library it reads and grows. */
   scope: string
   /** A grouping inside the scope's library. Defaults to the scope. */
   domain?: string
@@ -45,16 +45,16 @@ export interface Rollout {
 
 export interface Executor {
   /**
-   * Runs one execution of `task` with the harness in `harnessDir` (null: the base harness) and
+   * Runs one execution of `task` with the harness in `variantDir` (null: the base harness) and
    * returns what it produced. A failure is returned as `ok: false`, never thrown.
    */
-  execute(task: RefineTask, harnessDir: string | null, label: string, runId: string): Promise<Rollout>
+  execute(task: RefineTask, variantDir: string | null, label: string, runId: string): Promise<Rollout>
   /** The execution in the shared `[ACTION]/[OBSERVATION]/[ERROR]` grammar. */
   trajectory(rollout: Rollout, options: { obsTrunc: number }): string
   /** filename → readable text, one entry per artifact produced. */
   deliverableFiles(rollout: Rollout): Record<string, string>
-  /** Extra validation of a proposed tree for this task; throw with every problem listed. */
-  validateTree?(task: RefineTask, tree: Tree): void
+  /** Extra validation of a proposed variant for this task; throw with every problem listed. */
+  validateVariant?(task: RefineTask, variant: Variant): void
 }
 
 export interface ImproverReply {

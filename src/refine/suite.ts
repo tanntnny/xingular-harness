@@ -1,11 +1,11 @@
-// Evaluating harness trees on a task set: one execution per version × task, recorded as an
-// answer-free matrix of what each tree delivered. No improver, no selection, no adoption —
+// Evaluating variants on a task set: one execution per version × task, recorded as an
+// answer-free matrix of what each variant delivered. No improver, no selection, no adoption —
 // the only executions here are the given Executor's probe runs. Records live beside a
-// refinement's, under `<data root>/refine/<id>/`, so a sweep over tree versions or package
+// refinement's, under `<data root>/refine/<id>/`, so a sweep over variant versions or package
 // commits reads the same record family (`refine/<id>/matrix.json`).
 //
 // Every row carries its comparability keys (task-prompt hash, executor name, package
-// version, tree fingerprint), so two matrices — taken at different commits or versions —
+// version, variant fingerprint), so two matrices — taken at different commits or versions —
 // are diffable without re-reading the runs that produced them.
 import { createHash } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
@@ -13,19 +13,19 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { now, readJson, safeId, writeJson } from '../core/fs'
-import * as store from '../tree/store'
-import { PI_SURFACE, type Tree } from '../tree/surface'
-import { writeTree } from '../tree/tree'
-import { assertTreeHasNoGraderVerdicts } from './evidence'
+import * as store from '../variant/store'
+import { PI_SURFACE, type Variant } from '../variant/surface'
+import { writeVariant } from '../variant/variant'
+import { assertVariantHasNoGraderVerdicts } from './evidence'
 import { mapLimit } from './recursion'
 import type { Executor, RefineTask, Rollout } from './types'
 
 export type MatrixStatus = 'running' | 'ok' | 'partial' | 'failed' | 'cancelled'
 
 export interface MatrixVersion {
-  /** Record label; also names the tree copy under the record's harnesses/ folder. */
+  /** Record label; also names the variant copy under the record's variants/ folder. */
   label: string
-  tree: Tree
+  variant: Variant
 }
 
 export interface MatrixRow {
@@ -114,7 +114,7 @@ function taskHash(task: RefineTask): string {
 
 const SEGMENT = /^[A-Za-z0-9_-]{1,128}$/
 
-function stage(input: MatrixInput): { label: string; tree: Tree; fingerprint: string; dir: string; error: string }[] {
+function stage(input: MatrixInput): { label: string; variant: Variant; fingerprint: string; dir: string; error: string }[] {
   const labels: string[] = []
   for (const entry of input.versions) {
     if (!SEGMENT.test(entry.label)) throw new Error(`Version label '${entry.label}' must be a usable record name (A-Z a-z 0-9 _ -).`)
@@ -124,15 +124,15 @@ function stage(input: MatrixInput): { label: string; tree: Tree; fingerprint: st
   if (input.tasks.some((task) => !SEGMENT.test(task.id))) throw new Error('Task ids must be usable record names (A-Z a-z 0-9 _ -).')
   if (new Set(input.tasks.map((task) => task.id)).size !== input.tasks.length) throw new Error('Task ids must be unique.')
 
-  // Staging and the tripwire happen before any execution: a tree carrying grader output
+  // Staging and the tripwire happen before any execution: a variant carrying grader output
   // never reaches an execution, the same guard the refinement's evidence folder applies
-  // (INV-REF-1). A tree that cannot be written becomes an error row, never an abort.
+  // (INV-REF-1). A variant that cannot be written becomes an error row, never an abort.
   return input.versions.map((entry) => {
     try {
-      assertTreeHasNoGraderVerdicts(entry.tree)
-      return { label: entry.label, tree: entry.tree, fingerprint: store.fingerprint(entry.tree), dir: writeTree(PI_SURFACE, entry.tree, join(matrixDir(input.root, input.id), 'harnesses', entry.label)), error: '' }
+      assertVariantHasNoGraderVerdicts(entry.variant)
+      return { label: entry.label, variant: entry.variant, fingerprint: store.fingerprint(entry.variant), dir: writeVariant(PI_SURFACE, entry.variant, join(matrixDir(input.root, input.id), 'variants', entry.label)), error: '' }
     } catch (error) {
-      return { label: entry.label, tree: entry.tree, fingerprint: store.fingerprint(entry.tree), dir: '', error: error instanceof Error ? error.message : String(error) }
+      return { label: entry.label, variant: entry.variant, fingerprint: store.fingerprint(entry.variant), dir: '', error: error instanceof Error ? error.message : String(error) }
     }
   })
 }
@@ -172,14 +172,14 @@ export async function runMatrix(input: MatrixInput): Promise<MatrixSummary> {
     const runId = `${id}-${version.label}-${task.id}`
     let row: MatrixRow
     if (input.signal?.aborted) row = failedRow(version, task, runId, executorName, 'The matrix was cancelled.')
-    else if (version.error) row = failedRow(version, task, runId, executorName, `the tree could not be staged: ${version.error}`)
+    else if (version.error) row = failedRow(version, task, runId, executorName, `the variant could not be staged: ${version.error}`)
     else {
       let validation: string | null = null
-      if (executor.validateTree) {
+      if (executor.validateVariant) {
         try {
-          executor.validateTree(task, version.tree)
+          executor.validateVariant(task, version.variant)
         } catch (error) {
-          validation = `invalid tree for this task: ${error instanceof Error ? error.message : String(error)}`
+          validation = `invalid variant for this task: ${error instanceof Error ? error.message : String(error)}`
         }
       }
       if (validation) row = failedRow(version, task, runId, executorName, validation)

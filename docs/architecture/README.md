@@ -27,10 +27,10 @@ not one class (a set of functions in one module, say), it says so.
 
 | Page | Covers | Invariant prefix |
 |---|---|---|
-| [00 Overview](00-overview.md) | What the harness is, its layers, module map, ETCLOVG ownership | `INV-BND` |
+| [00 Overview](00-overview.md) | What the harness is, the foundation/variant split, layers, module map, ETCLOVG ownership | `INV-BND` |
 | [01 Extension points](01-extension-points.md) | The seven surfaces an application extends the harness through | `INV-EXT` |
 | [02 Sessions and runs](02-sessions-and-runs.md) | A session turn, run records and events, approvals, questions, subagents, plan mode, usage | `INV-RUN` |
-| [03 Harness trees](03-tree.md) | The eight components, validation, versions, pinning, plugin-code trust | `INV-TREE` |
+| [03 Variants](03-variants.md) | The eight components, validation, versions, pinning, plugin-code trust; the rule that only a variant mutates | `INV-VAR`, `INV-FND` |
 | [04 Prompt](04-prompt.md) | The compiler, the stable prefix, context updates | `INV-PRM` |
 | [05 Refinement](05-refinement.md) | Propose–Probe–Compose, evidence, budget, selection, the experience library | `INV-REF` |
 | [06 Plugins and capabilities](06-plugins-and-capabilities.md) | What a session loads, attachments, hooks, capability sets | `INV-PLG`, `INV-CAP` |
@@ -53,6 +53,25 @@ Related records, not binding by themselves:
 - [`../../README.md`](../../README.md): the embedding guide for application authors.
 - [`../../../App/docs/architecture/overview.md`](../../../App/docs/architecture/overview.md): the
   application side of the boundary.
+
+## Glossary
+
+These words are used the same way on every page, in code and in the data layout.
+
+| Word | Meaning |
+|---|---|
+| **Foundation** | The fixed half of the harness: code and invariants that no edit, improver or adoption can change. Changes by release, and by proposal when a contract moves. |
+| **Variant** | The mutating half: one tree of eight components (c1–c8) for one scope. Formerly "harness tree". |
+| **Component** | One of c1–c8 inside a variant (system prompt, guardrails, memory, tool guidance, subagents, skills, scripts, plugins). |
+| **Surface** | The foundation's definition of what a variant may contain (`PI_SURFACE`): paths, patterns, the always-on cap. |
+| **Scope** | The opaque id a variant belongs to. The application decides what it stands for. |
+| **Version** | A recorded variant: immutable, validated, named by its fingerprint. |
+| **Head** | A scope's current variant: the version a new run pins. |
+| **Lineage** | The parent chain of a scope's versions. |
+| **Candidate** | A variant that refinement proposed and a person has not adopted. |
+| **Adopt** | A person's act of committing a candidate as the head. The only way refinement's output reaches a run. |
+| **Trust** | A person's approval of the exact text of a variant's plugin code (c8), by hash. |
+| **Run** | One session turn on a pinned variant, recorded by the foundation. |
 
 ## Changing the architecture
 

@@ -9,11 +9,11 @@ import { allowed } from '../mcp/connections'
 import type { Connection } from '../mcp/types'
 import type { CallerContext } from '../core/caller'
 import { BUILT_IN_DYNAMIC, compile, toolGroups, type Launch } from '../prompt/compile'
-import type { Materialised } from '../tree/materialise'
+import type { Materialised } from '../variant/materialise'
 import { ASK_USER } from '../tools/askUser'
 import { CHECKLIST_WRITE } from '../tools/checklist'
 import { DEFAULT_TOOL_NAMES } from '../tools/definitions'
-import { HARNESS_TREE_PLUGIN } from './builtin'
+import { VARIANT_PLUGIN } from './builtin'
 import type { Contribution, Inventory, InventoryItem, Plugin, PluginDescriptor } from './types'
 
 export interface InventoryInput {
@@ -28,8 +28,8 @@ export interface InventoryInput {
   plugins: readonly Plugin[]
   descriptors: readonly PluginDescriptor[]
   saved: readonly Connection[]
-  /** The harness tree the caller runs, when it has one. */
-  tree?: Materialised | null
+  /** The variant the caller runs, when it has one. */
+  variant?: Materialised | null
 }
 
 const size = (path: string | null): number | null => {
@@ -49,7 +49,7 @@ export function inventory(input: InventoryInput): Inventory {
     items.push({ pluginId, contributionId: null, kind, name, delivery, chars, cut: false, ...rest })
   }
 
-  const pack = compile(env, context, launch, input.tree ?? null)
+  const pack = compile(env, context, launch, input.variant ?? null)
   const dynamic = new Set([...BUILT_IN_DYNAMIC.map((entry) => entry.id), ...(launch.sections ?? []).filter((section) => section.dynamic).map((section) => section.id)])
   let systemChars = 0
   let contextChars = 0
@@ -74,16 +74,16 @@ export function inventory(input: InventoryInput): Inventory {
     item(plugin?.id ?? '', 'instruction', name, delivery, section.size, { contributionId: plugin ? `${plugin.id}/instruction/${name}` : null, cut: section.cut })
   }
 
-  // The harness tree's skills are loaded only when used; its plugins run in the tool loop.
-  const tree = input.tree ?? null
-  if (tree) {
-    for (const rel of Object.keys(tree.tree).filter((path) => /^skills\/[^/]+\/SKILL\.md$/.test(path)).sort()) {
+  // The variant's skills are loaded only when used; its plugins run in the tool loop.
+  const variant = input.variant ?? null
+  if (variant) {
+    for (const rel of Object.keys(variant.files).filter((path) => /^skills\/[^/]+\/SKILL\.md$/.test(path)).sort()) {
       const name = rel.split('/')[1]!
-      item(HARNESS_TREE_PLUGIN.id, 'skill', name, 'on-demand', charCount(tree.tree[rel]!), { contributionId: `${HARNESS_TREE_PLUGIN.id}/skill/${name}` })
+      item(VARIANT_PLUGIN.id, 'skill', name, 'on-demand', charCount(variant.files[rel]!), { contributionId: `${VARIANT_PLUGIN.id}/skill/${name}` })
     }
-    for (const path of tree.extensionPaths) {
+    for (const path of variant.extensionPaths) {
       const name = path.split('/').pop()!
-      item(HARNESS_TREE_PLUGIN.id, 'code', name, 'code', size(path), { contributionId: `${HARNESS_TREE_PLUGIN.id}/code/${name}` })
+      item(VARIANT_PLUGIN.id, 'code', name, 'code', size(path), { contributionId: `${VARIANT_PLUGIN.id}/code/${name}` })
     }
   }
 

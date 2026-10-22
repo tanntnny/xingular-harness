@@ -1,12 +1,12 @@
 // The editable surface of a harness: the eight components a person or an improver may change,
-// where each lives in the tree, and the rules that keep a tree loadable by Pi.
+// where each lives in the variant, and the rules that keep a variant loadable by Pi.
 //
-// Ported from Harness² (Apache-2.0, Google LLC; `harness2/core/tree.py`, `SurfaceSpec`). The
+// Ported from Harness² (Apache-2.0, Google LLC; `harness2/core/variant.py`, `SurfaceSpec`). The
 // component numbering c1..c8 follows the paper: system prompt, guardrails, memory, tool
 // guidance, subagents, skills, scripts and plugins.
 
 /** A harness: relative path → file text, for every file on the editable surface. */
-export type Tree = Record<string, string>
+export type Variant = Record<string, string>
 
 export type ComponentId = 'systemPrompt' | 'guardrails' | 'memory' | 'toolGuidance' | 'subagents' | 'skills' | 'scripts' | 'plugins'
 
@@ -30,7 +30,7 @@ export interface SurfaceSpec {
   name: string
   /** Files whose whole text is in every run's prompt. */
   alwaysOn: readonly string[]
-  /** The most always-on characters a tree may carry. */
+  /** The most always-on characters a variant may carry. */
   alwaysOnMax: number
   alwaysOnCapReason: string
   skillDir: string

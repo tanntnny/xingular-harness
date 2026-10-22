@@ -158,7 +158,7 @@ appear as separate image-result entries immediately after their tool call, withi
 transcript; they move up with newer chat. The `/settings` Show images option controls whether the
 image data is rendered. Mouse-wheel scrolling and PgUp/PgDn
 move the transcript without moving the composer; Ctrl+Home and Ctrl+End jump to its beginning and
-end. The transcript has one blank row between each pair of entries, including assistant replies,
+end. A narrow `▕` thumb marks transcript position at the right edge; its mouse and keyboard scrolling remain native. The transcript has one blank row between each pair of entries, including assistant replies,
 thinking, tools, image results, notices, summaries, custom messages, user messages, plan cards and
 Bash entries. User, plan and Bash bubbles also have one blank row of internal padding above and below
 their content; other entries have no internal vertical padding. Bubble padding is additional to the
@@ -228,7 +228,7 @@ such as `/model`, `/tree`, `/resume` and `/fork` do not show a page strip. Escap
 search before closing. Left and right are passed to the current page and do not switch commands.
 
 `/components` browses skills, prompts and rules in the component library. After confirmation, a skill
-or rule is added to the attached Harness scope as a new tree version for future sessions; the current
+or rule is added to the attached Harness scope as a new variant version for future sessions; the current
 terminal stays pinned to the version it started with. Prompts remain browse-only, and terminals without
 a writable scope can browse but cannot add items. These changes go through the extension's private
 control key, so model-issued shell commands cannot add a component.
@@ -485,7 +485,7 @@ prompts and enabled skills. `/plugins` includes the protected code trust workflo
 terminal no longer has separate `/login`, `/trust`, `/bug`, `/changelog`, `/share`, `/scoped-mode` or
 `/import` commands. `/btw <question>` asks a short side question in a separate tool-free session. Its block puts the question after `/btw`, shows the normal animated spinner while answering, and separates the answer and hint by one blank row; it has no status labels. Escape closes the block without interrupting the main reply, and `/btw` also dismisses it. `/stop` interrupts the current reply. The `/accounts` page handles sign-in
 and sign-out. `/components` browses reusable skills, prompts and rules; a confirmed skill or rule addition
-creates a tree version for future sessions while the current terminal keeps its pinned version. `/reload` applies trusted resource and keybinding changes.
+creates a variant version for future sessions while the current terminal keeps its pinned version. `/reload` applies trusted resource and keybinding changes.
 
 `/trajectory` opens the newest recorded run for the current native conversation; `/trajectory <run-id>`
 opens a selected run from that conversation. Tab switches between Runs and Events; `[` and `]` change

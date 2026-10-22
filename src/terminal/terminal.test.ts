@@ -104,7 +104,7 @@ describe('a pi terminal session', () => {
     expect(readFileSync(join(stateDir, 'run', 'bin', 'xagent-wiki.cmd'), 'utf8')).toContain(' wiki %*\r\n')
   })
 
-  it('passes what the harness found as paths, the harness tree\'s skills and trusted plugins with them, and its own extension last', async () => {
+  it('passes what the harness found as paths, the variant\'s skills and trusted plugins with them, and its own extension last', async () => {
     const root = rootWithProject()
     writeFile(join(root, '.pi/extensions/local.ts'), 'export default function () {}\n')
     const item = (kind: Found['kind'], path: string, origin: Found['origin'], enabled = true): Found => ({ kind, path, origin, project: origin === 'project', packageRoot: null, source: null, enabled })
@@ -120,12 +120,12 @@ describe('a pi terminal session', () => {
     const harness = createHarness({ dataRoot: root, stateDir: mkdtempSync(join(tmpdir(), 'hs-')), secrets: memorySecretStore(), assets: { node: '/opt/node', cli: '/opt/harness/cli.js', piExtension: '/opt/harness/terminal-pi.js', openTui: '/opt/harness/terminal-opentui.js' }, resolver: async () => found })
     open.push(harness)
     const account = harness.accounts.create('Main', 'apiKey').accounts[0]
-    const tree = { 'systemprompt.md': 'Ship releases.\n', 'guardrails.md': '- When cutting a release, load the `release` skill.\n', 'memory.md': '', 'tool_guidance.md': '', 'skills/release/SKILL.md': '---\nname: release\ndescription: cutting a release\n---\nTag it.\n', 'plugins/guard.ts': 'export default function (pi) {}\n' }
-    const { commit, versionPath, head } = await import('../tree/store')
-    commit(root, 'term-agent', tree, { kind: 'seed' })
-    harness.trust.grant(tree['plugins/guard.ts'], 'plugins/guard.ts', 'term-agent')
+    const variant = { 'systemprompt.md': 'Ship releases.\n', 'guardrails.md': '- When cutting a release, load the `release` skill.\n', 'memory.md': '', 'tool_guidance.md': '', 'skills/release/SKILL.md': '---\nname: release\ndescription: cutting a release\n---\nTag it.\n', 'plugins/guard.ts': 'export default function (pi) {}\n' }
+    const { commit, versionPath, head } = await import('../variant/store')
+    commit(root, 'term-agent', variant, { kind: 'seed' })
+    harness.trust.grant(variant['plugins/guard.ts'], 'plugins/guard.ts', 'term-agent')
     const version = versionPath(root, 'term-agent', head(root, 'term-agent')!.fingerprint)
-    const prepare = async () => (await harness.terminals.prepare({ sessionId: 'term-1', accountId: account.id, projectId: 'p1', cwd: root, sessionFolder: join(root, 'sessions', 'p1', 'term-1'), harness: { scope: 'term-agent' } })).args.slice(4)
+    const prepare = async () => (await harness.terminals.prepare({ sessionId: 'term-1', accountId: account.id, projectId: 'p1', cwd: root, sessionFolder: join(root, 'sessions', 'p1', 'term-1'), variant: { scope: 'term-agent' } })).args.slice(4)
 
     const loaded = [
       '--extension', '/shared/extensions/mine.ts', '--extension', 'builtin:mcp', '--extension', join(version, 'plugins/guard.ts'),

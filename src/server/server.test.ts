@@ -84,7 +84,7 @@ describe('the harness served to a host', () => {
 
     const status = await request('harness.status')
     expect(status).toMatchObject({ dataRoot: harness.env.root, productName: 'Xingular Harness', activeRuns: [] })
-    expect(await request<string[]>('harness.methods')).toEqual(expect.arrayContaining(['accounts.list', 'accounts.choices', 'accounts.choose', 'sessions.run', 'sessions.spawnSubagent', 'subagents.spawn', 'subagents.wait', 'subagents.results', 'wiki.list', 'wiki.write', 'terminal.prepare', 'harnesses.seed', 'harnesses.save', 'refine.start', 'refine.adopt', 'library.list', 'connections.list', 'harness.shutdown']))
+    expect(await request<string[]>('harness.methods')).toEqual(expect.arrayContaining(['accounts.list', 'accounts.choices', 'accounts.choose', 'sessions.run', 'sessions.spawnSubagent', 'subagents.spawn', 'subagents.wait', 'subagents.results', 'wiki.list', 'wiki.write', 'terminal.prepare', 'variants.seed', 'variants.save', 'refine.start', 'refine.adopt', 'library.list', 'connections.list', 'harness.shutdown']))
 
     await expect(request('sessions.spawnSubagent', { parentRunId: 'missing', brief: 'Review' })).rejects.toMatchObject({ code: 'run_not_active' })
 
@@ -166,8 +166,8 @@ describe('the harness served to a host', () => {
   })
 })
 
-describe('harness trees over the wire', () => {
-  it('seeds, edits, validates, restores, and adds a built-in component, then compiles the tree', async () => {
+describe('variants over the wire', () => {
+  it('seeds, edits, validates, restores, and adds a built-in component, then compiles the variant', async () => {
     const builtins = mkdtempSync(join(tmpdir(), 'builtin-'))
     writeFile(join(builtins, 'skills', 'review', 'SKILL.md'), '---\nname: review\ndescription: reviewing a change before it ships\n---\nRead the diff first.\n')
     writeFile(join(builtins, 'rules', 'plain.md'), '---\nname: Plain words\n---\nUse plain words.\n')
@@ -176,31 +176,31 @@ describe('harness trees over the wire', () => {
     open.push(harness)
     serve(harness, transport)
 
-    const seeded = await request('harnesses.seed', { scope: 'a1', instructions: 'You help with releases.' })
+    const seeded = await request('variants.seed', { scope: 'a1', instructions: 'You help with releases.' })
     expect(seeded.fingerprint).toMatch(/^[0-9a-f]{16}$/)
-    expect(notices).toContainEqual({ type: 'harnesses.changed', scope: 'a1' })
-    const first = await request('harnesses.get', { scope: 'a1' })
-    expect(first.tree['systemprompt.md']).toBe('You help with releases.\n')
+    expect(notices).toContainEqual({ type: 'variants.changed', scope: 'a1' })
+    const first = await request('variants.get', { scope: 'a1' })
+    expect(first.variant['systemprompt.md']).toBe('You help with releases.\n')
 
-    const library = await request<any[]>('harnesses.components')
+    const library = await request<any[]>('variants.components')
     expect(library.map((item) => item.id)).toEqual(['rules/plain', 'skills/review'])
-    const added = await request('harnesses.addComponent', { scope: 'a1', id: 'skills/review' })
+    const added = await request('variants.addComponent', { scope: 'a1', id: 'skills/review' })
     expect(added.ok).toBe(true)
-    expect(added.tree['guardrails.md']).toContain('load the `review` skill')
-    const saved = await request('harnesses.save', { scope: 'a1', tree: added.tree, note: 'Added review' })
+    expect(added.variant['guardrails.md']).toContain('load the `review` skill')
+    const saved = await request('variants.save', { scope: 'a1', variant: added.variant, note: 'Added review' })
     expect(saved.parent).toBe(seeded.fingerprint)
 
-    const bad = await request('harnesses.validate', { tree: { ...added.tree, 'plugins/x.ts': 'nothing' } })
+    const bad = await request('variants.validate', { variant: { ...added.variant, 'plugins/x.ts': 'nothing' } })
     expect(bad).toMatchObject({ ok: false })
     expect(bad.problems.join(' ')).toContain('default export')
-    await expect(request('harnesses.save', { scope: 'a1', edit: { 'plugins/x.ts': 'nothing' } })).rejects.toMatchObject({ code: 'harness_invalid' })
+    await expect(request('variants.save', { scope: 'a1', edit: { 'plugins/x.ts': 'nothing' } })).rejects.toMatchObject({ code: 'variant_invalid' })
 
-    const edited = await request('harnesses.save', { scope: 'a1', edit: { 'memory.md': 'Releases ship on Tuesdays.\n' } })
-    expect((await request<any[]>('harnesses.lineage', { scope: 'a1' })).map((version) => version.fingerprint)).toEqual([edited.fingerprint, saved.fingerprint, seeded.fingerprint])
-    const compiled = await request('context.compile', { context: { agentId: 'a1', actor: 'Chat' }, harness: { scope: 'a1' }, render: true })
+    const edited = await request('variants.save', { scope: 'a1', edit: { 'memory.md': 'Releases ship on Tuesdays.\n' } })
+    expect((await request<any[]>('variants.lineage', { scope: 'a1' })).map((version) => version.fingerprint)).toEqual([edited.fingerprint, saved.fingerprint, seeded.fingerprint])
+    const compiled = await request('context.compile', { context: { agentId: 'a1', actor: 'Chat' }, variant: { scope: 'a1' }, render: true })
     expect(compiled.text).toContain('Releases ship on Tuesdays.')
-    await request('harnesses.restore', { scope: 'a1', version: seeded.fingerprint })
-    expect((await request('harnesses.get', { scope: 'a1' })).head.fingerprint).toBe(seeded.fingerprint)
+    await request('variants.restore', { scope: 'a1', version: seeded.fingerprint })
+    expect((await request('variants.get', { scope: 'a1' })).head.fingerprint).toBe(seeded.fingerprint)
     expect(await request('refine.list', { scope: 'a1' })).toEqual([])
   })
 })

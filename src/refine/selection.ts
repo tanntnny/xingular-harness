@@ -8,8 +8,8 @@ import { cpSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { writeJson } from '../core/fs'
-import { PI_SURFACE, type Tree } from '../tree/surface'
-import { writeTree } from '../tree/tree'
+import { PI_SURFACE, type Variant } from '../variant/surface'
+import { writeVariant } from '../variant/variant'
 import * as evidence from './evidence'
 import type { Experience } from './library'
 import * as P from './prompts'
@@ -214,7 +214,7 @@ export interface ReflectInput {
   executor: Executor
   improver: Improver
   workDir: string
-  baseTree: Tree
+  baseVariant: Variant
   decisions?: Record<string, string>
   signal?: AbortSignal
 }
@@ -225,19 +225,19 @@ export async function reflectAdoption(input: ReflectInput): Promise<Partial<Expe
   const chosen = input.rollouts[sel.chosenLabel]
   if (!sel.ok || !chosen) return {}
   const root = join(input.workDir, 'reflection', `${sel.mode}${sel.k}`)
-  const harnesses = join(input.workDir, 'harnesses')
+  const variants = join(input.workDir, 'variants')
   let layout = ''
   try {
     const built = evidence.build(root, {
       task,
       executor: input.executor,
       rollouts: Object.values(input.rollouts),
-      harnessDir: join(harnesses, sel.chosenLabel),
-      pool: Object.entries(input.rollouts).filter(([label]) => !label.startsWith('base')).map(([label, rollout]) => ({ label, harnessDir: join(harnesses, label), rollout })),
+      variantDir: join(variants, sel.chosenLabel),
+      pool: Object.entries(input.rollouts).filter(([label]) => !label.startsWith('base')).map(([label, rollout]) => ({ label, variantDir: join(variants, label), rollout })),
       decisions: input.decisions
     })
     layout = evidence.layout(built)
-    writeTree(PI_SURFACE, input.baseTree, join(root, 'base_harness'), { stubs: false })
+    writeVariant(PI_SURFACE, input.baseVariant, join(root, 'base_harness'), { stubs: false })
     writeFileSync(join(root, 'adoption.json'), `${JSON.stringify({ chosen_label: sel.chosenLabel, candidate_ids: sel.idMap, reason: sel.why }, null, 2)}\n`)
     evidence.assertNoLeakPaths(root, task.leakGlobs)
     evidence.assertNoGraderVerdicts(root)
@@ -263,7 +263,7 @@ export async function reflectAdoption(input: ReflectInput): Promise<Partial<Expe
   const out = parseExperience(text)
   if (out.edits) writeFileSync(join(root, 'edits.md'), `${out.edits}\n`)
   try {
-    evidence.assertTreeHasNoGraderVerdicts({ 'EXPERIENCE.md': JSON.stringify(out) })
+    evidence.assertVariantHasNoGraderVerdicts({ 'EXPERIENCE.md': JSON.stringify(out) })
   } catch {
     return {}
   }

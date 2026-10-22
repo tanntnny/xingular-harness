@@ -4,7 +4,7 @@
 
 A *session* is a native Pi conversation. A *run* is one tracked execution interval of a session:
 one turn from a request to an outcome. The harness opens Pi for each run with a pinned account,
-a pinned harness tree, a frozen capability set, a compiled prompt and a gated tool list, then
+a pinned variant, a frozen capability set, a compiled prompt and a gated tool list, then
 records everything the run does as validated events.
 
 ## Components
@@ -29,14 +29,14 @@ records everything the run does as validated events.
 2. Select the native history (`selectHistory`) and resolve the account (`accounts.resolve`).
 3. Resolve the caller's capabilities, intersect with any narrower requested set, and **freeze**
    them for the run (`capabilities/runSnapshot.ts::freezeRun`).
-4. **Pin** the harness tree once (`tree/materialise.ts::materialise`).
+4. **Pin** the variant once (`variant/materialise.ts::materialise`).
 5. `saveRun` with status `queued`, the account, `harnessScope` and `harnessVersion`.
 6. Compile the prompt (`sessionLaunch`, page 04): a stable system prompt and an optional context
    update.
 7. `runs.start` the live run; build the tool list (broker, harness tools, `ask_user`, subagent
    tools, provider tools) and the gate.
 8. Open Pi through the `SessionFactory`, with resources loaded in order: disk extensions chosen by
-   the harness, tree extensions, inline extensions, and the gate last.
+   the harness, variant extensions, inline extensions, and the gate last.
 9. Record `nativeSessionId`, register the run with `Subagents`, start `runTurn`, and return
    `{ runId, nativeSessionId }`. The reply streams as run events.
 
@@ -72,10 +72,10 @@ A session that cannot open ends its run as `failed` and returns `nativeSessionId
 - **Continuation** (PROP-0007). `continuationOf(root, runId, sessionDir?)` (`runs.continuation`)
   says whether a stopped run can be continued: `resumable`, a `reason` when not (`not_found`,
   `active`, `completed`, `no_history`, `history_missing`), the exact native history to reopen,
-  the pinned account, tree version and capability set, the checklist, unanswered approvals and
+  the pinned account, variant version and capability set, the checklist, unanswered approvals and
   questions, the last tool and whether it finished, and subagents that did not finish.
   `SessionRunInput.continueFrom` starts a **new** run from it: it reopens that history, records
-  `resumedFromRunId`, pins the same account, tree version and capability set (anything different
+  `resumedFromRunId`, pins the same account, variant version and capability set (anything different
   fails with `continuation_mismatch`; a run that cannot be continued fails with
   `continuation_unavailable`), defaults empty text to "Continue from where you stopped.", and adds
   a dynamic `continuation` section (order 26) saying where the earlier run stopped. The next run
@@ -87,7 +87,7 @@ A session that cannot open ends its run as `failed` and returns `nativeSessionId
 
 ## Invariants
 
-- **INV-RUN-1** A run pins one account, one harness tree version and one capability set when it
+- **INV-RUN-1** A run pins one account, one variant version and one capability set when it
   starts. None of them changes during the run. A pinned account that cannot be used fails the
   run; it is never swapped (`INV-ACC-2`).
 - **INV-RUN-2** A run's capability set is written once (`freezeRun`). A resumed or duplicate launch
@@ -99,10 +99,10 @@ A session that cannot open ends its run as `failed` and returns `nativeSessionId
 - **INV-RUN-4** A restarted harness never restarts model work. On `open`, runs left active are
   marked `interrupted` unless another live process owns them (`owner.json`). Recovery of a
   subagent needs the same account, caller, working folder and history branch. Continuing is always
-  a new run the application asks for with `continueFrom`; it pins the earlier run's account, tree
+  a new run the application asks for with `continueFrom`; it pins the earlier run's account, variant
   version and capability set, and the earlier run's record is never reopened.
 - **INV-RUN-5** Unattended runs (`automatic: true`) load no extension found on disk, read no
-  context files, and never ask a person: anything that would need approval is refused. A tree's
+  context files, and never ask a person: anything that would need approval is refused. A variant's
   own trusted plugins still load.
 - **INV-RUN-6** Only the harness writes `runs/<id>/`; an application reads it. `run.json`,
   `events.jsonl`, `owner.json` and `subagents.json` are written only through

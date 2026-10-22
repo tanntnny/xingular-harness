@@ -5,7 +5,7 @@
 //   context/source/                  the material it was done from
 //   context/rollouts/<label>.md      full trajectories
 //   context/deliverables/<label>/    what each rollout produced
-//   context/harness/<rel>            the tree being edited
+//   context/harness/<rel>            the harness being edited
 //   context/library/INDEX.md         earlier tasks in this area and their full harnesses
 //   context/pool/<label>/            candidate harnesses, their diffs and rollouts
 //   context/decisions/<label>.md     earlier edit and composition notes
@@ -14,8 +14,8 @@
 import { copyFileSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, extname, join, relative, sep } from 'node:path'
 
-import { PI_SURFACE, type Tree } from '../tree/surface'
-import { readTree } from '../tree/tree'
+import { PI_SURFACE, type Variant } from '../variant/surface'
+import { readVariant } from '../variant/variant'
 import type { Executor, RefineTask, Rollout } from './types'
 
 /** Strings that only a grader's own output contains. A tripwire, not the defence itself. */
@@ -103,9 +103,9 @@ export function assertNoGraderVerdicts(root: string, markers: readonly string[] 
   }
 }
 
-/** The same tripwire on a tree, before it is rolled or stored. */
-export function assertTreeHasNoGraderVerdicts(tree: Record<string, string>, markers: readonly string[] = GRADER_VERDICT_MARKERS): void {
-  for (const [name, body] of Object.entries(tree).sort()) {
+/** The same tripwire on a variant, before it is rolled or stored. */
+export function assertVariantHasNoGraderVerdicts(variant: Record<string, string>, markers: readonly string[] = GRADER_VERDICT_MARKERS): void {
+  for (const [name, body] of Object.entries(variant).sort()) {
     for (const marker of markers) {
       if (name.includes(marker)) throw new Error(`harness file '${name}' has grader-verdict marker '${marker}' in its NAME; rename it`)
       if (SCANNED.has(extname(name).toLowerCase()) && body.includes(marker)) throw new Error(`harness file '${name}' contains grader-verdict marker '${marker}'; remove that string -- files carrying it cannot be served as evidence to later tasks`)
@@ -144,7 +144,7 @@ export function copySource(task: RefineTask, root: string): number {
 }
 
 /** A line-based unified diff, enough for a reader to see what changed. */
-export function unifiedDiff(before: Tree, after: Tree, fromLabel: string, toLabel: string): string {
+export function unifiedDiff(before: Variant, after: Variant, fromLabel: string, toLabel: string): string {
   const out: string[] = []
   for (const name of [...new Set([...Object.keys(before), ...Object.keys(after)])].sort()) {
     const a = before[name] ?? ''
@@ -153,7 +153,7 @@ export function unifiedDiff(before: Tree, after: Tree, fromLabel: string, toLabe
     out.push(`--- ${fromLabel}/${name}`, `+++ ${toLabel}/${name}`)
     const x = a ? a.split('\n') : []
     const y = b ? b.split('\n') : []
-    // A longest-common-subsequence walk; trees are small enough for the quadratic table.
+    // A longest-common-subsequence walk; variants are small enough for the quadratic table.
     const dp: number[][] = Array.from({ length: x.length + 1 }, () => new Array<number>(y.length + 1).fill(0))
     for (let i = x.length - 1; i >= 0; i--) for (let j = y.length - 1; j >= 0; j--) dp[i]![j] = x[i] === y[j] ? dp[i + 1]![j + 1]! + 1 : Math.max(dp[i + 1]![j]!, dp[i]![j + 1]!)
     let i = 0
@@ -178,11 +178,11 @@ export function unifiedDiff(before: Tree, after: Tree, fromLabel: string, toLabe
 export interface PoolEntry {
   label: string
   /** The candidate's harness folder, or null. */
-  harnessDir: string | null
+  variantDir: string | null
   rollout: Rollout | null
 }
 
-export interface EvidenceTree {
+export interface EvidenceFolder {
   root: string
   taskId: string
   rollouts: string[]
@@ -196,19 +196,19 @@ export interface EvidenceTree {
 }
 
 /** The evidence-layout listing that goes in a mission; it mentions only what exists. */
-export function layout(tree: EvidenceTree): string {
+export function layout(evidence: EvidenceFolder): string {
   const lines = ['context/task.md                  the task as the agent received it']
-  if (tree.sourceFiles) lines.push('context/source/                 task source materials')
-  if (tree.decisions) lines.push('context/decisions/              earlier edits and composition decisions')
-  if (tree.rollouts.length) {
-    const names = tree.rollouts.slice(0, 6).map((label) => `${label}.md`).join(', ')
-    const more = tree.rollouts.length > 6 ? ` (+${tree.rollouts.length - 6} more)` : ''
+  if (evidence.sourceFiles) lines.push('context/source/                 task source materials')
+  if (evidence.decisions) lines.push('context/decisions/              earlier edits and composition decisions')
+  if (evidence.rollouts.length) {
+    const names = evidence.rollouts.slice(0, 6).map((label) => `${label}.md`).join(', ')
+    const more = evidence.rollouts.length > 6 ? ` (+${evidence.rollouts.length - 6} more)` : ''
     lines.push(`context/rollouts/               FULL trajectories: ${names}${more}`)
   }
-  if (tree.deliverables.length) lines.push('context/deliverables/<label>/    the files each rollout produced, one per artifact (browse INDEX.md for the set)')
-  if (tree.harnessFiles) lines.push(`context/harness/                the harness you are editing (${tree.harnessFiles} files)`)
-  if (tree.pool.length) lines.push(`context/pool/                   ${tree.pool.length} candidates, each with its harness and its rollout`)
-  if (tree.library) lines.push('context/library/                earlier tasks in this area -- browse INDEX.md first, then open what looks relevant')
+  if (evidence.deliverables.length) lines.push('context/deliverables/<label>/    the files each rollout produced, one per artifact (browse INDEX.md for the set)')
+  if (evidence.harnessFiles) lines.push(`context/harness/                the harness you are editing (${evidence.harnessFiles} files)`)
+  if (evidence.pool.length) lines.push(`context/pool/                   ${evidence.pool.length} candidates, each with its harness and its rollout`)
+  if (evidence.library) lines.push('context/library/                earlier tasks in this area -- browse INDEX.md first, then open what looks relevant')
   return lines.join('\n')
 }
 
@@ -216,7 +216,7 @@ export interface BuildInput {
   task: RefineTask
   executor: Executor
   rollouts?: readonly Rollout[]
-  harnessDir?: string | null
+  variantDir?: string | null
   libraryDir?: string | null
   pool?: readonly PoolEntry[]
   decisions?: Record<string, string>
@@ -265,7 +265,7 @@ export { renderDeliverable }
  * Writes the evidence folder and returns what landed, so a mission describes only that. A
  * trajectory is written in full; `obsTrunc` applies per observation.
  */
-export function build(dest: string, input: BuildInput): EvidenceTree {
+export function build(dest: string, input: BuildInput): EvidenceFolder {
   const { task, executor } = input
   rmSync(dest, { recursive: true, force: true })
   mkdirSync(dest, { recursive: true })
@@ -289,20 +289,20 @@ export function build(dest: string, input: BuildInput): EvidenceTree {
   }
 
   let harnessFiles = 0
-  if (input.harnessDir && existsSync(input.harnessDir)) {
-    assertNoLeakPaths(input.harnessDir, task.leakGlobs)
-    harnessFiles = copyFolder(input.harnessDir, join(dest, 'harness'))
+  if (input.variantDir && existsSync(input.variantDir)) {
+    assertNoLeakPaths(input.variantDir, task.leakGlobs)
+    harnessFiles = copyFolder(input.variantDir, join(dest, 'harness'))
   }
 
   const pool: string[] = []
   for (const entry of input.pool ?? []) {
     const dir = join(dest, 'pool', entry.label)
     mkdirSync(dir, { recursive: true })
-    if (entry.harnessDir && existsSync(entry.harnessDir)) {
-      assertNoLeakPaths(entry.harnessDir, task.leakGlobs)
-      copyFolder(entry.harnessDir, join(dir, 'harness'))
-      const reference = readTree(PI_SURFACE, join(dest, 'harness'))
-      const candidate = readTree(PI_SURFACE, entry.harnessDir)
+    if (entry.variantDir && existsSync(entry.variantDir)) {
+      assertNoLeakPaths(entry.variantDir, task.leakGlobs)
+      copyFolder(entry.variantDir, join(dir, 'harness'))
+      const reference = readVariant(PI_SURFACE, join(dest, 'harness'))
+      const candidate = readVariant(PI_SURFACE, entry.variantDir)
       writeFileSync(join(dir, 'harness.diff'), unifiedDiff(reference, candidate, 'current', entry.label))
     }
     if (entry.rollout) {
@@ -332,7 +332,7 @@ export function build(dest: string, input: BuildInput): EvidenceTree {
 }
 
 /** The short pointer to the evidence on disk: the job, where the evidence is, and the instruction to open it. */
-export function mission(tree: EvidenceTree, job: string): string {
+export function mission(evidence: EvidenceFolder, job: string): string {
   return [
     job.trim(),
     '',
@@ -340,7 +340,7 @@ export function mission(tree: EvidenceTree, job: string): string {
     '',
     'It is on disk, in `context/`. Read it -- do not answer from this message alone.',
     '',
-    layout(tree),
+    layout(evidence),
     '',
     'Every trajectory EVENT is present: the trajectory was not clipped to fit this mission. An individual observation may contain an explicit renderer-truncation marker; that marker is ours, not behavior by the solver. Do not diagnose it as a solver failure.',
     '',

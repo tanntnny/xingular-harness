@@ -20,19 +20,19 @@ export const PI_PLUGIN: PluginDescriptor = {
   toolGroups: ['Native']
 }
 
-/** The harness tree: the eight components that shape what an agent is told and can do. */
-export const HARNESS_TREE_PLUGIN: PluginDescriptor = {
-  id: 'harness',
-  title: 'Harness',
-  description: 'The agent\'s own harness: system prompt, guardrails, memory and tool guidance in every prompt; skills, scripts and subagents on demand; plugins in the tool loop. Versioned, and refined from evidence.',
-  required: 'Every agent runs on its harness.',
+/** The variant: the eight components that shape what an agent is told and can do. */
+export const VARIANT_PLUGIN: PluginDescriptor = {
+  id: 'variant',
+  title: 'Variant',
+  description: 'The agent\'s own variant: system prompt, guardrails, memory and tool guidance in every prompt; skills, scripts and subagents on demand; plugins in the tool loop. Versioned, and refined from evidence.',
+  required: 'Every agent runs on a variant.',
   sections: [
     { id: 'system', name: 'System prompt', description: 'c1: role and procedure.' },
     { id: 'guardrails', name: 'Guardrails', description: 'c2: standing rules.' },
     { id: 'memory', name: 'Memory', description: 'c3: durable facts about this kind of work.' },
-    { id: 'subagents', name: 'Subagents', description: 'c5: the list of this harness\'s subagents.' },
-    { id: 'scripts', name: 'Scripts', description: 'c7: where this harness\'s scripts are.' },
-    { id: 'reporting', name: 'Reporting', description: 'Fixed harness text, not part of the tree: how the final reply is shaped.' }
+    { id: 'subagents', name: 'Subagents', description: 'c5: the list of this variant\'s subagents.' },
+    { id: 'scripts', name: 'Scripts', description: 'c7: where this variant\'s scripts are.' },
+    { id: 'reporting', name: 'Reporting', description: 'Fixed foundation text, not part of the variant: how the final reply is shaped.' }
   ],
   tools: tools(SKILL_TOOLS)
 }
@@ -40,7 +40,7 @@ export const HARNESS_TREE_PLUGIN: PluginDescriptor = {
 export const HARNESS_PLUGINS: readonly PluginDescriptor[] = [
   PI_PLUGIN,
   { id: 'subagents', title: 'Subagents', description: 'Isolated child runs of the same caller, bounded by parent capabilities and nesting depth.', required: 'Availability is selected by the session host; child runs retain the parent permission boundary.', tools: [{ name: SPAWN_SUBAGENT, description: 'Start a subagent' }, { name: WAIT_SUBAGENTS, description: 'Wait for subagents' }] },
-  HARNESS_TREE_PLUGIN,
+  VARIANT_PLUGIN,
   {
     id: 'wiki',
     title: 'Wiki',

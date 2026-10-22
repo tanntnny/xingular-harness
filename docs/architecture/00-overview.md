@@ -3,9 +3,9 @@
 ## Purpose
 
 `@xingular/harness` runs one agent run well, on Pi, for any application that embeds it. It owns
-what a model is told (the harness tree and the compiled prompt), what it can do (tools, the gate,
-connected apps), what it remembers (Wiki notes, run history), how a run is recorded, and how the
-harness itself is improved from evidence (refinement). It knows a *caller*, a *session* and a
+what a model is told (the variant and the compiled prompt), what it can do (tools, the gate,
+connected apps), what it remembers (Wiki notes, run history), how a run is recorded, and how a variant
+of the harness is improved from evidence (refinement). It knows a *caller*, a *session* and a
 *run*. It does not know what an application is or what its objects mean.
 
 ## Layers
@@ -13,7 +13,7 @@ harness itself is improved from evidence (refinement). It knows a *caller*, a *s
 ```text
 Application (for example the App repo)      agents, groups, tasks, projects, worktrees, UI, PTY, keychain
    │  seven extension points (01) and the server protocol (10)
-Harness (this package)                      trees, prompt, sessions, runs, gate, Wiki, history, plugins, MCP, refinement, terminal
+Harness (this package)                      variants, prompt, sessions, runs, gate, Wiki, history, plugins, MCP, refinement, terminal
    │  Pi SDK: createAgentSession, ModelRuntime, SessionManager, DefaultResourceLoader
 Pi                                          model calls, native JSONL history, tool execution, extensions
 ```
@@ -25,7 +25,7 @@ Pi                                          model calls, native JSONL history, t
 - **The application** supplies what only it knows, through the extension points, and reads what
   the harness records.
 
-**Belongs in the harness:** Pi sessions and accounts, harness trees and refinement
+**Belongs in the harness:** Pi sessions and accounts, variants and refinement
 (Propose–Probe–Compose, selection, the experience library), the prompt compiler and its delivery,
 project notes (the Wiki), recall, the tool gate and standing approvals, connectors (MCP), terminal
 sessions and their owned standalone frontend, and the server protocol.
@@ -38,6 +38,49 @@ applications, so a change here changes every application built on it.
 
 The application side of the boundary is described in
 [`App/docs/architecture/overview.md`](../../../App/docs/architecture/overview.md).
+
+## Foundation and variants
+
+The harness has two halves, and every page uses these two words for them.
+
+- The **foundation** is the part that is fixed. Code and release change it; nothing running
+  through it can. It is the Pi hookup, the prompt compiler and its budgets, sessions, runs and the
+  run recorder, the tool gate and standing approvals, accounts and their isolation, plugin-code
+  trust, the variant surface with its validator and always-on cap, the refinement method (its
+  budget identity and answer-free rule), the seven extension points and the server protocol.
+- A **variant** is the part that mutates: one tree of eight components (c1–c8) for one scope,
+  stored as immutable, validated versions (page 03). A scope's *head* is the variant it runs now;
+  a *version* is a recorded variant; a *candidate* is a variant refinement proposed.
+
+"The harness" means the foundation together with the variant it is running.
+
+```text
+  foundation  ──runs──►  variant (pinned head)  ──►  run record, events, trajectories
+      ▲                                                        │
+      │ person adopts                                          ▼
+      └──────────  candidate variants  ◄── refinement (improvers edit a copy)
+```
+
+1. The foundation runs a session on a pinned variant and records everything the run did.
+2. Refinement reads those records, lets improver sessions edit a *copy* of the variant, probes
+   each candidate and picks one final output without seeing a score (page 05).
+3. A person adopts a candidate. Only then does it become the head, and only with its plugin code
+   trusted. The next run pins the new head.
+
+The rule between the halves is one-way. A variant decides what the agent is told and which
+skills, scripts, subagents and plugins it may load. It cannot alter the compiler, the gate, the
+recorder, accounts or trust: variant plugins run inside the tool loop, but the gate is always the
+last extension loaded (`INV-GATE-2`). Refinement never edits the foundation (`INV-FND-1`) and has
+one door into a variant (`INV-FND-2`).
+
+When a rule is unclear, ask which half the thing belongs to. If an agent or an improver could
+legitimately change it, it is a variant concern. If changing it would need a release, it is the
+foundation. Page 04 and DESIGN-0001 draw the same line inside the prompt: foundation text is
+contract prose about mechanics, variant text is work guidance.
+
+The improver prompts in `refine/prompts.ts` and the evidence folder's `harness/` names keep the
+Harness² paper's own vocabulary, where "the harness" is what the improver edits. They are method
+text, and changing them would change the method (`INV-REF-3`).
 
 ## Components
 
@@ -52,7 +95,7 @@ opens the data root.
 | `runs` | `RunRegistry` | `sessions/registry.ts` | 02 |
 | `subagents` | `Subagents` | `sessions/subagentService.ts` | 02 |
 | `approvals` | `Approvals` | `sessions/approvals.ts` | 07 |
-| `trust` | `TreeTrust` | `tree/trust.ts` | 03 |
+| `trust` | `VariantTrust` | `variant/trust.ts` | 03 |
 | `refine` | `Refinements` | `refine/service.ts` | 05 |
 | `plugins` | `Plugins` | `plugins/plugins.ts` | 06 |
 | `hooks` | `Hooks` | `plugins/hooks.ts` | 06 |
@@ -61,7 +104,7 @@ opens the data root.
 | `terminals` | `Terminals` | `terminal/terminals.ts` | 11 |
 | `bus` | `Bus` (state-changed notices) | `core/bus.ts` | 10 |
 
-Modules with no member of their own: `tree/` (functions over the tree store), `prompt/compile.ts`,
+Modules with no member of their own: `variant/` (functions over the variant store), `prompt/compile.ts`,
 `wiki/notes.ts`, `history/`, `tools/`, `capabilities/`, `server/`.
 
 ### Lifecycle
@@ -83,7 +126,7 @@ Modules with no member of their own: `tree/` (functions over the tree store), `p
 |---|---|
 | **E** Execution | Isolated account folders, the Pi session, the terminal launch spec |
 | **T** Tools | History, trajectory, Wiki notes, skill loading, `ask_user`, the run checklist, the connected-apps broker, the tool gate |
-| **C** Context | The compiler, stable prefix and updates, the versioned tree (c1–c8), skills, on-demand Wiki notes |
+| **C** Context | The compiler, stable prefix and updates, the versioned variant (c1–c8), skills, on-demand Wiki notes |
 | **L** Lifecycle | Run state, interrupt, recovery, approvals and questions, subagents, refinement |
 | **O** Observability | Validated run events saved per run; usage counters |
 | **V** Verification | Isolated refinement probes and answer-free selection |
@@ -99,11 +142,11 @@ The application's column (PTY, worktrees, roles, tasks, review, schedules, UI) i
 - **INV-BND-2** The harness names no application and no application concept (agent role, group,
   task, pane, worktree, handoff, browser, computer use) in code paths it reads or text a model or
   person sees. Text names the product through `env.productName` (default `Xingular Harness`;
-  `{product}` in a tool description). Ids such as `agentId`, `projectId` and a tree `scope` are
+  `{product}` in a tool description). Ids such as `agentId`, `projectId` and a variant `scope` are
   opaque; names come from `Directory` or `CallerContext.agentName`.
 - **INV-BND-3** A new need of one application is met by a generic extension point or option,
   never by a branch on an application's name or concept.
-- **INV-BND-4** Trees, the prompt compiler and Wiki notes are synchronous (`tree/`, `prompt/`,
+- **INV-BND-4** Variants, the prompt compiler and Wiki notes are synchronous (`variant/`, `prompt/`,
   `wiki/`). A synchronous function is the critical section; do not make them async. Accounts, Pi,
   MCP and refinement are async.
 - **INV-BND-5** The process never launches against `~/.pi`, `~/.codex` or `~/.claude`, and never

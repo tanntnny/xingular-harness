@@ -1,27 +1,27 @@
-// Versioned harness trees. Each scope (an opaque id the application chooses, such as one per
+// Versioned variants. Each scope (an opaque id the application chooses, such as one per
 // agent) has content-addressed versions, a head, and a lineage that says where each version came
 // from. A run uses the head it started with; a change makes a new version and never edits one.
 //
-//   <data>/harnesses/<scope>/versions/<fingerprint>/tree/<rel>
-//   <data>/harnesses/<scope>/versions/<fingerprint>/version.json
-//   <data>/harnesses/<scope>/head.json
-//   <data>/harnesses/<scope>/lineage.jsonl
+//   <data>/variants/<scope>/versions/<fingerprint>/variant/<rel>
+//   <data>/variants/<scope>/versions/<fingerprint>/version.json
+//   <data>/variants/<scope>/head.json
+//   <data>/variants/<scope>/lineage.jsonl
 import { createHash } from 'node:crypto'
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { HarnessError, invalid, notFound } from '../core/errors'
 import { appendLine, now, readJson, readText, safeId, writeJson } from '../core/fs'
-import { PI_SURFACE, type SurfaceSpec, type Tree } from './surface'
-import { diffSummary, readTree, validate, writeTree, type TreeCensus, type TreeDiff, type ValidateOptions } from './tree'
+import { PI_SURFACE, type SurfaceSpec, type Variant } from './surface'
+import { diffSummary, readVariant, validate, writeVariant, type VariantCensus, type VariantDiff, type ValidateOptions } from './variant'
 
-/** A stable digest of a tree: the same files with the same text give the same value. */
-export function fingerprint(tree: Tree): string {
+/** A stable digest of a variant: the same files with the same text give the same value. */
+export function fingerprint(variant: Variant): string {
   const hash = createHash('sha1')
-  for (const rel of Object.keys(tree).sort()) {
+  for (const rel of Object.keys(variant).sort()) {
     hash.update(rel)
     hash.update('\0')
-    hash.update(tree[rel]!)
+    hash.update(variant[rel]!)
     hash.update('\0')
   }
   return hash.digest('hex').slice(0, 16)
@@ -39,7 +39,7 @@ export interface VersionRecord {
   parent: string | null
   source: VersionSource
   createdAt: string
-  census: TreeCensus
+  census: VariantCensus
 }
 
 export interface Head {
@@ -47,12 +47,12 @@ export interface Head {
   updatedAt: string
 }
 
-export function harnessesDir(root: string): string {
-  return join(root, 'harnesses')
+export function variantsDir(root: string): string {
+  return join(root, 'variants')
 }
 
 function scopeDir(root: string, scope: string): string {
-  return join(harnessesDir(root), safeId(scope))
+  return join(variantsDir(root), safeId(scope))
 }
 
 function versionDir(root: string, scope: string, fp: string): string {
@@ -62,7 +62,7 @@ function versionDir(root: string, scope: string, fp: string): string {
 
 export function scopes(root: string): string[] {
   try {
-    return readdirSync(harnessesDir(root), { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort()
+    return readdirSync(variantsDir(root), { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort()
   } catch {
     return []
   }
@@ -76,10 +76,10 @@ export function exists(root: string, scope: string, fp: string): boolean {
   return existsSync(join(versionDir(root, scope, fp), 'version.json'))
 }
 
-export function readVersion(root: string, scope: string, fp: string, surface: SurfaceSpec = PI_SURFACE): Tree {
-  const dir = join(versionDir(root, scope, fp), 'tree')
+export function readVersion(root: string, scope: string, fp: string, surface: SurfaceSpec = PI_SURFACE): Variant {
+  const dir = join(versionDir(root, scope, fp), 'variant')
   if (!existsSync(dir)) throw notFound('That harness version')
-  return readTree(surface, dir)
+  return readVariant(surface, dir)
 }
 
 export function versionRecord(root: string, scope: string, fp: string): VersionRecord | null {
@@ -88,13 +88,13 @@ export function versionRecord(root: string, scope: string, fp: string): VersionR
 
 /** Where a version's files are on disk, for a run that loads them. */
 export function versionPath(root: string, scope: string, fp: string): string {
-  return join(versionDir(root, scope, fp), 'tree')
+  return join(versionDir(root, scope, fp), 'variant')
 }
 
-/** The head tree, or null when the scope has none yet. */
-export function headTree(root: string, scope: string, surface: SurfaceSpec = PI_SURFACE): { fingerprint: string; tree: Tree } | null {
+/** The head variant, or null when the scope has none yet. */
+export function headVariant(root: string, scope: string, surface: SurfaceSpec = PI_SURFACE): { fingerprint: string; variant: Variant } | null {
   const current = head(root, scope)
-  return current ? { fingerprint: current.fingerprint, tree: readVersion(root, scope, current.fingerprint, surface) } : null
+  return current ? { fingerprint: current.fingerprint, variant: readVersion(root, scope, current.fingerprint, surface) } : null
 }
 
 /** Every version recorded for a scope, newest first. */
@@ -120,22 +120,22 @@ export interface CommitOptions {
 }
 
 /**
- * Saves `tree` as a version of `scope`. An invalid tree is refused with every problem listed.
- * Saving a tree that already exists records nothing new but can still move the head.
+ * Saves `variant` as a version of `scope`. An invalid variant is refused with every problem listed.
+ * Saving a variant that already exists records nothing new but can still move the head.
  */
-export function commit(root: string, scope: string, tree: Tree, source: VersionSource, options: CommitOptions = {}): VersionRecord {
+export function commit(root: string, scope: string, variant: Variant, source: VersionSource, options: CommitOptions = {}): VersionRecord {
   const surface = options.surface ?? PI_SURFACE
-  let census: TreeCensus
+  let census: VariantCensus
   try {
-    census = validate(surface, tree, options.validate)
+    census = validate(surface, variant, options.validate)
   } catch (error) {
-    throw new HarnessError('harness_invalid', error instanceof Error ? error.message : String(error), 'Fix the listed problems and save again.')
+    throw new HarnessError('variant_invalid', error instanceof Error ? error.message : String(error), 'Fix the listed problems and save again.')
   }
-  const fp = fingerprint(tree)
+  const fp = fingerprint(variant)
   const parent = head(root, scope)?.fingerprint ?? null
   let record = versionRecord(root, scope, fp)
   if (!record) {
-    writeTree(surface, tree, join(versionDir(root, scope, fp), 'tree'), { stubs: false })
+    writeVariant(surface, variant, join(versionDir(root, scope, fp), 'variant'), { stubs: false })
     record = { fingerprint: fp, parent, source, createdAt: now(), census }
     writeJson(join(versionDir(root, scope, fp), 'version.json'), record)
     appendLine(join(scopeDir(root, scope), 'lineage.jsonl'), JSON.stringify(record))
@@ -145,10 +145,10 @@ export function commit(root: string, scope: string, tree: Tree, source: VersionS
 }
 
 /** Gives a scope its first version, unless it already has a head. */
-export function seed(root: string, scope: string, tree: Tree, note?: string, surface: SurfaceSpec = PI_SURFACE): Head {
+export function seed(root: string, scope: string, variant: Variant, note?: string, surface: SurfaceSpec = PI_SURFACE): Head {
   const current = head(root, scope)
   if (current) return current
-  commit(root, scope, tree, { kind: 'seed', note }, { surface })
+  commit(root, scope, variant, { kind: 'seed', note }, { surface })
   return head(root, scope)!
 }
 
@@ -168,7 +168,7 @@ export interface FileDiff {
 }
 
 /** What changed between two versions, file by file. */
-export function compare(root: string, scope: string, from: string, to: string, surface: SurfaceSpec = PI_SURFACE): { summary: TreeDiff; files: FileDiff[] } {
+export function compare(root: string, scope: string, from: string, to: string, surface: SurfaceSpec = PI_SURFACE): { summary: VariantDiff; files: FileDiff[] } {
   const a = readVersion(root, scope, from, surface)
   const b = readVersion(root, scope, to, surface)
   const summary = diffSummary(surface, a, b)
@@ -176,14 +176,14 @@ export function compare(root: string, scope: string, from: string, to: string, s
   return { summary, files }
 }
 
-/** Reads a tree folder made outside the harness, such as an export or a hand-written one. */
-export function importFolder(dir: string, surface: SurfaceSpec = PI_SURFACE): { tree: Tree; rejected: string[] } {
+/** Reads a variant folder made outside the harness, such as an export or a hand-written one. */
+export function importFolder(dir: string, surface: SurfaceSpec = PI_SURFACE): { variant: Variant; rejected: string[] } {
   const rejected: string[] = []
-  const tree = readTree(surface, dir, rejected)
-  return { tree, rejected }
+  const variant = readVariant(surface, dir, rejected)
+  return { variant, rejected }
 }
 
-/** Reads one file of a tree on disk; used by callers that only need one component. */
+/** Reads one file of a variant on disk; used by callers that only need one component. */
 export function readComponentFile(root: string, scope: string, fp: string, rel: string): string | null {
   try {
     return readFileSync(join(versionPath(root, scope, fp), rel), 'utf8')

@@ -1,5 +1,5 @@
 // The Wiki: plain Markdown notes about projects, linked to each other. It is reference material
-// a person and agents read and write; it is not what shapes an agent (that is the harness tree).
+// a person and agents read and write; it is not what shapes an agent (that is the variant).
 //
 //   <data>/wiki/home.md
 //   <data>/wiki/library/**.md          notes that belong to no project

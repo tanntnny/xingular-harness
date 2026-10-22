@@ -27,6 +27,7 @@ proposal is `Accepted`.
 | [PROP-0006](PROP-0006-run-checklist.md) | A run checklist the model writes, recorded as a run event | Implemented | 02-sessions-and-runs.md, 06, 07, 10-server-protocol.md | 2026-10-22 |
 | [PROP-0007](PROP-0007-run-continuation.md) | Continue a stopped run as a new run with the same pins | Implemented | INV-RUN-4, INV-RUN-10, 00-overview.md, 02-sessions-and-runs.md, 10-server-protocol.md | 2026-10-22 |
 | [PROP-0008](PROP-0008-lessons-from-runs.md) | Opt-in lessons from finished runs, kept in the Wiki | Implemented | INV-MEM-2, 02, 06, 08-memory-and-history.md, 12-storage.md, ADR-0010 | 2026-10-22 |
+| [PROP-0009](PROP-0009-foundation-and-variants.md) | Name the fixed half the foundation and the mutating half the variant | Accepted | INV-TREE→INV-VAR, new INV-FND-1/2, 00, 03, 05, 10, 12, ADR-0011 | 2026-10-22 |
 
 Numbers are four digits, start at `0001`, and are never reused.
 

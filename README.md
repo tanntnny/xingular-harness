@@ -1,35 +1,47 @@
 # Xingular Harness
 
 A Pi agent harness built on **recursive harnessing** ([Harness²](https://arxiv.org/abs/2610.14224),
-Apache-2.0, Google LLC), as one TypeScript package (`@xingular/harness`). The harness — what a
-model is told and can do — is the object that improves, with model weights fixed:
+Apache-2.0, Google LLC), as one TypeScript package (`@xingular/harness`). It lets a running host
+improve the harness itself, with model weights fixed. To say that precisely, the harness has two
+halves:
 
-- **A harness is a tree of eight components** (c1–c8): system prompt, guardrails, memory and tool
+- **The foundation is fixed.** Pi sessions, the prompt compiler, the run recorder, the tool gate,
+  accounts, plugin-code trust, the refinement method and the extension points. Only a release
+  changes it.
+- **A variant mutates.** It is what a model is told and can load: eight components (c1–c8) for one
+  scope. Each scope has versioned, validated variants; a run pins one version, and refinement
+  proposes a better variant that a person adopts.
+
+*The foundation runs a variant, records how it went, and lets refinement propose a better
+variant; only a person adopts one.* Refinement edits a copy of a variant and never the
+foundation. See [Foundation and variants](docs/architecture/00-overview.md#foundation-and-variants).
+
+- **A variant is a tree of eight components** (c1–c8): system prompt, guardrails, memory and tool
   guidance (always in the prompt, capped), subagents, skills and scripts (on demand), and plugins
-  (in the tool loop). Each caller scope has versioned, validated trees; a run pins one version.
-- **Task-level recursion** refines a tree on one task through *Propose–Probe–Compose*: k base
-  executions, improvers that edit the tree from the evidence (INV: how the agent works; DOM: what a
+  (in the tool loop).
+- **Task-level recursion** refines a variant on one task through *Propose–Probe–Compose*: k base
+  executions, improvers that edit the variant from the evidence (INV: how the agent works; DOM: what a
   practitioner knows), a probe execution of each candidate, and compositions built from the
   behavioural contrasts. Parallel mode explores wider; sequential mode refines deeper. Each costs
   4k executions and 3k improver sessions.
 - **Blind, answer-free selection** picks one final output from anonymised candidates; no rubric,
   score or reviewer verdict ever reaches an improver.
-- **Harnessing-level recursion** keeps an experience library per scope: each adopted tree with
+- **Harnessing-level recursion** keeps an experience library per scope: each adopted variant with
   what each edit did and one evidence-backed lesson, read by the next task's improvers.
 
 | Part | Folder | What it does |
 |---|---|---|
-| Harness trees | `src/tree/` | The eight-component surface, validation and repair, content-addressed versions and lineage, materialising a tree for Pi, plugin-code trust, seeding a first tree, the component library. |
+| Variants | `src/variant/` | The eight-component surface, validation and repair, content-addressed versions and lineage, materialising a variant for Pi, plugin-code trust, seeding a first variant, the component library. |
 | Refinement | `src/refine/` | Evidence folders, the prompt pack, parallel and sequential recursion, the budget ledger, selection, reflection, the experience library, Pi-backed executor and improver, and the `refine` service. |
 | Accounts | `src/accounts/` | Several isolated Pi accounts and pools, sign-in, model lists, health and limits. A session keeps the account it started with. |
-| Sessions | `src/sessions/` | Pi SDK turns on a pinned harness tree, run records and `events.jsonl`, interrupt, approvals, questions, subagents (named by a tree's c5), recovery after a crash. Startup recovery only interrupts an active run whose owner (`runs/<id>/owner.json`) has exited, so a second Harness on the same data folder leaves a running one alone. |
-| Prompt | `src/prompt/` | The system prompt compiled from the tree's sections and the application's, with budgets; a stable prefix, and changing state delivered as updates in native history. |
+| Sessions | `src/sessions/` | Pi SDK turns on a pinned variant, run records and `events.jsonl`, interrupt, approvals, questions, subagents (named by a variant's c5), recovery after a crash. Startup recovery only interrupts an active run whose owner (`runs/<id>/owner.json`) has exited, so a second Harness on the same data folder leaves a running one alone. |
+| Prompt | `src/prompt/` | The system prompt compiled from the variant's sections and the application's, with budgets; a stable prefix, and changing state delivered as updates in native history. |
 | Wiki | `src/wiki/` | Project notes: linked Markdown, versions, search. Reference material, not instructions. |
 | History | `src/history/` | Recall over earlier runs and bounded trajectory reads. |
 | Plugins | `src/plugins/` | What a Pi session loads, chosen by the harness and never by Pi's own discovery; trust for a working folder's code; the list of every plugin and what reaches one caller. |
 | Tools | `src/tools/` | Tool definitions, History/Wiki/skill tools, `ask_user`; a gate that asks the application's policy, then standing approvals, then the person. |
 | Connected apps | `src/mcp/` | MCP connections, OAuth, per-session grants, redaction, a trace of what each call returned. |
-| Terminal | `src/terminal/` | A Harness-owned terminal frontend over persistent Pi sessions on a harness tree. |
+| Terminal | `src/terminal/` | A Harness-owned terminal frontend over persistent Pi sessions on a variant. |
 | Server | `src/server/` | The same API over newline-delimited JSON, for a host that is not a Node program. |
 
 The binding design of every part is the [architecture specification](docs/architecture/README.md).
@@ -44,11 +56,11 @@ The [documentation index](docs/README.md) links current terminal architecture an
 - The model's `spawn_subagent` returns immediately by default; `wait: true` returns an inline result. `wait_subagents` joins selected children. The SDK and standalone terminal share this execution service. Terminal calls use its private control channel, including when connected apps are disabled.
 - Parents receive results at native turn boundaries and join outstanding children before completing. Typed native-history receipts prevent duplicate automatic delivery; explicit waits can reread results. Ownership is recorded before startup so an explicit resume can recover even a lost spawn return. Startup reservations without a run become interrupted outcomes. A restarted Harness never restarts model work automatically. Recovery requires the same recorded account, caller, working folder, and selected history branch. Session IDs are opaque; consumers follow `parentRunId` and `relation`.
 - `providers: false` runs a session with the harness's own tools only.
-- `harness: { scope }` runs the session on that scope's head tree (or `{ scope, version }`, or `{ dir }` for a tree on disk). The version is pinned for the run and recorded on it.
+- `variant: { scope }` runs the session on that scope's head variant (or `{ scope, version }`, or `{ dir }` for a variant on disk). The version is pinned for the run and recorded on it.
 - On the caller, `recallExcludeAgents` hides those agents' conversations from history and trajectory tools.
 - `harnessTools: false` runs a session without the History, Wiki and skill tools (and without `ask_user` and `checklist_write`).
 - Every session with harness tools gets `checklist_write`: the model sends its whole checklist (`pending`, `in_progress`, `completed`, at most 50 steps) and the run records it as a `checklist.updated` event. `checklistOf(events)` or the `runs.checklist` method reads the latest one. Plan mode allows it.
-- `continueFrom: <run id>` continues a run that stopped before it finished (interrupted or failed) as a new run. `harness.recovery.interruptedRunIds` lists the runs `open` marked interrupted, and `continuationOf(root, runId, sessionDir)` (`runs.continuation`) says whether one can be continued and what it left: checklist, unanswered approvals and questions, the last tool and whether it finished, unfinished subagents. The new run reopens the same native history, records `resumedFromRunId`, keeps the account, tree version and capability set (`continuation_mismatch` otherwise), and the model is told where the earlier run stopped. The harness never continues a run by itself; which runs to continue, and when, is the application's choice.
+- `continueFrom: <run id>` continues a run that stopped before it finished (interrupted or failed) as a new run. `harness.recovery.interruptedRunIds` lists the runs `open` marked interrupted, and `continuationOf(root, runId, sessionDir)` (`runs.continuation`) says whether one can be continued and what it left: checklist, unanswered approvals and questions, the last tool and whether it finished, unfinished subagents. The new run reopens the same native history, records `resumedFromRunId`, keeps the account, variant version and capability set (`continuation_mismatch` otherwise), and the model is told where the earlier run stopped. The harness never continues a run by itself; which runs to continue, and when, is the application's choice.
 - The first-party `lessons` plugin (off by default) reflects on a completed top-level run with enough tool calls and may keep one general lesson in the Wiki under `library/lessons/`, in refinement's cue/lesson shape. It uses the run's own account and model, read-only file tools, and is capped (`minToolCalls`, `maxLessons`, `maxChars`). See PROP-0008.
 
 Every session also gets `trajectory_search` and `trajectory_read` from the built-in History plugin.
@@ -66,7 +78,7 @@ They report recorded evidence without scoring runs, and do not backfill older re
 import { createHarness } from '@xingular/harness'
 
 const harness = createHarness({
-  dataRoot: '/path/to/data',        // harnesses/, library/, refine/, wiki/, registry/, runs/, index.sqlite
+  dataRoot: '/path/to/data',        // variants/, library/, refine/, wiki/, registry/, runs/, index.sqlite
   stateDir: '/path/to/state',       // device-local: accounts, approvals, connections, sockets
   productName: 'My App',            // how the harness names itself to a model (default 'Xingular Harness')
   secrets,                          // SecretStore; defaults to an owner-only file in stateDir
@@ -86,7 +98,7 @@ await harness.sessions.run({
   run: { id, sessionId },
   cwd, sessionDir, text,
   caller: { agentId, agentName, actor: 'Chat' },
-  harness: { scope: 'agent-1' },
+  variant: { scope: 'agent-1' },
   launch: { sections: [{ id: 'identity', title: 'Identity', body, budget: 2000, order: 10 }] },
   tools: { allow: ['read', 'bash', 'my_tool'], gated: ['bash'] }
 })
@@ -199,7 +211,7 @@ working folder brings.
   Outside a session, `xharness plugins list | show | install | remove | update | attach |
   detach | trust | untrust` acts directly, as the person who typed it; `trust` shows the files
   and wants a typed yes or `--yes`. It does not open the data root, so it settles no run.
-- **Unattended runs load no extension found on disk.** A harness tree's own trusted plugins still
+- **Unattended runs load no extension found on disk.** A variant's own trusted plugins still
   load, so a refinement probe runs the plugin it is testing.
 - **A person switches things on and off for a scope.** `plugins.attach` and `plugins.detach`
   take a plugin's or a contribution's `id` and a `scope` (`{}` for everywhere, `{ agentId }`, or
@@ -244,7 +256,7 @@ table. With the `--host-*` flags the harness calls the host for `secrets.get|set
 `policy.scope|authorize|approval|connections`, and `tools.call`; the host registers its tools
 with `tools.register` and its names with `directory.set`.
 
-`harnesses.importComponents` adds complete skill folders, or single-file rules and prompts, to the
+`variants.importComponents` adds complete skill folders, or single-file rules and prompts, to the
 component library:
 
 ```ts
@@ -256,7 +268,7 @@ It validates bounded relative paths and file encodings, requires a root
 has no knowledge of the application feature that may call it.
 
 `npm run prove` starts that server on a throwaway data root, with no application present, and
-exercises accounts, harness trees, the Wiki, the prompt, connected apps, a recorded session, a
+exercises accounts, variants, the Wiki, the prompt, connected apps, a recorded session, a
 plugin hook, and the refinement demo end to end.
 
 ## Run it as a standalone Harness terminal
@@ -319,7 +331,7 @@ verification. `/accounts`, `/permissions`, `/plugins`, `/hub`, `/components`, `/
 and `/log` each open their own centered page dialog with local tabs. `/permissions` reviews device-local Pi
 terminal grants and the Full Permission switch; tool grants apply across terminal sessions sharing this
 Harness state, and Full Permission requires confirmation. `/components` browses reusable skills,
-prompts and rules; a confirmed skill or rule addition creates a tree version for future sessions while
+prompts and rules; a confirmed skill or rule addition creates a variant version for future sessions while
 the current terminal stays pinned. `/trajectory` opens recorded runs for the current native conversation,
 with event navigation and a detail inspector. `/log` shows a static, redacted snapshot of Harness
 diagnostics and run events for the current conversation; press Escape to close. See
@@ -353,9 +365,9 @@ for integrations such as Xingular Agent/App.
 
 ```
 <data root>/
-  harnesses/<scope>/  versions/<fingerprint>/tree/, head.json, lineage.jsonl   (the eight components)
-  refine/<id>/      summary.json, task.json, harnesses/<label>/, rollouts/, context/, selection/, reflection/, improver/
-  library/<scope>/<area>/  INDEX.md, harnesses/<task>/{harness/, EXPERIENCE.md}   (the experience library)
+  variants/<scope>/  versions/<fingerprint>/variant/, head.json, lineage.jsonl   (the eight components)
+  refine/<id>/      summary.json, task.json, variants/<label>/, rollouts/, context/, selection/, reflection/, improver/
+  library/<scope>/<area>/  INDEX.md, variants/<task>/{variant/, EXPERIENCE.md}   (the experience library)
   wiki/             home.md, library/, projects/<slug>/   (project notes)
   wiki-history/     earlier versions of notes
   legacy/           what an earlier Wiki kept (memory blocks, facts, revisions, Inbox), moved once
@@ -371,7 +383,7 @@ for integrations such as Xingular Agent/App.
   accounts/         registry, per-account Pi agent folders, audit log
   approvals.json    standing approvals
   plugin-trust.json       the code a person trusted, by hash, and whether earlier packages were taken over
-  tree-plugin-trust.json  harness-tree plugin code a person trusted, and scopes whose probes may run improver code
+  variant-plugin-trust.json  harness-variant plugin code a person trusted, and scopes whose probes may run improver code
   plugin-registered.json  what each extension registered the last time a session loaded it
   plugin-hooks.json       what each hooks file listens for and how its last run went
   connections.json  connected apps (secrets are in the SecretStore)

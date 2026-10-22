@@ -1,5 +1,7 @@
 # System-prompt design: a fixed foundation with an adapting harness
 
+> Terminology (PROP-0009): this draft's *foundation* is the architecture spec's foundation, and its *adapting surface* is a **variant**. See [Foundation and variants](architecture/00-overview.md#foundation-and-variants).
+
 Status: **design draft** (working notes; not yet an ADR). Feed: the arm study
 ([study/00-index.md](study/00-index.md), arms 01 and 10). The compiler is
 `src/prompt/compile.ts` — the only place model instructions are assembled

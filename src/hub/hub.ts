@@ -8,9 +8,9 @@ import { atomicWrite, now, readJson, readJsonOr, writeJson } from '../core/fs'
 import type { Harness } from '../harness'
 import * as pluginApi from '../plugins/api'
 import * as packages from '../plugins/install'
-import * as registry from '../tree/components'
+import * as registry from '../variant/components'
 import * as attachments from '../plugins/attachments'
-import { version as harnessVersion } from '../../package.json'
+import { version as variantVersion } from '../../package.json'
 import bundled from './catalog.json'
 import { HUB_CATALOG_URL, HUB_MAX_BYTES, HUB_PREVIEW_PAGE_BYTES, hubCatalogSchema, hubEntrySchema, hubReceiptSchema, meetsMinimum, type HubCatalog, type HubEntry, type HubOverview, type HubReceipt } from './schema'
 
@@ -208,7 +208,7 @@ export class Hub {
   async install(id: string, version: string): Promise<HubReceipt> {
     const root = this.harness.env.root
     const entry = hubEntrySchema.parse(this.find(id, version))
-    if (entry.requires.harness && !meetsMinimum(harnessVersion, entry.requires.harness)) throw invalid(`This item requires Harness ${entry.requires.harness} or newer.`)
+    if (entry.requires.harness && !meetsMinimum(variantVersion, entry.requires.harness)) throw invalid(`This item requires Harness ${entry.requires.harness} or newer.`)
     const releaseState = acquire(join(this.harness.stateDir, 'hub', 'install.lock'))
     this.installing = true
     let releaseData: (() => void) | null = null

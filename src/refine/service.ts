@@ -7,10 +7,10 @@ import { join } from 'node:path'
 import type { Bus } from '../core/bus'
 import { HarnessError, invalid, notFound } from '../core/errors'
 import { readJsonOr, safeId } from '../core/fs'
-import * as store from '../tree/store'
-import { PI_SURFACE } from '../tree/surface'
-import { diffSummary, readTree, type TreeDiff } from '../tree/tree'
-import type { TreeTrust } from '../tree/trust'
+import * as store from '../variant/store'
+import { PI_SURFACE } from '../variant/surface'
+import { diffSummary, readVariant, type VariantDiff } from '../variant/variant'
+import type { VariantTrust } from '../variant/trust'
 import { DEFAULT_REFINE_HOST, type RefineHost } from './host'
 import { Library, libraryAreas, libraryScopes } from './library'
 import { PiExecutor, PiImprover, RETAINED_WORKSPACE, type ImproverSettings, type RefineRuntime } from './pi'
@@ -40,7 +40,7 @@ export interface CandidateView {
   delivered: boolean
   runId: string
   fingerprint: string | null
-  diff: TreeDiff | null
+  diff: VariantDiff | null
   files: string[]
   /** The retained workspace of this execution, or null when the refinement did not keep it. */
   workspace: string | null
@@ -51,11 +51,14 @@ export interface RefinementsOptions {
   bus: Bus
   runtime: RefineRuntime
   host: () => RefineHost | null
-  trust: TreeTrust
+  trust: VariantTrust
   /** Replace the Pi executor and improver, for tests and the demo. */
   executor?: (id: string, dir: string, signal: AbortSignal) => Executor
   improver?: (id: string, dir: string, settings: ImproverSettings, signal: AbortSignal) => Improver
 }
+
+/** A refinement's variants folder; records made before PROP-0009 call it `harnesses`. */
+const variantsFolder = (dir: string): string => (existsSync(join(dir, 'variants')) || !existsSync(join(dir, 'harnesses')) ? join(dir, 'variants') : join(dir, 'harnesses'))
 
 export class Refinements {
   private readonly active = new Map<string, { controller: AbortController; done: Promise<RefineSummary | null> }>()
@@ -72,7 +75,7 @@ export class Refinements {
     const k = input.k ?? 1
     const mode = input.mode ?? 'parallel'
     if (mode !== 'parallel' && mode !== 'sequential') throw invalid('mode is parallel or sequential.')
-    const base = input.baseVersion ? { tree: store.readVersion(root, task.scope, input.baseVersion) } : store.headTree(root, task.scope)
+    const base = input.baseVersion ? { variant: store.readVersion(root, task.scope, input.baseVersion) } : store.headVariant(root, task.scope)
     if (!base) throw new HarnessError('harness_missing', `The harness '${task.scope}' has no version yet.`, 'Create or seed it first.')
     const id = input.id ? safeId(input.id) : `${new Date().toISOString().slice(0, 10)}-${randomUUID().slice(0, 8)}`
     if (this.active.has(id)) throw invalid('That refinement is already running.')
@@ -85,7 +88,7 @@ export class Refinements {
       if (event.type === 'summary') this.options.bus.emit({ type: 'refine.changed', id, scope: task.scope, status: event.summary.status })
       else this.options.bus.emit({ type: 'refine.event', id, scope: task.scope, event })
     }
-    const done = runRefinement({ root, id, task, k, mode, executor, improver, baseTree: base.tree, settings: { executor: input.executor ?? null, improver: input.improver ?? null }, onEvent: emit, signal: controller.signal })
+    const done = runRefinement({ root, id, task, k, mode, executor, improver, baseVariant: base.variant, settings: { executor: input.executor ?? null, improver: input.improver ?? null }, onEvent: emit, signal: controller.signal })
       .catch((error) => {
         this.options.bus.emit({ type: 'refine.changed', id, scope: task.scope, status: 'failed', error: error instanceof Error ? error.message : String(error) })
         return null
@@ -130,19 +133,19 @@ export class Refinements {
     await running.done
   }
 
-  /** Every execution of a refinement: what harness it ran, how it differs from the base, what it produced. */
+  /** Every execution of a refinement: what variant it ran, how it differs from the base, what it produced. */
   candidates(id: string): CandidateView[] {
     const root = this.options.root()
     const summary = this.get(id)
     const dir = refineDir(root, id)
-    const baseTree = readTree(PI_SURFACE, join(dir, 'harnesses', 'base'))
+    const baseVariant = readVariant(PI_SURFACE, join(variantsFolder(dir), 'base'))
     const finals = new Set(summary.recursion?.finals ?? [])
     const labels = existsSync(join(dir, 'rollouts')) ? readdirSync(join(dir, 'rollouts')).sort() : []
     return labels.map((label) => {
       const record = readJsonOr<{ status?: string; files?: string[] }>(join(dir, 'rollouts', label, 'rollout.json'), {})
       const base = summary.base.find((entry) => entry.label === label)
-      const harnessDir = join(dir, 'harnesses', label)
-      const tree = existsSync(harnessDir) ? readTree(PI_SURFACE, harnessDir) : null
+      const variantDir = join(variantsFolder(dir), label)
+      const variant = existsSync(variantDir) ? readVariant(PI_SURFACE, variantDir) : null
       const files = record.files ?? []
       const workspace = join(dir, 'rollouts', label, RETAINED_WORKSPACE)
       return {
@@ -151,8 +154,8 @@ export class Refinements {
         ok: base ? base.ok : record.status ? record.status === 'completed' : true,
         delivered: base ? base.delivered : files.length > 0,
         runId: `${id}-${label}`,
-        fingerprint: tree ? store.fingerprint(tree) : null,
-        diff: tree && !label.startsWith('base') ? diffSummary(PI_SURFACE, baseTree, tree) : null,
+        fingerprint: variant ? store.fingerprint(variant) : null,
+        diff: variant && !label.startsWith('base') ? diffSummary(PI_SURFACE, baseVariant, variant) : null,
         files,
         workspace: existsSync(workspace) ? workspace : null
       } satisfies CandidateView
@@ -168,12 +171,12 @@ export class Refinements {
     const summary = this.get(id)
     const label = options.label ?? summary.selection?.chosenLabel
     if (!label) throw invalid('This refinement has nothing to adopt.')
-    const tree = readTree(PI_SURFACE, join(refineDir(root, id), 'harnesses', safeId(label)))
-    if (!Object.keys(tree).length) throw notFound('That candidate harness')
-    const untrusted = this.options.trust.review(tree).filter((plugin) => !plugin.trusted)
+    const variant = readVariant(PI_SURFACE, join(variantsFolder(refineDir(root, id)), safeId(label)))
+    if (!Object.keys(variant).length) throw notFound('That candidate variant')
+    const untrusted = this.options.trust.review(variant).filter((plugin) => !plugin.trusted)
     if (untrusted.length) throw new HarnessError('plugin_untrusted', `Trust the plugin code first: ${untrusted.map((plugin) => plugin.path).join(', ')}.`, 'Review the plugin files on the Harness page, trust them, then adopt.')
-    store.commit(root, summary.scope, tree, { kind: 'refinement', refineId: id, label, note: summary.selection?.why?.slice(0, 500) })
-    this.options.bus.emit({ type: 'harnesses.changed', scope: summary.scope })
+    store.commit(root, summary.scope, variant, { kind: 'refinement', refineId: id, label, note: summary.selection?.why?.slice(0, 500) })
+    this.options.bus.emit({ type: 'variants.changed', scope: summary.scope })
     return store.head(root, summary.scope)!
   }
 
@@ -182,9 +185,9 @@ export class Refinements {
     return libraryAreas(root, scope).map((area) => ({ area, entries: new Library(root, scope, area).list() }))
   }
 
-  libraryEntry(scope: string, area: string, task: string): { experience: string | null; tree: Record<string, string> } {
+  libraryEntry(scope: string, area: string, task: string): { experience: string | null; variant: Record<string, string> } {
     const library = new Library(this.options.root(), scope, area)
-    return { experience: library.experienceText(task), tree: library.treeOf(task) }
+    return { experience: library.experienceText(task), variant: library.variantOf(task) }
   }
 
   forget(scope: string, area: string, tasks: string[]): void {

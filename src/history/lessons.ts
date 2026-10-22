@@ -4,7 +4,7 @@
 // answer-free guards are refinement's (harness²); the caps follow OMP's memory budget.
 //
 // Lessons are reference notes (INV-MEM-1). They never enter the stable prefix and never change a
-// harness tree; something that should become an instruction goes through refinement and `adopt`.
+// variant; something that should become an instruction goes through refinement and `adopt`.
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -15,7 +15,7 @@ import * as frontmatter from '../core/frontmatter'
 import { looksSecret } from '../core/secrets'
 import * as attachments from '../plugins/attachments'
 import { LESSONS, LESSONS_CODE, LESSONS_SETTINGS, settingValue } from '../plugins/firstParty'
-import { assertNoGraderVerdicts, assertTreeHasNoGraderVerdicts } from '../refine/evidence'
+import { assertNoGraderVerdicts, assertVariantHasNoGraderVerdicts } from '../refine/evidence'
 import { hasExperience, type Experience } from '../refine/library'
 import { PiImprover, type RefineRuntime } from '../refine/pi'
 import { parseExperience } from '../refine/selection'
@@ -184,7 +184,7 @@ export class Lessons {
     const body = lessonNote(experience, [runId])
     if (`${experience.cue}${experience.lesson}${experience.evidence}`.length > limits.maxChars) return { kind: 'skipped', reason: 'lesson too long' }
     if (looksSecret(body)) return { kind: 'skipped', reason: 'lesson looked like it held a credential' }
-    assertTreeHasNoGraderVerdicts({ 'lesson.md': body })
+    assertVariantHasNoGraderVerdicts({ 'lesson.md': body })
     const taken = new Set(notes.paths(root))
     const base = `${LESSONS_FOLDER}/${slug(experience.cue)}`
     let path = base

@@ -2,10 +2,10 @@
 
 ## Purpose
 
-Refinement improves a harness tree from evidence of how it ran, with model weights fixed
-(Harness²). On one task it runs the current tree, lets improver sessions edit it, probes each
+Refinement improves a variant from evidence of how it ran, with model weights fixed
+(Harness²). On one task it runs the current variant, lets improver sessions edit it, probes each
 candidate, composes the best behaviours, and picks one final output without ever seeing a score.
-A person adopts the result. Adopted trees and their lessons go to an experience library that the
+A person adopts the result. Adopted variants and their lessons go to an experience library that the
 next task's improvers read.
 
 ## Components
@@ -14,7 +14,7 @@ next task's improvers read.
 |---|---|---|
 | `Refinements` | `refine/service.ts` | `start`, `wait`, `get`, `list`, `cancel`, `candidates`, `adopt`, `library`, `libraryEntry`, `forget`. |
 | `runRefinement` | `refine/runner.ts` | One refinement end to end; writes `summary.json`. |
-| `runMatrix` | `refine/suite.ts` | Evaluates tree versions on a task set without refining: one probe execution per version × task, recorded as `matrix.json` with comparability keys. Reads with `readMatrix`. |
+| `runMatrix` | `refine/suite.ts` | Evaluates variant versions on a task set without refining: one probe execution per version × task, recorded as `matrix.json` with comparability keys. Reads with `readMatrix`. |
 | recursion | `refine/recursion.ts` | Parallel (`agg`) and sequential (`seq`) modes; stages `INV`, `DOM`, `AGG`, `COMPOSE`. |
 | `Ledger` | `refine/ledger.ts` | Budget identity: R = 4k rollouts, P = 3k improver sessions. |
 | evidence | `refine/evidence.ts` | Builds the evidence folder and guards it against grader output. |
@@ -27,8 +27,8 @@ next task's improvers read.
 ## Method
 
 ```text
-base tree ──► k base executions (probe runs, isolated workspaces)
-          ──► evidence folder (task, source, trajectories, deliverables, tree, library, pool)
+base variant ──► k base executions (probe runs, isolated workspaces)
+          ──► evidence folder (task, source, trajectories, deliverables, variant, library, pool)
           ──► improvers: k INV (how the agent works) + k DOM (what a practitioner knows)
           ──► probe each candidate ──► k compositions from behavioural contrasts ──► k finals
           ──► blind selection among anonymised outputs ──► reflection ──► candidate for adoption
@@ -36,15 +36,15 @@ base tree ──► k base executions (probe runs, isolated workspaces)
 
 Parallel mode explores wider; sequential mode refines deeper. Both cost R = 4k executions and
 P = 3k improver sessions. An invalid proposal gets one retry with the validator's message
-(`STAGE_ATTEMPTS = 2`), then inherits the current tree.
+(`STAGE_ATTEMPTS = 2`), then inherits the current variant.
 
 An **evaluation matrix** is the measurement half on its own: `runMatrix` runs every
-`{tree version × task}` pair through the same `Executor` contract — no improver, no selection,
+`{variant version × task}` pair through the same `Executor` contract — no improver, no selection,
 no adoption, and an empty or failed execution is an honest row. Every row records
 deliverability (`ok`, `delivered`) and cost, plus its comparability keys (task-prompt hash,
-executor name, package version, tree fingerprint), so matrices taken across tree versions or
+executor name, package version, variant fingerprint), so matrices taken across variant versions or
 package commits are diffable directly. An evaluation never moves a head, and it inherits the
-answer-free rule: a tree or record carrying grader output is refused before any execution
+answer-free rule: a variant or record carrying grader output is refused before any execution
 (`INV-REF-1`).
 
 ## Contracts
@@ -64,7 +64,7 @@ answer-free rule: a tree or record carrying grader output is refused before any 
   `refinement`. It refuses while any plugin code in it is untrusted.
 - Executions run as `sessions.run` with `trigger: 'probe'`, `automatic: true`, in the host's
   workspace. Improvers run with `trigger: 'improver'`, `automatic: true`, file tools only, no
-  providers, no connected apps, no harness tools, no tree, in a temporary copy of the evidence.
+  providers, no connected apps, no harness tools, no variant, in a temporary copy of the evidence.
 
 ## Invariants
 
@@ -82,21 +82,21 @@ answer-free rule: a tree or record carrying grader output is refused before any 
   queued.
 - **INV-REF-5** Improvers have file tools only and work on a copy of the evidence.
 - **INV-REF-6** Refinement never moves a head by itself. Only `adopt`, a person's action, does, and
-  only with all plugin code trusted (`INV-TREE-5`).
-- **INV-REF-7** The library carries whole adopted trees with an evidence-backed lesson, never a
-  summary in place of the tree.
+  only with all plugin code trusted (`INV-VAR-5`).
+- **INV-REF-7** The library carries whole adopted variants with an evidence-backed lesson, never a
+  summary in place of the variant.
 - **INV-REF-8** Per-observation truncation of trajectories is never below `MIN_OBS_TRUNC`
   (10,000 characters); lower values fabricate defects.
 
 ## Data
 
 ```text
-<data root>/refine/<id>/      summary.json, task.json, harnesses/<label>/, rollouts/<label>/,
+<data root>/refine/<id>/      summary.json, task.json, variants/<label>/, rollouts/<label>/,
                               sessions/<label>/, context/, selection/, reflection/, improver/
 <data root>/refine/<id>/rollouts/<label>/workspace/    only with retainWorkspaces
 <data root>/refine/<id>/      matrix.json, suite.json   (evaluation matrices; see above)
 <data root>/library/<scope>/<area>/INDEX.md
-<data root>/library/<scope>/<area>/harnesses/<task>/{harness/, EXPERIENCE.md}
+<data root>/library/<scope>/<area>/variants/<task>/{variant/, EXPERIENCE.md}
 ```
 
 ## Source map

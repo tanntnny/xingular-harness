@@ -7,9 +7,9 @@
 import { join } from 'node:path'
 
 import { now, readJson, safeId, writeJson } from '../core/fs'
-import * as store from '../tree/store'
-import { PI_SURFACE, type Tree } from '../tree/surface'
-import { isUnchanged, writeTree } from '../tree/tree'
+import * as store from '../variant/store'
+import { PI_SURFACE, type Variant } from '../variant/surface'
+import { isUnchanged, writeVariant } from '../variant/variant'
 import { Library, hasExperience, type Experience } from './library'
 import type { LedgerRecord } from './ledger'
 import { mapLimit, modeRecord, runMode, type ModeRecord, type RecursionEvent } from './recursion'
@@ -67,7 +67,7 @@ export interface RefineRunInput {
   /** The selector; defaults to the improver. */
   selector?: Improver
   /** The harness to start from. Defaults to the scope's head. */
-  baseTree?: Tree
+  baseVariant?: Variant
   proposeWidth?: number
   rolloutWidth?: number
   /** Recorded on the summary only; the executor and improver already carry them. */
@@ -93,9 +93,9 @@ export async function runRefinement(input: RefineRunInput): Promise<RefineSummar
   safeId(task.scope)
   const workDir = refineDir(root, id)
   const area = task.domain ?? task.scope
-  const baseTree = input.baseTree ?? store.headTree(root, task.scope)?.tree
-  if (!baseTree) throw new Error(`The harness '${task.scope}' has no version to start from.`)
-  const baseFingerprint = store.fingerprint(baseTree)
+  const baseVariant = input.baseVariant ?? store.headVariant(root, task.scope)?.variant
+  if (!baseVariant) throw new Error(`The harness '${task.scope}' has no version to start from.`)
+  const baseFingerprint = store.fingerprint(baseVariant)
   const library = new Library(root, task.scope, area)
   const runIdOf = (label: string) => `${id}-${label}`
   const emit = (event: RefineEvent) => input.onEvent?.(event)
@@ -140,7 +140,7 @@ export async function runRefinement(input: RefineRunInput): Promise<RefineSummar
   const libraryDir = library.contextDir()
 
   emit({ type: 'phase', phase: 'base' })
-  const baseDir = writeTree(PI_SURFACE, baseTree, join(workDir, 'harnesses', 'base'))
+  const baseDir = writeVariant(PI_SURFACE, baseVariant, join(workDir, 'variants', 'base'))
   const labels = Array.from({ length: k }, (_, i) => `base${i + 1}`)
   const base: Rollout[] = await mapLimit(labels, input.rolloutWidth ?? 4, async (label) => {
     emit({ type: 'rollout.started', label })
@@ -165,7 +165,7 @@ export async function runRefinement(input: RefineRunInput): Promise<RefineSummar
   emit({ type: 'phase', phase: 'recursion' })
   let result
   try {
-    result = await runMode(mode, { task, executor, improver, workDir, runIdOf, baseTree, libraryDir, proposeWidth: input.proposeWidth, rolloutWidth: input.rolloutWidth, onEvent: emit, signal: input.signal }, k, base)
+    result = await runMode(mode, { task, executor, improver, workDir, runIdOf, baseVariant, libraryDir, proposeWidth: input.proposeWidth, rolloutWidth: input.rolloutWidth, onEvent: emit, signal: input.signal }, k, base)
   } catch (error) {
     summary.errors.push(`${mode}: ${error instanceof Error ? error.message : String(error)}`)
     return finish(input.signal?.aborted ? 'cancelled' : 'failed')
@@ -185,11 +185,11 @@ export async function runRefinement(input: RefineRunInput): Promise<RefineSummar
   const chosen = candidates[sel.chosenLabel]
   if (chosen && !chosen.delivered) summary.errors.push(`${mode}: selected run ${chosen.runId} produced no deliverable`)
 
-  const chosenTree = result.trees[sel.chosenLabel] ?? baseTree
-  summary.chosenIsBase = isUnchanged(PI_SURFACE, baseTree, chosenTree)
+  const chosenVariant = result.variants[sel.chosenLabel] ?? baseVariant
+  summary.chosenIsBase = isUnchanged(PI_SURFACE, baseVariant, chosenVariant)
   if (sel.chosenLabel && !summary.chosenIsBase) {
     try {
-      summary.chosenFingerprint = store.commit(root, task.scope, chosenTree, { kind: 'refinement', refineId: id, label: sel.chosenLabel, note: sel.why.slice(0, 500) }, { moveHead: false }).fingerprint
+      summary.chosenFingerprint = store.commit(root, task.scope, chosenVariant, { kind: 'refinement', refineId: id, label: sel.chosenLabel, note: sel.why.slice(0, 500) }, { moveHead: false }).fingerprint
     } catch (error) {
       summary.errors.push(`could not save the chosen harness: ${error instanceof Error ? error.message : String(error)}`)
     }
@@ -199,11 +199,11 @@ export async function runRefinement(input: RefineRunInput): Promise<RefineSummar
   if (sel.ok) {
     emit({ type: 'phase', phase: 'reflection' })
     const decisions = Object.fromEntries(result.stages.map((stage) => [stage.label, stage.notes || stage.error]))
-    const experience = await reflectAdoption({ task, selection: sel, rollouts: result.rollouts, executor, improver: input.selector ?? improver, workDir, baseTree, decisions, signal: input.signal })
+    const experience = await reflectAdoption({ task, selection: sel, rollouts: result.rollouts, executor, improver: input.selector ?? improver, workDir, baseVariant, decisions, signal: input.signal })
     summary.experience = Object.keys(experience).length ? experience : null
     if (hasExperience(experience)) {
       try {
-        summary.libraryEntry = library.add(task.id, chosenTree, { why: sel.why, label: sel.chosenLabel, runId: sel.chosenRunId, experience })
+        summary.libraryEntry = library.add(task.id, chosenVariant, { why: sel.why, label: sel.chosenLabel, runId: sel.chosenRunId, experience })
       } catch (error) {
         summary.errors.push(`could not add to the library: ${error instanceof Error ? error.message : String(error)}`)
       }

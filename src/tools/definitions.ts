@@ -1,5 +1,5 @@
 // The harness's own model tools, defined once: History (earlier runs), the Wiki (project notes),
-// and skill loading from the run's harness tree. An SDK session gets them as Pi tools; a
+// and skill loading from the run's variant. An SDK session gets them as Pi tools; a
 // terminal session reaches the same calls through the bundled server.
 
 export type HarnessCall =

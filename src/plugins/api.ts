@@ -8,7 +8,7 @@ import { findProject } from '../core/projects'
 import type { Harness } from '../harness'
 import type { CallerContext } from '../core/caller'
 import type { Launch } from '../prompt/compile'
-import { materialise, type HarnessChoice } from '../tree/materialise'
+import { materialise, type VariantChoice } from '../variant/materialise'
 import * as attachments from './attachments'
 import { catalogue } from './catalogue'
 import { inventory } from './inventory'
@@ -67,8 +67,8 @@ export interface InventoryParams extends PluginScope {
   launch?: Launch
   tools?: string[]
   connections?: boolean
-  /** The harness tree the caller runs, so what it adds is listed too. */
-  harness?: HarnessChoice | null
+  /** The variant the caller runs, so what it adds is listed too. */
+  variant?: VariantChoice | null
 }
 
 export async function inventoryFor(harness: Harness, params: InventoryParams): Promise<Inventory> {
@@ -82,7 +82,7 @@ export async function inventoryFor(harness: Harness, params: InventoryParams): P
     plugins: await list(harness, { ...params, agentId: params.agentId ?? params.context?.agentId ?? null, projectId: params.projectId ?? params.context?.projectId ?? null }),
     descriptors: harness.descriptors,
     saved: harness.apps.connections.list(),
-    tree: params.harness ? materialise(harness.env.root, params.harness, { trust: harness.trust }) : null
+    variant: params.variant ? materialise(harness.env.root, params.variant, { trust: harness.trust }) : null
   })
 }
 

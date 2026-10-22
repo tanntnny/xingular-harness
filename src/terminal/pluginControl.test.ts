@@ -112,7 +112,7 @@ describe('the plugins command', () => {
     const last = (): string => lines.at(-1) ?? ''
 
     expect(await run(['list'])).toBe(0)
-    expect(last()).toMatch(/^harness\s+required\s+Harness$/m)
+    expect(last()).toMatch(/^variant\s+required\s+Variant$/m)
     expect(await run(['install', join(base, 'kit')])).toBe(0)
     expect(last()).toContain('Installed, switched off.')
     expect(last()).toContain('trust its code with "plugins trust <id>"')
@@ -133,8 +133,8 @@ describe('the plugins command', () => {
     expect(last()).toContain('Code (trusted)')
     expect(last()).toContain('● skill audit (package:review-kit/skill/audit)')
 
-    expect(await run(['detach', 'harness'])).toBe(1)
-    expect(last()).toContain('Harness cannot be switched off.')
+    expect(await run(['detach', 'variant'])).toBe(1)
+    expect(last()).toContain('Variant cannot be switched off.')
     expect(await run(['untrust', 'package:review-kit'])).toBe(0)
     expect(await run(['remove', 'package:review-kit'])).toBe(0)
     expect(await run(['show', 'package:review-kit'])).toBe(1)

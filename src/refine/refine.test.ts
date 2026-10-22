@@ -3,8 +3,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
-import * as store from '../tree/store'
-import { DemoExecutor, DemoImprover, demoBaseTree, demoTasks } from './demo'
+import * as store from '../variant/store'
+import { DemoExecutor, DemoImprover, demoBaseVariant, demoTasks } from './demo'
 import * as evidence from './evidence'
 import { Library } from './library'
 import { Ledger, BudgetError } from './ledger'
@@ -15,7 +15,7 @@ import type { Improver, ImproverCall, RefineTask } from './types'
 
 function setup() {
   const root = mkdtempSync(join(tmpdir(), 'refine-'))
-  store.seed(root, 'demo', demoBaseTree())
+  store.seed(root, 'demo', demoBaseVariant())
   return { root, tasks: demoTasks(root), executor: new DemoExecutor(root), improver: new DemoImprover() }
 }
 
@@ -100,7 +100,7 @@ describe('guards and parsing', () => {
     const dir = mkdtempSync(join(tmpdir(), 'guard-'))
     writeFileSync(join(dir, 'notes.json'), '{"pass_rate": 1}')
     expect(() => evidence.assertNoGraderVerdicts(dir)).toThrow(/grader verdict/)
-    expect(() => evidence.assertTreeHasNoGraderVerdicts({ 'memory.md': 'review_verdict: approved' })).toThrow()
+    expect(() => evidence.assertVariantHasNoGraderVerdicts({ 'memory.md': 'review_verdict: approved' })).toThrow()
     expect(() => evidence.assertNoLeakPaths(dir, ['notes.json'])).toThrow(/answer-key/)
   })
 
@@ -131,8 +131,8 @@ describe('guards and parsing', () => {
   it('builds missions that point at the evidence on disk', () => {
     const root = mkdtempSync(join(tmpdir(), 'mission-'))
     const task: RefineTask = { id: 't', scope: 's', prompt: 'Do it.' }
-    const tree = evidence.build(join(root, 'ctx'), { task, executor: new DemoExecutor(root) })
-    const text = evidence.mission(tree, P.propose({ work: 'drafting' }, 'INV'))
+    const folder = evidence.build(join(root, 'ctx'), { task, executor: new DemoExecutor(root) })
+    const text = evidence.mission(folder, P.propose({ work: 'drafting' }, 'INV'))
     expect(text).toContain('# YOUR EVIDENCE')
     expect(text).toContain('context/task.md')
     expect(text).toContain('`plugins/<name>.ts`')

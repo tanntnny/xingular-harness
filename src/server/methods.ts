@@ -25,12 +25,12 @@ import type { SessionRunInput } from '../sessions/sessions'
 import type { TerminalPrepareInput } from '../terminal/terminals'
 import { checklistOf } from '../tools/checklist'
 import { dispatch } from '../tools/dispatch'
-import * as components from '../tree/components'
-import { materialise, type HarnessChoice } from '../tree/materialise'
-import { seedTree } from '../tree/seed'
-import * as trees from '../tree/store'
-import { PI_SURFACE, type Tree } from '../tree/surface'
-import { applyEdit, autotrigger, TreeError, validate } from '../tree/tree'
+import * as components from '../variant/components'
+import { materialise, type VariantChoice } from '../variant/materialise'
+import { seedVariant } from '../variant/seed'
+import * as variants from '../variant/store'
+import { PI_SURFACE, type Variant } from '../variant/surface'
+import { applyEdit, autotrigger, VariantError, validate } from '../variant/variant'
 import * as notes from '../wiki/notes'
 import type { Handler } from './rpc'
 
@@ -54,9 +54,9 @@ const questionAnswer = (value: unknown): { selected: string[]; text?: string; no
 }
 const pluginScope = (params: Params): plugins.PluginScope => ({ cwd: optional(params, 'cwd'), accountId: optional(params, 'accountId'), agentId: optional(params, 'agentId'), projectId: optional(params, 'projectId') })
 
-const treeOf = (value: unknown): Tree => {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) throw invalid('tree must be an object of path → text.')
-  const out: Tree = {}
+const variantOf = (value: unknown): Variant => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw invalid('variant must be an object of path → text.')
+  const out: Variant = {}
   for (const [path, body] of Object.entries(value as Record<string, unknown>)) {
     if (typeof body !== 'string') throw invalid(`${path} must be text.`)
     out[path] = body
@@ -64,19 +64,19 @@ const treeOf = (value: unknown): Tree => {
   return out
 }
 
-/** Validates a tree without throwing: its census, or every problem. */
-function check(tree: Tree): { ok: true; census: ReturnType<typeof validate> } | { ok: false; problems: string[] } {
+/** Validates a variant without throwing: its census, or every problem. */
+function check(variant: Variant): { ok: true; census: ReturnType<typeof validate> } | { ok: false; problems: string[] } {
   try {
-    return { ok: true, census: validate(PI_SURFACE, tree) }
+    return { ok: true, census: validate(PI_SURFACE, variant) }
   } catch (error) {
-    return { ok: false, problems: error instanceof TreeError ? error.problems : [error instanceof Error ? error.message : String(error)] }
+    return { ok: false, problems: error instanceof VariantError ? error.problems : [error instanceof Error ? error.message : String(error)] }
   }
 }
 
 export function methods(harness: Harness): Record<string, Handler> {
   const { accounts, approvals, apps, runs, sessions, terminals, env } = harness
   const root = (): string => env.root
-  const harnessesChanged = (scope: string): void => harness.bus.emit({ type: 'harnesses.changed', scope })
+  const variantsChanged = (scope: string): void => harness.bus.emit({ type: 'variants.changed', scope })
 
   return {
     // ---- The harness itself --------------------------------------------------------------------
@@ -148,84 +148,84 @@ export function methods(harness: Harness): Record<string, Handler> {
     'connections.appClients': () => apps.appClients(),
     'connections.validateScope': (params: Params) => validateScopeIds(apps.connections.list(), { agentId: optional(params, 'agentId'), projectId: optional(params, 'projectId') }, Array.isArray(params.ids) ? params.ids : []),
 
-    // ---- Harness trees: the eight components that shape an agent ---------------------------------
-    'harnesses.surface': () => PI_SURFACE,
-    'harnesses.list': () => trees.scopes(root()).map((scope) => {
-      const head = trees.head(root(), scope)
-      return { scope, head, version: head ? trees.versionRecord(root(), scope, head.fingerprint) : null }
+    // ---- Variants: the eight components that shape an agent ---------------------------------
+    'variants.surface': () => PI_SURFACE,
+    'variants.list': () => variants.scopes(root()).map((scope) => {
+      const head = variants.head(root(), scope)
+      return { scope, head, version: head ? variants.versionRecord(root(), scope, head.fingerprint) : null }
     }),
-    'harnesses.get': (params: Params) => {
+    'variants.get': (params: Params) => {
       const scope = text(params, 'scope')
-      const head = trees.head(root(), scope)
+      const head = variants.head(root(), scope)
       const fp = optional(params, 'version') ?? head?.fingerprint ?? null
-      if (!fp) return { scope, head: null, version: null, tree: null, plugins: [] }
-      const tree = trees.readVersion(root(), scope, fp)
-      return { scope, head, version: trees.versionRecord(root(), scope, fp), tree, plugins: harness.trust.review(tree), probeCode: harness.trust.probeCode(scope) }
+      if (!fp) return { scope, head: null, version: null, variant: null, plugins: [] }
+      const variant = variants.readVersion(root(), scope, fp)
+      return { scope, head, version: variants.versionRecord(root(), scope, fp), variant, plugins: harness.trust.review(variant), probeCode: harness.trust.probeCode(scope) }
     },
-    'harnesses.lineage': (params: Params) => trees.lineage(root(), text(params, 'scope')),
-    'harnesses.compare': (params: Params) => trees.compare(root(), text(params, 'scope'), text(params, 'from'), text(params, 'to')),
-    'harnesses.validate': (params: Params) => {
-      const tree = treeOf(params.tree)
-      const repaired = params.repair === true ? autotrigger(PI_SURFACE, tree) : []
-      return { ...check(tree), repaired, tree }
+    'variants.lineage': (params: Params) => variants.lineage(root(), text(params, 'scope')),
+    'variants.compare': (params: Params) => variants.compare(root(), text(params, 'scope'), text(params, 'from'), text(params, 'to')),
+    'variants.validate': (params: Params) => {
+      const variant = variantOf(params.variant)
+      const repaired = params.repair === true ? autotrigger(PI_SURFACE, variant) : []
+      return { ...check(variant), repaired, variant }
     },
-    // A whole tree, or an edit of the head that names only the files it changes (null removes one).
-    'harnesses.save': (params: Params) => {
+    // A whole variant, or an edit of the head that names only the files it changes (null removes one).
+    'variants.save': (params: Params) => {
       const scope = text(params, 'scope')
-      const base = trees.headTree(root(), scope)?.tree ?? {}
-      const tree = params.tree !== undefined ? treeOf(params.tree) : applyEdit(base, (params.edit ?? {}) as Record<string, string | null>)
-      if (params.repair === true) autotrigger(PI_SURFACE, tree)
-      const record = trees.commit(root(), scope, tree, { kind: params.source === 'import' ? 'import' : 'edit', note: optional(params, 'note') ?? undefined, components: Array.isArray(params.components) ? params.components : undefined })
-      harnessesChanged(scope)
+      const base = variants.headVariant(root(), scope)?.variant ?? {}
+      const variant = params.variant !== undefined ? variantOf(params.variant) : applyEdit(base, (params.edit ?? {}) as Record<string, string | null>)
+      if (params.repair === true) autotrigger(PI_SURFACE, variant)
+      const record = variants.commit(root(), scope, variant, { kind: params.source === 'import' ? 'import' : 'edit', note: optional(params, 'note') ?? undefined, components: Array.isArray(params.components) ? params.components : undefined })
+      variantsChanged(scope)
       return record
     },
-    'harnesses.restore': (params: Params) => {
+    'variants.restore': (params: Params) => {
       const scope = text(params, 'scope')
-      const head = trees.restore(root(), scope, text(params, 'version'), optional(params, 'note') ?? undefined)
-      harnessesChanged(scope)
+      const head = variants.restore(root(), scope, text(params, 'version'), optional(params, 'note') ?? undefined)
+      variantsChanged(scope)
       return head
     },
-    // A first version: the tree given, or one built from what shaped the caller before harness trees.
-    'harnesses.seed': (params: Params) => {
+    // A first version: the variant given, or one built from what shaped the caller before variants.
+    'variants.seed': (params: Params) => {
       const scope = text(params, 'scope')
-      const tree = params.tree !== undefined ? treeOf(params.tree) : seedTree(root(), { agentId: optional(params, 'agentId') ?? scope, projectId: optional(params, 'projectId'), instructions: typeof params.instructions === 'string' ? params.instructions : '' })
-      const head = trees.seed(root(), scope, tree, optional(params, 'note') ?? undefined)
-      harnessesChanged(scope)
+      const variant = params.variant !== undefined ? variantOf(params.variant) : seedVariant(root(), { agentId: optional(params, 'agentId') ?? scope, projectId: optional(params, 'projectId'), instructions: typeof params.instructions === 'string' ? params.instructions : '' })
+      const head = variants.seed(root(), scope, variant, optional(params, 'note') ?? undefined)
+      variantsChanged(scope)
       return head
     },
-    'harnesses.legacy': (params: Params) => seedTree(root(), { agentId: optional(params, 'agentId'), projectId: optional(params, 'projectId'), instructions: typeof params.instructions === 'string' ? params.instructions : '' }),
-    'harnesses.trusted': () => harness.trust.list(),
-    'harnesses.trust': (params: Params) => {
+    'variants.legacy': (params: Params) => seedVariant(root(), { agentId: optional(params, 'agentId'), projectId: optional(params, 'projectId'), instructions: typeof params.instructions === 'string' ? params.instructions : '' }),
+    'variants.trusted': () => harness.trust.list(),
+    'variants.trust': (params: Params) => {
       const scope = text(params, 'scope')
-      const tree = trees.headTree(root(), scope)?.tree ?? {}
+      const variant = variants.headVariant(root(), scope)?.variant ?? {}
       const path = text(params, 'path')
-      const body = typeof params.text === 'string' ? params.text : tree[path]
+      const body = typeof params.text === 'string' ? params.text : variant[path]
       if (typeof body !== 'string') throw invalid('That plugin file is not in the harness.')
       const entry = harness.trust.grant(body, path, scope)
-      harnessesChanged(scope)
+      variantsChanged(scope)
       return entry
     },
-    'harnesses.untrust': (params: Params) => {
+    'variants.untrust': (params: Params) => {
       harness.trust.revoke(text(params, 'hash'))
-      harness.bus.emit({ type: 'harnesses.changed' })
+      harness.bus.emit({ type: 'variants.changed' })
     },
-    'harnesses.setProbeCode': (params: Params) => {
+    'variants.setProbeCode': (params: Params) => {
       const scope = text(params, 'scope')
       harness.trust.setProbeCode(scope, params.on === true)
-      harnessesChanged(scope)
+      variantsChanged(scope)
     },
-    // The component library (skills, rules and prompts kept as files), and adding one to a tree.
-    'harnesses.components': () => components.list(root()),
-    'harnesses.importComponents': (params: Params) => components.importItems(root(), (optional(params, 'kind') ?? 'skills') as components.ComponentKind, Array.isArray(params.items) ? params.items : []),
-    'harnesses.addComponent': (params: Params) => {
+    // The component library (skills, rules and prompts kept as files), and adding one to a variant.
+    'variants.components': () => components.list(root()),
+    'variants.importComponents': (params: Params) => components.importItems(root(), (optional(params, 'kind') ?? 'skills') as components.ComponentKind, Array.isArray(params.items) ? params.items : []),
+    'variants.addComponent': (params: Params) => {
       const scope = text(params, 'scope')
-      const base = params.tree !== undefined ? treeOf(params.tree) : trees.headTree(root(), scope)?.tree ?? {}
-      const tree = components.addToTree(root(), base, text(params, 'id'))
-      return { tree, ...check(tree) }
+      const base = params.variant !== undefined ? variantOf(params.variant) : variants.headVariant(root(), scope)?.variant ?? {}
+      const variant = components.addToVariant(root(), base, text(params, 'id'))
+      return { variant, ...check(variant) }
     },
-    'harnesses.materialise': (params: Params) => {
-      const built = materialise(root(), params.harness as HarnessChoice, { trust: harness.trust })
-      return { ...built, tree: undefined }
+    'variants.materialise': (params: Params) => {
+      const built = materialise(root(), params.variant as VariantChoice, { trust: harness.trust })
+      return { ...built, files: undefined }
     },
 
     // ---- Refinement: improving a harness from evidence -------------------------------------------
@@ -265,7 +265,7 @@ export function methods(harness: Harness): Record<string, Handler> {
     },
 
     // ---- What a session calls, on behalf of a caller the host names -------------------------------
-    'harness.call': (params: Params) => dispatch(env, (params.context ?? {}) as CallerContext, text(params, 'call'), params.params ?? {}, { treeDir: optional(params, 'treeDir') }),
+    'harness.call': (params: Params) => dispatch(env, (params.context ?? {}) as CallerContext, text(params, 'call'), params.params ?? {}, { variantDir: optional(params, 'variantDir') }),
 
     // ---- Recall ------------------------------------------------------------------------------------
     'recall.search': (params: Params) => recall.searchAll(env, typeof params.query === 'string' ? params.query : '', params.filter ?? {}),
@@ -273,8 +273,8 @@ export function methods(harness: Harness): Record<string, Handler> {
 
     // ---- The compiled prompt -----------------------------------------------------------------------
     'context.compile': (params: Params) => {
-      const tree = params.harness ? materialise(root(), params.harness as HarnessChoice, { trust: harness.trust }) : null
-      const pack = compile(env, (params.context ?? {}) as CallerContext, (params.launch ?? {}) as Launch, tree)
+      const variant = params.variant ? materialise(root(), params.variant as VariantChoice, { trust: harness.trust }) : null
+      const pack = compile(env, (params.context ?? {}) as CallerContext, (params.launch ?? {}) as Launch, variant)
       return params.render ? { pack, text: render(env, pack) } : pack
     },
     'context.runPack': (params: Params) => load(root(), text(params, 'runId')),
@@ -295,7 +295,7 @@ export function methods(harness: Harness): Record<string, Handler> {
     'plugins.update': (params: Params) => install.update(harness, { ...pluginScope(params), pluginId: optional(params, 'pluginId') }),
     'plugins.configure': (params: Params) => plugins.configure(harness, { ...pluginScope(params), pluginId: text(params, 'pluginId'), settings: (params.settings && typeof params.settings === 'object' ? params.settings : {}) as Record<string, unknown> }),
     'plugins.forgetAgent': (params: Params) => plugins.forgetAgent(harness, text(params, 'agentId')),
-    'plugins.inventory': (params: Params) => plugins.inventoryFor(harness, { ...pluginScope(params), context: (params.context ?? {}) as CallerContext, launch: (params.launch ?? {}) as Launch, tools: params.tools, connections: params.connections, harness: (params.harness ?? null) as HarnessChoice | null }),
+    'plugins.inventory': (params: Params) => plugins.inventoryFor(harness, { ...pluginScope(params), context: (params.context ?? {}) as CallerContext, launch: (params.launch ?? {}) as Launch, tools: params.tools, connections: params.connections, variant: (params.variant ?? null) as VariantChoice | null }),
     'plugins.trust': (params: Params) => plugins.trust(harness, { cwd: optional(params, 'cwd'), accountId: optional(params, 'accountId'), hash: text(params, 'hash') }),
     'plugins.untrust': (params: Params) => plugins.untrust(harness, { cwd: optional(params, 'cwd'), accountId: optional(params, 'accountId'), hash: text(params, 'hash') }),
 

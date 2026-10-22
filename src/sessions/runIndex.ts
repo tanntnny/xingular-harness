@@ -5,7 +5,7 @@ import { join } from 'node:path'
 
 import { readJson } from '../core/fs'
 import { all, run as execute, runFolders, transaction, withIndex } from '../core/index'
-import { runRecordSchema, type RunRecord } from './contracts'
+import { runRecordSchema, upgradeRunRecord, type RunRecord } from './contracts'
 
 export function upsertRun(database: DatabaseSync, record: RunRecord): void {
   execute(
@@ -40,7 +40,7 @@ export function readAllRuns(root: string): RunRecord[] {
   const records: RunRecord[] = []
   for (const name of runFolders(root)) {
     try {
-      const parsed = runRecordSchema.safeParse(readJson(join(root, 'runs', name, 'run.json')))
+      const parsed = runRecordSchema.safeParse(upgradeRunRecord(readJson(join(root, 'runs', name, 'run.json'))))
       if (parsed.success) records.push(parsed.data)
     } catch {
       // Not a run folder.

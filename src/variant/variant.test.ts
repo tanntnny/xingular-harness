@@ -4,16 +4,16 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 import * as store from './store'
-import { PI_SURFACE, componentOf, type Tree } from './surface'
-import { applyEdit, autotrigger, diffSummary, diversity, isAllowed, normalizeRel, readTree, touchedComponents, TreeError, validate, writeTree } from './tree'
+import { PI_SURFACE, componentOf, type Variant } from './surface'
+import { applyEdit, autotrigger, diffSummary, diversity, isAllowed, normalizeRel, readVariant, touchedComponents, VariantError, validate, writeVariant } from './variant'
 
 const skill = (name: string, description = 'reviewing a contract') => `---\nname: ${name}\ndescription: ${description}\n---\nSteps.\n`
 
-function base(): Tree {
+function base(): Variant {
   return { 'systemprompt.md': 'You draft documents.\n', 'guardrails.md': '', 'memory.md': '', 'tool_guidance.md': '' }
 }
 
-describe('tree surface', () => {
+describe('variant surface', () => {
   it('knows which paths are editable and which component they are', () => {
     expect(isAllowed(PI_SURFACE, 'systemprompt.md')).toBe(true)
     expect(isAllowed(PI_SURFACE, 'skills/doc_review/SKILL.md')).toBe(true)
@@ -30,22 +30,22 @@ describe('tree surface', () => {
     expect(() => normalizeRel('/etc/passwd')).toThrow()
   })
 
-  it('round-trips a tree through disk, keeping off-surface files and skipping stubs', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'tree-'))
+  it('round-trips a variant through disk, keeping off-surface files and skipping stubs', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'variant-'))
     writeFileSync(join(dir, 'unrelated.txt'), 'keep me')
-    const tree = { ...base(), 'skills/doc_review/SKILL.md': skill('doc_review') }
-    writeTree(PI_SURFACE, tree, dir)
+    const variant = { ...base(), 'skills/doc_review/SKILL.md': skill('doc_review') }
+    writeVariant(PI_SURFACE, variant, dir)
     expect(existsSync(join(dir, 'skills/README.md'))).toBe(true)
     expect(readFileSync(join(dir, 'unrelated.txt'), 'utf8')).toBe('keep me')
     const rejected: string[] = []
-    expect(readTree(PI_SURFACE, dir, rejected)).toEqual(tree)
+    expect(readVariant(PI_SURFACE, dir, rejected)).toEqual(variant)
     expect(rejected).toEqual(['unrelated.txt'])
   })
 })
 
 describe('validate', () => {
   it('lists every problem in one error', () => {
-    const tree: Tree = {
+    const variant: Variant = {
       ...base(),
       'skills/doc_review/SKILL.md': '---\nname: other\n---\n',
       'sub_agents/reader/AGENT.md': 'no frontmatter',
@@ -53,11 +53,11 @@ describe('validate', () => {
       'systemprompt.md': 'Run `python3 scripts/missing.py`.'
     }
     try {
-      validate(PI_SURFACE, tree, { compileScripts: false })
+      validate(PI_SURFACE, variant, { compileScripts: false })
       throw new Error('expected a failure')
     } catch (error) {
-      expect(error).toBeInstanceOf(TreeError)
-      const problems = (error as TreeError).problems.join('\n')
+      expect(error).toBeInstanceOf(VariantError)
+      const problems = (error as VariantError).problems.join('\n')
       expect(problems).toContain('needs a `description:`')
       expect(problems).toContain('`name: doc_review`')
       expect(problems).toContain('never named in the always-on text')
@@ -77,10 +77,10 @@ describe('validate', () => {
   })
 
   it('repairs an untriggered skill with a trigger line', () => {
-    const tree: Tree = { ...base(), 'skills/doc_review/SKILL.md': skill('doc_review', 'reviewing a contract.') }
-    expect(autotrigger(PI_SURFACE, tree)).toEqual(['doc_review'])
-    expect(tree['guardrails.md']).toContain('- When reviewing a contract, load the `doc_review` skill.')
-    expect(validate(PI_SURFACE, tree).skills).toBe(1)
+    const variant: Variant = { ...base(), 'skills/doc_review/SKILL.md': skill('doc_review', 'reviewing a contract.') }
+    expect(autotrigger(PI_SURFACE, variant)).toEqual(['doc_review'])
+    expect(variant['guardrails.md']).toContain('- When reviewing a contract, load the `doc_review` skill.')
+    expect(validate(PI_SURFACE, variant).skills).toBe(1)
   })
 })
 
@@ -97,8 +97,8 @@ describe('diff and diversity', () => {
 })
 
 describe('store', () => {
-  it('versions trees, records lineage, and restores', () => {
-    const root = mkdtempSync(join(tmpdir(), 'tree-store-'))
+  it('versions variants, records lineage, and restores', () => {
+    const root = mkdtempSync(join(tmpdir(), 'variant-store-'))
     const first = store.seed(root, 'agent-1', base(), 'from instructions')
     expect(store.seed(root, 'agent-1', { ...base(), 'memory.md': 'ignored' })).toEqual(first)
     const second = store.commit(root, 'agent-1', applyEdit(base(), { 'guardrails.md': 'Cite sources.' }), { kind: 'edit', components: ['guardrails'] })
@@ -107,12 +107,12 @@ describe('store', () => {
     expect(store.lineage(root, 'agent-1').map((v) => v.source.kind)).toEqual(['edit', 'seed'])
     expect(store.compare(root, 'agent-1', first.fingerprint, second.fingerprint).files).toEqual([{ path: 'guardrails.md', before: '', after: 'Cite sources.' }])
     store.restore(root, 'agent-1', first.fingerprint)
-    expect(store.headTree(root, 'agent-1')?.tree).toEqual(base())
+    expect(store.headVariant(root, 'agent-1')?.variant).toEqual(base())
     expect(store.scopes(root)).toEqual(['agent-1'])
   })
 
-  it('refuses an invalid tree and leaves the head alone', () => {
-    const root = mkdtempSync(join(tmpdir(), 'tree-store-'))
+  it('refuses an invalid variant and leaves the head alone', () => {
+    const root = mkdtempSync(join(tmpdir(), 'variant-store-'))
     store.seed(root, 'a', base())
     const before = store.head(root, 'a')
     expect(() => store.commit(root, 'a', { ...base(), 'plugins/x.ts': 'nothing' }, { kind: 'edit' })).toThrow(/default export/)

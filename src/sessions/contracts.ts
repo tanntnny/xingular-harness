@@ -307,9 +307,9 @@ export interface RunRecord {
   agentId: string | null
   /** What started the run. */
   trigger: string | null
-  /** The harness tree the run used: its scope and version fingerprint. */
-  harnessScope?: string | null
-  harnessVersion?: string | null
+  /** The variant the run used: its scope and version fingerprint. */
+  variantScope?: string | null
+  variantVersion?: string | null
 }
 
 const text = z.string().nullish().transform((value) => value ?? null)
@@ -338,9 +338,18 @@ export const runRecordSchema = z.object({
   accountId: text,
   agentId: text,
   trigger: text,
-  harnessScope: text.optional(),
-  harnessVersion: text.optional()
+  variantScope: text.optional(),
+  variantVersion: text.optional()
 }) satisfies z.ZodType<RunRecord, unknown>
+
+/** Records written before PROP-0009 name the variant `harnessScope` and `harnessVersion`. */
+export function upgradeRunRecord(raw: unknown): unknown {
+  if (!raw || typeof raw !== 'object') return raw
+  const record = raw as Record<string, unknown>
+  if (!('harnessScope' in record) && !('harnessVersion' in record)) return raw
+  const { harnessScope, harnessVersion, ...rest } = record
+  return { variantScope: harnessScope, variantVersion: harnessVersion, ...rest }
+}
 
 export const ACTIVE_STATUSES: readonly string[] = ['queued', 'running', 'waiting_for_approval', 'waiting_for_input']
 

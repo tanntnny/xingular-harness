@@ -1,6 +1,6 @@
 // The component library: skills, rules and prompts kept as files under `<data>/registry/`, and
 // any built-in ones an application ships in folders laid out the same way. Nothing here reaches
-// a session by itself: a person adds an item to a harness tree, where it becomes a skill (c6) or
+// a session by itself: a person adds an item to a variant, where it becomes a skill (c6) or
 // guardrail text (c2). The Hub installs into this library.
 import { lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
@@ -9,8 +9,8 @@ import { invalid, notFound } from '../core/errors'
 import * as frontmatter from '../core/frontmatter'
 import { isDir, safeRelative } from '../core/fs'
 import { compareText, lines, takeChars } from '../core/text'
-import { GUARDRAILS, PI_SURFACE, type Tree } from './surface'
-import { autotrigger } from './tree'
+import { GUARDRAILS, PI_SURFACE, type Variant } from './surface'
+import { autotrigger } from './variant'
 
 export const KINDS = ['skills', 'prompts', 'rules'] as const
 export type ComponentKind = (typeof KINDS)[number]
@@ -103,29 +103,29 @@ export function list(root: string): ComponentItem[] {
   return [...items.values()].sort((left, right) => compareText(left.id, right.id))
 }
 
-/** A tree with one library item added: a skill as `skills/<name>/` with its files, a rule as guardrail text. */
+/** A variant with one library item added: a skill as `skills/<name>/` with its files, a rule as guardrail text. */
 function skillName(item: ComponentItem): string {
   const slug = basename(item.path) === 'SKILL.md' ? basename(dirname(item.path)) : basename(item.path).replace(/\.md$/, '')
   return slug.toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^[-_]+|-+$/g, '') || 'skill'
 }
 
-/** Whether a library skill or rule already has a corresponding entry in a tree. */
-export function isInTree(root: string, tree: Tree, id: string): boolean {
+/** Whether a library skill or rule already has a corresponding entry in a variant. */
+export function isInVariant(root: string, variant: Variant, id: string): boolean {
   const item = list(root).find((candidate) => candidate.id === id)
   if (!item) return false
-  if (item.kind === 'skills') return tree['skills/' + skillName(item) + '/SKILL.md'] !== undefined
+  if (item.kind === 'skills') return variant['skills/' + skillName(item) + '/SKILL.md'] !== undefined
   if (item.kind === 'rules') {
     const text = readFileSync(item.path, 'utf8')
     const body = (frontmatter.parse(text)?.body ?? text).trim()
-    return Boolean(body) && (tree[GUARDRAILS] ?? '').includes(body)
+    return Boolean(body) && (variant[GUARDRAILS] ?? '').includes(body)
   }
   return false
 }
 
-export function addToTree(root: string, tree: Tree, id: string): Tree {
+export function addToVariant(root: string, variant: Variant, id: string): Variant {
   const item = list(root).find((candidate) => candidate.id === id)
   if (!item) throw notFound('That library item')
-  const next: Tree = { ...tree }
+  const next: Variant = { ...variant }
   const text = readFileSync(item.path, 'utf8')
   const body = (frontmatter.parse(text)?.body ?? text).trim()
   if (item.kind === 'rules') {

@@ -1,7 +1,7 @@
 import type { Theme } from '@earendil-works/pi-coding-agent'
 import { matchesKey, truncateToWidth, wrapTextWithAnsi } from '@earendil-works/pi-tui'
 
-import { KINDS, type ComponentItem } from '../../../tree/components'
+import { KINDS, type ComponentItem } from '../../../variant/components'
 import type { MenuUi } from '../../pluginMenu'
 import { safeText, type TabInfo } from '../chrome'
 import type { TerminalPage } from '../page'
@@ -89,11 +89,11 @@ export class ComponentsPage implements TerminalPage {
   private async add(item: ComponentItem | undefined): Promise<void> {
     if (!item || this.busy) return
     if (item.kind === 'prompts') {
-      this.options.notify('Prompts stay in the library and cannot be added to a Harness tree.', 'info')
+      this.options.notify('Prompts stay in the library and cannot be added to a Variant.', 'info')
       return
     }
     if ((this.snapshot?.addedIds ?? []).includes(item.id)) {
-      this.options.notify('This item is already in the current Harness tree.', 'info')
+      this.options.notify('This item is already in the current Variant.', 'info')
       return
     }
     if (!this.snapshot?.writable) {
@@ -102,14 +102,14 @@ export class ComponentsPage implements TerminalPage {
     }
     const approved = await this.options.ui.confirm(
       'Add ' + item.name + '?',
-      'This creates a new Harness tree version for the next session. The running terminal keeps its pinned version.'
+      'This creates a new Variant version for the next session. The running terminal keeps its pinned version.'
     )
     if (!approved) return
     this.busy = true
     try {
       const result = await this.options.call<ComponentAddedResult>('terminal.components.add', { id: item.id })
       this.options.notify(
-        result.alreadyPresent ? 'This item is already in the current Harness tree.' : 'Saved for the next session · version ' + result.fingerprint,
+        result.alreadyPresent ? 'This item is already in the current Variant.' : 'Saved for the next session · version ' + result.fingerprint,
         'info'
       )
       await this.load()

@@ -38,9 +38,9 @@ const empty = () => ({ owners: [], receipts: [] })
 describe('subagents a harness defines (c5)', () => {
   it('starts one by name with its own instructions instead of the parent\'s, and refuses a name the harness lacks', async () => {
     const { harness, start, systems } = setup()
-    const { commit } = await import('../tree/store')
+    const { commit } = await import('../variant/store')
     commit(harness.env.root, 'caller', { 'systemprompt.md': 'You coordinate releases.\n', 'guardrails.md': '', 'memory.md': '', 'tool_guidance.md': '', 'sub_agents/reader/AGENT.md': '---\ndescription: reads long logs and answers briefly\n---\nRead the log and answer in three lines.\n' }, { kind: 'seed' })
-    await start('parent', { harness: { scope: 'caller' }, tools: { allow: ['read', 'spawn_subagent', 'wait_subagents'] } })
+    await start('parent', { variant: { scope: 'caller' }, tools: { allow: ['read', 'spawn_subagent', 'wait_subagents'] } })
     expect(systems.get('parent')).toContain('You coordinate releases.')
     expect(systems.get('parent')).toContain('- reader — reads long logs and answers briefly')
     const child = await harness.subagents.spawn({ parentRunId: 'parent', brief: 'Summarise build.log', agent: 'reader' })
@@ -49,7 +49,7 @@ describe('subagents a harness defines (c5)', () => {
     // A plain child keeps the parent's harness, pinned to the same version.
     const copy = await harness.subagents.spawn({ parentRunId: 'parent', brief: 'Check the tests' })
     expect(systems.get(copy.runId)).toContain('You coordinate releases.')
-    expect(loadRun(harness.env.root, copy.runId).harnessVersion).toBe(loadRun(harness.env.root, 'parent').harnessVersion)
+    expect(loadRun(harness.env.root, copy.runId).variantVersion).toBe(loadRun(harness.env.root, 'parent').variantVersion)
     await expect(harness.subagents.spawn({ parentRunId: 'parent', brief: 'x', agent: 'writer' })).rejects.toThrow('There is no subagent named writer.')
   })
 })

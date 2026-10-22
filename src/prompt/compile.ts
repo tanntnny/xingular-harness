@@ -2,7 +2,7 @@
 // session; no other code assembles model instructions.
 //
 // A pack is an ordered list of sections, each with its own character budget. The harness writes
-// the sections that come from the session's harness tree (instructions, guardrails, memory, tool
+// the sections that come from the session's variant (instructions, guardrails, memory, tool
 // guidance, and the indexes of its subagents and scripts), the selected references, the Wiki
 // pointer, and the tools; the embedding application supplies the others (who the model is, its
 // role, what it is working on). Each run's pack is recorded in `runs/<id>/context.json`.
@@ -13,15 +13,15 @@ import { isSession, projectOf, usesCli, type CallerContext } from '../core/calle
 import type { HarnessEnv } from '../core/env'
 import { isDir, now, readJson, safeId, writeJson } from '../core/fs'
 import { charCount, compareText, lines, takeChars } from '../core/text'
-import type { Materialised } from '../tree/materialise'
+import type { Materialised } from '../variant/materialise'
 import * as notes from '../wiki/notes'
 
 const WIKI_BUDGET = 2500
 const TOOLS_BUDGET = 8000
 const REPORTING_BUDGET = 2000
 export const REFERENCES_BUDGET = 12000
-/** Always-on tree text is capped when the tree is saved, so its sections are never cut here. */
-const TREE_BUDGET = 30_000
+/** Always-on variant text is capped when the variant is saved, so its sections are never cut here. */
+const VARIANT_BUDGET = 30_000
 const NOTES_LISTED = 25
 
 /** Where the harness's own sections sit; an application's sections are placed among them by `order`. */
@@ -59,8 +59,8 @@ export interface ContextPack {
   sections: Section[]
   /** The tools the pack describes, by group. */
   toolGroups: ToolGroup[]
-  /** The harness tree the session ran, when it ran one. */
-  harness?: { scope: string | null; fingerprint: string } | null
+  /** The variant the session ran, when it ran one. */
+  variant?: { scope: string | null; fingerprint: string } | null
   compiledAt: string
   delivery?: Delivery
 }
@@ -288,15 +288,15 @@ function hostSection(host: HostSection): Section | null {
 }
 
 /** Compiles the pack for a caller. It only reads the data root. */
-export function compile(env: HarnessEnv, context: CallerContext, launch: Launch = {}, tree: Materialised | null = null): ContextPack {
+export function compile(env: HarnessEnv, context: CallerContext, launch: Launch = {}, variant: Materialised | null = null): ContextPack {
   const { root } = env
   const groups = toolGroups(context, launch)
-  const treeSource = tree ? [{ id: tree.scope ?? tree.dir, kind: 'harness', revision: tree.fingerprint }] : []
+  const variantSource = variant ? [{ id: variant.scope ?? variant.dir, kind: 'variant', revision: variant.fingerprint }] : []
   const built: { order: number; index: number; section: Section | null }[] = [
-    ...(tree?.sections ?? []).map((entry) => ({ order: entry.order, section: section(entry.id, entry.title, entry.body, TREE_BUDGET, '', treeSource) })),
+    ...(variant?.sections ?? []).map((entry) => ({ order: entry.order, section: section(entry.id, entry.title, entry.body, VARIANT_BUDGET, '', variantSource) })),
     { order: SECTION_ORDER.references, section: selectedReferences(root, launch) },
     { order: SECTION_ORDER.wiki, section: wiki(root, context) },
-    { order: SECTION_ORDER.tools, section: tools(groups, tree?.toolGuidance ?? '', launch.toolsPointer ?? '') },
+    { order: SECTION_ORDER.tools, section: tools(groups, variant?.toolGuidance ?? '', launch.toolsPointer ?? '') },
     { order: SECTION_ORDER.reporting, section: section('reporting', 'Reporting your work', REPORTING_GUIDANCE, REPORTING_BUDGET, '', []) },
     ...(launch.sections ?? []).map((host) => ({ order: host.order, section: hostSection(host) }))
   ].map((entry, index) => ({ ...entry, index }))
@@ -307,7 +307,7 @@ export function compile(env: HarnessEnv, context: CallerContext, launch: Launch 
     sections,
     // A pack without its tools section describes no tools.
     toolGroups: sections.some((entry) => entry.id === 'tools') ? groups.map(({ group, tools: names }) => ({ group, tools: names })) : [],
-    harness: tree ? { scope: tree.scope, fingerprint: tree.fingerprint } : null,
+    variant: variant ? { scope: variant.scope, fingerprint: variant.fingerprint } : null,
     compiledAt: now()
   }
 }
@@ -442,8 +442,8 @@ function sameSection(left: Section | undefined, right: Section | undefined): boo
  * Recording the current pack does not mark an update delivered: the session saves that snapshot
  * only when it appends the corresponding context message.
  */
-export function sessionLaunch(env: HarnessEnv, context: CallerContext, launch: Launch, historyFile: string | null, tree: Materialised | null = null): { system: string; update: ContextUpdate | null; pack: ContextPack } {
-  const pack = compile(env, context, launch, tree)
+export function sessionLaunch(env: HarnessEnv, context: CallerContext, launch: Launch, historyFile: string | null, variant: Materialised | null = null): { system: string; update: ContextUpdate | null; pack: ContextPack } {
+  const pack = compile(env, context, launch, variant)
   const dynamic = [...BUILT_IN_DYNAMIC, ...(launch.sections ?? []).filter((host) => host.dynamic).map((host) => ({ id: host.id, order: host.order }))]
     .map((slot, index) => ({ ...slot, index }))
     .sort((left, right) => left.order - right.order || left.index - right.index)

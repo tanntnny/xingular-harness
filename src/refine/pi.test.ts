@@ -9,7 +9,7 @@ import { fauxModel } from '../../tests/faux'
 import { memorySecretStore } from '../accounts/secrets'
 import { createHarness, type Harness } from '../harness'
 import { listRuns } from '../sessions/runStore'
-import * as store from '../tree/store'
+import * as store from '../variant/store'
 import { DEFAULT_REFINE_HOST } from './host'
 import { Library } from './library'
 import { IMPROVER_TRIGGER, PiExecutor, PiImprover, PROBE_TRIGGER, RETAINED_WORKSPACE } from './pi'
@@ -24,7 +24,7 @@ afterEach(async () => {
 type Message = { role: string; content: unknown }
 const text = (message: Message | undefined): string => (!message ? '' : Array.isArray(message.content) ? message.content.map((part: { text?: string }) => part.text ?? '').join('') : String(message.content))
 
-it('runs probes and improvers as Pi sessions, harvests the edited tree, and records a lesson', async () => {
+it('runs probes and improvers as Pi sessions, harvests the edited variant, and records a lesson', async () => {
   const root = mkdtempSync(join(tmpdir(), 'refine-pi-'))
   const harness = createHarness({ dataRoot: root, stateDir: mkdtempSync(join(tmpdir(), 'refine-pi-state-')), secrets: memorySecretStore() })
   open.push(harness)
@@ -82,7 +82,7 @@ it('runs probes and improvers as Pi sessions, harvests the edited tree, and reco
   // Every execution and improver session is an ordinary recorded run, marked by its trigger.
   const runs = listRuns(root, {})
   expect(runs.filter((run) => run.trigger === PROBE_TRIGGER)).toHaveLength(4)
-  expect(runs.filter((run) => run.trigger === PROBE_TRIGGER).every((run) => run.harnessScope === 'ledger' && run.status === 'completed')).toBe(true)
+  expect(runs.filter((run) => run.trigger === PROBE_TRIGGER).every((run) => run.variantScope === 'ledger' && run.status === 'completed')).toBe(true)
   expect(runs.filter((run) => run.trigger === IMPROVER_TRIGGER)).toHaveLength(4)
 
   // Adopting makes the chosen harness the head.

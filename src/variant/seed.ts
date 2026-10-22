@@ -1,5 +1,5 @@
-// A first harness tree for a caller that had none, built from what shaped it before harness
-// trees existed: its instructions (c1), the rules switched on for it (c2), its memory blocks and
+// A first variant for a caller that had none, built from what shaped it before harness
+// variants existed: its instructions (c1), the rules switched on for it (c2), its memory blocks and
 // the person's own block (c3), and the skills switched on for it (c6). Read straight from the
 // files an earlier harness left in the data root; nothing there is changed.
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
@@ -7,8 +7,8 @@ import { join } from 'node:path'
 
 import * as frontmatter from '../core/frontmatter'
 import * as attachments from '../plugins/attachments'
-import { GUARDRAILS, MEMORY, PI_SURFACE, SYSTEM_PROMPT, TOOL_GUIDANCE, type Tree } from './surface'
-import { alwaysOnText, autotrigger, validate } from './tree'
+import { GUARDRAILS, MEMORY, PI_SURFACE, SYSTEM_PROMPT, TOOL_GUIDANCE, type Variant } from './surface'
+import { alwaysOnText, autotrigger, validate } from './variant'
 
 export interface SeedInput {
   /** The caller whose rules, skills and memory blocks to carry over. */
@@ -99,13 +99,13 @@ export function legacyPieces(root: string, input: SeedInput): { rules: string[];
 }
 
 /**
- * Builds a valid seed tree. Rules become guardrails, blocks become memory, and every skill gets a
+ * Builds a valid seed variant. Rules become guardrails, blocks become memory, and every skill gets a
  * trigger line. When the always-on text would be over the cap, memory is shortened first, then
  * guardrails; nothing else is dropped.
  */
-export function seedTree(root: string, input: SeedInput): Tree {
+export function seedVariant(root: string, input: SeedInput): Variant {
   const pieces = legacyPieces(root, input)
-  const tree: Tree = {
+  const variant: Variant = {
     [SYSTEM_PROMPT]: (input.instructions ?? '').trim() ? `${input.instructions!.trim()}\n` : '',
     [GUARDRAILS]: pieces.rules.length ? `${pieces.rules.join('\n\n')}\n` : '',
     [MEMORY]: pieces.memory.length ? `${pieces.memory.join('\n\n')}\n` : '',
@@ -114,10 +114,10 @@ export function seedTree(root: string, input: SeedInput): Tree {
   }
   const cap = PI_SURFACE.alwaysOnMax - 2_000
   for (const rel of [MEMORY, GUARDRAILS, SYSTEM_PROMPT]) {
-    const over = alwaysOnText(PI_SURFACE, tree).length - cap
-    if (over > 0) tree[rel] = `${tree[rel]!.slice(0, Math.max(0, tree[rel]!.length - over - 40)).trimEnd()}\n\n(Shortened when this harness was created.)\n`
+    const over = alwaysOnText(PI_SURFACE, variant).length - cap
+    if (over > 0) variant[rel] = `${variant[rel]!.slice(0, Math.max(0, variant[rel]!.length - over - 40)).trimEnd()}\n\n(Shortened when this harness was created.)\n`
   }
-  autotrigger(PI_SURFACE, tree)
-  validate(PI_SURFACE, tree, { compileScripts: false })
-  return tree
+  autotrigger(PI_SURFACE, variant)
+  validate(PI_SURFACE, variant, { compileScripts: false })
+  return variant
 }

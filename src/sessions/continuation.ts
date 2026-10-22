@@ -10,7 +10,7 @@ import { findHistory } from './history'
 import { findRun, pendingDecisions, readEvents, recordedSubagents, type PendingDecision } from './runStore'
 
 export const CONTINUATION_SECTION_ID = 'continuation'
-/** Right after the plan section, before the tree's own sections. */
+/** Right after the plan section, before the variant's own sections. */
 export const CONTINUATION_SECTION_ORDER = 26
 const CONTINUATION_BUDGET = 2000
 
@@ -26,8 +26,8 @@ export interface Continuation {
   /** The exact native history to reopen; set when it was found in the session folder. */
   resume: { sessionFile: string; nativeSessionId: string } | null
   accountId: string | null
-  /** The tree the run pinned; a continuation pins the same version. */
-  harness: { scope: string; version: string | null } | null
+  /** The variant the run pinned; a continuation pins the same version. */
+  variant: { scope: string; version: string | null } | null
   capabilities: CapabilitySet | null
   stoppedAt: string | null
   terminalReason: string | null
@@ -46,7 +46,7 @@ export interface Continuation {
 export function continuationOf(root: string, runId: string, sessionDir?: string | null): Continuation {
   const record = findRun(root, runId)
   if (!record) {
-    return { runId, sessionId: '', status: 'missing', resumable: false, reason: 'not_found', resume: null, accountId: null, harness: null, capabilities: null, stoppedAt: null, terminalReason: null, checklist: [], pending: [], lastTool: null, unfinishedSubagents: [] }
+    return { runId, sessionId: '', status: 'missing', resumable: false, reason: 'not_found', resume: null, accountId: null, variant: null, capabilities: null, stoppedAt: null, terminalReason: null, checklist: [], pending: [], lastTool: null, unfinishedSubagents: [] }
   }
   const events = readEvents(root, runId)
   const started = events.filter((event) => event.type === 'tool.started').at(-1)
@@ -71,7 +71,7 @@ export function continuationOf(root: string, runId: string, sessionDir?: string 
     reason,
     resume: sessionFile && record.nativeSessionId ? { sessionFile, nativeSessionId: record.nativeSessionId } : null,
     accountId: record.accountId,
-    harness: record.harnessScope ? { scope: record.harnessScope, version: record.harnessVersion ?? null } : null,
+    variant: record.variantScope ? { scope: record.variantScope, version: record.variantVersion ?? null } : null,
     capabilities,
     stoppedAt: record.endedAt,
     terminalReason: record.terminalReason,

@@ -1,5 +1,5 @@
-// The harness, assembled: Pi sessions on isolated accounts, versioned harness trees that shape
-// them, refinement that improves those trees from evidence, a compiled prompt, project notes,
+// The harness, assembled: Pi sessions on isolated accounts, versioned variants that shape
+// them, refinement that improves those variants from evidence, a compiled prompt, project notes,
 // tools, and connected apps. An application embeds one of these and adds its own prompt
 // sections, tools, and policy; nothing here knows what that application is.
 import { Subagents } from './sessions/subagentService'
@@ -23,8 +23,9 @@ import { Lessons } from './history/lessons'
 import * as recall from './history/recall'
 import type { RefineHost } from './refine/host'
 import { Refinements } from './refine/service'
-import { configureBuiltins } from './tree/components'
-import { TreeTrust } from './tree/trust'
+import { configureBuiltins } from './variant/components'
+import { migrateVariantLayout } from './variant/migrate'
+import { VariantTrust } from './variant/trust'
 import * as notes from './wiki/notes'
 import * as pluginApi from './plugins/api'
 import * as attachments from './plugins/attachments'
@@ -130,9 +131,9 @@ export class Harness {
   applicationPlugins: ReadonlySet<string> = new Set()
   readonly subagents: Subagents
   readonly sessions: Sessions
-  /** Which plugin code in harness trees a person trusted. */
-  readonly trust: TreeTrust
-  /** Refinement: improving a harness tree from evidence of how it ran. */
+  /** Which plugin code in variants a person trusted. */
+  readonly trust: VariantTrust
+  /** Refinement: improving a variant from evidence of how it ran. */
   readonly refine: Refinements
   /** Reflection on finished runs, when the `lessons` plugin is on (page 08). */
   readonly lessons: Lessons
@@ -151,7 +152,7 @@ export class Harness {
     this.hub = new Hub(this, options.hub)
     this.policy = options.policy ?? {}
     configureBuiltins(options.builtins ?? [])
-    this.trust = new TreeTrust(this.stateDir)
+    this.trust = new VariantTrust(this.stateDir)
     this.refineHost = options.refineHost ?? null
     const secrets = options.secrets ?? fileSecretStore(join(this.stateDir, 'secrets.json'))
     this.accounts = new Accounts({ dir: join(this.stateDir, 'accounts'), secrets, bus: this.bus })
@@ -249,8 +250,16 @@ export class Harness {
     const root = dataRoot
     this.hooks.watch(notes.wikiDir(root))
     void this.hooks.reload()
-    for (const folder of ['registry/skills', 'registry/prompts', 'registry/rules', 'config', 'runs', 'harnesses']) mkdirSync(join(root, folder), { recursive: true })
+    for (const folder of ['registry/skills', 'registry/prompts', 'registry/rules', 'config', 'runs']) mkdirSync(join(root, folder), { recursive: true })
     let migrationError: string | null = null
+    try {
+      const moved = migrateVariantLayout(root)
+      if (moved.length) log(`renamed ${moved.length} earlier harness folders to variants`)
+    } catch (error) {
+      migrationError = error instanceof Error ? error.message : String(error)
+      log('variant layout', migrationError)
+    }
+    mkdirSync(join(root, 'variants'), { recursive: true })
     let legacyWiki: string | null = null
     try {
       legacyWiki = notes.moveLegacy(root)

@@ -8,7 +8,7 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, 
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import type { Tree } from '../tree/surface'
+import type { Variant } from '../variant/surface'
 import type { Executor, Improver, ImproverCall, ImproverReply, RefineTask, Rollout } from './types'
 
 export const DEMO_SCRIPT = `import { readFileSync } from 'node:fs'
@@ -19,7 +19,7 @@ const total = cents.filter((amount) => amount > 0).reduce((sum, amount) => sum +
 console.log(\`Total: \${(total / 100).toFixed(2)}\`)
 `
 
-export function demoBaseTree(): Tree {
+export function demoBaseVariant(): Variant {
   return {
     'systemprompt.md': 'Reconcile the ledger using node scripts/summarize.mjs.\n',
     'guardrails.md': '',
@@ -58,11 +58,11 @@ export class DemoExecutor implements Executor {
 
   constructor(private readonly root: string) {}
 
-  async execute(task: RefineTask, harnessDir: string | null, label: string, runId: string): Promise<Rollout> {
+  async execute(task: RefineTask, variantDir: string | null, label: string, runId: string): Promise<Rollout> {
     this.executions++
     const dir = join(this.root, 'executions', runId)
     mkdirSync(dir, { recursive: true })
-    const script = join(harnessDir ?? '', 'scripts', 'summarize.mjs')
+    const script = join(variantDir ?? '', 'scripts', 'summarize.mjs')
     const result = spawnSync(process.execPath, [script, join(task.sourceDir ?? '', 'ledger.csv')], { encoding: 'utf8', timeout: 10_000 })
     if (result.status !== 0) {
       return { label, runId, dir, ok: false, delivered: false, costUsd: 0, wallMs: 0, error: result.stderr || 'script failed' }
@@ -81,8 +81,8 @@ export class DemoExecutor implements Executor {
     return existsSync(path) ? { 'answer.txt': readFileSync(path, 'utf8') } : {}
   }
 
-  validateTree(_task: RefineTask, tree: Tree): void {
-    if (!tree['scripts/summarize.mjs']) throw new Error('The local executor requires scripts/summarize.mjs')
+  validateVariant(_task: RefineTask, variant: Variant): void {
+    if (!variant['scripts/summarize.mjs']) throw new Error('The local executor requires scripts/summarize.mjs')
   }
 }
 

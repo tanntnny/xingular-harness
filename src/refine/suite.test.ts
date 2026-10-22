@@ -3,9 +3,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
-import * as store from '../tree/store'
-import type { Tree } from '../tree/surface'
-import { DemoExecutor, demoBaseTree, demoTasks } from './demo'
+import * as store from '../variant/store'
+import type { Variant } from '../variant/surface'
+import { DemoExecutor, demoBaseVariant, demoTasks } from './demo'
 import { runRefineCli } from './cli'
 import { readMatrix, runMatrix, type MatrixSummary } from './suite'
 
@@ -14,16 +14,16 @@ function setup() {
   return { root, tasks: demoTasks(root), executor: new DemoExecutor(root) }
 }
 
-/** The demo's improved tree: the same script without the positive-only filter. */
-function improvedTree(): Tree {
-  const tree = demoBaseTree()
-  return { ...tree, 'scripts/summarize.mjs': tree['scripts/summarize.mjs']!.replace('.filter((amount) => amount > 0)', '') }
+/** The demo's improved variant: the same script without the positive-only filter. */
+function improvedVariant(): Variant {
+  const variant = demoBaseVariant()
+  return { ...variant, 'scripts/summarize.mjs': variant['scripts/summarize.mjs']!.replace('.filter((amount) => amount > 0)', '') }
 }
 
-/** A tree that stages cleanly but fails every execution. */
-function failingTree(): Tree {
-  const tree = demoBaseTree()
-  return { ...tree, 'scripts/summarize.mjs': 'process.exit(1)\n' }
+/** A variant that stages cleanly but fails every execution. */
+function failingVariant(): Variant {
+  const variant = demoBaseVariant()
+  return { ...variant, 'scripts/summarize.mjs': 'process.exit(1)\n' }
 }
 
 describe('the evaluation matrix', () => {
@@ -33,9 +33,9 @@ describe('the evaluation matrix', () => {
       root,
       id: 'matrix-1',
       versions: [
-        { label: 'base', tree: demoBaseTree() },
-        { label: 'improved', tree: improvedTree() },
-        { label: 'failing', tree: failingTree() }
+        { label: 'base', variant: demoBaseVariant() },
+        { label: 'improved', variant: improvedVariant() },
+        { label: 'failing', variant: failingVariant() }
       ],
       tasks,
       executor
@@ -50,10 +50,10 @@ describe('the evaluation matrix', () => {
     expect(summary.rows.filter((row) => row.version === 'failing').every((row) => !row.ok)).toBe(true)
     expect(summary.usd).toBe(0)
 
-    // Fingerprints identify each tree, and a row matches the tree it ran.
-    expect(summary.rows[0]!.fingerprint).toBe(store.fingerprint(demoBaseTree()))
+    // Fingerprints identify each variant, and a row matches the variant it ran.
+    expect(summary.rows[0]!.fingerprint).toBe(store.fingerprint(demoBaseVariant()))
     expect(new Set(summary.rows.map((row) => row.fingerprint)).size).toBe(3)
-    expect(summary.rows.filter((row) => row.version === 'improved')[0]!.fingerprint).toBe(store.fingerprint(improvedTree()))
+    expect(summary.rows.filter((row) => row.version === 'improved')[0]!.fingerprint).toBe(store.fingerprint(improvedVariant()))
 
     // Comparability keys: identical task text hashes, the executor's name, this package's release.
     const { version } = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')) as { version: string }
@@ -70,15 +70,15 @@ describe('the evaluation matrix', () => {
     expect(JSON.parse(readFileSync(join(root, 'refine', 'matrix-1', 'suite.json'), 'utf8'))).toMatchObject({ id: 'matrix-1' })
   })
 
-  it('rejects a tree that carries grader output before any execution runs', async () => {
+  it('rejects a variant that carries grader output before any execution runs', async () => {
     const { root, tasks, executor } = setup()
-    const poisoned: Tree = { ...demoBaseTree(), 'guardrails.md': 'Never write review_verdict into a note.\n' }
+    const poisoned: Variant = { ...demoBaseVariant(), 'guardrails.md': 'Never write review_verdict into a note.\n' }
     const summary = await runMatrix({
       root,
       id: 'poisoned',
       versions: [
-        { label: 'clean', tree: demoBaseTree() },
-        { label: 'poisoned', tree: poisoned }
+        { label: 'clean', variant: demoBaseVariant() },
+        { label: 'poisoned', variant: poisoned }
       ],
       tasks,
       executor
@@ -95,17 +95,17 @@ describe('the evaluation matrix', () => {
     expect(executor.executions).toBe(2)
   })
 
-  it('runs the executor tree validation as a row failure, not an abort', async () => {
+  it('runs the executor variant validation as a row failure, not an abort', async () => {
     const { root, tasks, executor } = setup()
-    const { 'scripts/summarize.mjs': _omit, ...noScript } = demoBaseTree()
+    const { 'scripts/summarize.mjs': _omit, ...noScript } = demoBaseVariant()
     const summary = await runMatrix({
       root,
       id: 'unvalidated',
-      versions: [{ label: 'no-script', tree: noScript }],
+      versions: [{ label: 'no-script', variant: noScript }],
       tasks,
       executor
     })
-    expect(summary.rows.every((row) => row.error.includes('invalid tree for this task'))).toBe(true)
+    expect(summary.rows.every((row) => row.error.includes('invalid variant for this task'))).toBe(true)
     expect(summary.status).toBe('partial')
     expect(executor.executions).toBe(0)
   })
@@ -114,14 +114,14 @@ describe('the evaluation matrix', () => {
     const { root, tasks, executor } = setup()
     const aborted = new AbortController()
     aborted.abort()
-    const summary = await runMatrix({ root, id: 'aborted', versions: [{ label: 'base', tree: demoBaseTree() }], tasks, executor, signal: aborted.signal })
+    const summary = await runMatrix({ root, id: 'aborted', versions: [{ label: 'base', variant: demoBaseVariant() }], tasks, executor, signal: aborted.signal })
     expect(summary.status).toBe('cancelled')
     expect(summary.rows.every((row) => row.error === 'The matrix was cancelled.')).toBe(true)
     expect(executor.executions).toBe(0)
 
     await expect(runMatrix({ root, id: 'bad1', versions: [], tasks, executor })).rejects.toThrow()
-    await expect(runMatrix({ root, id: 'bad2', versions: [{ label: 'base', tree: demoBaseTree() }], tasks: [], executor })).rejects.toThrow()
-    await expect(runMatrix({ root, id: 'bad3', versions: [{ label: 'bad label', tree: demoBaseTree() }], tasks, executor })).rejects.toThrow()
+    await expect(runMatrix({ root, id: 'bad2', versions: [{ label: 'base', variant: demoBaseVariant() }], tasks: [], executor })).rejects.toThrow()
+    await expect(runMatrix({ root, id: 'bad3', versions: [{ label: 'bad label', variant: demoBaseVariant() }], tasks, executor })).rejects.toThrow()
   })
 })
 
@@ -142,8 +142,8 @@ describe('the refine matrix command', () => {
 
   it('evaluates a committed scope version without touching its head', async () => {
     const root = mkdtempSync(join(tmpdir(), 'refine-matrix-'))
-    store.seed(root, 'demo', demoBaseTree())
-    const record = store.commit(root, 'demo', improvedTree(), { kind: 'edit', note: 'signed sums' }, { moveHead: false })
+    store.seed(root, 'demo', demoBaseVariant())
+    const record = store.commit(root, 'demo', improvedVariant(), { kind: 'edit', note: 'signed sums' }, { moveHead: false })
     const suite = {
       id: 'lineage',
       versions: [{ label: 'committed', scope: 'demo', version: record.fingerprint }],
@@ -154,7 +154,7 @@ describe('the refine matrix command', () => {
     const lines: string[] = []
     const code = await runRefineCli(['matrix', '--suite', suiteFile, '--data', root], { write: (text) => lines.push(text) })
     expect(code).toBe(0)
-    expect(store.head(root, 'demo')?.fingerprint).toBe(store.fingerprint(demoBaseTree()))
+    expect(store.head(root, 'demo')?.fingerprint).toBe(store.fingerprint(demoBaseVariant()))
     expect(lines.join('')).toContain('committed')
   })
 
@@ -169,7 +169,7 @@ describe('the refine matrix command', () => {
     const root = mkdtempSync(join(tmpdir(), 'refine-matrix-'))
     const suiteFile = join(root, 'suite.json')
     writeFileSync(suiteFile, JSON.stringify({ id: 'x', versions: [{ label: 'base', scope: 'demo' }], tasks: demoTasks(root), executor: 'pi' }))
-    store.seed(root, 'demo', demoBaseTree())
+    store.seed(root, 'demo', demoBaseVariant())
     const lines: string[] = []
     const code = await runRefineCli(['matrix', '--suite', suiteFile, '--data', root], { write: (text) => lines.push(text) })
     expect(code).toBe(1)

@@ -1,13 +1,14 @@
-// Plugin code in a harness tree (c8) runs inside every session's tool loop, so it loads only
+// Plugin code in a variant (c8) runs inside every session's tool loop, so it loads only
 // after a person trusted that exact code: trust is a hash of the file, and a changed file asks
 // again. A person may also let refinement probes run the plugin code an improver wrote for one
-// harness scope; adopting such a harness still needs the code trusted.
+// scope; adopting such a variant still needs the code trusted.
 import { createHash } from 'node:crypto'
 import { chmodSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { now, readJsonOr, safeId, writeJson } from '../core/fs'
-import { patterns, PI_SURFACE, type Tree } from './surface'
+import { migrateTrustFile } from './migrate'
+import { patterns, PI_SURFACE, type Variant } from './surface'
 
 export interface TrustedPlugin {
   hash: string
@@ -27,11 +28,12 @@ export function pluginHash(text: string): string {
   return createHash('sha256').update(text).digest('hex')
 }
 
-export class TreeTrust {
+export class VariantTrust {
   private readonly path: string
 
   constructor(stateDir: string) {
-    this.path = join(stateDir, 'tree-plugin-trust.json')
+    migrateTrustFile(stateDir)
+    this.path = join(stateDir, 'variant-plugin-trust.json')
   }
 
   private read(): Stored {
@@ -75,11 +77,11 @@ export class TreeTrust {
     this.write({ ...stored, probeCode })
   }
 
-  /** The plugin files of a tree and whether each is trusted. */
-  review(tree: Tree): { path: string; hash: string; trusted: boolean }[] {
+  /** The plugin files of a variant and whether each is trusted. */
+  review(variant: Variant): { path: string; hash: string; trusted: boolean }[] {
     const rx = patterns(PI_SURFACE).plugin
-    return Object.keys(tree).filter((rel) => rx.test(rel)).sort().map((path) => {
-      const hash = pluginHash(tree[path]!)
+    return Object.keys(variant).filter((rel) => rx.test(rel)).sort().map((path) => {
+      const hash = pluginHash(variant[path]!)
       return { path, hash, trusted: this.has(hash) }
     })
   }

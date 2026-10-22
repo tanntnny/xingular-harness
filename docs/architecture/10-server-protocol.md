@@ -53,7 +53,7 @@ harness → host   { v: 1, id, call, params }          host → harness   { v: 1
 - **INV-SRV-5** The harness works with none of the host calls supplied (`INV-EXT-2`).
 - **INV-SRV-6** After a change to the server, the CLI or startup, `npm run prove` must pass: it
   starts the server on a throwaway data root with no application present and exercises accounts,
-  trees, the Wiki, the prompt, connected apps, a recorded session, a plugin hook and the
+  variants, the Wiki, the prompt, connected apps, a recorded session, a plugin hook and the
   refinement demo. The App's sidecar tests parse every reply with its schemas and must pass too.
 
 ## Source map

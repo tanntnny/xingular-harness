@@ -3,7 +3,7 @@
 ## Purpose
 
 The harness keeps two folders. The **data root** holds knowledge and history that may be shared
-or synced: trees, refinements, the library, the Wiki, runs. The **state directory** holds
+or synced: variants, refinements, the library, the Wiki, runs. The **state directory** holds
 device-local state that must never travel with the data: accounts, secrets, approvals, trust,
 connections, sockets. Files are the source of truth everywhere; the only database is a derived
 index.
@@ -12,10 +12,10 @@ index.
 
 ```text
 <data root>/
-  harnesses/<scope>/   versions/<fingerprint>/{tree/, version.json}, head.json, lineage.jsonl, restores.jsonl   (03)
-  refine/<id>/         summary.json, task.json, harnesses/, rollouts/, sessions/, context/, selection/, reflection/, improver/, or matrix.json + suite.json for evaluation matrices   (05)
+  variants/<scope>/   versions/<fingerprint>/{variant/, version.json}, head.json, lineage.jsonl, restores.jsonl   (03)
+  refine/<id>/         summary.json, task.json, variants/, rollouts/, sessions/, context/, selection/, reflection/, improver/, or matrix.json + suite.json for evaluation matrices   (05)
                        rollouts/<label>/workspace/ only when started with retainWorkspaces
-  library/<scope>/<area>/   INDEX.md, harnesses/<task>/{harness/, EXPERIENCE.md}   (05)
+  library/<scope>/<area>/   INDEX.md, variants/<task>/{variant/, EXPERIENCE.md}   (05)
   wiki/                home.md, library/ (library/lessons/ from the lessons plugin), projects/<slug>/   (08)
   reflection/improver/lesson-<run id>/   a reflection's native history and reply   (08)
   wiki-history/        earlier versions of notes   (08)
@@ -33,7 +33,7 @@ index.
   accounts/            registry, per-account Pi agent folders, _shared/pi/, audit log   (09)
   secrets.json         default SecretStore, owner-only   (09)
   approvals.json       standing approvals   (07)
-  plugin-trust.json, tree-plugin-trust.json, plugin-registered.json, plugin-hooks.json   (03, 06)
+  plugin-trust.json, variant-plugin-trust.json, plugin-registered.json, plugin-hooks.json   (03, 06)
   connections.json     connected apps, no secrets   (09)
   hub/catalog.json     catalog cache   (09)
   run/                 the session socket and terminal commands   (11)

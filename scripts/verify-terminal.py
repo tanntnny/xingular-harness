@@ -611,10 +611,12 @@ def main():
                     terminal.read(0.3)
                     if terminal.screen is not None:
                         assert 'Jump to latest' not in '\n'.join(terminal.screen.display), 'The jump badge appeared while pinned to the latest message'
+                        assert any('▕' in line[-4:] for line in terminal.screen.display), 'The slim transcript scrollbar thumb was not rendered at the right edge'
                     terminal.scroll(max(1, width // 2), max(1, height // 2))
                     terminal.wait('Jump to latest', start, timeout=10)
                     if terminal.screen is not None:
                         assert 'Jump to latest' in '\n'.join(terminal.screen.display), 'Mouse-wheel scrolling away did not show the jump badge'
+                        assert any('▕' in line[-4:] for line in terminal.screen.display), 'The slim scrollbar thumb disappeared after scrolling away'
                         terminal.click_text('Jump to latest')
                         terminal.read(0.3)
                         visible = '\n'.join(terminal.screen.display)

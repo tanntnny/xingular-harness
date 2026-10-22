@@ -18,8 +18,8 @@ import type { Plugins } from '../plugins/plugins'
 import { sessionLaunch, type Launch } from '../prompt/compile'
 import * as attachments from '../plugins/attachments'
 import { FIRST_PARTY_PLUGINS, firstPartyExtensions, type InlineExtension } from '../plugins/firstParty'
-import { materialise, type HarnessChoice, type Materialised } from '../tree/materialise'
-import type { TreeTrust } from '../tree/trust'
+import { materialise, type VariantChoice, type Materialised } from '../variant/materialise'
+import type { VariantTrust } from '../variant/trust'
 import { ASK_USER, askUserTool } from '../tools/askUser'
 import { CHECKLIST_WRITE, checklistTool } from '../tools/checklist'
 import { subagentTools } from '../tools/spawnSubagent'
@@ -73,10 +73,10 @@ export interface SessionRunInput {
   /** Who the session works as, for history, the Wiki and the prompt. */
   caller: CallerContext
   /**
-   * The harness tree the session runs: a scope's head (or a version of it), or a tree on disk.
+   * The variant the session runs: a scope's head (or a version of it), or a variant on disk.
    * Its version is pinned for the whole run and recorded on it.
    */
-  harness?: HarnessChoice | null
+  variant?: VariantChoice | null
   /** What the application adds to the prompt, and which tools it describes. */
   launch?: Launch
   /** The tools switched on, in the order the model sees them, and those that ask before each call. */
@@ -100,7 +100,7 @@ export interface SessionRunInput {
   plan?: boolean
   /**
    * Continue a run that stopped before it finished: the earlier run's id. The new run reopens its
-   * native history and pins its account, tree version and capability set, and the model is told
+   * native history and pins its account, variant version and capability set, and the model is told
    * where it stopped. The harness never does this by itself; the application asks for it.
    */
   continueFrom?: string | null
@@ -116,14 +116,14 @@ function continueInput(root: string, input: SessionRunInput): Continuation {
   if (continuation.sessionId !== input.run.sessionId) throw mismatch('session')
   if (input.resume?.nativeSessionId && input.resume.nativeSessionId !== continuation.resume.nativeSessionId) throw mismatch('history')
   if (input.accountId && input.accountId !== continuation.accountId) throw mismatch('account')
-  const pinned = continuation.harness
-  const chosen = input.harness ?? null
+  const pinned = continuation.variant
+  const chosen = input.variant ?? null
   if (chosen && (!pinned || 'dir' in chosen || chosen.scope !== pinned.scope || (chosen.version && chosen.version !== pinned.version))) throw mismatch('harness version')
   input.resume = continuation.resume
   input.run.resumedFromRunId ??= continuation.runId
   input.accountId = continuation.accountId
   input.poolId = null
-  if (pinned) input.harness = { scope: pinned.scope, version: pinned.version }
+  if (pinned) input.variant = { scope: pinned.scope, version: pinned.version }
   if (!input.capabilities && continuation.capabilities) input.capabilities = continuation.capabilities
   if (!input.text.trim()) input.text = CONTINUE_TEXT
   return continuation
@@ -147,8 +147,8 @@ export interface SessionsOptions {
   /** Resolves the caller's capability set from the harness's stores. */
   resolveCapabilities?: (caller: CallerContext, tools: readonly string[], cwd: string) => Promise<CapabilitySet>
   factory?: SessionFactory
-  /** Which plugin code in harness trees a person trusted. */
-  trust?: TreeTrust | null
+  /** Which plugin code in variants a person trusted. */
+  trust?: VariantTrust | null
 }
 
 /** The harness's own plugins a person switched on for this caller, with the numbers they set. */
@@ -281,12 +281,12 @@ export class Sessions {
 
     // The harness is resolved once and pinned: a child run or a later turn of this run uses the
     // same files even if the head moves meanwhile.
-    let tree: Materialised | null = null
-    if (input.harness) {
-      const scope = input.harness.scope ?? null
+    let variant: Materialised | null = null
+    if (input.variant) {
+      const scope = input.variant.scope ?? null
       const trust = this.options.trust ?? null
-      tree = materialise(root, input.harness, { trust, probeCode: input.run.trigger === 'probe' && Boolean(scope && trust?.probeCode(scope)), subagents: capabilities.tools.includes(SPAWN_SUBAGENT) })
-      input.harness = { dir: tree.dir, scope: tree.scope }
+      variant = materialise(root, input.variant, { trust, probeCode: input.run.trigger === 'probe' && Boolean(scope && trust?.probeCode(scope)), subagents: capabilities.tools.includes(SPAWN_SUBAGENT) })
+      input.variant = { dir: variant.dir, scope: variant.scope }
     }
 
     saveRun(root, {
@@ -313,8 +313,8 @@ export class Sessions {
       accountId: account.id,
       agentId: input.run.agentId ?? caller.agentId ?? null,
       trigger: input.run.trigger ?? null,
-      harnessScope: tree?.scope ?? null,
-      harnessVersion: tree?.fingerprint ?? null
+      variantScope: variant?.scope ?? null,
+      variantVersion: variant?.fingerprint ?? null
     })
 
     // What the session is, kept with the run so later consolidation knows which memory it had.
@@ -346,7 +346,7 @@ export class Sessions {
         connectionTools: (launch.connectionTools ?? []).filter((name) => capabilities.tools.includes(name)),
         toolGroups: launch.toolGroups?.map((group) => ({ ...group, tools: group.tools.filter((name) => capabilities.tools.includes(name)) })).filter((group) => group.tools.length > 0)
       }
-      ;({ system, update } = sessionLaunch(this.env, caller, effectiveLaunch, historyFile, tree))
+      ;({ system, update } = sessionLaunch(this.env, caller, effectiveLaunch, historyFile, variant))
     } catch (error) {
       fail(error)
       throw error
@@ -354,8 +354,8 @@ export class Sessions {
 
     const run = this.options.runs.start(input.run.sessionId, runId)
     if (run.finished) return { runId, nativeSessionId: null }
-    if (tree?.untrustedPlugins.length) {
-      run.emit('extension.notice', { kind: 'notify', level: 'warning', text: `Harness plugins not loaded until their code is trusted: ${tree.untrustedPlugins.join(', ')}.` })
+    if (variant?.untrustedPlugins.length) {
+      run.emit('extension.notice', { kind: 'notify', level: 'warning', text: `Harness plugins not loaded until their code is trusted: ${variant.untrustedPlugins.join(', ')}.` })
     }
     // What every session has, after the tools the caller switched on and in a fixed order.
     const allow = capabilities.tools
@@ -366,7 +366,7 @@ export class Sessions {
     try {
       const tools: ToolSpec[] = [
         ...(broker ? broker.tools(session, { readOnly: typeof input.connections === 'object' && input.connections.readOnly === true }) : []),
-        ...(input.harnessTools === false ? [] : [...harnessTools(this.options.env, caller, { treeDir: tree?.dir ?? null }), askUserTool(run), checklistTool(run)]),
+        ...(input.harnessTools === false ? [] : [...harnessTools(this.options.env, caller, { variantDir: variant?.dir ?? null }), askUserTool(run), checklistTool(run)]),
         ...subagentTools(this.options.subagents, runId).filter(tool => allow.includes(tool.name))
       ]
       if (input.providers !== false) for (const provider of this.providers) tools.push(...(await provider(session)))
@@ -401,8 +401,8 @@ export class Sessions {
         preamble: input.preamble ?? null,
         automatic: input.automatic,
         account: context,
-        resources: { ids: [], skillPaths: tree?.skillPaths ?? [], promptPaths: [] },
-        treeExtensions: tree?.extensionPaths ?? [],
+        resources: { ids: [], skillPaths: variant?.skillPaths ?? [], promptPaths: [] },
+        variantExtensions: variant?.extensionPaths ?? [],
         inline: [...firstPartyFor(root, capabilities.contributions), runLineageJoin(root, runId), this.options.subagents.extension(runId)],
         ...(plugins ? { plugins: { loading: () => plugins.loading({ cwd: input.cwd, agentDir: context.configDir, install: true, caller: { agentId: caller.agentId ?? null, projectId: caller.projectId ?? null }, contributions: capabilities.contributions }), loaded: (extensions) => plugins.loaded(extensions) } } : {}),
         system,

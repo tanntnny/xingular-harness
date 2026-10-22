@@ -8,9 +8,9 @@ import type { CallerContext } from '../core/caller'
 import { createEnv, type HarnessEnv } from '../core/env'
 import { writeJson } from '../core/fs'
 import { closeIndex } from '../core/index'
-import { materialise } from '../tree/materialise'
-import * as store from '../tree/store'
-import type { Tree } from '../tree/surface'
+import { materialise } from '../variant/materialise'
+import * as store from '../variant/store'
+import type { Variant } from '../variant/surface'
 import * as notes from '../wiki/notes'
 import { compile, fit, load, render, REPORTING_GUIDANCE, sessionFile, sessionLaunch, SECTION_ORDER, type ContextUpdate, type HostSection, type Launch } from './compile'
 
@@ -28,7 +28,7 @@ function setup(): HarnessEnv {
   return createEnv(root)
 }
 
-const tree: Tree = {
+const variant: Variant = {
   'systemprompt.md': 'You draft release notes.\n',
   'guardrails.md': 'Never publish without a review.\n- When writing a changelog, load the `changelog` skill.\n',
   'memory.md': 'Releases ship on Tuesdays.\n',
@@ -44,7 +44,7 @@ const work = (body: string): HostSection => ({ id: 'work', title: 'Active work',
 const hosted = (extra: Partial<Launch> = {}): Launch => ({ sections: [identity, work('You have no unresolved work.')], tools: ['read'], ...extra })
 
 function scoped(env: HarnessEnv) {
-  store.seed(env.root, 'nora', tree)
+  store.seed(env.root, 'nora', variant)
   return materialise(env.root, { scope: 'nora' }, { subagents: true })
 }
 
@@ -55,7 +55,7 @@ test('cuts at a paragraph and points to the rest', () => {
   expect(cut.body).toBe(`${'a'.repeat(40)}\n\n${'b'.repeat(40)}\n\n(more)`)
 })
 
-test('the harness tree supplies the instructions, guardrails, memory, subagents, scripts and tool guidance, in order', () => {
+test('the variant supplies the instructions, guardrails, memory, subagents, scripts and tool guidance, in order', () => {
   const env = setup()
   const pack = compile(env, agent(), hosted(), scoped(env))
   const ids = pack.sections.map((entry) => entry.id)
@@ -67,15 +67,15 @@ test('the harness tree supplies the instructions, guardrails, memory, subagents,
   expect(text).toContain('- reader — reads long logs and answers briefly')
   expect(text).toMatch(/scripts: count\.py/)
   expect(text).toContain('### How to use your tools\n\nPrefer grep over reading whole files.')
-  expect(pack.harness).toEqual({ scope: 'nora', fingerprint: store.head(env.root, 'nora')!.fingerprint })
-  expect(pack.sections.find((entry) => entry.id === 'system')!.sources).toEqual([{ id: 'nora', kind: 'harness', revision: pack.harness!.fingerprint }])
+  expect(pack.variant).toEqual({ scope: 'nora', fingerprint: store.head(env.root, 'nora')!.fingerprint })
+  expect(pack.sections.find((entry) => entry.id === 'system')!.sources).toEqual([{ id: 'nora', kind: 'variant', revision: pack.variant!.fingerprint }])
 })
 
-test('without a tree, only the application, the Wiki and the tools speak', () => {
+test('without a variant, only the application, the Wiki and the tools speak', () => {
   const env = setup()
   const pack = compile(env, agent(), hosted())
   expect(pack.sections.map((entry) => entry.id)).toEqual(['identity', 'work', 'wiki', 'tools', 'reporting'])
-  expect(pack.harness).toBeNull()
+  expect(pack.variant).toBeNull()
 })
 
 test('the Wiki section lists the current project\'s notes and only describes wiki_write when it is on', () => {
@@ -128,7 +128,7 @@ test('state stays out of the system prompt and only delivered changes are resent
   expect(changed.update!.content).not.toContain('## Active work')
   expect(load(env.root, 'run-1')!.delivery!.updatedSectionIds).toEqual(['wiki'])
   // A new harness version changes the stable prefix, never the delivered state.
-  store.commit(env.root, 'nora', { ...tree, 'memory.md': 'Releases ship on Thursdays.\n' }, { kind: 'edit' })
+  store.commit(env.root, 'nora', { ...variant, 'memory.md': 'Releases ship on Thursdays.\n' }, { kind: 'edit' })
   const next = sessionLaunch(env, agent(), hosted(), history, materialise(env.root, { scope: 'nora' }, { subagents: true }))
   expect(next.system).toContain('Releases ship on Thursdays.')
   expect(next.system).not.toBe(first.system)
@@ -151,7 +151,7 @@ test('the snapshot follows the active branch and refreshes after compaction', ()
 
 test('a subagent section is left out when the session cannot start subagents', () => {
   const env = setup()
-  store.seed(env.root, 'nora', tree)
+  store.seed(env.root, 'nora', variant)
   const pack = compile(env, agent(), hosted(), materialise(env.root, { scope: 'nora' }, { subagents: false }))
   expect(pack.sections.some((entry) => entry.id === 'subagents')).toBe(false)
 })

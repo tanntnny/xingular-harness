@@ -54,10 +54,10 @@ export interface TurnParams {
   /** Unattended: no project extensions, no context files, settings held in memory. */
   automatic?: boolean
   account: AccountContext
-  /** Skills and prompt templates to load natively: the harness tree's skills folder. */
+  /** Skills and prompt templates to load natively: the variant's skills folder. */
   resources?: { ids: string[]; skillPaths: string[]; promptPaths: string[] }
-  /** Pi extensions from the harness tree (c8) that may load: trusted code, or a probe the person allowed. */
-  treeExtensions?: string[]
+  /** Pi extensions from the variant (c8) that may load: trusted code, or a probe the person allowed. */
+  variantExtensions?: string[]
   /**
    * What the harness found for this session to load, and where it reports what loaded. Pi's own
    * discovery is off whenever this is set, so only these paths and the registry's reach the session.
@@ -569,15 +569,15 @@ export async function runTurn(run: ActiveRun, session: PiSessionLike, params: Tu
  * Loads what a session may use besides its tools: Pi's context files, the registry's skills and
  * prompts, and what the harness found for it. `gate` is loaded after every extension on disk.
  */
-export async function loadResources(pi: typeof import('@earendil-works/pi-coding-agent'), params: Pick<TurnParams, 'cwd' | 'account' | 'automatic' | 'resources' | 'treeExtensions' | 'plugins' | 'system' | 'inline'>, gate: unknown, automaticSettings?: SettingsManager) {
+export async function loadResources(pi: typeof import('@earendil-works/pi-coding-agent'), params: Pick<TurnParams, 'cwd' | 'account' | 'automatic' | 'resources' | 'variantExtensions' | 'plugins' | 'system' | 'inline'>, gate: unknown, automaticSettings?: SettingsManager) {
   const loading = params.automatic ? null : ((await params.plugins?.loading()) ?? null)
   const resourceLoader = new pi.DefaultResourceLoader({
     ...(automaticSettings ? { settingsManager: automaticSettings, noExtensions: true, noContextFiles: true } : {}),
     // The loader gets empty settings and no discovery of its own: it loads the paths below and
     // nothing else. The session still reads the account's real settings for everything but resources.
     ...(loading ? { settingsManager: pi.SettingsManager.inMemory({}), noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true } : {}),
-    // The harness tree's plugins load in every kind of run, unattended ones included.
-    additionalExtensionPaths: [...(loading?.extensionPaths ?? []), ...(params.treeExtensions ?? [])],
+    // The variant's plugins load in every kind of run, unattended ones included.
+    additionalExtensionPaths: [...(loading?.extensionPaths ?? []), ...(params.variantExtensions ?? [])],
     cwd: params.cwd,
     agentDir: params.account.configDir,
     // Inline extensions load after the ones on disk, and the gate after all of them, so it sees

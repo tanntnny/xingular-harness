@@ -582,13 +582,13 @@ describe('session turns on Pi', () => {
     expect(events.some((event) => event.type === 'approval.requested')).toBe(false)
   })
 
-  it('runs on a pinned harness tree: its sections, its skills, and its version on the run', async () => {
+  it('runs on a pinned variant: its sections, its skills, and its version on the run', async () => {
     let received: Parameters<SessionFactory>[0] | null = null
     const { run, harness } = setup(async (input) => {
       received = input
       return fakeSession(async () => undefined, input.gate)
     })
-    const { commit, head } = await import('../tree/store')
+    const { commit, head } = await import('../variant/store')
     commit(harness.env.root, 'agent-1', {
       'systemprompt.md': 'You review pull requests.\n',
       'guardrails.md': '- When a diff is large, load the `triage` skill.\n',
@@ -597,14 +597,14 @@ describe('session turns on Pi', () => {
       'skills/triage/SKILL.md': '---\nname: triage\ndescription: a diff is large\n---\nSplit it by folder.\n',
       'plugins/guard.ts': 'export default function (pi) {}\n'
     }, { kind: 'seed' })
-    await run('run-tree', { harness: { scope: 'agent-1' } })
+    await run('run-variant', { variant: { scope: 'agent-1' } })
     await tick()
-    const record = loadRun(harness.env.root, 'run-tree')
-    expect(record).toMatchObject({ harnessScope: 'agent-1', harnessVersion: head(harness.env.root, 'agent-1')!.fingerprint })
+    const record = loadRun(harness.env.root, 'run-variant')
+    expect(record).toMatchObject({ variantScope: 'agent-1', variantVersion: head(harness.env.root, 'agent-1')!.fingerprint })
     expect(received!.params.system).toContain('You review pull requests.')
-    expect(received!.params.resources!.skillPaths[0]).toMatch(/versions\/[0-9a-f]{16}\/tree\/skills$/)
+    expect(received!.params.resources!.skillPaths[0]).toMatch(/versions\/[0-9a-f]{16}\/variant\/skills$/)
     // Plugin code waits for trust.
-    expect(received!.params.treeExtensions).toEqual([])
+    expect(received!.params.variantExtensions).toEqual([])
     expect(await received!.tools.find((tool) => tool.name === 'skill_load')!.execute({ name: 'triage' })).toContain('Split it by folder.')
   })
 
@@ -659,7 +659,7 @@ describe('continuing a run that stopped', () => {
     expect(continuation).toMatchObject({ resumable: true, reason: null, status: 'interrupted', resume: { sessionFile: realpathSync(join(sessionDir, 'saved.jsonl')), nativeSessionId: 'native-1' }, checklist: [{ text: 'Read', status: 'completed' }, { text: 'Fix', status: 'in_progress' }] })
 
     await expect(run('wrong-account', { continueFrom: 'first', accountId: 'another' })).rejects.toMatchObject({ code: 'continuation_mismatch' })
-    await expect(run('wrong-tree', { continueFrom: 'first', harness: { scope: 'other' } })).rejects.toMatchObject({ code: 'continuation_mismatch' })
+    await expect(run('wrong-variant', { continueFrom: 'first', variant: { scope: 'other' } })).rejects.toMatchObject({ code: 'continuation_mismatch' })
 
     await run('second', { continueFrom: 'first', text: '' })
     await tick()

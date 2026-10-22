@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Two kinds of memory sit outside the harness tree. The **Wiki** holds project notes: linked
+Two kinds of memory sit outside the variant. The **Wiki** holds project notes: linked
 Markdown that people and agents read and write as reference material, never as instructions.
 **History** is the record of earlier runs: recall over what was said, and bounded reads of the
 recorded trajectory. Both are served through harness tools (page 07) and kept searchable in a
@@ -59,8 +59,8 @@ rebuildable SQLite index.
 
 ## Invariants
 
-- **INV-MEM-1** The Wiki is reference material, not instructions. Only the tree shapes an agent
-  (`INV-TREE-1`); the Wiki reaches a prompt only as the dynamic `wiki` pointer and selected
+- **INV-MEM-1** The Wiki is reference material, not instructions. Only the variant shapes an agent
+  (`INV-VAR-1`); the Wiki reaches a prompt only as the dynamic `wiki` pointer and selected
   `references` (`INV-PRM-3`).
 - **INV-MEM-2** The harness is the only writer of the Wiki and of run records. An application
   reads them and writes notes only through harness methods (`wiki.*`). Inside the harness, the

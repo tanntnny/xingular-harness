@@ -2,7 +2,7 @@
 
 ## Purpose
 
-One compiler builds every model instruction the harness gives. It merges the pinned tree's
+One compiler builds every model instruction the harness gives. It merges the pinned variant's
 sections, the harness's own sections and the application's sections into an ordered,
 budgeted pack, then splits the pack into a **stable system prompt** (cached by the provider) and
 a **context update** (changing state appended to native history). Keeping the two apart is what
@@ -12,9 +12,9 @@ keeps provider caching effective across turns.
 
 | Type / function | Role |
 |---|---|
-| `compile(env, caller, launch, tree)` → `ContextPack` | Builds the ordered, budgeted sections. |
+| `compile(env, caller, launch, variant)` → `ContextPack` | Builds the ordered, budgeted sections. |
 | `render(env, pack)` → `string` | One string for a session that takes a single prompt. |
-| `sessionLaunch(env, caller, launch, historyFile, tree)` → `{ system, update, pack }` | SDK sessions: stable prefix plus an update with only the dynamic sections that changed since the last delivered snapshot. |
+| `sessionLaunch(env, caller, launch, historyFile, variant)` → `{ system, update, pack }` | SDK sessions: stable prefix plus an update with only the dynamic sections that changed since the last delivered snapshot. |
 | `deliveredSnapshot(sessionFile)` | Reads the last delivered snapshot on the active history branch; a compaction forces a fresh one. |
 | `saveForSession`, `copyToRun` | Terminal sessions keep the pack they started with and copy it to each run. |
 | `record`, `load`, `packPath` | The pack each run was given, at `runs/<id>/context.json`. |
@@ -30,7 +30,7 @@ All in `prompt/compile.ts`. A `ContextPack` holds `sections: Section[]` (each wi
 `scripts` 66, `wiki` 80, `tools` 90, `reporting` 95. Application sections sit among them by their `order`; plan
 mode uses `plan` at 25. Ties keep insertion order.
 
-Budgets (characters): tree sections 30,000 each (already capped at save, so never cut here);
+Budgets (characters): variant sections 30,000 each (already capped at save, so never cut here);
 references 12,000; Wiki pointer 2,500; tools 8,000; reporting 2,000; application sections their
 own `budget`.
 
@@ -70,7 +70,7 @@ compile ──► pack ──► stable sections ──► system prompt (+ "Con
 
 - **INV-PRM-1** The prompt is assembled only in `src/prompt/compile.ts`. Nothing else builds model
   instructions. SDK sessions use `sessionLaunch`; terminal sessions use `compile` + `render`.
-- **INV-PRM-2** The system prompt holds only stable text: identity, role, the tree's sections, the
+- **INV-PRM-2** The system prompt holds only stable text: identity, role, the variant's sections, the
   harness's reporting guidance, tool guidance and the tool manifest. Changing state never enters it.
 - **INV-PRM-3** `references`, `wiki`, and every section the application marks `dynamic` are
   delivered as context updates in native history, never in the system prompt.
@@ -91,5 +91,5 @@ what this page states is binding. Adopting parts of that draft is an architectur
 ## Source map
 
 `src/prompt/compile.ts`, `src/sessions/sessions.ts` (calls `sessionLaunch`),
-`src/terminal/terminals.ts` (calls `compile` + `render`), `src/tree/materialise.ts` (tree
+`src/terminal/terminals.ts` (calls `compile` + `render`), `src/variant/materialise.ts` (variant
 sections), `src/sessions/planMode.ts` (`plan` section).

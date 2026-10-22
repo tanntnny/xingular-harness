@@ -63,25 +63,25 @@ try {
   check('keeps several isolated Pi accounts', overview.accounts.length === 2 && overview.accounts[0].provider === 'pi', overview.accounts.map((account) => account.label).join(', '))
 
   const caller = { agentId: 'proof-agent', agentName: 'Prover', actor: 'Chat' }
-  // The agent's harness: a versioned tree of the eight components.
-  const seeded = await request('harnesses.seed', { scope: 'proof-agent', tree: { 'systemprompt.md': 'You prove the harness runs on its own.\n', 'guardrails.md': '- When asked for a proof, load the `proof` skill.\n', 'memory.md': 'The proof ran.\n', 'tool_guidance.md': '', 'skills/proof/SKILL.md': '---\nname: proof\ndescription: asked for a proof\n---\nList each check.\n' } })
-  const edited = await request('harnesses.save', { scope: 'proof-agent', edit: { 'tool_guidance.md': 'Read before you write.\n' }, note: 'proof edit' })
+  // The agent's harness: a versioned variant of the eight components.
+  const seeded = await request('variants.seed', { scope: 'proof-agent', variant: { 'systemprompt.md': 'You prove the harness runs on its own.\n', 'guardrails.md': '- When asked for a proof, load the `proof` skill.\n', 'memory.md': 'The proof ran.\n', 'tool_guidance.md': '', 'skills/proof/SKILL.md': '---\nname: proof\ndescription: asked for a proof\n---\nList each check.\n' } })
+  const edited = await request('variants.save', { scope: 'proof-agent', edit: { 'tool_guidance.md': 'Read before you write.\n' }, note: 'proof edit' })
   let refused = ''
   try {
-    await request('harnesses.save', { scope: 'proof-agent', edit: { 'skills/orphan/SKILL.md': '---\nname: orphan\ndescription: never named\n---\nx\n' } })
+    await request('variants.save', { scope: 'proof-agent', edit: { 'skills/orphan/SKILL.md': '---\nname: orphan\ndescription: never named\n---\nx\n' } })
   } catch (error) {
     refused = error.message
   }
-  const lineage = await request('harnesses.lineage', { scope: 'proof-agent' })
-  check('keeps a versioned harness tree and refuses an invalid one', lineage.length === 2 && edited.parent === seeded.fingerprint && refused.includes('never named in the always-on text'), `${lineage.length} versions`)
+  const lineage = await request('variants.lineage', { scope: 'proof-agent' })
+  check('keeps a versioned variant and refuses an invalid one', lineage.length === 2 && edited.parent === seeded.fingerprint && refused.includes('never named in the always-on text'), `${lineage.length} versions`)
 
   await request('wiki.write', { path: 'library/proof', text: '# Proof\n\nThe harness runs on its own. See [[home]].\n' })
   const found = await request('wiki.search', { query: 'harness runs' })
   const graph = await request('wiki.graph')
   check('keeps linked project notes in the Wiki', found.length > 0 && graph.edges.some((edge) => edge.from === 'library/proof' && edge.to === 'home'), `${found.length} hit; ${graph.edges.length} link`)
 
-  const compiled = await request('context.compile', { context: caller, harness: { scope: 'proof-agent' }, launch: { sections: [{ id: 'identity', title: 'Identity', body: 'You are the Prover.', budget: 1000, order: 10 }] }, render: true })
-  check('compiles a prompt from the host\'s sections and the harness tree', compiled.text.includes('You are the Prover.') && compiled.text.includes('The proof ran.') && compiled.text.includes('Read before you write.'), `${compiled.pack.sections.map((section) => section.id).join(', ')}`)
+  const compiled = await request('context.compile', { context: caller, variant: { scope: 'proof-agent' }, launch: { sections: [{ id: 'identity', title: 'Identity', body: 'You are the Prover.', budget: 1000, order: 10 }] }, render: true })
+  check('compiles a prompt from the host\'s sections and the variant', compiled.text.includes('You are the Prover.') && compiled.text.includes('The proof ran.') && compiled.text.includes('Read before you write.'), `${compiled.pack.sections.map((section) => section.id).join(', ')}`)
 
   const connections = await request('connections.list')
   check('lists connected apps', Array.isArray(connections), `${connections.length} configured`)
@@ -95,7 +95,7 @@ try {
     await new Promise((resolve) => setTimeout(resolve, 100))
   }
   check('records a scripted session as a run with events (no credentials, so it fails cleanly)', run.status === 'failed' && events.some((event) => event.runId === 'proof-run'), `status ${run.status}; ${events.length} events relayed`)
-  check('tells the host when state changes', ['accounts.changed', 'wiki.changed', 'harnesses.changed'].every((type) => notices.some((notice) => notice.type === type)))
+  check('tells the host when state changes', ['accounts.changed', 'wiki.changed', 'variants.changed'].every((type) => notices.some((notice) => notice.type === type)))
 
   // A plugin that extends the Wiki with a hook: installed from a folder, it hears nothing until it
   // is switched on and trusted, then every saved note; changed code is read again once trusted.
