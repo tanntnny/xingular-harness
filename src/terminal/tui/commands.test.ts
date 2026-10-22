@@ -1,19 +1,37 @@
-import type { AgentSession, ExtensionUIContext } from '@earendil-works/pi-coding-agent'
+import type { AgentSession, ExtensionUIContext, KeybindingsManager, Theme } from '@earendil-works/pi-coding-agent'
+import { stripTerminalSequences, type TUI } from '@earendil-works/pi-tui'
 import { describe, expect, it, vi } from 'vitest'
 import { createTerminalCommands, type TerminalCommandHost } from './commands'
+import { PageOverlay } from './pageOverlay'
+import { createHarnessTheme } from './theme'
+
+const harnessTheme = createHarnessTheme({ getColorMode: () => 'truecolor' } as Theme)
+/** The page overlay the last command handed to `ui.custom`. */
+async function overlayOf(ui: ExtensionUIContext): Promise<PageOverlay> {
+  Object.assign(ui, { theme: harnessTheme })
+  const [factory] = vi.mocked(ui.custom).mock.calls.at(-1)!
+  return await factory({ terminal: { rows: 24 }, requestRender: vi.fn() } as unknown as TUI, harnessTheme, {} as KeybindingsManager, vi.fn()) as unknown as PageOverlay
+}
 
 function setup() {
   const ui = {
     notify: vi.fn(), select: vi.fn(), confirm: vi.fn(), input: vi.fn(), custom: vi.fn(async () => undefined),
     theme: { name: 'harness-titanium' }
   } as unknown as ExtensionUIContext
+  let hideThinking = false
+  const setHideThinkingBlock = vi.fn((hidden: boolean) => { hideThinking = hidden })
   const session = {
-    extensionRunner: { getRegisteredCommands: () => [{ name: 'accounts', description: 'Manage accounts' }] },
+    extensionRunner: { getRegisteredCommands: () => [{ name: 'deploy', description: 'Deploy the project' }] },
     resourceLoader: {
       getPrompts: () => ({ prompts: [{ name: 'review', description: 'Review code' }] }),
       getSkills: () => ({ skills: [{ name: 'diagnose', description: 'Diagnose a problem' }] })
     },
-    settingsManager: { getEnableSkillCommands: () => true },
+    settingsManager: {
+      getEnableSkillCommands: () => true, getShowImages: () => true, getImageAutoResize: () => true, getBlockImages: () => false,
+      getHideThinkingBlock: () => hideThinking, setHideThinkingBlock,
+      getShowHardwareCursor: () => false, getShowTerminalProgress: () => false
+    },
+    autoCompactionEnabled: true, autoRetryEnabled: true, thinkingLevel: 'medium', steeringMode: 'all', followUpMode: 'one-at-a-time',
     compact: vi.fn(), reload: vi.fn(), setSessionName: vi.fn(),
     getActiveToolNames: () => ['read', 'bash'],
     getLastAssistantText: vi.fn(() => 'Actual assistant response'),
@@ -24,7 +42,9 @@ function setup() {
     newSession: vi.fn(), switchSession: vi.fn(), fork: vi.fn(), importFromJsonl: vi.fn(), reload: vi.fn(), navigateTree: vi.fn(),
     installationDeviceId: vi.fn(async () => '12345678-1234-4234-8234-123456789abc'),
     permissions: vi.fn(async () => ({ full: false, globalTools: [] as string[] })),
-    setFullPermission: vi.fn(async () => {}), setGlobalTool: vi.fn(async () => {})
+    setFullPermission: vi.fn(async () => {}), setGlobalTool: vi.fn(async () => {}),
+    snapshot: vi.fn(() => ({ account: { accountId: 'a1', label: 'Work' } })),
+    interrupt: vi.fn(async () => {})
   }
   const trajectoryRun = { id: 'run-1', mode: 'code', goal: 'Review the change', startedAt: '2026-10-18T00:00:00.000Z', endedAt: '2026-10-18T00:00:01.000Z', status: 'completed' }
   const host: TerminalCommandHost = {
@@ -32,7 +52,13 @@ function setup() {
     cwd: () => '/isolated/project', sessionDirectory: () => '/isolated/account/history',
     refresh: vi.fn(), changed: vi.fn(), shutdown: vi.fn(), setEditorText: vi.fn(), copyText: vi.fn(async () => {}),
     plan: vi.fn(),
-    hotkeys: () => 'Escape: interrupt', changelog: async () => 'Harness release notes',
+    btw: vi.fn(async () => {}),
+    control: vi.fn(async (method: string) => ({
+      'accounts.list': { accounts: [], pools: [], defaults: {} }, 'plugins.session': { projectId: null }, 'plugins.list': [],
+      'hub.list': { entries: [], installed: [], origin: 'bundled' },
+      'terminal.components.list': { items: [], addedIds: [], writable: false, fingerprint: null }
+    })[method]) as unknown as TerminalCommandHost['control'],
+    hotkeys: () => 'Escape: interrupt',
     logs: { read: vi.fn(async () => '[harness] diagnostic') },
     trajectory: {
       list: vi.fn(async () => [trajectoryRun]),
@@ -45,7 +71,7 @@ function setup() {
 describe('owned terminal commands', () => {
   it('leaves ordinary prompts and supported extension/resource commands for the SDK', async () => {
     const { commands, ui } = setup()
-    for (const text of ['hello', '/accounts', '/review module', '/skill:diagnose trace']) {
+    for (const text of ['hello', '/deploy', '/review module', '/skill:diagnose trace']) {
       expect(await commands.execute(text)).toBe(false)
     }
     expect(ui.notify).not.toHaveBeenCalled()
@@ -60,10 +86,37 @@ describe('owned terminal commands', () => {
   it('populates completion from builtins and loaded resources', () => {
     const { commands } = setup()
     const names = commands.completions().map(item => item.name)
-    expect(names).toEqual(expect.arrayContaining(['model', 'resume', 'accounts', 'review', 'effort', 'trajectory', 'log', 'permissions']))
-    expect(names).not.toContain('thinking')
+    expect(names).toEqual(expect.arrayContaining(['model', 'resume', 'accounts', 'review', 'effort', 'thinking', 'trajectory', 'log', 'permissions', 'components']))
     expect(names).not.toContain('skill:diagnose')
     expect(new Set(names).size).toBe(names.length)
+  })
+
+  it('toggles transcript thinking visibility with /thinking and supports explicit show or hide', async () => {
+    const { commands, session, ui } = setup()
+    const setHideThinkingBlock = session.settingsManager.setHideThinkingBlock
+
+    await commands.execute('/thinking')
+    expect(session.settingsManager.getHideThinkingBlock()).toBe(true)
+    expect(setHideThinkingBlock).toHaveBeenLastCalledWith(true)
+    expect(ui.notify).toHaveBeenLastCalledWith('Thinking blocks hidden.', 'info')
+
+    await commands.execute('/thinking show')
+    expect(session.settingsManager.getHideThinkingBlock()).toBe(false)
+    expect(setHideThinkingBlock).toHaveBeenLastCalledWith(false)
+
+    await commands.execute('/thinking hide')
+    expect(session.settingsManager.getHideThinkingBlock()).toBe(true)
+    expect(setHideThinkingBlock).toHaveBeenLastCalledWith(true)
+
+    await commands.execute('/thinking')
+    expect(session.settingsManager.getHideThinkingBlock()).toBe(false)
+    expect(setHideThinkingBlock).toHaveBeenLastCalledWith(false)
+
+    await commands.execute('/thinking toggle')
+    expect(session.settingsManager.getHideThinkingBlock()).toBe(false)
+    expect(setHideThinkingBlock).toHaveBeenCalledTimes(4)
+    expect(ui.notify).toHaveBeenLastCalledWith('Use /thinking, /thinking show, or /thinking hide.', 'error')
+    expect(commands.completions().find(item => item.name === 'thinking')?.description).toContain('[show|hide]')
   })
 
   it('runs one plan request from /plan <brief> and rejects toggle syntax', async () => {
@@ -89,28 +142,12 @@ describe('owned terminal commands', () => {
     expect(commands.expandSkill('$diagnose the trace')).toBe('$diagnose the trace')
   })
 
-  it('uses the scope checked runtime for explicit resume and import paths', async () => {
+  it('uses the scope checked runtime for an explicit resume path', async () => {
     const { commands, runtime } = setup()
     await commands.execute('/resume /isolated/account/history/session.jsonl')
     expect(runtime.switchSession).toHaveBeenCalledWith('/isolated/account/history/session.jsonl')
-    await commands.execute('/import other.jsonl')
-    expect(runtime.importFromJsonl).toHaveBeenCalledWith('/isolated/project/other.jsonl')
     await commands.execute('/new')
     expect(runtime.newSession).toHaveBeenCalledOnce()
-  })
-
-  it('passes the Harness installation device ID to direct OAuth sign-in', async () => {
-    const { commands, session, runtime } = setup()
-    const login = vi.fn(async (_provider: string, _type: string, _interaction: unknown, options?: { getDeviceId?: () => string }) => options)
-    Object.assign(session, { modelRuntime: {
-      getProviders: () => [{ id: 'openai', name: 'OpenAI', auth: { oauth: {}, apiKey: undefined } }],
-      login
-    } })
-
-    await commands.execute('/login openai')
-
-    expect(runtime.installationDeviceId).toHaveBeenCalledOnce()
-    expect(login.mock.calls[0]?.[3]?.getDeviceId?.()).toBe('12345678-1234-4234-8234-123456789abc')
   })
 
   it('reports rejected navigation without claiming success', async () => {
@@ -145,73 +182,104 @@ describe('owned terminal commands', () => {
     expect(session.exportToHtml).toHaveBeenCalledWith('/isolated/project/notes.html', { themeName: 'harness-titanium' })
   })
 
-  it('does not upload anything after a declined share confirmation', async () => {
-    const { commands, ui, session } = setup()
-    vi.mocked(ui.confirm).mockResolvedValue(false)
-    await commands.execute('/share')
-    expect(ui.confirm).toHaveBeenCalledOnce()
-    expect(session.exportToHtml).not.toHaveBeenCalled()
-  })
-
-  it('shows actual application keyboard bindings and release notes', async () => {
+  it('shows actual application keyboard bindings', async () => {
     const { commands, ui } = setup()
     await commands.execute('/hotkeys')
     expect(ui.notify).toHaveBeenCalledWith('Escape: interrupt', 'info')
-    await commands.execute('/changelog')
-    expect(ui.notify).toHaveBeenCalledWith('Harness release notes', 'info')
   })
 
-  it('opens the latest or requested trajectory run in the interactive overlay', async () => {
+  it.each(['login', 'logout', 'share', 'bug', 'changelog', 'trust', 'scoped-models', 'session', 'import'])('no longer has /%s', async name => {
+    const { commands, ui } = setup()
+    expect(commands.completions().map(item => item.name)).not.toContain(name)
+    expect(await commands.execute(`/${name} anything`)).toBe(true)
+    expect(ui.notify).toHaveBeenCalledWith(expect.stringContaining(`Unknown command: /${name}`), 'error')
+  })
+
+  it('asks a side question with /btw, and dismisses the one showing when it has no question', async () => {
+    const { commands, host } = setup()
+    expect(await commands.execute('/btw what does the plan step do?')).toBe(true)
+    expect(host.btw).toHaveBeenLastCalledWith('what does the plan step do?')
+    await commands.execute('/btw')
+    expect(host.btw).toHaveBeenLastCalledWith('')
+    expect(commands.completions().find(item => item.name === 'btw')?.description).toContain('/btw <question>')
+  })
+
+  it('stops a running reply with /stop and says when nothing is running', async () => {
+    const { commands, runtime, session, ui } = setup()
+    await commands.execute('/stop')
+    expect(runtime.interrupt).not.toHaveBeenCalled()
+    expect(ui.notify).toHaveBeenCalledWith('Nothing is running.', 'error')
+    Object.assign(session, { isStreaming: true })
+    await commands.execute('/stop')
+    expect(runtime.interrupt).toHaveBeenCalledOnce()
+  })
+
+  it('opens Trajectory as a standalone full-screen page on the requested run', async () => {
     const { commands, host, ui } = setup()
-    await commands.execute('/trajectory')
-    expect(host.trajectory.list).toHaveBeenCalledOnce()
-    expect(host.trajectory.read).toHaveBeenCalledWith('run-1')
-    expect(ui.custom).toHaveBeenCalledOnce()
-    expect(ui.custom).toHaveBeenCalledWith(expect.any(Function), { overlay: true, overlayOptions: { width: '100%', maxHeight: '90%' } })
-
     await commands.execute('/trajectory run-1')
-    expect(host.trajectory.read).toHaveBeenLastCalledWith('run-1')
+    expect(ui.custom).toHaveBeenCalledOnce()
+    expect(ui.custom).toHaveBeenCalledWith(expect.any(Function), { overlay: true, overlayOptions: { width: '100%', maxHeight: '100%', anchor: 'top-left', dialog: 'page' } })
+    const shown = await overlayOf(ui)
+    expect(shown.page.tabs().map(tab => tab.title)).toEqual(['Runs', 'Events'])
+    await vi.waitFor(() => expect(host.trajectory.read).toHaveBeenCalledWith('run-1'))
+    expect(shown.page.activeTab()).toBe('events')
+    shown.dispose()
   })
 
-  it('opens a full-screen snapshot combining diagnostics and current-conversation run events', async () => {
+  it('opens Log alone and reads diagnostics and current-conversation run events', async () => {
     const { commands, host, ui } = setup()
     await commands.execute('/log')
-    expect(host.logs.read).toHaveBeenCalledOnce()
+    const shown = await overlayOf(ui)
+    expect(shown.page.tabs().map(tab => tab.title)).toEqual(['Diagnostics', 'Run Events'])
+    await vi.waitFor(() => expect(host.logs.read).toHaveBeenCalledOnce())
     expect(host.trajectory.list).toHaveBeenCalledOnce()
-    expect(host.trajectory.read).toHaveBeenCalledWith('run-1')
-    expect(ui.custom).toHaveBeenCalledWith(expect.any(Function), {
-      overlay: true, overlayOptions: { width: '100%', maxHeight: '100%', anchor: 'top-left' }
-    })
+    await vi.waitFor(() => expect(host.trajectory.read).toHaveBeenCalledWith('run-1'))
+    shown.dispose()
   })
 
-  it('shows shared tool grants and confirms Full Permission before enabling it', async () => {
-    const { commands, host, runtime, ui } = setup()
-    vi.mocked(ui.custom).mockImplementationOnce(async () => 'tool:bash' as never)
-      .mockImplementationOnce(async () => 'done' as never)
-    await commands.execute('/permissions')
-    expect(runtime.permissions).toHaveBeenCalled()
-    expect(runtime.setGlobalTool).toHaveBeenCalledWith('bash', true)
-
-    vi.mocked(ui.custom).mockImplementationOnce(async () => 'full' as never)
-      .mockImplementationOnce(async () => 'done' as never)
-    vi.mocked(ui.confirm).mockResolvedValueOnce(true)
-    await commands.execute('/permissions')
-    expect(ui.confirm).toHaveBeenCalledWith('Enable Full Permission?', expect.stringContaining('Hard denials'))
-    expect(runtime.setFullPermission).toHaveBeenCalledWith(true)
-    expect(host.refresh).toHaveBeenCalled()
+  it('opens Settings alone with its category tabs', async () => {
+    const { commands, ui } = setup()
+    await commands.execute('/settings')
+    const shown = await overlayOf(ui)
+    expect(shown.page.activeTab()).toBe('appearance')
+    expect(shown.render(100).map(stripTerminalSequences).join('\n')).toContain('Show images')
+    shown.dispose()
   })
 
-  it('reports empty history and refuses run IDs outside the current native session', async () => {
+  it.each([
+    ['/accounts', ['Accounts', 'Pools']], ['/permissions', ['Overview', 'Tools']],
+    ['/plugins', ['Plugins', 'Trust']], ['/hub', ['Catalog', 'Installed']],
+    ['/components', ['Skills', 'Prompts', 'Rules']], ['/settings', expect.any(Array)],
+    ['/trajectory', ['Runs', 'Events']], ['/log', ['Diagnostics', 'Run Events']]
+  ])('opens %s as its own page with local tabs', async (command, tabs) => {
+    const { commands, ui } = setup()
+    await commands.execute(command)
+    expect(ui.custom).toHaveBeenCalledOnce()
+    const shown = await overlayOf(ui)
+    const titles = shown.page.tabs().map(tab => tab.title)
+    if (Array.isArray(tabs)) expect(titles).toEqual(tabs)
+    else expect(titles.length).toBeGreaterThan(1)
+    const rows = shown.render(100).map(stripTerminalSequences)
+    expect(rows[0]).toContain(titles[0]!)
+    expect(rows.join('\n')).not.toContain('  Accounts  Permissions  Plugins  Hub  Settings  Trajectory  Log')
+    shown.dispose()
+  })
+
+  it('shows empty history and refuses run IDs outside the current native session on the page itself', async () => {
     const { commands, host, ui } = setup()
     vi.mocked(host.trajectory.list).mockResolvedValue([])
     await commands.execute('/trajectory')
-    expect(ui.notify).toHaveBeenCalledWith('No runs recorded for this native session yet', 'info')
-    expect(ui.custom).not.toHaveBeenCalled()
+    const empty = await overlayOf(ui)
+    await vi.waitFor(() => expect(empty.render(100).map(stripTerminalSequences).join('\n')).toContain('No runs recorded for this native session yet'))
+    empty.dispose()
 
+    vi.mocked(ui.custom).mockClear()
     vi.mocked(host.trajectory.list).mockResolvedValue([{ id: 'run-1', mode: 'code', goal: null, startedAt: '2026-10-18T00:00:00.000Z', endedAt: null, status: 'running' }])
     await commands.execute('/trajectory other-run')
+    const missing = await overlayOf(ui)
+    await vi.waitFor(() => expect(missing.render(100).map(stripTerminalSequences).join('\n')).toContain('Run not found in this native session'))
     expect(host.trajectory.read).not.toHaveBeenCalled()
-    expect(ui.notify).toHaveBeenLastCalledWith('Run not found in this native session', 'error')
+    missing.dispose()
   })
 
   it('exits through the application lifecycle', async () => {
@@ -238,59 +306,11 @@ describe('owned terminal commands', () => {
     expect(host.setEditorText).toHaveBeenCalledWith('')
   })
 
-  it('uses masked input for secret provider credentials', async () => {
-    const { commands, session, host, ui } = setup()
-    const login = vi.fn(async (_provider, _type, interaction) => {
-      expect(await interaction.prompt({ type: 'secret', message: 'API key' })).toBe('private-key')
-    })
-    Object.assign(session, { modelRuntime: {
-      getProviders: () => [{ id: 'provider', name: 'Provider', auth: { apiKey: { login: true } } }], login
-    } })
-    host.secretInput = vi.fn(async () => 'private-key')
-    await commands.execute('/login provider')
-    expect(host.secretInput).toHaveBeenCalledWith('API key', undefined, { signal: undefined })
-    expect(ui.input).not.toHaveBeenCalled()
-    expect(ui.notify).not.toHaveBeenCalledWith(expect.stringContaining('private-key'), expect.anything())
-  })
-
-  it('fails closed when secure credential input is unavailable', async () => {
-    const { commands, session, ui } = setup()
-    Object.assign(session, { modelRuntime: {
-      getProviders: () => [{ id: 'provider', name: 'Provider', auth: { apiKey: { login: true } } }],
-      login: async (_provider: string, _type: string, interaction: { prompt(prompt: unknown): Promise<string> }) => interaction.prompt({ type: 'secret', message: 'API key' })
-    } })
-    await commands.execute('/login provider')
-    expect(ui.input).not.toHaveBeenCalled()
-    expect(ui.notify).toHaveBeenCalledWith('Secure credential entry is unavailable', 'error')
-  })
-
   it('rejects resume paths outside account history before runtime navigation', async () => {
     const { commands, runtime, ui } = setup()
     await commands.execute('/resume /other-account/session.jsonl')
     expect(runtime.switchSession).not.toHaveBeenCalled()
     expect(ui.notify).toHaveBeenCalledWith(expect.stringContaining('this account history folder'), 'error')
-  })
-
-  it('routes trust through the existing protected plugin workflow', async () => {
-    const { commands, session } = setup()
-    Object.assign(session, { prompt: vi.fn(async () => {}) })
-    vi.spyOn(session.extensionRunner, 'getRegisteredCommands').mockReturnValue([{ name: 'plugins' }] as never)
-    await commands.execute('/trust')
-    expect(session.prompt).toHaveBeenCalledWith('/plugins')
-  })
-
-  it('opens a reviewable Harness issue draft without attaching session history', async () => {
-    const { commands, host, ui } = setup()
-    host.openExternal = vi.fn(async () => {})
-    vi.mocked(ui.confirm).mockResolvedValue(false)
-    await commands.execute('/bug Unicode issue 知識')
-    expect(host.openExternal).not.toHaveBeenCalled()
-    vi.mocked(ui.confirm).mockResolvedValue(true)
-    await commands.execute('/bug Unicode issue 知識')
-    const url = new URL(vi.mocked(host.openExternal).mock.calls[0][0])
-    expect(url.pathname).toBe('/tanntnny/xingular-harness/issues/new')
-    expect(url.searchParams.get('title')).toBe('Unicode issue 知識')
-    expect(url.searchParams.get('body')).toContain('Harness')
   })
 
   it('reloads through the stable runtime lifecycle', async () => {

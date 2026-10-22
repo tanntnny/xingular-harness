@@ -1,0 +1,40 @@
+{
+  "passed": false,
+  "implementation": "production standalone CLI + real Pi SDK + loopback OpenAI SSE transport",
+  "cli": "/Users/tanny/Documents/Projects/Xingular/Xingular Agent/Harness/dist/cli.js",
+  "cliSha256": "2557f86b2f25ccdb1c76efcd51c3aab83b5b100ca55237eda0ff68f74bd7c6da",
+  "verifierSha256": "8a92a37b485c27c775ab470921ffbb073d904ebb055a70129709aa8cda135a43",
+  "provider": "controlled loopback OpenAI-compatible streaming transport; no external model requests or user credentials",
+  "requestCount": 0,
+  "profiles": [
+    {
+      "size": "40x20",
+      "checks": [
+        "welcome and real configured model"
+      ],
+      "error": "PTY did not show 'Settings'; exit=None; tail='    ████████████           ██  ██       Xingular Harness       ██  ██              ▒▒  ██                  ██       v3.0.0Starting session…                       ────────────────────────────────────────❯\\xa0Try \"find where the configuration is l────────────────────────────────────────40x20 | — | account unknown · no-model ·❯\\xa0Try \"find where the configuration is l40x20 | — | Verifier First · Local termi'",
+      "exitCode": -15,
+      "termiosRestored": false,
+      "bracketedPasteDisabled": false,
+      "cursorShown": false
+    }
+  ],
+  "captures": [
+    {
+      "file": "40x20-welcome.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 40,
+      "rows": 20,
+      "rawBytes": 2362,
+      "rawSha256": "05346c934e0d0b2f823909ed6f74e9c034af50c676d76de6a85344454f2af08d",
+      "archiveBytes": 681,
+      "archiveSha256": "cd04396452bc2515010c5c9c5764ab0ea6b6637f240c3aa488fef936ac901c25"
+    }
+  ],
+  "limits": [
+    "The AgentSession, frontend, native tools, authorization and run writer are production code.",
+    "The controlled local transport supplies deterministic model responses and usage fixtures.",
+    "These functional checks do not establish external provider OAuth/service availability or visual equivalence to OMP.",
+    "Each compressed capture is a cumulative actual ANSI stream from PTY startup through the named interaction. Replay at its recorded dimensions."
+  ]
+}

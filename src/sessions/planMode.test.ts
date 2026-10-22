@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 import { CONTEXT_MESSAGE_TYPE, CONTEXT_SNAPSHOT_KEY } from '../prompt/compile'
-import { PLAN_INSTRUCTIONS, PLAN_SECTION_ID, planModeTools, planRefusal, planSection } from './planMode'
+import { PLAN_INSTRUCTIONS, PLAN_SECTION_ID, parseProposedPlan, planModeTools, planRefusal, planSection } from './planMode'
 
 function history(sectionIds: string[]): string {
   const file = join(mkdtempSync(join(tmpdir(), 'plan-history-')), 'session.jsonl')
@@ -43,5 +43,35 @@ describe('plan mode', () => {
     expect(planSection(false, null)).toBeNull()
     expect(planSection(false, history(['blocks']))).toBeNull()
     expect(planSection(false, history(['blocks', PLAN_SECTION_ID]))).toMatchObject({ id: PLAN_SECTION_ID, body: null, dynamic: true })
+  })
+})
+
+describe('parseProposedPlan', () => {
+  it('returns the title, body and surrounding text of a closed block', () => {
+    expect(parseProposedPlan('Here is what I found.\n<proposed_plan>\n# Add cache\n\n1. Edit `src/a.ts`\n</proposed_plan>\nAsk me to start.')).toEqual({
+      before: 'Here is what I found.',
+      title: 'Add cache',
+      body: '1. Edit `src/a.ts`',
+      after: 'Ask me to start.',
+      complete: true
+    })
+  })
+
+  it('treats a missing closing tag as a plan still streaming', () => {
+    expect(parseProposedPlan('<proposed_plan># Draft\n\n1. Read')).toMatchObject({ title: 'Draft', body: '1. Read', after: '', complete: false })
+  })
+
+  it('falls back to a generic title when the block has no heading', () => {
+    expect(parseProposedPlan('<proposed_plan>1. Only steps</proposed_plan>')).toMatchObject({ title: 'Plan', body: '1. Only steps', complete: true })
+  })
+
+  it('uses the last block when a reply has several', () => {
+    const plan = parseProposedPlan('<proposed_plan># First</proposed_plan>\n<proposed_plan># Second</proposed_plan>')
+    expect(plan).toMatchObject({ title: 'Second', complete: true })
+    expect(plan?.before).toContain('# First')
+  })
+
+  it('returns null when the reply has no block', () => {
+    expect(parseProposedPlan('Just an answer.')).toBeNull()
   })
 })

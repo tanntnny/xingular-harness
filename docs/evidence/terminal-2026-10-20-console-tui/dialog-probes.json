@@ -1,0 +1,100 @@
+{
+  "scope": "centered page dialog geometry and scrim",
+  "passed": true,
+  "implementation": "production OpenTUI frontend built from src/terminal/opentui/",
+  "cli": "dist/cli.js",
+  "cliSha256": "029c32e19955993be65b7031b50a77e463c0c799893de78c0a83f4d75cf128d3",
+  "frontend": "dist/terminal-opentui.js",
+  "frontendSha256": "e0d7cf79e3a8063d49862e666c988b98be94a4695194b943f69f704cbef2850c",
+  "input": "isolated PTY; the command characters were sent one at a time and Return as its own key event",
+  "fixture": "state and data from an isolated verifier run; the loopback provider was not running for these probes",
+  "rule": {
+    "size": "80% of the terminal, capped at 100 columns by 30 rows",
+    "centered": true,
+    "fallback": "full-screen page below 30 columns or 12 rows",
+    "pageRows": "dialog rows less 4 chrome rows (header, two rules, hint)",
+    "panel": "#111114",
+    "outside": "#0b0b0d",
+    "scrim": "#0b0b0d99",
+    "dimmedFooter": "#2b2b31, blended from theme.dim #5c5c66"
+  },
+  "profiles": [
+    {
+      "size": "40x20",
+      "top": 2,
+      "left": 4,
+      "width": 32,
+      "height": 16,
+      "panelBackground": "#111114",
+      "outsideBackground": "#0b0b0d",
+      "footerForeground": "#2b2b31",
+      "notes": "The dimmed welcome lockup remains visible around the four sides of the panel."
+    },
+    {
+      "size": "80x24",
+      "top": 2,
+      "left": 8,
+      "width": 64,
+      "height": 19,
+      "panelBackground": "#111114",
+      "outsideBackground": "#0b0b0d",
+      "footerForeground": "#2b2b31",
+      "notes": "The page hint row covers the dimmed composer's first row; the composer borders remain visible outside the panel."
+    },
+    {
+      "size": "120x40",
+      "top": 5,
+      "left": 12,
+      "width": 96,
+      "height": 30,
+      "panelBackground": "#111114",
+      "outsideBackground": "#0b0b0d",
+      "footerForeground": "#2b2b31",
+      "notes": "The panel ends above the composer at this size."
+    }
+  ],
+  "captures": [
+    {
+      "file": "40x20-settings-dialog.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 40,
+      "rows": 20,
+      "rawBytes": 30285,
+      "rawSha256": "d36f9450faea88da8cef3f99bb9941b5d7c70955ab56ffa5a65e60c4eb90ed78",
+      "archiveBytes": 3439,
+      "archiveSha256": "59179b47668e565d3aa92f192d01b88e10eded919564351d2ddc768354c689f2"
+    },
+    {
+      "file": "80x24-settings-dialog.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 80,
+      "rows": 24,
+      "rawBytes": 44631,
+      "rawSha256": "25efcd64ea7ff48bbd93835e8f86a5c85fc61e424e20cabad954fde5a8b75559",
+      "archiveBytes": 4537,
+      "archiveSha256": "38d4aade18a7afca91380501dfcce7fdca66d19e4d864a13e5ea871d91a33798"
+    },
+    {
+      "file": "120x40-settings-dialog.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 120,
+      "rows": 40,
+      "rawBytes": 65108,
+      "rawSha256": "6b5b9db20b615d109a6b024bd2f2045da7243ded949ae8102e2e29b468eae7a6",
+      "archiveBytes": 5500,
+      "archiveSha256": "0c4dbaf698e891a8011463a83d4fa4082b6c939589ff74f60e343bd7d4f8b2c1"
+    }
+  ],
+  "checks": [
+    "At each size the page panel is centered and its width and height match the 80% rule and the 100x30 cap.",
+    "The panel is drawn in #111114 with no rounded border, and the rest of the console in #0b0b0d.",
+    "The full-screen scrim dims the console: the footer foreground is #2b2b31 instead of theme.dim #5c5c66.",
+    "The 40x20 capture leaves the dimmed welcome lockup visible around the panel.",
+    "The default Pi frontend is unchanged; its verifier passed 80x24 in this tree (see pi-80x24/verification.json)."
+  ],
+  "limits": [
+    "The full scripts/verify-terminal.py sends /settings\\r as one write; the OpenTUI input path drops the Return in that burst. These probes send the command characters and Return separately, as a person does.",
+    "The probes establish layout, panel color and scrim dimming, not a model turn or the full verifier's interaction groups.",
+    "Each compressed capture is a cumulative actual ANSI stream from PTY startup through the opened /settings dialog. Replay it at its recorded dimensions."
+  ]
+}

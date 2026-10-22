@@ -13,7 +13,7 @@ import { diffSummary, readTree, type TreeDiff } from '../tree/tree'
 import type { TreeTrust } from '../tree/trust'
 import { DEFAULT_REFINE_HOST, type RefineHost } from './host'
 import { Library, libraryAreas, libraryScopes } from './library'
-import { PiExecutor, PiImprover, type ImproverSettings, type RefineRuntime } from './pi'
+import { PiExecutor, PiImprover, RETAINED_WORKSPACE, type ImproverSettings, type RefineRuntime } from './pi'
 import { checkWorkPrompts } from './prompts'
 import { readSummary, refineDir, runRefinement, type RefineEvent, type RefineSummary } from './runner'
 import type { Executor, Improver, RecursionMode, RefineTask } from './types'
@@ -26,6 +26,10 @@ export interface StartInput {
   improver?: ImproverSettings
   /** Start from this version of the scope instead of its head. */
   baseVersion?: string | null
+  /** Model, effort and account for executions; a host's own session settings win (PROP-0003). */
+  executor?: ImproverSettings
+  /** Keep every execution's workspace under `rollouts/<label>/workspace/` for measurement afterwards. */
+  retainWorkspaces?: boolean
   id?: string
 }
 
@@ -38,6 +42,8 @@ export interface CandidateView {
   fingerprint: string | null
   diff: TreeDiff | null
   files: string[]
+  /** The retained workspace of this execution, or null when the refinement did not keep it. */
+  workspace: string | null
 }
 
 export interface RefinementsOptions {
@@ -73,13 +79,13 @@ export class Refinements {
     const dir = refineDir(root, id)
     const controller = new AbortController()
     const host = this.options.host() ?? DEFAULT_REFINE_HOST
-    const executor = this.options.executor?.(id, dir, controller.signal) ?? new PiExecutor(this.options.runtime, host, id, dir, controller.signal)
+    const executor = this.options.executor?.(id, dir, controller.signal) ?? new PiExecutor(this.options.runtime, host, id, dir, controller.signal, { retainWorkspaces: input.retainWorkspaces === true, settings: input.executor })
     const improver = this.options.improver?.(id, dir, input.improver ?? {}, controller.signal) ?? new PiImprover(this.options.runtime, dir, input.improver ?? {}, controller.signal)
     const emit = (event: RefineEvent) => {
       if (event.type === 'summary') this.options.bus.emit({ type: 'refine.changed', id, scope: task.scope, status: event.summary.status })
       else this.options.bus.emit({ type: 'refine.event', id, scope: task.scope, event })
     }
-    const done = runRefinement({ root, id, task, k, mode, executor, improver, baseTree: base.tree, onEvent: emit, signal: controller.signal })
+    const done = runRefinement({ root, id, task, k, mode, executor, improver, baseTree: base.tree, settings: { executor: input.executor ?? null, improver: input.improver ?? null }, onEvent: emit, signal: controller.signal })
       .catch((error) => {
         this.options.bus.emit({ type: 'refine.changed', id, scope: task.scope, status: 'failed', error: error instanceof Error ? error.message : String(error) })
         return null
@@ -138,6 +144,7 @@ export class Refinements {
       const harnessDir = join(dir, 'harnesses', label)
       const tree = existsSync(harnessDir) ? readTree(PI_SURFACE, harnessDir) : null
       const files = record.files ?? []
+      const workspace = join(dir, 'rollouts', label, RETAINED_WORKSPACE)
       return {
         label,
         kind: label.startsWith('base') ? 'base' : finals.has(label) ? 'final' : 'candidate',
@@ -146,7 +153,8 @@ export class Refinements {
         runId: `${id}-${label}`,
         fingerprint: tree ? store.fingerprint(tree) : null,
         diff: tree && !label.startsWith('base') ? diffSummary(PI_SURFACE, baseTree, tree) : null,
-        files
+        files,
+        workspace: existsSync(workspace) ? workspace : null
       } satisfies CandidateView
     })
   }

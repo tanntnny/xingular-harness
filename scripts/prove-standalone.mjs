@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Shows that the harness runs with no application around it: starts `xingular-harness serve`
+// Shows that the harness runs with no application around it: starts `xharness serve`
 // on a throwaway data root and drives it over newline-delimited JSON, the way a host written
 // in any language would. No model request is made: the scripted session has no credentials,
 // so the proof is that it is recorded and fails cleanly.
@@ -128,6 +128,11 @@ try {
 
   const demo = spawnSync(process.execPath, [cli, 'refine', 'demo', '--k', '2', '--out', join(scratch, 'demo')], { encoding: 'utf8' })
   check('refines a harness end to end: Propose–Probe–Compose, blind selection, and a library entry', demo.status === 0 && (demo.stdout.match(/R=8\/8 executions, P=6\/6 improver sessions/g) ?? []).length === 2 && demo.stdout.includes('library: ledger-1, ledger-2'), demo.stdout.split('\n')[0] || demo.stderr)
+
+  const matrixRoot = join(scratch, 'matrix')
+  const matrix = spawnSync(process.execPath, [cli, 'refine', 'matrix', '--demo', '--data', matrixRoot, '--out', join(matrixRoot, 'summary.json')], { encoding: 'utf8' })
+  const matrixSummary = matrix.status === 0 ? JSON.parse(readFileSync(join(matrixRoot, 'summary.json'), 'utf8')) : null
+  check('evaluates a harness matrix with no model: per-version deliverability with comparability keys', matrixSummary !== null && matrixSummary.status === 'ok' && matrixSummary.rows.length === 2 && matrixSummary.rows[0].packageVersion === JSON.parse(readFileSync(join(here, '..', 'package.json'), 'utf8')).version && matrixSummary.rows[0].executor === 'DemoExecutor', matrix.stdout.split('\n')[0] || matrix.stderr)
 
   await request('harness.shutdown')
 } catch (error) {

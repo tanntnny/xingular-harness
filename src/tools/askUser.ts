@@ -22,19 +22,21 @@ export function askUserTool(run: Pick<ActiveRun, 'requestAnswers'>): ToolSpec {
     label: 'Ask the user',
     description:
       'Ask the user one to five related questions in one request and wait until they answer the batch. Give each question a concise 2–3 word summary and aim to keep each question to 25 words or fewer. ' +
-      'Offer up to 6 short options when the choices are clear; every option must include a helpful description of 25 words or fewer. Recommendations are visual only: they never preselect an answer, and submitted choices keep their original labels. Mark a recommended option with recommended: true instead of changing its label; mark at most one for a single-choice question, or several when multiSelect is true. Every question includes a free-text “Something else” answer. Set multiSelect when several can apply. Use it when you need a decision, not for small talk.',
+      'Every question must offer 1–6 short choices, each with a helpful description of 25 words or fewer, and at least one choice must be marked recommended: true. Recommendations are visual only: they never preselect an answer, and submitted choices keep their original labels. Mark at most one recommended choice for a single-choice question, or several when multiSelect is true. Every question also includes a free-text “Something else” answer. Set multiSelect when several can apply. Use it when you need a decision, not for small talk.',
     parameters: (Type) =>
       Type.Object({
         questions: Type.Array(Type.Object({
           summary: Type.String({ description: 'A concise 2–3 word summary label' }),
           question: Type.String({ description: 'A clear, standalone question; aim for 25 words or fewer' }),
-          options: Type.Optional(
-            Type.Array(Type.Object({
-              label: Type.String({ description: 'A short choice; do not add a recommendation suffix to the label' }),
-              description: Type.String({ description: 'Required. Briefly explain this choice in 25 words or fewer.' }),
-              recommended: Type.Optional(Type.Boolean({ description: 'Whether to show this choice as a visual recommendation; it is not preselected, and answers use the original label' }))
-            }), { maxItems: MAX_OPTIONS })
-          ),
+          options: Type.Array(Type.Object({
+            label: Type.String({ description: 'A short choice; do not add a recommendation suffix to the label' }),
+            description: Type.String({ description: 'Required. Briefly explain this choice in 25 words or fewer.' }),
+            recommended: Type.Optional(Type.Boolean({ description: 'Whether to show this choice as a visual recommendation; at least one choice per question must be recommended, it is not preselected, and answers use the original label' }))
+          }), {
+            minItems: 1,
+            maxItems: MAX_OPTIONS,
+            contains: Type.Object({ recommended: Type.Literal(true) })
+          }),
           multiSelect: Type.Optional(Type.Boolean())
         }), { minItems: 1, maxItems: 5 })
       }),
@@ -60,6 +62,8 @@ export function askUserTool(run: Pick<ActiveRun, 'requestAnswers'>): ToolSpec {
       })
       if (questions.some((question) => !question.summary || question.summary.length > 100)) return 'Each question needs a short summary of no more than 100 characters.'
       if (questions.some((question) => !question.question)) return 'Every question needs a question sentence.'
+      if (questions.some((question) => question.options.length === 0)) return 'Every question needs at least one choice.'
+      if (questions.some((question) => !question.options.some((option) => option.recommended))) return 'Every question needs at least one recommended choice.'
       if (questions.some((question) => !question.multiSelect && question.options.filter((option) => option.recommended).length > 1)) return 'A single-choice question may recommend at most one option.'
       if (questions.some((question) => question.options.some((option) => !option.description))) return 'Every choice needs a short description. Aim for 25 words or fewer.'
       const answers = await run.requestAnswers(questions)

@@ -42,13 +42,13 @@ function fakeSpawn(onSpawn: (program: string, args: string[], options: { cwd?: s
 }
 
 function harnessFactory(options: HarnessOptions): Harness {
-  const harness = createHarness({ ...options, secrets: memorySecretStore(), piProgram: () => '/opt/pi/bin/pi' })
+  const harness = createHarness({ ...options, secrets: memorySecretStore() })
   harnesses.push(harness)
   return harness
 }
 
 describe('standalone terminal startup', () => {
-  it('routes the no-command and terminal invocations to Pi, leaving host commands explicit', () => {
+  it('routes the no-command and terminal invocations to the frontend, leaving host commands explicit', () => {
     expect(standaloneArguments([])).toEqual([])
     expect(standaloneArguments(['--data', '/tmp/data'])).toEqual(['--data', '/tmp/data'])
     expect(standaloneArguments(['terminal', '--state', '/tmp/state'])).toEqual(['--state', '/tmp/state'])
@@ -73,7 +73,7 @@ describe('standalone terminal startup', () => {
     expect(parseStandaloneOptions(['--data', '/data', '--state', '/state'], 'HOME', '/work/project')).toEqual({ dataRoot: '/data', stateDir: '/state' })
   })
 
-  it('starts Pi in the current directory, creates the first isolated account, and cleans up on exit', async () => {
+  it('starts OpenTUI in the current directory, creates the first isolated account, and cleans up on exit', async () => {
     const home = temporaryDirectory('harness-standalone-')
     const cwd = temporaryDirectory('harness-cwd-')
     const paths = parseStandaloneOptions([], home)
@@ -86,7 +86,8 @@ describe('standalone terminal startup', () => {
 
     const harness = harnesses.shift()!
     expect(harness.accounts.overview().accounts).toMatchObject([{ label: 'Default', isDefault: true }])
-    expect(invocation?.program).toBe('/opt/pi/bin/pi')
+    expect(invocation?.program).toBe(process.env.XINGULAR_HARNESS_BUN || 'bun')
+    expect(invocation?.args.slice(0, 2)).toEqual(['--conditions=browser', defaultAssets().openTui])
     expect(invocation?.options).toMatchObject({ cwd, stdio: 'inherit' })
     expect(invocation?.args).toContain('--extension')
     expect(invocation?.args).toContain(defaultAssets().piExtension)
@@ -105,7 +106,7 @@ describe('standalone terminal startup', () => {
     expect(create).not.toHaveBeenCalled()
   })
 
-  it('cleans up the prepared terminal when Pi cannot be spawned', async () => {
+  it('cleans up the prepared terminal when the frontend cannot be spawned', async () => {
     const home = temporaryDirectory('harness-standalone-fail-')
     const cwd = temporaryDirectory('harness-cwd-fail-')
     const spawn = fakeSpawn(() => undefined, { error: new Error('spawn failed') })
@@ -119,19 +120,19 @@ describe('standalone terminal startup', () => {
     expect(harness.terminals.has('failed')).toBe(false)
   })
 
-  it('explains a missing Pi executable in terms of the terminal launch', async () => {
+  it('explains a missing Bun executable in terms of the terminal launch', async () => {
     const home = temporaryDirectory('harness-standalone-enoent-')
     const cwd = temporaryDirectory('harness-cwd-enoent-')
-    const error = Object.assign(new Error('spawn /opt/pi/bin/pi ENOENT'), { code: 'ENOENT' })
+    const error = Object.assign(new Error('spawn bun ENOENT'), { code: 'ENOENT' })
     const spawn = fakeSpawn(() => undefined, { error })
 
-    await expect(runStandaloneTerminal([], { home, cwd, stdinIsTTY: true, stdoutIsTTY: true, createSessionId: () => 'missing-pi', createHarness: harnessFactory, spawn }))
-      .rejects.toThrow(/Could not start Pi terminal.*Pi executable.*\/opt\/pi\/bin\/pi/)
+    await expect(runStandaloneTerminal([], { home, cwd, stdinIsTTY: true, stdoutIsTTY: true, createSessionId: () => 'missing-bun', createHarness: harnessFactory, spawn }))
+      .rejects.toThrow(/Could not start the Harness terminal.*Bun executable.*bun.*install Bun or set XINGULAR_HARNESS_BUN/)
   })
 })
 
 describe('switching the account of a running terminal', () => {
-  it('ends Pi when the person asks for another account, and starts it again on that account', async () => {
+  it('ends the frontend when the person asks for another account, and starts it again on that account', async () => {
     const home = temporaryDirectory('harness-switch-')
     const cwd = temporaryDirectory('harness-switch-cwd-')
     const paths = parseStandaloneOptions([], home)
@@ -145,7 +146,7 @@ describe('switching the account of a running terminal', () => {
         // Deferred, as a real process is: the launcher attaches its listeners after spawn returns.
         await Promise.resolve()
         if (spawned.length === 1) {
-          // The first Pi asks for the other account through its own extension, then ends.
+          // The first frontend asks for the other account through its own extension, then ends.
           spareId = harnesses[0].accounts.create('Spare', 'apiKey').accounts.find((account) => account.label === 'Spare')!.id
           const connection = { socket: options.env![SOCKET_ENV]!, token: options.env![TOKEN_ENV]! }
           const { key } = await socketCall<{ key: string }>(connection, 'control.claim')

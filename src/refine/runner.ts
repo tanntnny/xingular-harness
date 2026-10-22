@@ -40,6 +40,15 @@ export interface RefineSummary {
   experience: Partial<Experience> | null
   usd: number
   errors: string[]
+  /** The executor and improver settings the refinement was started with (PROP-0003). Run records hold what each run resolved. */
+  settings?: { executor: RefineSettings | null; improver: RefineSettings | null }
+}
+
+export interface RefineSettings {
+  model?: string | null
+  effort?: string | null
+  accountId?: string | null
+  poolId?: string | null
 }
 
 export type RefineEvent =
@@ -61,6 +70,8 @@ export interface RefineRunInput {
   baseTree?: Tree
   proposeWidth?: number
   rolloutWidth?: number
+  /** Recorded on the summary only; the executor and improver already carry them. */
+  settings?: { executor: RefineSettings | null; improver: RefineSettings | null }
   onEvent?: (event: RefineEvent) => void
   signal?: AbortSignal
 }
@@ -108,7 +119,8 @@ export async function runRefinement(input: RefineRunInput): Promise<RefineSummar
     libraryEntry: null,
     experience: null,
     usd: 0,
-    errors: []
+    errors: [],
+    ...(input.settings ? { settings: input.settings } : {})
   }
   const save = () => {
     writeJson(join(workDir, 'summary.json'), summary)

@@ -20,4 +20,11 @@ describe('the process-lifetime terminal control claim', () => {
     await claimTerminalControl({ socket: '/fake/socket', token: 'different-terminal' })
     expect(calls.socket.mock.calls.filter(([, call]) => call === 'control.claim')).toHaveLength(2)
   })
+
+  it('retries a claim that failed instead of keeping the failure', async () => {
+    const terminal = { socket: '/fake/socket', token: 'retry-after-failure' }
+    calls.socket.mockRejectedValueOnce(new Error('The harness did not answer control.claim.'))
+    await expect(claimTerminalControl(terminal)).rejects.toThrow('did not answer')
+    await expect(claimTerminalControl(terminal)).resolves.toBe('lexical-secret')
+  })
 })

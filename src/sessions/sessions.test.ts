@@ -1,4 +1,4 @@
-import { mkdtempSync, realpathSync, utimesSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, realpathSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -7,6 +7,7 @@ import { memorySecretStore } from '../accounts/secrets'
 import { createHarness, type Harness } from '../harness'
 import type { RunEvent } from './contracts'
 import { grant, type ApprovalFacts } from './approvals'
+import { continuationOf, continuationSection } from './continuation'
 import { selectHistory } from './history'
 import type { ToolPolicy } from './policy'
 import type { PiEvent, PiSessionLike, SessionFactory } from './runner'
@@ -51,6 +52,87 @@ function fakeSession(script: (emit: (event: PiEvent) => void, gateCheck: () => P
 }
 
 describe('session turns on Pi', () => {
+  it('runs an initial Bash command before asking the agent to inspect its result', async () => {
+    const calls: string[] = []
+    const { run, events } = setup(async ({ gate }) => {
+      const session = fakeSession(async () => { calls.push('prompt') }, gate)
+      session.executeBash = async command => {
+        calls.push(`bash:${command}`)
+        return { output: 'command output', exitCode: 0, cancelled: false, truncated: false }
+      }
+      session.sendCustomMessage = async message => { calls.push(`context:${message.content}`) }
+      return session
+    })
+
+    await run('initial-bash', {
+      text: '!printf command-output',
+      initialBashCommand: 'printf command-output',
+      tools: { allow: ['read', 'bash'], gated: [] }
+    })
+    await tick()
+
+    expect(calls.indexOf('bash:printf command-output')).toBeLessThan(calls.indexOf('prompt'))
+    expect(calls.some(call => call.startsWith('context:') && /already run|already executed/i.test(call))).toBe(true)
+    expect(calls.filter(call => call.startsWith('bash:'))).toHaveLength(1)
+    expect(events.find(event => event.type === 'tool.completed')?.payload).toMatchObject({
+      name: 'bash', ok: true, output: 'command output'
+    })
+  })
+
+  it('gives a retry the prior native Bash result without executing the command again', async () => {
+    const calls: string[] = []
+    const { run, events } = setup(async ({ gate }) => {
+      const session = fakeSession(async () => { calls.push('prompt') }, gate)
+      session.executeBash = async command => {
+        calls.push(`bash:${command}`)
+        return { output: '', exitCode: 0, cancelled: false, truncated: false }
+      }
+      session.sendCustomMessage = async message => { calls.push(`context:${message.content}`) }
+      return session
+    })
+
+    await run('initial-bash-retry', {
+      run: { id: 'initial-bash-retry', sessionId: 'agent-1', trigger: 'user' },
+      text: '!printf command-output',
+      initialBashContext: { runId: 'initial-bash-first', status: 'completed', ok: true, output: 'command output' }
+    })
+    await tick()
+
+    expect(calls.filter(call => call.startsWith('bash:'))).toHaveLength(0)
+    const contextIndex = calls.findIndex(call => call.startsWith('context:') && call.includes("initial ! command was already attempted"))
+    expect(calls[contextIndex]).toContain('command output')
+    expect(calls[contextIndex]).toMatch(/Do not execute it again automatically/)
+    expect(events.some(event => event.type === 'tool.started' || event.type === 'tool.completed')).toBe(false)
+    expect(contextIndex).toBeGreaterThanOrEqual(0)
+    expect(contextIndex).toBeLessThan(calls.indexOf('prompt'))
+  })
+
+  it('rejects a prior Bash result combined with a new Bash execution request', async () => {
+    let opened = false
+    const { run } = setup(async ({ gate }) => {
+      opened = true
+      return fakeSession(async () => undefined, gate)
+    })
+    await expect(run('initial-bash-conflict', {
+      text: '!printf twice', initialBashCommand: 'printf twice',
+      initialBashContext: { runId: 'initial-bash-first', status: 'completed', output: 'already ran' }
+    })).rejects.toMatchObject({ message: expect.stringContaining('prior Bash result') })
+    expect(opened).toBe(false)
+  })
+
+  it('rejects initial Bash execution for a retry trigger', async () => {
+    let opened = false
+    const { run } = setup(async ({ gate }) => {
+      opened = true
+      return fakeSession(async () => undefined, gate)
+    })
+    await expect(run('initial-bash-retry', {
+      run: { id: 'initial-bash-retry', sessionId: 'agent-1', trigger: 'retry' },
+      text: '!printf once', initialBashCommand: 'printf once'
+    })).rejects.toMatchObject({ message: expect.stringContaining('new interactive user turn') })
+    expect(opened).toBe(false)
+  })
+
   it('rejects image-required turns before any prompt reaches a text-only model', async () => {
     let requested = false
     let disposed = false
@@ -283,7 +365,7 @@ describe('session turns on Pi', () => {
         // What a loaded extension does: registers a tool nobody switched on by name, shows a line, and asks.
         gate.ask?.(['kit_scan'])
         extensions!.notice({ kind: 'status', key: 'kit', text: 'Scanning' })
-        answered = await extensions!.ask({ question: 'Scan the whole folder?', options: [{ label: 'Yes' }, { label: 'No' }], multiSelect: false, allowText: false })
+        answered = await extensions!.ask({ question: 'Scan the whole folder?', options: [{ label: 'Yes' }, { label: 'No', recommended: true }], multiSelect: false, allowText: false })
         blockReason = await gate.check('kit_scan', { path: '.' })
       }
     }))
@@ -455,9 +537,37 @@ describe('session turns on Pi', () => {
     expect(received!.allow.slice(0, 2)).toEqual(['react', 'ask_user'])
     expect(received!.allow).toEqual(expect.arrayContaining(['history_search', 'wiki_search', 'wiki_read', 'skill_load', 'trajectory_read']))
     expect(received!.allow).not.toContain('wiki_write')
-    expect(received!.tools.map((tool) => tool.name)).toEqual(['history_search', 'history_read', 'trajectory_search', 'trajectory_read', 'wiki_search', 'wiki_read', 'wiki_list', 'wiki_write', 'skill_load', 'ask_user', 'spawn_subagent', 'wait_subagents', 'react'])
+    expect(received!.tools.map((tool) => tool.name)).toEqual(['history_search', 'history_read', 'trajectory_search', 'trajectory_read', 'wiki_search', 'wiki_read', 'wiki_list', 'wiki_write', 'skill_load', 'ask_user', 'checklist_write', 'spawn_subagent', 'wait_subagents', 'react'])
     expect(await received!.tools.find((tool) => tool.name === 'skill_load')!.execute({})).toBe('You have no skills.')
     expect(received!.params.system).toContain('# Xingular Harness context')
+  })
+
+  it('records the checklist the model writes, whole, and allows it in plan mode', async () => {
+    let received: Parameters<SessionFactory>[0] | null = null
+    const { events, run } = setup(async (input) => {
+      received = input
+      return fakeSession(() => new Promise((resolve) => setTimeout(resolve, 50)), input.gate)
+    })
+    await run('run-checklist', { plan: true })
+    await tick()
+    expect(await received!.gate.check('checklist_write', { items: [] })).toBeNull()
+    const tool = received!.tools.find((candidate) => candidate.name === 'checklist_write')!
+    expect(await tool.execute({ items: [{ text: 'Read the code', status: 'completed' }, { text: 'Write the fix', status: 'in_progress' }] })).toBe('[x] Read the code\n[~] Write the fix')
+    expect(await tool.execute({ items: [{ text: '', status: 'pending' }] })).toContain('Every step needs text')
+    expect(events.filter((event) => event.type === 'checklist.updated').map((event) => event.payload)).toEqual([
+      { items: [{ text: 'Read the code', status: 'completed' }, { text: 'Write the fix', status: 'in_progress' }] }
+    ])
+  })
+
+  it('gives no checklist tool when the harness tools are off', async () => {
+    let received: Parameters<SessionFactory>[0] | null = null
+    const { run } = setup(async (input) => {
+      received = input
+      return fakeSession(async () => undefined, input.gate)
+    })
+    await run('run-no-checklist', { harnessTools: false })
+    await tick()
+    expect(received!.tools.map((tool) => tool.name)).not.toContain('checklist_write')
   })
 
   it('refuses, never asks, when a refinement run reaches a call that needs a person', async () => {
@@ -524,6 +634,54 @@ describe('session turns on Pi', () => {
     open.push(harness)
     await expect(harness.sessions.run({ run: { id: 'r', sessionId: 's' }, cwd: '/tmp', sessionDir: join(harness.env.root, 's'), text: 'x', caller: { agentId: 'a' }, tools: { allow: [] } })).rejects.toMatchObject({ code: 'account_required' })
     expect(() => loadRun(harness.env.root, 'r')).toThrow()
+  })
+})
+
+describe('continuing a run that stopped', () => {
+  it('says what the earlier run left, and continues it as a new run with the same pins', async () => {
+    let received: Parameters<SessionFactory>[0] | null = null
+    const { harness, run, sessionDir } = setup(async (input) => {
+      received = input
+      return fakeSession(() => new Promise((resolve) => setTimeout(resolve, 400)), input.gate)
+    })
+    await run('first')
+    await tick()
+    await received!.tools.find((tool) => tool.name === 'checklist_write')!.execute({ items: [{ text: 'Read', status: 'completed' }, { text: 'Fix', status: 'in_progress' }] })
+    await harness.runs.interrupt('first')
+    await tick(60)
+    mkdirSync(sessionDir, { recursive: true })
+    writeFileSync(join(sessionDir, 'saved.jsonl'), `${JSON.stringify({ type: 'session', id: 'native-1' })}\n`)
+
+    const root = harness.env.root
+    expect(continuationOf(root, 'missing').reason).toBe('not_found')
+    expect(continuationOf(root, 'first', join(root, 'elsewhere'))).toMatchObject({ resumable: false, reason: 'history_missing' })
+    const continuation = continuationOf(root, 'first', sessionDir)
+    expect(continuation).toMatchObject({ resumable: true, reason: null, status: 'interrupted', resume: { sessionFile: realpathSync(join(sessionDir, 'saved.jsonl')), nativeSessionId: 'native-1' }, checklist: [{ text: 'Read', status: 'completed' }, { text: 'Fix', status: 'in_progress' }] })
+
+    await expect(run('wrong-account', { continueFrom: 'first', accountId: 'another' })).rejects.toMatchObject({ code: 'continuation_mismatch' })
+    await expect(run('wrong-tree', { continueFrom: 'first', harness: { scope: 'other' } })).rejects.toMatchObject({ code: 'continuation_mismatch' })
+
+    await run('second', { continueFrom: 'first', text: '' })
+    await tick()
+    expect(received!.params.text).toBe('Continue from where you stopped.')
+    expect(received!.params.update?.content).toContain('stopped before it finished')
+    expect(received!.params.update?.content).toContain('[~] Fix')
+    expect(received!.params.historyFile).toBe(realpathSync(join(sessionDir, 'saved.jsonl')))
+    expect(loadRun(root, 'second')).toMatchObject({ resumedFromRunId: 'first', accountId: loadRun(root, 'first').accountId })
+    await harness.runs.interrupt('second')
+  })
+
+  it('refuses to continue a run that completed or is still going', async () => {
+    const { harness, run, sessionDir } = setup(async (input) => fakeSession(async () => undefined, input.gate))
+    await run('done')
+    await tick()
+    expect(continuationOf(harness.env.root, 'done', sessionDir).reason).toBe('completed')
+    await expect(run('again', { continueFrom: 'done' })).rejects.toMatchObject({ code: 'continuation_unavailable' })
+  })
+
+  it('withdraws the continuation section once it was delivered', () => {
+    expect(continuationSection(null, false)).toBeNull()
+    expect(continuationSection(null, true)).toMatchObject({ id: 'continuation', body: null, dynamic: true })
   })
 })
 

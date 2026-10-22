@@ -94,7 +94,7 @@ describe('a whole reply, with a scripted model', () => {
     const ai = await import('@earendil-works/pi-ai')
     model.script([
       model.calls(['spawn_subagent', { brief: 'Ask for a decision', wait: true }]),
-      ai.fauxAssistantMessage([ai.fauxToolCall('ask_user', { questions: [{ summary: 'A decision', question: 'Which approach?' }] })], { stopReason: 'toolUse' })
+      ai.fauxAssistantMessage([ai.fauxToolCall('ask_user', { questions: [{ summary: 'A decision', question: 'Which approach?', options: [{ label: 'Approach A', description: 'Use the first approach.', recommended: true }] }] })], { stopReason: 'toolUse' })
     ])
     let childRunId: string | null = null
     harness.runs.listen((event, run) => { if (event.type === 'question.requested' && run?.relation === 'subagent') childRunId = event.runId })

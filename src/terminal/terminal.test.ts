@@ -1,5 +1,4 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
-import { spawnSync } from 'node:child_process'
 import { connect } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -13,6 +12,7 @@ import { loadRun } from '../sessions/runStore'
 import type { Found } from '../plugins/discover'
 import { rootWithProject, writeFile } from '../../tests/helpers'
 import { parseCli } from './cli'
+import { defaultAssets } from './terminals'
 import { SOCKET_ENV, TOKEN_ENV, socketCall, type SocketConnection } from './client'
 import { SessionSocket } from './socket'
 import { LOG_READ_CHUNK_BYTES } from './logs'
@@ -42,7 +42,7 @@ function tellOn(connection: SocketConnection, event: string, data: Record<string
 
 async function setup(policy: ToolPolicy = {}) {
   const root = rootWithProject()
-  const harness = createHarness({ dataRoot: root, stateDir: mkdtempSync(join(tmpdir(), 'hs-')), secrets: memorySecretStore(), policy, piProgram: () => '/opt/pi/bin/pi', assets: { node: '/opt/node', cli: '/opt/harness/cli.js', piExtension: '/opt/harness/terminal-pi.js' } })
+  const harness = createHarness({ dataRoot: root, stateDir: mkdtempSync(join(tmpdir(), 'hs-')), secrets: memorySecretStore(), policy, assets: { node: '/opt/node', cli: '/opt/harness/cli.js', piExtension: '/opt/harness/terminal-pi.js', openTui: '/opt/harness/terminal-opentui.js' } })
   const legacyBin = join(harness.stateDir, 'run', 'bin')
   mkdirSync(legacyBin, { recursive: true })
   writeFileSync(join(legacyBin, 'agentx-wiki'), 'old wrapper')
@@ -62,15 +62,16 @@ async function setup(policy: ToolPolicy = {}) {
 }
 
 describe('a pi terminal session', () => {
-  it('launches on the pinned account with compiled instructions, the extension, and the session socket', async () => {
+  it('launches OpenTUI on the pinned account with compiled instructions, the extension, and the session socket', async () => {
     const { launch, account, harness, sessionFolder, root } = await setup()
-    expect(launch.program).toBe('/opt/pi/bin/pi')
+    expect(launch.program).toBe(process.env.XINGULAR_HARNESS_BUN || 'bun')
     expect(launch.accountId).toBe(account.id)
-    expect(launch.args[0]).toBe('--append-system-prompt')
-    expect(launch.args[1]).toContain('# Xingular Harness context')
-    expect(launch.args[1]).toContain('xagent-wiki')
+    expect(launch.args.slice(0, 2)).toEqual(['--conditions=browser', '/opt/harness/terminal-opentui.js'])
+    expect(launch.args[2]).toBe('--append-system-prompt')
+    expect(launch.args[3]).toContain('# Xingular Harness context')
+    expect(launch.args[3]).toContain('xagent-wiki')
     // Pi's own discovery is off; its command's built-in extensions are named, and the harness's comes last.
-    expect(launch.args.slice(2)).toEqual([
+    expect(launch.args.slice(4)).toEqual([
       '--model', 'chosen-model', '--no-extensions', '--no-skills', '--no-prompt-templates', '--no-themes',
       '--extension', 'builtin:llama.cpp', '--extension', 'builtin:codemode', '--extension', 'builtin:tool-search', '--extension', 'builtin:mcp',
       '--extension', '/opt/harness/terminal-pi.js', '--session-dir', join(sessionFolder, 'pi')
@@ -86,25 +87,21 @@ describe('a pi terminal session', () => {
     expect(root).toBeTruthy()
   })
 
-  it.skipIf(process.platform !== 'win32')('starts the resolved Pi CLI through Node without a model or interactive terminal', async () => {
+  it.skipIf(process.platform !== 'win32')('launches Bun with the OpenTUI frontend on Windows', async () => {
     const root = rootWithProject()
     const stateDir = mkdtempSync(join(tmpdir(), 'hs-pi-smoke-'))
     const harness = createHarness({ dataRoot: root, stateDir, secrets: memorySecretStore() })
     open.push(harness)
     harness.accounts.create('Main', 'subscription')
     const launch = await harness.terminals.prepare({ sessionId: 'pi-smoke', cwd: root, sessionFolder: join(root, 'sessions', 'pi-smoke') })
-    const cli = launch.args[0]
     const pathKeys = Object.keys(launch.env).filter((name) => name.toLowerCase() === 'path')
 
-    expect(launch.program).toBe(process.execPath)
+    expect(launch.program).toBe(process.env.XINGULAR_HARNESS_BUN || 'bun')
+    expect(launch.args.slice(0, 2)).toEqual(['--conditions=browser', defaultAssets().openTui])
     expect(pathKeys).toHaveLength(1)
     expect(launch.env[pathKeys[0]]).toContain(';')
     expect(launch.env.XINGULAR_HARNESS_NODE).toBe(process.execPath)
     expect(readFileSync(join(stateDir, 'run', 'bin', 'xagent-wiki.cmd'), 'utf8')).toContain(' wiki %*\r\n')
-    const result = spawnSync(launch.program, [cli, '--help'], { cwd: root, encoding: 'utf8', timeout: 20_000 })
-    expect(result.error).toBeUndefined()
-    expect(result.status).toBe(0)
-    expect(`${result.stdout}${result.stderr}`).toMatch(/usage|options|pi coding agent/i)
   })
 
   it('passes what the harness found as paths, the harness tree\'s skills and trusted plugins with them, and its own extension last', async () => {
@@ -120,7 +117,7 @@ describe('a pi terminal session', () => {
       item('prompt', '/shared/prompts/p.md', 'shared'),
       item('theme', '/shared/themes/dark.json', 'shared')
     ]
-    const harness = createHarness({ dataRoot: root, stateDir: mkdtempSync(join(tmpdir(), 'hs-')), secrets: memorySecretStore(), piProgram: () => '/opt/pi/bin/pi', assets: { node: '/opt/node', cli: '/opt/harness/cli.js', piExtension: '/opt/harness/terminal-pi.js' }, resolver: async () => found })
+    const harness = createHarness({ dataRoot: root, stateDir: mkdtempSync(join(tmpdir(), 'hs-')), secrets: memorySecretStore(), assets: { node: '/opt/node', cli: '/opt/harness/cli.js', piExtension: '/opt/harness/terminal-pi.js', openTui: '/opt/harness/terminal-opentui.js' }, resolver: async () => found })
     open.push(harness)
     const account = harness.accounts.create('Main', 'apiKey').accounts[0]
     const tree = { 'systemprompt.md': 'Ship releases.\n', 'guardrails.md': '- When cutting a release, load the `release` skill.\n', 'memory.md': '', 'tool_guidance.md': '', 'skills/release/SKILL.md': '---\nname: release\ndescription: cutting a release\n---\nTag it.\n', 'plugins/guard.ts': 'export default function (pi) {}\n' }
@@ -128,7 +125,7 @@ describe('a pi terminal session', () => {
     commit(root, 'term-agent', tree, { kind: 'seed' })
     harness.trust.grant(tree['plugins/guard.ts'], 'plugins/guard.ts', 'term-agent')
     const version = versionPath(root, 'term-agent', head(root, 'term-agent')!.fingerprint)
-    const prepare = async () => (await harness.terminals.prepare({ sessionId: 'term-1', accountId: account.id, projectId: 'p1', cwd: root, sessionFolder: join(root, 'sessions', 'p1', 'term-1'), harness: { scope: 'term-agent' } })).args.slice(2)
+    const prepare = async () => (await harness.terminals.prepare({ sessionId: 'term-1', accountId: account.id, projectId: 'p1', cwd: root, sessionFolder: join(root, 'sessions', 'p1', 'term-1'), harness: { scope: 'term-agent' } })).args.slice(4)
 
     const loaded = [
       '--extension', '/shared/extensions/mine.ts', '--extension', 'builtin:mcp', '--extension', join(version, 'plugins/guard.ts'),
@@ -146,12 +143,8 @@ describe('a pi terminal session', () => {
     expect(await prepare()).toEqual([...flags, '--extension', join(root, '.pi/extensions/local.ts'), ...loaded])
   })
 
-  it('refuses to launch without the pi command, and never on another account', async () => {
-    const harness = createHarness({ dataRoot: rootWithProject(), stateDir: mkdtempSync(join(tmpdir(), 'hs-')), secrets: memorySecretStore(), piProgram: () => null })
-    open.push(harness)
-    harness.accounts.create('Main', 'apiKey')
-    await expect(harness.terminals.prepare({ sessionId: 's', cwd: '/tmp', sessionFolder: join(harness.env.root, 'sessions', 's') })).rejects.toMatchObject({ code: 'harness_unavailable' })
-    const other = createHarness({ dataRoot: rootWithProject(), stateDir: mkdtempSync(join(tmpdir(), 'hs-')), secrets: memorySecretStore(), piProgram: () => '/opt/pi' })
+  it('never launches on an account it cannot find', async () => {
+    const other = createHarness({ dataRoot: rootWithProject(), stateDir: mkdtempSync(join(tmpdir(), 'hs-')), secrets: memorySecretStore() })
     open.push(other)
     other.accounts.create('Main', 'apiKey')
     await expect(other.terminals.prepare({ sessionId: 's', accountId: 'missing-account', cwd: '/tmp', sessionFolder: join(other.env.root, 'sessions', 's') })).rejects.toThrow()
@@ -364,7 +357,7 @@ describe('a pi terminal session', () => {
       socket.once('connect', resolve)
       socket.once('error', reject)
     })
-    socket.write(`${JSON.stringify({ token: connection.token, event: 'question', data: { requestId: 'native-one', question: 'Continue?' } })}\n`)
+    socket.write(`${JSON.stringify({ token: connection.token, event: 'question', data: { requestId: 'native-one', question: 'Continue?', options: [{ label: 'Continue', recommended: true }] } })}\n`)
     await vi.waitFor(() => expect(events.some((event) => event.type === 'question.requested')).toBe(true))
     socket.destroy()
     await vi.waitFor(() => expect(events.some((event) => event.type === 'failed')).toBe(true))
@@ -481,12 +474,45 @@ describe('decisions in the Harness-owned frontend', () => {
     await expect(socketCall(connection, 'terminal.approve', { requestId: 'missing', decision: 'approved' }, 1000, key)).rejects.toMatchObject({ code: 'invalid_request' })
   })
 
+  it('restores the exact multiline draft after raw Ctrl+U and keeps handoff blocked', async () => {
+    const { connection, harness, tell } = await setup()
+    await tell('ready')
+    const { key } = await socketCall<{ key: string }>(connection, 'control.claim')
+    harness.terminals.input('term-1', 'first line\nsecond line')
+    await socketCall(connection, 'terminal.draft', { dirty: true }, 1000, key)
+    harness.terminals.input('term-1', '\u0015')
+    expect(harness.terminals.state('term-1').dirty).toBe(false)
+
+    await socketCall(connection, 'terminal.draft', { dirty: true }, 1000, key)
+    expect(harness.terminals.state('term-1').dirty).toBe(true)
+    await expect(harness.terminals.send({ sessionId: 'term-1', runId: 'multiline-draft', text: 'Task' })).rejects.toMatchObject({ code: 'terminal_has_draft' })
+  })
+
+  it.skipIf(process.env.XINGULAR_PROFILE_TERMINAL_INPUT !== '1')('terminal input profile: local draft control socket latency', async () => {
+    const { connection, tell } = await setup()
+    await tell('ready')
+    const { key } = await socketCall<{ key: string }>(connection, 'control.claim')
+    await socketCall(connection, 'terminal.draft', { dirty: true }, 1000, key)
+    const samples: number[] = []
+    for (let index = 0; index < 120; index++) {
+      const startedAt = performance.now()
+      await socketCall(connection, 'terminal.draft', { dirty: index % 2 === 0 }, 1000, key)
+      samples.push(performance.now() - startedAt)
+    }
+    const percentile = (fraction: number) => [...samples].sort((a, b) => a - b)[Math.ceil(samples.length * fraction) - 1] ?? 0
+    console.info(`[terminal-input-profile] ${JSON.stringify({
+      component: 'local draft control socket', requests: samples.length,
+      latencyMs: { p50: percentile(0.5), p95: percentile(0.95) }
+    })}`)
+    expect(samples).toHaveLength(120)
+  })
+
   it('answers through the existing run registry and rejects stale answers', async () => {
     const { connection, tell, events } = await setup()
     const { key } = await socketCall<{ key: string }>(connection, 'control.claim')
     await tell('ready')
     await tell('begin', { text: 'Ask a question' })
-    const answer = tell('question', { requestId: 'native-question', question: 'Choose?', options: [{ label: 'A', description: 'First' }], multiSelect: false })
+    const answer = tell('question', { requestId: 'native-question', question: 'Choose?', options: [{ label: 'A', description: 'First', recommended: true }], multiSelect: false })
     let id = ''
     await vi.waitFor(async () => {
       const pending = await socketCall<{ requests: Array<{ requestId: string }> }>(connection, 'terminal.pending', {}, 1000, key)
@@ -511,7 +537,7 @@ describe('decisions in the Harness-owned frontend', () => {
     })
     await socketCall(connection, 'terminal.approve', { requestId: approvalId, decision: 'approved' }, 1000, key)
     expect(await approval).toEqual({ decision: 'approved' })
-    const question = tell('question', { requestId: 'same-tool-call', question: 'Continue?', options: [{ label: 'Yes' }] })
+    const question = tell('question', { requestId: 'same-tool-call', question: 'Continue?', options: [{ label: 'Yes', recommended: true }] })
     let questionId = ''
     await vi.waitFor(async () => {
       const { requests } = await socketCall<{ requests: Array<{ requestId: string; type: string }> }>(connection, 'terminal.pending', {}, 1000, key)
@@ -527,7 +553,7 @@ describe('decisions in the Harness-owned frontend', () => {
     const { key } = await socketCall<{ key: string }>(connection, 'control.claim')
     await tell('ready')
     await tell('begin', { text: 'Wait for a question' })
-    const answer = tell('question', { requestId: 'cancel-question', question: 'Wait?', options: [], multiSelect: false })
+    const answer = tell('question', { requestId: 'cancel-question', question: 'Wait?', options: [{ label: 'Wait', recommended: true }], multiSelect: false })
     await vi.waitFor(async () => expect((await socketCall<{ requests: unknown[] }>(connection, 'terminal.pending', {}, 1000, key)).requests).toHaveLength(1))
     await socketCall(connection, 'terminal.interrupt', {}, 1000, key)
     expect(await answer).toEqual({ selected: [] })

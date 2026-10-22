@@ -1,0 +1,516 @@
+#!/usr/bin/env python3
+"""Measure keystroke-to-screen latency of the Harness terminal, opencode and pure Pi.
+
+Each target runs in a real PTY. Keys are written at a fixed human-fast interval and a pyte
+virtual screen records when each typed prefix first becomes visible. A loopback
+OpenAI-compatible server feeds every target the same deterministic replies, so no model
+request leaves the machine unless `--real` is given (then each target uses its own login and
+only the "stream" scenario runs).
+
+Scenarios:
+  idle     fresh session, nothing running
+  history  after a ~240-message tool loop has finished (transcript length cost)
+  stream   while a reply streams ~200 tokens/s (work-in-progress cost)
+  question while an ask_user question waits above the composer
+
+Run `npm run build` first. Example:
+  python3 scripts/profile-terminal-latency.py --targets xingular,pi,opencode --output /tmp/lat
+"""
+import argparse
+import errno
+import fcntl
+import http.server
+import json
+import os
+from pathlib import Path
+import pty
+import random
+import select
+import shutil
+import signal
+import struct
+import subprocess
+import tempfile
+import termios
+import threading
+import time
+
+import pyte
+
+REPOSITORY = Path(__file__).resolve().parent.parent
+TYPED = 'zqxjkvwy'  # Never produced by the loopback replies, so a match is the typed text.
+FILLER = ('the agent reads each file and then plans a change . it runs the tests and reports '
+          'one result per line . nothing else is done here . the harness records the run and '
+          'its tool calls so that a person can follow the trail later . ').split(' ')
+HISTORY_TURNS = 80
+STREAM_SECONDS = 30
+
+
+def filler_words(count, rng):
+    return ' '.join(rng.choice(FILLER) for _ in range(count))
+
+
+def user_text(messages):
+    for message in reversed(messages):
+        if message.get('role') != 'user':
+            continue
+        content = message.get('content')
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            return ' '.join(str(part.get('text', '')) for part in content if isinstance(part, dict))
+    return ''
+
+
+class Provider(http.server.BaseHTTPRequestHandler):
+    protocol_version = 'HTTP/1.1'
+    fixture = None
+    requests = 0
+
+    def log_message(self, *args):
+        pass
+
+    def do_GET(self):
+        body = json.dumps({'object': 'list', 'data': [{'id': 'latency-model', 'object': 'model'}]}).encode()
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Content-Length', str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_POST(self):
+        request = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+        Provider.requests += 1
+        messages = request.get('messages', [])
+        text = user_text(messages)
+        last_user = max((i for i, m in enumerate(messages) if m.get('role') == 'user'), default=-1)
+        tool_results = sum(1 for m in messages[last_user + 1:] if m.get('role') == 'tool')
+        tools = {t.get('function', {}).get('name'): t.get('function', {}) for t in request.get('tools', [])}
+        rng = random.Random(Provider.requests)
+        streaming = request.get('stream', True)
+        if not streaming:
+            body = json.dumps({'id': 'l', 'object': 'chat.completion', 'created': int(time.time()), 'model': 'latency-model',
+                               'choices': [{'index': 0, 'message': {'role': 'assistant', 'content': 'Latency title'}, 'finish_reason': 'stop'}],
+                               'usage': {'prompt_tokens': 10, 'completion_tokens': 2, 'total_tokens': 12}}).encode()
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/event-stream')
+        self.send_header('Cache-Control', 'no-cache')
+        self.send_header('Connection', 'close')
+        self.end_headers()
+
+        def chunk(delta=None, finish=None, usage=None):
+            value = {'id': 'latency', 'object': 'chat.completion.chunk', 'created': int(time.time()), 'model': 'latency-model',
+                     'choices': [{'index': 0, 'delta': delta or {}, 'finish_reason': finish}]}
+            if usage:
+                value['usage'] = usage
+            self.wfile.write(('data: ' + json.dumps(value) + '\n\n').encode())
+            self.wfile.flush()
+
+        def done(finish='stop'):
+            chunk(finish=finish, usage={'prompt_tokens': 1000 + len(messages), 'completion_tokens': 50, 'total_tokens': 1050 + len(messages)})
+            self.wfile.write(b'data: [DONE]\n\n')
+            self.wfile.flush()
+
+        try:
+            chunk({'role': 'assistant'})
+            if not tools:
+                chunk({'content': 'Latency title'})
+                done()
+                return
+            if 'latency-history' in text and tool_results < HISTORY_TURNS and 'read' in tools:
+                properties = tools['read'].get('parameters', {}).get('properties', {})
+                key = next((name for name in ['filePath', 'path', 'file_path'] if name in properties), 'path')
+                chunk({'content': f'step {tool_results} . {filler_words(30, rng)}\n'})
+                chunk({'tool_calls': [{'index': 0, 'id': f'call_{tool_results}', 'type': 'function',
+                                       'function': {'name': 'read', 'arguments': json.dumps({key: str(Provider.fixture)})}}]})
+                done('tool_calls')
+                return
+            if 'latency-question' in text and tool_results == 0 and 'ask_user' in tools:
+                chunk({'content': 'one question first .\n'})
+                arguments = {'questions': [{'summary': 'Pick one', 'question': 'Which path should the run take',
+                                            'options': [{'label': 'First', 'description': 'the first path'}, {'label': 'Second', 'description': 'the second path'}]}]}
+                chunk({'tool_calls': [{'index': 0, 'id': 'call_question', 'type': 'function',
+                                       'function': {'name': 'ask_user', 'arguments': json.dumps(arguments)}}]})
+                done('tool_calls')
+                return
+            if 'latency-stream' in text:
+                chunk({'reasoning_content': filler_words(40, rng)})
+                deadline = time.monotonic() + STREAM_SECONDS
+                line = 0
+                while time.monotonic() < deadline:
+                    line += 1
+                    if line % 25 == 1:
+                        chunk({'content': f'\n## section {line // 25 + 1}\n\n'})
+                    elif line % 25 == 12:
+                        chunk({'content': '\n```\nconst result = run ( task )\n```\n'})
+                    else:
+                        chunk({'content': f'- {filler_words(3, rng)}' + ('\n' if line % 4 == 0 else ' ')})
+                    time.sleep(1 / 60)
+                done()
+                return
+            chunk({'content': 'finished . ' + filler_words(20, rng)})
+            done()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        finally:
+            self.close_connection = True
+
+
+class Terminal:
+    def __init__(self, command, cwd, env, width, height):
+        self.master, slave = pty.openpty()
+        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', height, width, 0, 0))
+        self.screen = pyte.Screen(width, height)
+        self.stream = pyte.ByteStream(self.screen)
+        self.bytes = 0
+
+        def control_terminal():
+            os.setsid()
+            fcntl.ioctl(0, termios.TIOCSCTTY, 0)
+        self.process = subprocess.Popen(command, cwd=cwd, env=env, stdin=slave, stdout=slave, stderr=slave,
+                                        preexec_fn=control_terminal, close_fds=True)
+        os.close(slave)
+
+    def pump(self, timeout=0.0):
+        ready, _, _ = select.select([self.master], [], [], timeout)
+        if not ready:
+            return False
+        try:
+            part = os.read(self.master, 1 << 17)
+        except OSError as error:
+            if error.errno == errno.EIO:
+                return False
+            raise
+        if not part:
+            return False
+        self.bytes += len(part)
+        # Answer the terminal queries a real emulator would, so startup does not wait on timeouts.
+        for query, reply in [(b'\x1b[6n', b'\x1b[1;1R'), (b'\x1b[c', b'\x1b[?1;2c'), (b'\x1b[?u', b'\x1b[?0u')]:
+            if query in part:
+                try:
+                    os.write(self.master, reply)
+                except OSError:
+                    pass
+        try:
+            self.stream.feed(part)
+        except Exception:
+            pass
+        return True
+
+    def read(self, seconds):
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            self.pump(max(0.0, min(0.02, deadline - time.monotonic())))
+
+    def text(self):
+        return '\n'.join(self.screen.display)
+
+    def flat(self):
+        return ''.join(line.rstrip() for line in self.screen.display)
+
+    def wait(self, needle, timeout=60):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            self.pump(0.05)
+            if needle in self.text():
+                return True
+            if self.process.poll() is not None:
+                break
+        raise AssertionError(f'Screen never showed {needle!r}; exit={self.process.poll()}\n{self.text()}')
+
+    def settle(self, quiet=1.0, timeout=30):
+        deadline = time.monotonic() + timeout
+        last = time.monotonic()
+        while time.monotonic() < deadline:
+            if self.pump(0.05):
+                last = time.monotonic()
+            elif time.monotonic() - last > quiet:
+                return
+
+    def send(self, data):
+        os.write(self.master, data.encode() if isinstance(data, str) else data)
+
+    def cpu_seconds(self):
+        """CPU time of the whole process tree, from ps."""
+        out = subprocess.run(['ps', '-A', '-o', 'pid=,ppid=,time='], capture_output=True, text=True).stdout
+        children, times = {}, {}
+        for line in out.splitlines():
+            pid, ppid, cpu = line.split(None, 2)
+            children.setdefault(int(ppid), []).append(int(pid))
+            parts = cpu.strip().replace('-', ':').split(':')
+            seconds = 0.0
+            for part in parts:
+                seconds = seconds * 60 + float(part)
+            times[int(pid)] = seconds
+        total, stack = 0.0, [self.process.pid]
+        while stack:
+            pid = stack.pop()
+            total += times.get(pid, 0.0)
+            stack.extend(children.get(pid, []))
+        return total
+
+    def close(self):
+        if self.process.poll() is None:
+            try:
+                os.killpg(self.process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            deadline = time.monotonic() + 5
+            while self.process.poll() is None and time.monotonic() < deadline:
+                self.pump(0.05)
+            if self.process.poll() is None:
+                os.killpg(self.process.pid, signal.SIGKILL)
+                self.process.wait(5)
+        os.close(self.master)
+
+
+def percentile(values, p):
+    if not values:
+        return None
+    ordered = sorted(values)
+    return round(ordered[min(len(ordered) - 1, max(0, int(round(p / 100 * len(ordered) + 0.5)) - 1))], 2)
+
+
+def type_rounds(terminal, rounds, length, interval, rng, timeout=3.0):
+    """Type `rounds` strings; return per-key latency in ms (None when never seen within timeout)."""
+    latencies = []
+    cpu_before, wall_before, bytes_before = terminal.cpu_seconds(), time.monotonic(), terminal.bytes
+    for _ in range(rounds):
+        text = ''.join(rng.choice(TYPED) for _ in range(length))
+        sent = []
+        seen = [None] * length
+        next_key = 0
+        next_at = time.monotonic()
+        while True:
+            now = time.monotonic()
+            if next_key < length and now >= next_at:
+                terminal.send(text[next_key])
+                sent.append(time.monotonic())
+                next_key += 1
+                next_at += interval
+            terminal.pump(0.001)
+            flat = None
+            for index in range(len(sent)):
+                if seen[index] is not None:
+                    continue
+                if flat is None:
+                    flat = terminal.flat()
+                start = max(0, index + 1 - 10)
+                if text[start:index + 1] in flat and (index >= 9 or text[:index + 1] in flat):
+                    stamp = time.monotonic()
+                    for earlier in range(index + 1):
+                        if seen[earlier] is None:
+                            seen[earlier] = stamp
+            if next_key == length and (all(s is not None for s in seen) or time.monotonic() - sent[-1] > timeout):
+                break
+        for index in range(8, length):  # The first keys are too short to be unique on screen.
+            latencies.append(None if seen[index] is None else (seen[index] - sent[index]) * 1000)
+        terminal.send('\x7f' * length)
+        terminal.read(0.6)
+    wall = time.monotonic() - wall_before
+    cpu = terminal.cpu_seconds() - cpu_before
+    measured = [value for value in latencies if value is not None]
+    return {
+        'keys': len(latencies), 'missed': len(latencies) - len(measured),
+        'p50': percentile(measured, 50), 'p95': percentile(measured, 95), 'p99': percentile(measured, 99),
+        'max': round(max(measured), 2) if measured else None,
+        'cpuPercent': round(100 * cpu / wall, 1), 'bytesPerKey': round((terminal.bytes - bytes_before) / max(1, len(latencies) + 8 * rounds))
+    }
+
+
+def base_env():
+    env = {key: value for key, value in os.environ.items()
+           if not key.upper().endswith(('_API_KEY', '_AUTH_TOKEN', '_OAUTH_TOKEN', '_ACCESS_TOKEN'))
+           and key not in ['PI_CODING_AGENT_DIR', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'OPENCODE_CONFIG']}
+    env.update({'TERM': 'xterm-256color', 'COLORTERM': 'truecolor'})
+    return env
+
+
+def model_entry(provider_url):
+    return {'baseUrl': provider_url + '/v1', 'api': 'openai-completions', 'apiKey': 'loopback-latency-fixture',
+            'compat': {'supportsDeveloperRole': False, 'supportsReasoningEffort': False, 'supportsStore': False},
+            'models': [{'id': 'latency-model', 'name': 'Latency model', 'reasoning': True, 'input': ['text'],
+                        'contextWindow': 200000, 'maxTokens': 4096,
+                        'cost': {'input': 0, 'output': 0, 'cacheRead': 0, 'cacheWrite': 0}}]}
+
+
+def create_harness_account(cli, root):
+    child = subprocess.Popen(['node', str(cli), 'serve', '--state', str(root / 'state'), '--data', str(root / 'data')],
+                             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        for serial, (method, params) in enumerate([('accounts.create', {'label': 'Latency', 'authKind': 'apiKey'}), ('harness.shutdown', {})], 1):
+            child.stdin.write(json.dumps({'v': 1, 'id': str(serial), 'method': method, 'params': params}) + '\n')
+            child.stdin.flush()
+            while True:
+                line = child.stdout.readline()
+                if not line:
+                    raise AssertionError('Harness serve exited: ' + child.stderr.read())
+                value = json.loads(line)
+                if value.get('id') == str(serial):
+                    if value.get('error'):
+                        raise AssertionError(value['error'])
+                    break
+    finally:
+        child.stdin.close()
+        child.wait(timeout=15)
+
+
+def launch(target, root, project, provider_url, real, cli):
+    env = base_env()
+    if target == 'xingular':
+        if real:
+            return ['node', str(cli)], env
+        shared = root / 'state' / 'accounts' / '_shared' / 'pi'
+        shared.mkdir(parents=True, exist_ok=True)
+        (shared / 'models.json').write_text(json.dumps({'providers': {'latency': model_entry(provider_url)}}))
+        (shared / 'settings.json').write_text(json.dumps({'defaultProvider': 'latency', 'defaultModel': 'latency-model',
+                                                          'defaultThinkingLevel': 'medium', 'enableAnalytics': False}))
+        create_harness_account(cli, root)
+        return ['node', str(cli), '--state', str(root / 'state'), '--data', str(root / 'data')], env
+    if target == 'pi':
+        agent = root / 'pi-agent'
+        agent.mkdir(parents=True, exist_ok=True)
+        if not real:
+            (agent / 'models.json').write_text(json.dumps({'providers': {'latency': model_entry(provider_url)}}))
+            (agent / 'settings.json').write_text(json.dumps({'defaultProvider': 'latency', 'defaultModel': 'latency-model',
+                                                             'defaultThinkingLevel': 'medium', 'enableAnalytics': False}))
+        env['PI_CODING_AGENT_DIR'] = str(agent)
+        return ['node', str(REPOSITORY / 'node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js')], env
+    if target == 'opencode':
+        binary = shutil.which('opencode') or str(Path.home() / '.opencode/bin/opencode')
+        if real:
+            return [binary], env
+        for name in ['XDG_DATA_HOME', 'XDG_CONFIG_HOME', 'XDG_STATE_HOME', 'XDG_CACHE_HOME']:
+            path = root / 'opencode-xdg' / name
+            path.mkdir(parents=True, exist_ok=True)
+            env[name] = str(path)
+        config = root / 'opencode.json'
+        config.write_text(json.dumps({
+            '$schema': 'https://opencode.ai/config.json', 'autoupdate': False, 'share': 'disabled',
+            'model': 'latency/latency-model', 'small_model': 'latency/latency-model',
+            'provider': {'latency': {'npm': '@ai-sdk/openai-compatible', 'name': 'Latency',
+                                     'options': {'baseURL': provider_url + '/v1', 'apiKey': 'loopback-latency-fixture'},
+                                     'models': {'latency-model': {'name': 'Latency model'}}}}}))
+        env['OPENCODE_CONFIG'] = str(config)
+        # A private server, so the person's own opencode background service is never touched.
+        return [binary, '--standalone'], env
+    raise SystemExit(f'Unknown target {target}')
+
+
+def submit(terminal, text):
+    for character in text:
+        terminal.send(character)
+        terminal.read(0.01)
+    terminal.read(0.3)
+    terminal.send('\r')
+
+
+def run_target(target, args, output, provider_url):
+    root = output / target
+    root.mkdir(parents=True, exist_ok=True)
+    project = root / 'project'
+    project.mkdir(exist_ok=True)
+    (project / 'fixture.txt').write_text('\n'.join(filler_words(12, random.Random(i)) for i in range(40)) + '\n')
+    Provider.fixture = (project / 'fixture.txt').resolve()
+    subprocess.run(['git', 'init', '-q'], cwd=project)
+    command, env = launch(target, root, project, provider_url, args.real, args.cli.resolve())
+    rng = random.Random(7)
+    result = {'target': target, 'command': command[0], 'scenarios': {}}
+    terminal = Terminal(command, project, env, args.width, args.height)
+    try:
+        terminal.read(4)
+        terminal.settle(1.5, 40)
+        for keys in args.setup:  # For example a model choice: --setup /model '\r' codex '\r'
+            terminal.send(keys.encode().decode('unicode_escape'))
+            terminal.read(1.5)
+        (root / 'startup.txt').write_text(terminal.text())
+        scenarios = ['stream'] if args.real else args.scenarios.split(',')
+        for scenario in scenarios:
+            if scenario == 'idle':
+                result['scenarios']['idle'] = type_rounds(terminal, args.rounds, args.length, args.interval, rng)
+            elif scenario == 'history':
+                started = time.monotonic()
+                submit(terminal, 'latency-history: please loop')
+                terminal.wait(f'step {HISTORY_TURNS - 1}', timeout=240)
+                terminal.settle(2.0, 120)
+                (root / 'history.txt').write_text(terminal.text())
+                stats = type_rounds(terminal, args.rounds, args.length, args.interval, rng)
+                stats['historySetupSeconds'] = round(time.monotonic() - started, 1)
+                result['scenarios']['history'] = stats
+            elif scenario == 'question':
+                submit(terminal, 'latency-question: ask me')
+                deadline = time.monotonic() + 60
+                while 'Which path' not in terminal.text() and 'Allow once' not in terminal.text() and time.monotonic() < deadline:
+                    terminal.pump(0.05)
+                terminal.settle(1.0, 20)
+                if 'Allow once' in terminal.text():  # A fresh account asks before ask_user runs.
+                    (root / 'approval.txt').write_text(terminal.text())
+                    result['scenarios']['approval'] = type_rounds(terminal, args.rounds, args.length, args.interval, rng)
+                    print(target, 'approval', json.dumps(result['scenarios']['approval']), flush=True)
+                    terminal.send('\r')
+                    deadline = time.monotonic() + 30
+                    while 'Allow once' in terminal.text() and time.monotonic() < deadline:
+                        terminal.pump(0.05)
+                terminal.wait('Which path', timeout=60)
+                terminal.settle(1.0, 20)
+                (root / 'question.txt').write_text(terminal.text())
+                result['scenarios']['question'] = type_rounds(terminal, args.rounds, args.length, args.interval, rng)
+                terminal.send('\x1b')
+                terminal.settle(1.0, 20)
+            elif scenario == 'stream':
+                prompt = ('Write a long, detailed markdown essay (at least 1500 words, many headings and bullet lists) '
+                          'about how terminal user interfaces render text. Do not use any tools.') if args.real else 'latency-stream: go'
+                submit(terminal, prompt)
+                terminal.read(10 if args.real else 2)  # A real model may think before it streams.
+                (root / 'stream-start.txt').write_text(terminal.text())
+                result['scenarios']['stream'] = type_rounds(terminal, max(1, args.rounds - 1), args.length, args.interval, rng)
+                (root / 'stream-end.txt').write_text(terminal.text())
+                terminal.read(STREAM_SECONDS if not args.real else 5)
+                terminal.settle(2.0, 120)
+            print(target, scenario, json.dumps(result['scenarios'][scenario]), flush=True)
+    finally:
+        (root / 'final.txt').write_text(terminal.text())
+        terminal.close()
+    return result
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument('--targets', default='xingular,pi,opencode')
+    parser.add_argument('--scenarios', default='idle,history,stream')
+    parser.add_argument('--rounds', type=int, default=4)
+    parser.add_argument('--length', type=int, default=60)
+    parser.add_argument('--interval', type=float, default=0.035)
+    parser.add_argument('--width', type=int, default=160)
+    parser.add_argument('--height', type=int, default=45)
+    parser.add_argument('--real', action='store_true', help='Use each target\'s own login (stream scenario only)')
+    parser.add_argument('--setup', nargs='*', default=[], help='Key strings (backslash escapes allowed) sent after startup, before measuring')
+    parser.add_argument('--cli', type=Path, default=REPOSITORY / 'dist' / 'cli.js')
+    parser.add_argument('--output', type=Path)
+    args = parser.parse_args()
+    output = (args.output or Path(tempfile.mkdtemp(prefix='terminal-latency-'))).resolve()
+    output.mkdir(parents=True, exist_ok=True)
+    server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Provider)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    provider_url = f'http://127.0.0.1:{server.server_port}'
+    print(f'Output: {output}', flush=True)
+    report = {'interval': args.interval, 'length': args.length, 'rounds': args.rounds, 'size': f'{args.width}x{args.height}',
+              'real': args.real, 'results': []}
+    for target in args.targets.split(','):
+        try:
+            report['results'].append(run_target(target, args, output, provider_url))
+        except Exception as error:  # Keep measuring the other targets.
+            report['results'].append({'target': target, 'error': str(error)[:4000]})
+            print(target, 'failed:', str(error)[:2000], flush=True)
+    (output / 'report.json').write_text(json.dumps(report, indent=2) + '\n')
+    print(json.dumps(report, indent=2))
+
+
+if __name__ == '__main__':
+    main()

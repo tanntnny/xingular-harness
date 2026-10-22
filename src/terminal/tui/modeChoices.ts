@@ -1,0 +1,91 @@
+// The model and effort each composer mode uses. A mode's saved choice is applied when the mode becomes
+// active, and every selection the person makes is recorded against the mode it was made in. Changes
+// the terminal makes itself (applying a choice, restoring a session) are never recorded.
+import type { AgentSession } from '@earendil-works/pi-coding-agent'
+
+import { resolveChoice, type ChoicePatch, type ModeChoice } from '../../accounts/choices'
+import type { Effort } from '../../core/effort'
+
+export type ComposerMode = 'normal' | 'plan'
+
+export type ChoiceModel = Parameters<AgentSession['setModel']>[0]
+
+/** The part of the account store a terminal can reach: its own account, through the session socket. */
+export interface ChoiceStore {
+  read(): Promise<Record<string, ModeChoice>>
+  write(mode: ComposerMode, patch: ChoicePatch): Promise<unknown>
+}
+
+/** The part of a native session a choice touches. */
+export interface ChoiceSession {
+  readonly model?: ChoiceModel
+  setModel(model: ChoiceModel, options: { persist: boolean }): Promise<void>
+  setThinkingLevel(level: AgentSession['thinkingLevel'], options: { persist: boolean }): void
+}
+
+export class ModeChoices {
+  private modes: Record<string, ModeChoice> = {}
+  private quiet = 0
+
+  constructor(private readonly store: ChoiceStore) {}
+
+  /** Reads the account's choices. A failed read keeps what is already known, so a session still starts. */
+  async load(): Promise<void> {
+    try {
+      this.modes = await this.store.read()
+    } catch {
+      // Keep the choices already known; the terminal starts on Pi's own default when there are none.
+    }
+  }
+
+  /** The model and effort a mode starts from: its own, else normal's, field by field. */
+  resolve(mode: ComposerMode): { model?: string; effort?: Effort } {
+    return resolveChoice(this.modes, mode)
+  }
+
+  /** Runs `action` as the terminal's own change. Nothing it causes is recorded as a person's selection. */
+  async quietly<T>(action: () => T | Promise<T>): Promise<T> {
+    this.quiet += 1
+    try {
+      return await action()
+    } finally {
+      this.quiet -= 1
+    }
+  }
+
+  /**
+   * Applies a mode's saved model and effort to the session. A model the account cannot use is
+   * skipped, and Pi clamps an effort the model does not support.
+   */
+  async apply(session: ChoiceSession, mode: ComposerMode, modelFor: (reference: string) => ChoiceModel | undefined): Promise<void> {
+    const choice = this.resolve(mode)
+    await this.quietly(async () => {
+      const model = choice.model ? modelFor(choice.model) : undefined
+      if (model && !(session.model && session.model.provider === model.provider && session.model.id === model.id)) {
+        try {
+          await session.setModel(model, { persist: false })
+        } catch {
+          // Not usable on this account (no key, or no longer offered): keep the session's model.
+        }
+      }
+      if (choice.effort) session.setThinkingLevel(choice.effort as AgentSession['thinkingLevel'], { persist: false })
+    })
+  }
+
+  /** Records a selection the person made in `mode`. Skipped while the terminal is making its own change. */
+  async record(mode: ComposerMode, patch: ChoicePatch): Promise<void> {
+    if (this.quiet > 0) return
+    const current = this.modes[mode]
+    this.modes[mode] = {
+      ...current,
+      ...(patch.model !== undefined ? { model: patch.model } : {}),
+      ...(patch.effort !== undefined ? { effort: patch.effort } : {}),
+      updatedAt: new Date().toISOString()
+    }
+    try {
+      await this.store.write(mode, patch)
+    } catch {
+      // Best effort: the selection still applies to this session, and the next one is recorded again.
+    }
+  }
+}

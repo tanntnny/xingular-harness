@@ -1,24 +1,3 @@
-import { HarnessError } from '../core/errors'
-
-export interface PiCommand {
-  program: string
-  argsPrefix: string[]
-}
-
-export function resolvePiCommand(options: {
-  platform: NodeJS.Platform
-  node: string
-  cli: string
-  programOverride?: () => string | null
-}): PiCommand {
-  if (options.programOverride) {
-    const program = options.programOverride()
-    if (!program) throw new HarnessError('harness_unavailable', 'The Pi CLI was not found on PATH.')
-    return { program, argsPrefix: [] }
-  }
-  return { program: options.node, argsPrefix: [options.cli, 'terminal-frontend'] }
-}
-
 function bashPath(path: string): string {
   const drive = /^([a-z]):[\\/](.*)$/i.exec(path)
   if (drive) return `/${drive[1].toLowerCase()}/${drive[2].replaceAll('\\', '/')}`

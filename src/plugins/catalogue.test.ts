@@ -72,7 +72,7 @@ describe('the plugin list', () => {
       ['app-tasks', 'application', ['tool:start_task:on']],
       ['web', 'application', ['tool:web_search:on', 'tool:web_fetch:on']]
     ])
-    expect(plugins.filter((plugin) => plugin.source === 'builtin').map((plugin) => plugin.id)).toEqual(['ask-user', 'budget-guard', 'connected-apps', 'harness', 'history', 'output-trim', 'subagents', 'wiki'])
+    expect(plugins.filter((plugin) => plugin.source === 'builtin').map((plugin) => plugin.id)).toEqual(['ask-user', 'budget-guard', 'checklist', 'connected-apps', 'harness', 'history', 'lessons', 'output-trim', 'subagents', 'wiki'])
 
     const kit = plugins.find((plugin) => plugin.id === 'package:review-kit')!
     // It was there when trust was first asked per package, so it was taken over as trusted.
@@ -138,7 +138,7 @@ describe('what reaches one caller', () => {
     const of = (plugin: string) => result.items.filter((item) => item.pluginId === plugin).map((item) => `${item.kind}:${item.name}:${item.delivery}`)
     expect(of('app-identity')).toEqual(['instruction:Identity line:system'])
     expect(of('app-tasks')).toEqual(['instruction:Tool guidance: Tasks:system', 'tool:start_task:tool'])
-    expect(of('harness')).toEqual(['instruction:System prompt:system', 'instruction:Guardrails:system', 'skill:release:on-demand', 'tool:skill_load:tool'])
+    expect(of('harness')).toEqual(['instruction:System prompt:system', 'instruction:Guardrails:system', 'instruction:Reporting:system', 'skill:release:on-demand', 'tool:skill_load:tool'])
     expect(of('wiki')).toEqual(['instruction:Wiki:context', 'instruction:Tool guidance: Wiki:system', 'tool:wiki_search:tool', 'tool:wiki_read:tool', 'tool:wiki_list:tool'])
     expect(of('history')).toEqual(['instruction:Tool guidance: History:system', 'tool:history_search:tool', 'tool:history_read:tool', 'tool:trajectory_search:tool', 'tool:trajectory_read:tool'])
     expect(of('pi')).toEqual(['instruction:Tool guidance: Native:system', 'tool:read:tool', 'tool:bash:tool', 'instruction:Base prompt:system'])

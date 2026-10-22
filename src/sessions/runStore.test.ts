@@ -1,4 +1,6 @@
-import { appendFileSync, mkdtempSync, readFileSync } from 'node:fs'
+import { spawn } from 'node:child_process'
+import { once } from 'node:events'
+import { appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { expect, test } from 'vitest'
@@ -99,11 +101,43 @@ test('a run that never settled is marked interrupted at startup', () => {
   const root = temp()
   fixtureRun(root, 'running')
   appendEvent(root, fixtureEvent(0, 'started', {}))
-  expect(markInterruptedRuns(root)).toBe(1)
+  expect(markInterruptedRuns(root)).toEqual(['run-1'])
   expect(loadRun(root, 'run-1').status).toBe('interrupted')
   expect(readEvents(root, 'run-1').at(-1)).toMatchObject({ sequence: 1, type: 'status.changed' })
-  expect(markInterruptedRuns(root)).toBe(0)
+  expect(markInterruptedRuns(root)).toEqual([])
   closeIndex(root)
+})
+
+test('startup leaves a run alone while another live process owns it', () => {
+  const root = temp()
+  fixtureRun(root, 'running')
+  const owner = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60_000)'], { stdio: 'ignore' })
+  try {
+    writeFileSync(join(runDir(root, 'run-1'), 'owner.json'), JSON.stringify({ pid: owner.pid }))
+    expect(markInterruptedRuns(root)).toEqual([])
+    expect(loadRun(root, 'run-1').status).toBe('running')
+  } finally {
+    owner.kill()
+    closeIndex(root)
+  }
+})
+
+test('startup interrupts a run whose owner has exited, or that has no owner', async () => {
+  const root = temp()
+  fixtureRun(root, 'running')
+  const exited = spawn(process.execPath, ['-e', '0'], { stdio: 'ignore' })
+  await once(exited, 'exit')
+  writeFileSync(join(runDir(root, 'run-1'), 'owner.json'), JSON.stringify({ pid: exited.pid }))
+  expect(markInterruptedRuns(root)).toEqual(['run-1'])
+  expect(loadRun(root, 'run-1').status).toBe('interrupted')
+  closeIndex(root)
+
+  const legacy = temp()
+  fixtureRun(legacy, 'running')
+  rmSync(join(runDir(legacy, 'run-1'), 'owner.json'))
+  expect(markInterruptedRuns(legacy)).toEqual(['run-1'])
+  expect(loadRun(legacy, 'run-1').status).toBe('interrupted')
+  closeIndex(legacy)
 })
 
 test('normal completion and failure are terminal too', () => {

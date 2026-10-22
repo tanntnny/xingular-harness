@@ -1,0 +1,26 @@
+{
+  "probe": "default standalone command without XINGULAR_HARNESS_TUI",
+  "date": "2026-10-21",
+  "size": "80x24",
+  "argv": [
+    "node",
+    "dist/cli.js",
+    "--data",
+    "<temp>/data",
+    "--state",
+    "<temp>/state"
+  ],
+  "environment": "XINGULAR_HARNESS_TUI unset",
+  "exitCode": 0,
+  "bytes": 12788,
+  "capture": "default-opentui-80x24.ansi.gz",
+  "captureSha256": "d322d87d704da6338129d69561a2dd82d36cf8af94bdba44fe2eedc8eab96b8f",
+  "distCliSha256": "47bacb4b544a1be0896a7a8d55d76dc0216b971a288dfcdf1ab8bb3a090c5994",
+  "distFrontendSha256": "78738ad7a35911b035fc22ab17df14e744d5a7606be0259306592cad75e144d1",
+  "observed": {
+    "homeProductMark": true,
+    "composerHint": true,
+    "helpHint": true
+  },
+  "limits": "Capture starts at PTY startup and ends after Ctrl+C exits the application. It proves the default launch renders OpenTUI; it does not exercise a provider request."
+}

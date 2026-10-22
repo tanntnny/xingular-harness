@@ -336,8 +336,8 @@ export class TerminalController {
         toolCallId: String(data.id),
         name: String(data.name),
         ...(data.phase === 'start'
-          ? { summary: String(data.summary ?? '') }
-          : { ok: data.ok !== false, ...(typeof data.durationMs === 'number' ? { durationMs: data.durationMs } : {}), ...(typeof data.resultChars === 'number' ? { resultChars: data.resultChars } : {}) })
+          ? { summary: String(data.summary ?? ''), ...(typeof data.input === 'string' ? { input: data.input.slice(0, 24_000) } : {}) }
+          : { ok: data.ok !== false, ...(typeof data.durationMs === 'number' ? { durationMs: data.durationMs } : {}), ...(typeof data.resultChars === 'number' ? { resultChars: data.resultChars } : {}), ...(typeof data.output === 'string' ? { output: data.output.slice(0, 24_000) } : {}), ...(data.outputTruncated === true ? { outputTruncated: true } : {}) })
       })
     }
     return {}

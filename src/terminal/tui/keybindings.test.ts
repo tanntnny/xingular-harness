@@ -11,6 +11,13 @@ it('steps thinking effort on shift arrows', () => {
   expect(manager.matches('\x1b[Z', 'app.thinking.cycle')).toBe(false)
 })
 
+it('steers on Cmd+Enter and Alt+Enter, and leaves plain Enter to queue', () => {
+  const manager = terminalKeybindings('/unused/isolated-account')
+  expect(manager.matches('\x1b[13;9u', 'app.message.steer')).toBe(true)
+  expect(manager.matches('\x1b[13;3u', 'app.message.steer')).toBe(true)
+  expect(manager.matches('\r', 'app.message.steer')).toBe(false)
+})
+
 it('reloads edited isolated keybindings on the existing public manager', () => {
   const root = mkdtempSync(join(tmpdir(), 'harness-keybindings-'))
   try {

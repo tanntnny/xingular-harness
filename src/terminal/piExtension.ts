@@ -2,7 +2,7 @@
 // session does to the harness, asks before each tool call, takes instructions the harness
 // queues for it, and gives the session the harness's own tools. It runs in the `pi` process,
 // so everything it knows about the harness comes through the session socket.
-import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent'
+import type { AgentSession, ExtensionAPI, ExtensionContext, ExtensionUIDialogOptions } from '@earendil-works/pi-coding-agent'
 import { Type } from 'typebox'
 
 import { connectionFromEnv, socketCall, terminalCall } from './client'
@@ -41,7 +41,10 @@ async function withParentCancellation<T>(signal: AbortSignal | undefined, work: 
   try { return await work() } finally { signal?.removeEventListener('abort', stop) }
 }
 
-export default async function (pi: ExtensionAPI, planRun?: TerminalPlanRunState) {
+/** /hub, /plugins and /accounts are pages: the owned terminal fills the screen, and Pi's own dialogs ignore the field. */
+const PAGE: ExtensionUIDialogOptions & { page: boolean } = { page: true }
+
+export default async function (pi: ExtensionAPI, planRun?: TerminalPlanRunState, getSession?: () => AgentSession) {
   await terminalCall('startup', { phase: 'Pi extension loaded' })
   let context: ExtensionContext | null = null
   let nativeSubagents = false
@@ -70,7 +73,7 @@ export default async function (pi: ExtensionAPI, planRun?: TerminalPlanRunState)
       handler: async (_args, ctx) => {
         if (!control) return ctx.ui.notify('This session cannot install hub items.', 'warning')
         await runHubMenu(
-          { select: (title, options) => ctx.ui.select(title, options), confirm: (title, message) => ctx.ui.confirm(title, message), notify: (message, level) => ctx.ui.notify(message, level) },
+          { select: (title, options) => ctx.ui.select(title, options, PAGE), confirm: (title, message) => ctx.ui.confirm(title, message), notify: (message, level) => ctx.ui.notify(message, level) },
           (method, params) => socketCall(connection, method, params ?? {}, 300_000, control)
         )
       }
@@ -81,7 +84,7 @@ export default async function (pi: ExtensionAPI, planRun?: TerminalPlanRunState)
         if (!control) return ctx.ui.notify('This session cannot change plugins.', 'warning')
         const { projectId } = await socketCall<{ projectId: string | null }>(connection, 'plugins.session', {}, 15_000, control).catch(() => ({ projectId: null }))
         await runPluginsMenu(
-          { select: (title, options) => ctx.ui.select(title, options), confirm: (title, message) => ctx.ui.confirm(title, message), notify: (message, level) => ctx.ui.notify(message, level) },
+          { select: (title, options) => ctx.ui.select(title, options, PAGE), confirm: (title, message) => ctx.ui.confirm(title, message), notify: (message, level) => ctx.ui.notify(message, level) },
           (method, params) => socketCall(connection, method, params ?? {}, 60_000, control),
           projectId
         )
@@ -95,7 +98,7 @@ export default async function (pi: ExtensionAPI, planRun?: TerminalPlanRunState)
         if (!session) return ctx.ui.notify('This session has no account to manage.', 'warning')
         const outcome = await runAccountsMenu(
           {
-            select: (title, options) => ctx.ui.select(title, options),
+            select: (title, options) => ctx.ui.select(title, options, PAGE),
             confirm: (title, message) => ctx.ui.confirm(title, message),
             input: (title, placeholder) => ctx.ui.input(title, placeholder),
             notify: (message, level) => ctx.ui.notify(message, level)
@@ -177,6 +180,46 @@ export default async function (pi: ExtensionAPI, planRun?: TerminalPlanRunState)
       if (planRun.active) event.systemPromptOptions.sections.plan = PLAN_INSTRUCTIONS
       else delete event.systemPromptOptions.sections.plan
     }
+    const bang = event.messageType === 'user' ? /^\s*!\s*([\s\S]+)$/u.exec(event.prompt) : null
+    if (!bang) return
+    const command = bang[1]!
+    const id = `initial-bash:${begun.runId}`
+    const started = Date.now()
+    await terminalCall('tool', { phase: 'start', id, name: 'bash', summary: command.slice(0, 200), input: JSON.stringify({ command }) })
+    let refusal: string | undefined
+    let result: Awaited<ReturnType<AgentSession['executeBash']>> | undefined
+    if (planRun?.active) {
+      refusal = 'Bash commands are disabled while a plan request is running.'
+    } else {
+      try {
+        const policy = await terminalCall<{ allowed: boolean; reason?: string; requiresApproval?: boolean }>('policy', { tool: 'bash', args: { command } })
+        if (policy.requiresApproval) {
+          const approval = await terminalCall<{ decision: string }>('approval', { requestId: id, tool: 'bash', args: { command } })
+          if (approval.decision !== 'approved') refusal = 'The user denied this Bash command.'
+        } else if (!policy.allowed) {
+          refusal = policy.reason ?? 'This Bash command is outside what the terminal allows.'
+        }
+        if (!refusal) {
+          const session = getSession?.()
+          if (!session) refusal = 'The native session is unavailable.'
+          else result = await session.executeBash(command, undefined, { id })
+        }
+      } catch (error) {
+        refusal = error instanceof Error ? error.message : 'The Bash policy or command failed.'
+      }
+    }
+    const output = result?.output ?? refusal ?? 'The command did not complete.'
+    const outputTruncated = output.length > 24_000
+    await terminalCall('tool', {
+      phase: 'end', id, name: 'bash', ok: !refusal && result?.exitCode === 0 && !result.cancelled,
+      durationMs: Date.now() - started, resultChars: output.length,
+      output: outputTruncated ? `${output.slice(0, 23_987)}\n…[truncated]` : output,
+      ...(outputTruncated ? { outputTruncated: true } : {})
+    })
+    const instruction = refusal
+      ? `The user's initial Bash command was not run. Reason: ${refusal}. Do not claim that it ran; explain the limitation and ask how to proceed.`
+      : 'The user’s initial Bash command has already run. Read its native Bash result and explain what it shows. Do not run the same command again unless the user explicitly asks.'
+    return { message: { customType: 'xingular-initial-bash', content: instruction, display: false, details: {} } }
   })
   const deliverChildren = async (event: any, ctx: ExtensionContext, settle: boolean) => {
     if (!nativeSubagents || (settle && event.outcome !== 'completed') || ctx.signal?.aborted) return
@@ -246,8 +289,9 @@ export default async function (pi: ExtensionAPI, planRun?: TerminalPlanRunState)
         return { block: true, reason: 'The user denied this action. Ask how they would like to proceed.' }
       }
       if (!policy.allowed) return { block: true, reason: policy.reason ?? 'Outside what this session may do.' }
-    } catch {
-      return { block: true, reason: 'The terminal controller is unavailable.' }
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error)
+      return { block: true, reason: `The terminal controller is unavailable: ${detail}` }
     }
   })
   pi.on('tool_execution_start', async (event) => {
@@ -272,7 +316,7 @@ export default async function (pi: ExtensionAPI, planRun?: TerminalPlanRunState)
     await terminalCall('settled', { error: failure, aborted: event.aborted })
   })
   pi.on('user_bash', async () => {
-    throw new Error('Use the bash tool so this action can be checked.')
+    throw new Error('Use the ! command composer so this action can be checked.')
   })
   pi.on('session_shutdown', async () => {
     if (timer) clearInterval(timer)
@@ -294,13 +338,20 @@ export default async function (pi: ExtensionAPI, planRun?: TerminalPlanRunState)
   pi.registerTool({
     name: 'ask_user_question',
     label: 'Ask a question',
-    description: 'Ask the user a question and wait for their answer. Recommendations are visual only and never preselect answers; submitted choices keep their labels. Mark options with recommended: true, at most one for single-choice questions or several when multiSelect is true.',
+    description: 'Ask the user a question and wait for their answer. Every question must include at least one choice and at least one choice must be recommended. Recommendations are visual only and never preselect answers; submitted choices keep their labels. Mark at most one choice recommended for single-choice questions or several when multiSelect is true.',
     parameters: Type.Object({
       question: Type.String(),
-      options: Type.Optional(Type.Array(Type.Object({ label: Type.String(), description: Type.Optional(Type.String()), recommended: Type.Optional(Type.Boolean()) }))),
+      options: Type.Array(Type.Object({ label: Type.String(), description: Type.Optional(Type.String()), recommended: Type.Optional(Type.Boolean()) }), {
+        minItems: 1,
+        contains: Type.Object({ recommended: Type.Literal(true) })
+      }),
       multiSelect: Type.Optional(Type.Boolean())
     }),
     async execute(id, input) {
+      if (!Array.isArray(input.options) || input.options.length === 0) throw new Error('Every question needs at least one choice.')
+      const recommendedCount = input.options.filter(option => option.recommended).length
+      if (recommendedCount === 0) throw new Error('Every question needs at least one recommended choice.')
+      if (!input.multiSelect && recommendedCount > 1) throw new Error('A single-choice question may recommend at most one option.')
       const answer = await terminalCall('question', { requestId: id, ...input })
       return { content: [{ type: 'text', text: JSON.stringify(answer) }], details: undefined }
     }

@@ -43,7 +43,7 @@ test('question batches validate all answers before resolving and retain choice n
 
   const result = run.requestAnswers([
     { summary: 'Project scope', question: 'What should change?', options: [{ label: 'UI', recommended: true }, { label: 'API', recommended: true }], multiSelect: true, allowText: true },
-    { summary: 'Target date', question: 'When should it ship?', options: [{ label: 'Soon' }, { label: 'Later' }], multiSelect: false, allowText: false }
+    { summary: 'Target date', question: 'When should it ship?', options: [{ label: 'Soon', recommended: true }, { label: 'Later' }], multiSelect: false, allowText: false }
   ])
   let settled = false
   void result.then(() => { settled = true })
@@ -81,11 +81,13 @@ test('question batches validate all answers before resolving and retain choice n
   })
 })
 
-test('recommendation limits are checked before any question in a batch is emitted', () => {
+test('choices and recommendation limits are checked before any question in a batch is emitted', () => {
   const { root, run } = fixture()
-  const base = { question: 'Which?', options: [{ label: 'A' }, { label: 'B' }], multiSelect: false, allowText: true }
+  const base = { question: 'Which?', options: [{ label: 'A', recommended: true }, { label: 'B' }], multiSelect: false, allowText: true }
+  expect(() => run.requestAnswer({ ...base, options: [] })).toThrow(/at least one choice/)
+  expect(() => run.requestAnswer({ ...base, options: [{ label: 'A' }] })).toThrow(/at least one recommended choice/)
   expect(() => run.requestAnswers([
-    { ...base, options: [{ label: 'A' }] },
+    { ...base, options: [{ label: 'A', recommended: true }] },
     { ...base, options: [{ label: 'B', recommended: true }, { label: 'C', recommended: true }] }
   ])).toThrow(/single-choice question can recommend at most one/)
   expect(() => run.requestAnswer({ ...base, options: [{ label: 'A', recommended: true }, { label: 'B', recommended: true }] })).toThrow(/single-choice question can recommend at most one/)
@@ -94,7 +96,7 @@ test('recommendation limits are checked before any question in a batch is emitte
 
 test('legacy single questions remain valid alongside batch event metadata', () => {
   const { root, registry, run } = fixture()
-  const answer = run.requestAnswer({ question: 'Continue?', options: [{ label: 'Yes' }], multiSelect: false, allowText: false })
+  const answer = run.requestAnswer({ question: 'Continue?', options: [{ label: 'Yes', recommended: true }], multiSelect: false, allowText: false })
   const request = readEvents(root, 'run-1').find((event) => event.type === 'question.requested')!
   expect(runEventPayloadSchemas['question.requested'].safeParse(request.payload).success).toBe(true)
   expect(runEventPayloadSchemas['question.requested'].safeParse({ ...(request.payload as object), options: [{ label: 'Yes', recommended: true }] }).success).toBe(true)
@@ -106,8 +108,8 @@ test('legacy single questions remain valid alongside batch event metadata', () =
 test('answer batch method rejects duplicate and foreign question ids without settling the batch', async () => {
   const { root, registry, run } = fixture()
   const result = run.requestAnswers([
-    { summary: 'First', question: 'First?', options: [], multiSelect: false, allowText: true },
-    { summary: 'Second', question: 'Second?', options: [], multiSelect: false, allowText: true }
+    { summary: 'First', question: 'First?', options: [{ label: 'Choice A', recommended: true }], multiSelect: false, allowText: true },
+    { summary: 'Second', question: 'Second?', options: [{ label: 'Choice B', recommended: true }], multiSelect: false, allowText: true }
   ])
   const requested = readEvents(root, 'run-1').filter((event) => event.type === 'question.requested')
   const [first, second] = requested.map((event) => event.payload as { questionId: string; batchId: string })

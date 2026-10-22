@@ -1,7 +1,78 @@
 # Harness terminal frontend
 
-Status: published as `@xingular/harness` 2.1.2. Last updated: 2026-10-19.
-Decision: [ADR-0001](decisions/ADR-0001-owned-terminal.md).
+Status: release candidate `@xingular/harness` 4.0.0; npm publication blocked by registry authorization. Last updated: 2026-10-22.
+Decision: [ADR-0001](decisions/ADR-0001-owned-terminal.md),
+[ADR-0006](decisions/ADR-0006-opentui-only-terminal.md),
+[ADR-0009](decisions/ADR-0009-xharness-command.md).
+
+## OpenTUI terminal
+
+OpenTUI/Solid, built from [`src/terminal/opentui/`](../src/terminal/opentui/), is the only terminal
+frontend. It needs Bun 1.3.14 or newer for its build and runtime:
+
+```sh
+npm run build:tui
+node dist/cli.js terminal
+```
+
+`npm run build` builds `dist/terminal-opentui.js`; without Bun the build fails, because there is no
+second frontend to fall back to. The harness passes `--conditions=browser` when it launches the
+bundle so Solid resolves to its client build, not its server build. `XINGULAR_HARNESS_BUN`
+overrides the Bun executable.
+
+[`app.ts`](../src/terminal/opentui/app.ts) owns the terminal lifecycle and reuses the shared
+`TerminalRuntime`, session replacement, commands, decisions, account pinning and run records. It
+projects the runtime's snapshot and transcript into an OpenCode-inspired view, with a native
+OpenTUI textarea for the prompt, `Ctrl+K` for the command palette, `Return` to send (or to queue behind a running reply),
+`Cmd+Return` (or `Alt+Return`) to steer a running reply, and `Shift+Return` for a newline. With an
+empty composer, unmodified Up recalls the latest non-empty user message from the active session.
+After recall, unmodified Up/Down are available for normal editor movement and do not browse history
+while the draft is non-empty. Ctrl+Up/Down remain explicit history shortcuts; Down past the newest
+entry restores a blank draft. History comes from the active Pi session's saved messages, so `/new`
+and `/resume` switch to that session's history. Steering needs a terminal that reports Cmd with the
+kitty keyboard protocol; elsewhere `Alt+Return` steers. In the composer, `Tab` opens up to eight matching filesystem entries for the path token at the cursor, or current-folder entries when the token is empty. The list has no heading or hint row. Up/Down select; Enter or Tab inserts the selection; Escape closes the list. Directories end in `/`, and Bash mode escapes shell-special characters. Use `/effort` or Shift+Up/Down to change effort. The command palette opens above the composer under a muted (`dim`) top rule, and has no other border. Its rows align slash commands and descriptions in two columns: the command column sizes to the widest visible name, bounded to preserve description space, and both columns wrap instead of truncating. The plan-choice rule, question block's top-only divider, and `/btw` block's top rule use the same muted color as the normal composer divider. The console has no background of its own: the renderer, root surface
+and transcript are transparent, so the terminal's own background shows through, while panels,
+dialogs and the scrim stay opaque. The composer has no panel background: it is bounded by a top and
+a bottom rule, with the working status and spinner above it and a wrapping status bar below it. Its
+fixed-width left gutter shows `❯` on the first input row and leaves continuation rows blank, including
+explicit newlines and soft wraps; Bash mode shows `!` on the first row instead. In plan mode,
+`plan mode` is right-aligned within the top rule, followed by exactly one divider character. The status bar shows the working folder's name, the Git branch, the account, model and effort separated by spaces, and input (`↑`) and output (`↓`) token counts with each glyph adjacent to its count; `|` separates the groups. Token counts
+below 1,000 show as whole numbers and larger counts use K/M/B suffixes. A leading `!`
+enters Bash mode: the chevron becomes `!`, and the marker and both rules use the `bashMode` colour.
+In plan mode, the marker and rules use the plan blue and `plan mode` is right-aligned within the
+top rule with exactly one divider character after it; in the normal prompt, the marker matches the divider. The command body keeps the normal
+text color. Every terminal animates the same star
+glyphs (`·✢✳✶✻✽`) while working, with Ghostty's existing variant; there is no ASCII line fallback.
+Extension dialogs, pages, custom editors, widgets, headers and footers keep using Pi's component
+API through [`dialogHost.ts`](../src/terminal/opentui/dialogHost.ts): a small fake `TUI` renders
+`Component.render(width)` ANSI into stacked overlays and forwards raw key sequences. Extensions
+never receive an OpenTUI renderable or a second account. A theme an extension selects still colors
+its own components, while the OpenTUI chrome keeps the fixed OpenCode-inspired palette. Component
+UI is supported; an extension that draws only by writing raw ANSI through the TUI terminal is not.
+
+Pages become centered dialogs. The page commands `/accounts`, `/permissions`, `/plugins`,
+`/hub`, `/components`, `/settings`, `/trajectory` and `/log`, the `/model` and `/tree` pickers, and
+the `select`, `confirm`, `input` and `editor` dialogs (such as `/effort` and the Thinking setting),
+take 80% of the terminal, capped at 100 columns by 30 rows, on a flat panel in the console's panel
+colour. A full-screen scrim dims the console behind the panel so the transcript stays faintly
+visible. Centered Harness dialogs fit their rendered content, capped by the available dialog
+height, with four columns of horizontal padding and two rows of vertical padding to account for
+the terminal's taller-than-wide cells. They use a plain title with a muted `Esc` hint and
+omit divider rules and footer hints. Shortcut behavior remains available. Searchable lists share
+the same glyph, placeholder, spacing, and muted result note, with search context included on that
+row. A terminal too small for a 30-column by
+12-row dialog falls back to the full-screen page chrome. A plugin's full-screen surface stays full
+screen.
+
+The frontend is verified with a real isolated PTY and a loopback provider. Run
+`python3 scripts/verify-terminal.py --composer-only` for explicit-newline and soft-wrap checks of
+both prompt gutters plus normal/plan/Bash mode exclusivity, `--file-completion-only` for filesystem
+completion and insertion,
+`--history-only` for active-session history across `/new` and `/resume`, `--help-only` for `/help` replacing the welcome screen, `--questions-only` for recommended choices,
+selected-row and Continue/Submit colors, `--jump-latest-only` for scroll-away badge visibility and click-to-latest (screen-level click assertions use optional `pyte`), and choice-backed “Something else” answers, or `--thinking-only` for `/thinking` visibility toggles. The full suite covers a complete turn, `read`, `bash` approval, `ask_user_question` approval and picker, plugin overlay/widget/status
+disposal, a completed run record with usage and decision events, `/help`, `/permissions`,
+`/settings`, `/model`, palette selection, confirm cancel, and Ctrl+D exit. Live-provider behavior,
+exact OpenCode parity and concurrent session tabs are not established.
 
 ## Native subagents (2026-10-18)
 
@@ -20,27 +91,28 @@ routing. It does not establish live-provider behavior or new visual UI parity. S
 
 ## Ownership and process boundary
 
-Harness owns its interactive terminal application in [`src/terminal/tui/`](../src/terminal/tui/).
-[`TerminalApplication`](../src/terminal/tui/application.ts) owns terminal lifecycle, screen
-composition, focus, input dispatch, scrolling, editor mounting, dialogs and keyboard actions.
-It does not construct Pi's `InteractiveMode`. Pi 1.2.0 supplies the persistent agent session,
-model and auth runtime, native JSONL history, tool execution and rich content components.
+Harness owns its interactive terminal application in
+[`src/terminal/opentui/`](../src/terminal/opentui/). [`app.ts`](../src/terminal/opentui/app.ts)
+owns terminal lifecycle, submission, commands, decisions and run records;
+[`root.tsx`](../src/terminal/opentui/root.tsx) owns composition, the transcript, the composer,
+palette and dialogs. It does not construct Pi's `InteractiveMode`. Pi 1.2.0 supplies the
+persistent agent session, model and auth runtime, native JSONL history, tool execution and rich
+content components.
 
-The parent process still calls `Terminals.prepare()`, spawns its returned specification in a
-PTY or inherited terminal, and eventually calls `dispose()`. Its default command is the active
-Node runtime followed by the existing Harness CLI and `terminal-frontend`; it requires no global
-`pi` command. `TerminalAssets` remains `{ node, cli, piExtension }`, and the existing
-`prepare`, `send`, `state`, `input` and `dispose` contracts remain in place. The `piExtension`
-path remains the final prepared extension argument. The owned runtime recognizes that bridge
-position and loads its trusted, bundled factory inline after the selected disk extensions.
+The parent process calls `Terminals.prepare()`, spawns its returned specification in a PTY or
+inherited terminal, and eventually calls `dispose()`. Its command is Bun with
+`--conditions=browser` and the built `dist/terminal-opentui.js`; it requires no global `pi`
+command. `TerminalAssets` is `{ node, cli, piExtension, openTui }`, and the existing `prepare`,
+`send`, `state`, `input` and `dispose` contracts remain in place. The `piExtension` path remains
+the final prepared extension argument. The runtime recognizes that bridge position and loads its
+trusted, bundled factory inline after the selected disk extensions.
 
 ```text
 Harness parent: account + compiled context + trusted resources + run writer
        | launch specification / existing session socket
-Harness terminal child: TerminalApplication + persistent Pi AgentSessionRuntime
+Harness terminal child: OpenTUI application + persistent Pi AgentSessionRuntime
        | typed native events / plugin UI callbacks
-Harness screen: transcript, with the product lockup above it until the first message, above a dock
-       (status, editor, footer), with dialogs and overlays
+Harness screen: transcript above the composer, with centered page dialogs and blocks
 ```
 
 [`runtime.ts`](../src/terminal/tui/runtime.ts) builds a public `AgentSessionRuntime` around
@@ -59,31 +131,107 @@ unattended execution path.
 
 ## Screen layout
 
-[`screen.ts`](../src/terminal/tui/screen.ts) chooses the screen from Pi's `tuiMode` in the
-account's `settings.json`; the default is `fullscreen`. Fullscreen uses Pi 1.2.0's
-`TuiAltScreen` with a layout root: a `ScrollView` holds the transcript (with the product lockup
-above it) and fills the terminal, and a `VStack` dock sits below it. The dock holds the working
-line, queued messages, widgets, the editor with its status band, and the footer. Terminal notices
-(mode changes, errors, the keyboard list) are rows in the transcript, so they scroll with the
-conversation and clear with its session. The dock stays on the last rows as the transcript grows,
-and scrolling moves only the transcript. When the screen is short, the prompt and status keep
-their full height, and queued messages and widgets show their first rows and scroll for the rest. Pi's `tui.altScreen.*` bindings
-(PgUp/PgDn, Ctrl+Home/End and the rest), mouse wheel, selection and search apply. The scrollbar,
-wheel step and copy-on-select behaviour are read from Pi's `fullscreen*` settings. Submitting a
-message and changing session return the transcript to its latest row. The product lockup
-(`welcome.ts`) is the first row of the transcript only while the current chat has no user
-message, so a resumed session with history starts without it and a new, cleared or switched-to
-empty chat shows it again. A header set by a trusted extension with `setHeader` replaces the
-lockup and is never hidden. Hiding the lockup shrinks the rendered rows, so the main screen clears
-and reprints once when the first message is sent.
+[`root.tsx`](../src/terminal/opentui/root.tsx) draws the terminal on OpenTUI's alternate screen.
+An empty conversation shows the centered product mark and a short hint; once a message exists, a
+scrollable transcript fills the space above the composer. Single-line notices can appear with the
+welcome, while multiline notices such as `/help` switch to the transcript layout so their output
+cannot overlap it. The composer is a single top and bottom rule, with the right-aligned `plan mode` label followed by one divider character in the top rule,
+and the textarea in the middle.
+The working status row shows the active verb with a soft, warm glint that feathers across it and
+fades past its edges, followed by run duration and the latest completed assistant response's output
+rate, formatted as `(time, tok/s)`; the spinner and metrics stay steady, and duration updates during a run.
+Until response usage is available, the rate shows `— tok/s`. On settlement, the completion verb and
+final run statistics stay in that row until the next run replaces them; they do not become a transcript
+entry. Notifications, queue announcements, compaction-start and retry updates—including retries
+while summarizing context or branches—are one-line transcript entries at the point they occur, so
+subsequent chat moves them up rather than keeping them pinned at the bottom. A completed context
+compaction adds a first-class card from Pi's persisted session history, showing the token count and
+an expandable Markdown summary; click the card or use Ctrl+O to toggle its details.
+A successful transcript-selection copy instead shows a temporary, opaque toast at the top-right of the
+terminal. Interactive blocks and widgets remain docked above the composer. A wrapping status bar
+below the composer shows the working folder, branch, account, model, effort and token totals. After
+the input token count it shows cache hit rate as `R<percentage>%`, calculated from cache reads divided
+by total input tokens. The footer shows status messages without a shortcut-hint row. Press `?` with an empty
+composer to open the shortcut reference. Transcript entries include
+messages, thinking, tools, notices and extension ANSI components. Image blocks returned by tools
+appear as separate image-result entries immediately after their tool call, within the scrollable
+transcript; they move up with newer chat. The `/settings` Show images option controls whether the
+image data is rendered. Mouse-wheel scrolling and PgUp/PgDn
+move the transcript without moving the composer; Ctrl+Home and Ctrl+End jump to its beginning and
+end. The transcript has one blank row between each pair of entries, including assistant replies,
+thinking, tools, image results, notices, summaries, custom messages, user messages, plan cards and
+Bash entries. User, plan and Bash bubbles also have one blank row of internal padding above and below
+their content; other entries have no internal vertical padding. Bubble padding is additional to the
+inter-entry gap. Internal lines within an entry stay together. The transcript stays pinned to the
+latest message until you scroll away. While scrolled away, a `↓ Jump to latest` badge overlays the
+transcript's lower-right corner; clicking it returns to the newest message and hides the badge.
+`Ctrl+End` remains an alternate way to jump to the end. A primary click in the transcript or empty welcome area focuses the composer. Dragging to select
+transcript text copies the selected plain text when the selection is released; a simple click does
+not copy. `/copy` and `Ctrl+X` continue to copy the latest assistant reply.
 
-`regular` uses the main screen with the same components flowing in order, and the terminal keeps
-the scrollback. Leaving fullscreen with `fullscreenExitOutput: "transcript"` (Pi's default) copies
-the rendered conversation into the normal scrollback once the alternate screen is gone; a session
-with no messages writes nothing, and a started chat copies it without the product lockup. Other
-exit-output values are not implemented and write nothing.
-The decision and its consequences are recorded in
-[ADR-0004](decisions/ADR-0004-fullscreen-terminal-layout.md).
+Mouse movement highlights the row under the pointer in the command palette, plan choices, question
+dock, searchable dialogs and Harness page lists; the highlight uses the same selection style as
+keyboard navigation. A primary click activates the row, and clicks on page tabs switch that page's
+section. Question choices still stage their answer until the question's action is clicked. Dialogs
+preserve their existing confirmation safeguards. OpenTUI enables terminal mouse-motion reporting for
+hover; terminals or multiplexers that do not report motion retain keyboard navigation. ANSI-only
+custom UI without a mouse handler remains keyboard-driven.
+
+Page dialogs and blocks are absolute overlays, so the transcript stays behind them. The screen
+restores the terminal's alternate-screen state when the application exits.
+
+### Markdown transcript
+
+Assistant replies, plan-card bodies and Markdown image-result text share one style map. Heading
+levels use the Harness palette; links are blue and underlined, and only their labels appear in the
+transcript. Hovering a supported link changes the terminal pointer to a hand and shows a `Click to
+open link` hint in the status bar. A primary click opens it with the system browser; only valid
+HTTP and HTTPS destinations are accepted, and the launcher receives the URL as an argument without
+a shell. OSC 8 metadata is emitted where available, but link activation does not depend on terminal
+OSC 8 support. Inline and fenced code use a subtle panel fill with syntax colors. Emphasis, quotes,
+list markers, tables, dividers and task-list markers use the existing titanium palette. Images
+display their alt text and are not fetched or rendered as image files.
+
+## Blocks and pages
+
+In Pi's own terminal UI, [`chrome.ts`](../src/terminal/tui/chrome.ts) gives terminal surfaces one
+of two rule-based shapes, using the 2-cell composer gutter on each side and a dim hint row.
+
+- A **block** docks at the bottom like the slash-command list above the composer. It has an amber
+  (`warning`) rule, a bold title row with an optional dim note at the right edge (a dialog's
+  countdown), the body, a hint row, and a neutral (`dim`) closing rule. It is as tall as its body.
+  Approvals, questions, and the `select`, `confirm`, `input` and `editor` dialogs use this shape
+  there. OpenTUI renders Harness-managed centered dialogs with the inset header treatment below.
+- A **page** is a header row (title left, position or status right), a neutral rule, the body,
+  a neutral rule, and the hint row. `/settings`, `/trajectory`, `/log`, `/permissions`, and the
+  `/accounts`, `/plugins` and `/hub` menus are pages. Section labels inside a page are plain bold
+  headings, never text set into a rule.
+
+`DialogPanel` takes a `variant` (`block` by default). `ui.select` accepts a harness-owned `page`
+option, which Pi's own dialogs ignore, so the same extension code runs in either terminal. Selected
+rows keep the full-width `selectedBg` highlight and `❯` marker the slash-command list uses. Both
+frontends draw that field from the same muted-blue selection palette (`selection.ts`) and use
+explicit high-contrast text on it instead of the accent colour, so a choice reads the same in every
+list. Rules use the theme's `warning` and `dim` colors, so a custom theme restyles them.
+
+Each page command owns a separate page and its own tab strip: `/accounts` has Accounts
+and Pools; `/permissions` has Overview and Tools; `/plugins` has Plugins and Trust; `/hub` has
+Catalog and Installed; `/components` has Skills, Prompts and Rules; `/settings` has the available
+settings categories; `/trajectory` has Runs and Events; and `/log` has Diagnostics and Run Events.
+Commands never share one cross-page tab strip. Tab and Shift+Tab move between the current page's
+tabs; in centered dialogs, Left and Right move between those tabs too. Up and Down move through
+rows, while PageUp/PageDown, Home and End move through rows or details. Trajectory keeps `[` and
+`]` for run navigation; its Up and Down arrows select events. The `/model` scope tabs and `/tree`
+filter tabs also respond to Left and Right. Every list and picker places the same `⌕ Type to
+search` row immediately under its title or strip, with its result count at the right. Compact pickers
+such as `/model`, `/tree`, `/resume` and `/fork` do not show a page strip. Escape clears a non-empty
+search before closing. Left and right are passed to the current page and do not switch commands.
+
+`/components` browses skills, prompts and rules in the component library. After confirmation, a skill
+or rule is added to the attached Harness scope as a new tree version for future sessions; the current
+terminal stays pinned to the version it started with. Prompts remain browse-only, and terminals without
+a writable scope can browse but cannot add items. These changes go through the extension's private
+control key, so model-issued shell commands cannot add a component.
 
 ## Plan mode and thinking keys
 
@@ -94,8 +242,31 @@ when Pi's follow-up mode is `all`. During that run the session narrows to read-o
 and recall (history and Wiki reads, `memory_facts`). Providers may mark individual calls as safe for
 research; every other call is blocked before approval. Edits, writes, shell commands, memory writes,
 subagents and connected-app tools remain unavailable. The plan instructions arrive as a
-request-scoped prompt section, which the next ordinary request withdraws. `/plan` without a brief
-and the old on/off/toggle forms are rejected.
+request-scoped prompt section, which the next ordinary request withdraws.
+
+Each mode keeps its own model and effort for the account. Every selection the person makes (the model
+picker, `/effort`, Shift+Up/Down, Ctrl+P) is saved against the mode it was made in, so Shift+Tab switches to that
+mode's model and effort, and a new conversation starts on the normal mode's latest choice. A mode with no
+choice of its own takes normal's, field by field. A resumed conversation keeps the model in its history,
+and a saved model the account cannot use is skipped. The choices live in the account's `choices.json`,
+and the App reads and writes them through `accounts.choices` and `accounts.choose`.
+
+A bare `/plan` toggles plan mode, and Shift+Tab cycles between normal and plan mode. Normal, plan
+and Bash are mutually exclusive composer modes. While plan mode is on, each submitted message is sent
+as a plan request through that same queue, and the composer's top and bottom rules take the plan colour.
+Commands still run as commands. Entering Bash with a leading `!` exits plan mode; Shift+Tab from Bash
+switches to plan mode and keeps the draft text. Turning plan mode off returns to normal mode. The old
+on/off/toggle forms are rejected; a bare `/plan` is the switch.
+
+When a plan request ends with a complete `<proposed_plan>` block, the terminal shows it as a bordered
+card at the end of the reply, with the text around the block left as ordinary assistant text. A choice
+block then appears above the composer with `Plan ready`, a blank row, then `Implement "<title>"` or
+`Edit the plan`, followed by a blank row and the hint. Up and Down choose, Enter confirms, and Escape
+dismisses it; the block yields to the composer as soon as the draft has text.
+Implement leaves plan mode, so the normal tools and the mode's own model and effort come back, and sends
+`Implement the plan: <title>`; the plan itself is already in the conversation. Edit the plan stays in plan
+mode and focuses the composer, so the next message revises the plan and offers a new choice. A plan run
+that was interrupted, failed, or had work queued behind it is not offered.
 
 While typing, a recognized leading slash command uses the selected theme's link color. This
 includes built-in commands, loaded extension and prompt commands, and enabled skill invocations
@@ -103,8 +274,26 @@ written as `/skill:name`. Unknown slash tokens keep the normal text color.
 
 SDK session runs receive plan instructions as a dynamic context update, leaving the stable system
 prompt unchanged; their session gate refuses calls outside the read-only set. The standalone
-terminal applies the same one-run instructions and tool restrictions. Shift+Up and Shift+Down step
-the thinking level within the levels the model supports, and do not wrap.
+terminal applies the same instructions and tool restrictions to each plan request. Shift+Up and
+Shift+Down step the thinking level within the levels the model supports, and do not wrap. Use `/thinking` to toggle transcript thinking visibility, or `/thinking show` and `/thinking hide` to set it explicitly. This changes only whether thinking blocks appear in the transcript; it does not change model reasoning or effort, and it shares the Hide thinking setting with Ctrl+T and `/settings`.
+
+## Bash command mode
+
+Typing or pasting `!` at the start of the composer enters Bash mode: the first-row prompt marker
+changes from `❯` to `!`, and the `!` and the composer rules use the `bashMode` theme color while the
+command body keeps the normal text color. Continuation rows keep their blank gutter. Entering Bash
+exits plan mode; Shift+Tab from Bash switches to plan mode and preserves the draft. Plan mode colors
+the marker and rules blue; in the normal prompt, the marker matches the divider color. Backspace on
+an empty Bash body returns to the normal prompt. Submitting while a reply is active queues
+the command as a standalone turn; it does not steer the current model request.
+
+The terminal extension checks Bash policy and requests approval before using Pi's native
+`executeBash`. Output streams into the transcript while the command runs, so browser-login URLs are
+visible before the command finishes; the running item shows that Escape stops the command. The
+native result is recorded in run activity and session history before the model is prompted to read
+and explain it. This does not attach interactive stdin to the shell. SDK callers may opt into this
+behavior with `SessionRunInput.initialBashCommand`; it is restricted to a new interactive user turn
+and the session runner applies the same Bash gate.
 
 ## Reference and reproduced presentation
 
@@ -120,28 +309,28 @@ not an arbitrary checkout of upstream main. The source repository is
 | Native `omp` artifact used for observation | `d518310d647d467a2c5c3f2d38e34489a761996d766395c03b37c61a2203d02b` |
 
 In the extracted `pi-tui` package, `src/theme/defaults/titanium.json` establishes the titanium
-palette and `src/prompt/welcome.ts` establishes the five-row Pi logo, exact diagonal RGB stops
-and indexed-color fallback, centered lockup and narrow-width behavior. Harness adapts these
-into [`theme.ts`](../src/terminal/tui/theme.ts) and [`welcome.ts`](../src/terminal/tui/welcome.ts),
-with its own product name, package version and existing-command tips. The text-only status band in
-[`status.ts`](../src/terminal/tui/status.ts) shows the project name, branch, account/model/effort,
-the last completed response's output rate and current-session input/output totals. Input totals add
-cache reads and exclude cache writes. The prompt
-frame is implemented in [`editor.ts`](../src/terminal/tui/editor.ts): two full-width neutral
-rules around the prompt, a dim `❯` glyph, a `Try "…"` placeholder before the first prompt of a
-launch, and a `? for shortcuts` footer line above the band. The frame follows the observed
-composer of Claude Code 2.1.302, reproduced from its visible values; no code is copied, and
-`?` opens the same list as `/hotkeys`. Startup selects the Harness titanium presentation
-without rewriting the user's saved theme settings. The shipped OMP light palette is also
-available as `light`; native rich components and the status band switch together. Missing
-Pi-specific color tokens use documented Harness fallbacks in `theme.ts`.
+palette and its indexed-color fallbacks. Harness adapts these into
+[`theme.ts`](../src/terminal/tui/theme.ts) and
+[`opentui/theme.ts`](../src/terminal/opentui/theme.ts). The OpenTUI status bar shows the project name,
+branch, account, model, context use and current-session input/output totals. Input totals add cache
+reads and exclude cache writes; its `R<percentage>%` hit rate is cache reads divided by total input.
+Token counts below 1,000 show as whole numbers; larger counts use floor-rounded K/M/B suffixes
+without decimals.
+
+The OpenTUI composer follows the observed composer of Claude Code 2.1.302, reproduced from its
+visible values; no code is copied. The command palette follows the same borderless convention.
+Startup selects the Harness titanium presentation without rewriting the user's saved theme
+settings. The shipped OMP light palette is also available as `light`; native rich components and
+the OpenTUI chrome switch together. Missing Pi-specific color tokens use documented Harness
+fallbacks in `theme.ts`.
 
 The frontend exposes capabilities already present in Harness/Pi. It does not import OMP's
 agent runtime, tools, providers, MCP implementation, task system or other product features.
-Harness-owned composition reuses public Pi Markdown, message, tree/model selector and rich
-tool components. Tool diffs, expandable output, images and extension renderers therefore retain
-the existing Pi interpretation. This is an implementation of the requested terminal presentation;
-complete visual or behavioral parity with every OMP surface has not been established.
+OpenTUI owns screen composition and transcript rendering. Dialogs and extensions continue to use
+Pi's component API through `dialogHost.ts`. Image blocks returned by tools appear as separate
+scrollable image-result entries, rendered inline when `/settings` Show images is on; Markdown
+images continue to show alt text only. This is an implementation of the requested terminal
+presentation; complete visual or behavioral parity with every OMP surface has not been established.
 
 Full upstream copyright and MIT permission notices are in [NOTICE.md](../NOTICE.md).
 
@@ -171,15 +360,41 @@ chunk and fails with a clear error if that hook moves or disappears. A local pro
 checks that a Pi HTTP request reaches the configured proxy without contacting an external host.
 These module imports do not instantiate `InteractiveMode`.
 
-## Clipboard image paste
+## Attachments: images and large pastes
 
-The standalone terminal reads Finder-copied file paths before checking clipboard image pixels.
-On macOS, `.heic` and `.heif` files are converted with `/usr/bin/sips` to private temporary PNGs,
-preserving the copied path order and leaving the originals untouched. The temporary files are
-removed when the terminal shuts down. A failed or invalid conversion reports an error and leaves
-the composer unchanged. Clipboard image pixels continue through Pi's native adapter, which reads
-PNG/TIFF on macOS and normalizes TIFF to PNG. This path is terminal-emulator independent; direct
-Warp clipboard acceptance still requires a manual check in Warp.
+Images are sent to the model as image content in the same user message, not as file paths
+(`TerminalRuntime.submit(text, followUp, images)` and `submitPlan(text, images)` pass Pi's
+`PromptOptions.images`). [`attachments.ts`](../src/terminal/opentui/attachments.ts) holds the
+draft's attachments; [`composerMarks.ts`](../src/terminal/opentui/composerMarks.ts) keeps one
+virtual OpenTUI extmark on each label, so the label is drawn in the `attachment` colour and the
+cursor, Backspace and Delete treat it as one unit.
+
+- **Cmd+V, drag and drop.** The composer intercepts the terminal's bracketed paste. An empty paste
+  (what terminals send when the clipboard holds only an image) reads the clipboard; a paste made
+  only of existing image paths — escaped, quoted, `file://` or one unescaped path — attaches those
+  files. `Ctrl+V` (and `Alt+V`) on macOS, `Ctrl+V` elsewhere, read the clipboard directly, and a
+  `super+v` key from a terminal that forwards Cmd+V does the same.
+- **Labels.** An image shows as `[Image #n]`. A paste of more than three lines or 800 characters
+  shows as `[Pasted text #n +L lines]` (or `… N chars]`). Numbering restarts after each send.
+- **Deleting.** Backspace or Delete next to a label removes it whole. A word or line delete that
+  cuts into a label removes the rest of it, and the attachment goes with it.
+- **Sending.** Pasted text is put back in place of its label; image labels stay in the text so the
+  model can refer to "Image #1", and the images follow in label order. Sent user messages colour
+  `[Image #n]` the same way. Images are resized with Pi's `resizeImage`; one that cannot be
+  shrunk and is over 5 MB is refused.
+- **Refusals.** A model whose `input` lacks `image` refuses the attach with a notice naming the
+  model. Bash mode and plugin editors take no images. A slash command or Bash command sent with
+  images runs without them, with a warning. Alt+Up (dequeue) restores queued text and drops
+  queued images with a warning.
+
+Finder-copied file paths are read before clipboard image pixels. On macOS, `.heic` and `.heif`
+files are converted with `/usr/bin/sips` to private temporary PNGs, preserving the copied path
+order and leaving the originals untouched; temporary files are removed when the terminal shuts
+down. Clipboard image pixels go through Pi's native adapter, which reads PNG/TIFF on macOS and
+normalizes TIFF to PNG. `python3 scripts/verify-terminal.py --attachments-only` checks a dropped
+image path, label colour, collapsed pastes, whole-label Backspace and Alt+Backspace, and that the
+loopback provider receives an image part and the expanded text. Whether a given emulator sends an
+empty bracketed paste for an image-only clipboard has to be checked by hand in that emulator.
 
 ## Accounts, history and resource trust
 
@@ -236,15 +451,28 @@ clears controller readiness and stops that session's poller; the replacement's `
 restores readiness while retaining the same process control claim.
 
 The bridge exposes the shared `ask_user` batch tool alongside the existing single-question
-`ask_user_question` contract. Registry events project the actual batch IDs, order, summaries,
-choices, descriptions and optional recommendation metadata into the terminal inbox. Its custom
-picker places recommended choices first and marks them in yellow without changing their labels or
-preselecting them; a single-choice question allows at most one recommendation, while multi-select
-questions may recommend several. The frontend stages answers locally and
-submits them together through protected `terminal.answers`; the registry validates the entire
-batch before resolving any question. Escape interrupts a pending question; cancelling optional
-text entry returns to the choices and preserves selections. Disappearing requests abort their
-open dialogs. Labels are numbered so a real choice cannot collide with a dialog action.
+`ask_user_question` contract. Every question must include at least one choice and at least one
+recommended choice; recommendations remain visual and never preselect. Choice-based questions also
+retain a free-text “Something else” answer. A pending question appears in a flat block immediately above the
+composer, not in a modal. It has only a muted top divider and separates its hint from the content by
+one blank line. The block shows one batch question at a time with previous/next navigation and batch
+progress, choices and descriptions, a numbered free-text answer row after the choices, and a Continue
+or Skip action. Selected choices fill the whole row with subtle dark green; Continue and Submit uses
+a green-filled button, while Skip remains neutral. The regular composer remains below it for a direct message to the waiting session.
+Tab and Shift+Tab move focus through the available controls; Tab from a focused selected choice opens
+its inline note field. In multi-select questions, Tab can open a note for each selected choice; notes
+are submitted by choice label and cleared when that choice is deselected. While the block is active,
+Tab takes precedence over the normal thinking and plan-mode shortcuts. Up and Down navigate choices;
+Left and Right navigate the batch while choices or the action are focused. Enter selects a choice,
+activates the focused action, or submits the answer or note field. Escape interrupts the pending
+question. Press `x` from the choices or action to collapse the block; Tab reopens it.
+
+Recommended choices appear first with a warning-colored marker, without changing their labels or
+preselecting them; every question requires at least one recommendation. A single-choice question
+allows at most one recommendation, while multi-select questions may recommend several. The frontend stages each answer locally and submits the complete
+batch together through protected `terminal.answers`; a single question uses `terminal.answer`. The
+registry validates answers before resolving the request. If a request disappears, its block and
+staged answers are discarded.
 
 Plugin UI methods carry a generation guard, including methods a plugin retained before an
 `await`. Session replacement, reload and disposal revoke the old generation. Outgoing native
@@ -252,25 +480,53 @@ event subscriptions and custom transcript components detach before native invali
 Cleanup failures cannot prevent terminal restoration. Fatal asynchronous errors restore the
 terminal and exit with failure; startup failures and suspend/resume use the same lifecycle.
 
-The command registry supplies help and completion for every pinned Pi built-in command name,
-plus Harness commands supplied by the bridge. `/trust` opens the existing protected code-review
-workflow in `/plugins`; trust changes require a freshly prepared terminal. `/bug` opens a
-reviewable Harness issue draft after confirmation, without attaching history. `/changelog`
-reads bundled Harness change notes. `/reload` also applies the isolated account's edited
-keyboard bindings through the public TUI manager.
+The command registry supplies help and completion for Harness commands, loaded extensions,
+prompts and enabled skills. `/plugins` includes the protected code trust workflow. The standalone
+terminal no longer has separate `/login`, `/trust`, `/bug`, `/changelog`, `/share`, `/scoped-mode` or
+`/import` commands. `/btw <question>` asks a short side question in a separate tool-free session. Its block puts the question after `/btw`, shows the normal animated spinner while answering, and separates the answer and hint by one blank row; it has no status labels. Escape closes the block without interrupting the main reply, and `/btw` also dismisses it. `/stop` interrupts the current reply. The `/accounts` page handles sign-in
+and sign-out. `/components` browses reusable skills, prompts and rules; a confirmed skill or rule addition
+creates a tree version for future sessions while the current terminal keeps its pinned version. `/reload` applies trusted resource and keybinding changes.
 
 `/trajectory` opens the newest recorded run for the current native conversation; `/trajectory <run-id>`
-opens a selected run from that conversation. Left/right changes runs, up/down selects recorded
-events, PageUp/PageDown scrolls event details, and `c` copies the selected event. Active runs
-refresh while the overlay is open. The protected terminal socket scopes both the run list and event
+opens a selected run from that conversation. Tab switches between Runs and Events; `[` and `]` change
+runs, up/down selects recorded events, PageUp/PageDown scrolls event details, and `c` copies the
+selected event. Active runs refresh while the overlay is open. The protected terminal socket scopes both the run list and event
 reads to the current terminal and native session file.
 
-`/log` opens a static full-screen snapshot with separate Harness diagnostics and current-conversation
+`/log` opens a centered page dialog with separate Harness diagnostics and current-conversation
 run-event views. The diagnostic file is read at its captured size in bounded socket chunks. Tab/Shift+Tab
-or left/right switches views; arrows, PageUp/PageDown, Home and End scroll; Escape closes. Fetch
+switches views; arrows, PageUp/PageDown, Home and End scroll; Escape closes. Fetch
 diagnostics retain available error stacks and safe request metadata, while the viewer redacts secrets
 and URL queries and omits response bodies, prompts and message contents. Embedded hosts without a
 `harness.log` still show the conversation's recorded run events.
+
+## Input performance profile
+
+`npm run profile:terminal-latency` (`scripts/profile-terminal-latency.py`) types into the real
+terminal in a PTY and times each key until it is visible on a virtual screen, while idle, after a
+long tool history, while a reply streams, and with an approval or question waiting. It can run pure
+Pi and opencode the same way for comparison; method and results are in
+[EXP-0002](experiments/EXP-0002-opentui-typing-latency/results.md).
+`npm run profile:terminal-input` still measures the local draft-control socket on its own.
+
+How the frontend keeps typing fast:
+
+- **Rendering on demand.** The renderer is not started in continuous mode, so a key is drawn as soon
+  as it arrives instead of waiting for the next fixed tick; `maxFps` is 120.
+- **Fine-grained view.** `root.tsx` keeps the application view in a Solid store and reconciles each
+  update by item id, so a streamed delta updates one markdown block in place (`streaming` is passed
+  to `<markdown>`) and a keystroke does not redraw the transcript.
+- **Coalesced background updates.** `change()` publishes runtime events at most once per frame,
+  33 ms while a run is active. A person's input (keys, the composer, the question dock) publishes at
+  once and synchronously, in order with the composer's own events.
+- **Draft read at key time.** The composer reports its text in a microtask, after all keys of one
+  input chunk; the root reads the composer before each key so Enter never sends a stale draft.
+- **Cached derived data.** Finished messages keep their transcript items until their position or tool
+  results change; session statistics refresh at most every 250 ms during a run.
+- **Kept connections.** Session-socket requests ask to `keep` their connection, so the two 100 ms
+  polls and per-key draft updates reuse a connection instead of opening one each.
+- **No swallowed keys.** A character the question dock does not use moves focus to the composer and
+  is typed there.
 
 ## Verification and remaining limits
 
@@ -280,16 +536,19 @@ sidecar build passed; its renderer tests passed (561), but one sidecar screensho
 Rust tests failed in the broader in-progress App worktree. Those failures do not touch the Harness
 release files; the App changes were not included in this package.
 
-Fullscreen layout verification, 2026-10-18: [`screen.test.ts`](../src/terminal/tui/screen.test.ts)
-covers the dock on the last rows as the transcript grows and scrolls, notice clipping, regular
-flow, and the exit copy. The PTY verifier against the built CLI passed all 14 interaction groups at
-40×20, 80×24 and 120×40; the retained result is
+OpenTUI verification, 2026-10-20: the OpenTUI unit tests cover the transcript model, palette,
+Bash mode, dialog geometry, composer, theme and component host. Targeted PTY probes against the
+production bundle cover centered page dialogs at 40×20, 80×24 and 120×40, palette ranking, and
+Bash mode through its approval gate; see
+[docs/evidence/terminal-2026-10-20-console-tui](evidence/terminal-2026-10-20-console-tui/README.md).
+The full `scripts/verify-terminal.py` run under OpenTUI stops at `/settings` because the verifier
+sends the command and Return in one burst; the targeted probes send them separately. Run
+`python3 scripts/verify-terminal.py --sizes 80x24 --click-focus-only` to check composer focus from
+the empty welcome area, transcript text and blank transcript space in an isolated PTY.
+
+Earlier fullscreen-layout verification, 2026-10-18, covered the removed Pi frontend's dock,
+notice clipping, regular flow and exit copy. It is retained as history in
 [docs/evidence/terminal-2026-10-18-fullscreen](evidence/terminal-2026-10-18-fullscreen/verification.json).
-The verifier's keyboard-list check now waits for the list's first line, because a long notice shows
-its first rows in the dock and scrolls for the rest. The App sidecar's suite passes 30 of 30 and
-`cargo test` passes 217 tests against this tree. The App's root Vitest suite has one failure, the
-pre-existing `PendingRequestDock` expectation. The App sidecar's own `tsc` run reports four errors
-in `agentRuns.ts` and `app.test.ts` that also occur on the checkpoint commit.
 
 Earlier verification, before the fullscreen layout: Harness typecheck, **419 passing tests / two platform skips**, build and standalone proof
 passed on 2026-10-17. A final cleanup-order adjustment was rechecked with all **91 frontend
@@ -324,7 +583,7 @@ Already-running sessions need to exit and relaunch to load the replacement.
 A direct REA comparison of the pinned OMP executable and Harness at 80×24 captures startup and
 settings without output truncation; both exit 0. The [readable comparison](evidence/terminal-2026-10-17-followup/reference-comparison.md)
 retains exact frame/evidence IDs. It established matching centered welcome/composer geometry,
-rounded settings framing and the need for flat settings rows at 80 columns; the latter was
+rounded settings framing (since replaced by [pages](#blocks-and-pages)) and the need for flat settings rows at 80 columns; the latter was
 corrected using the shipped SettingsList's minimum editable-pane width. Product lockups, tips,
 capability tabs, setting names, paths and unavailable-model guidance differ deliberately.
 This is bounded visual review, not proof of equivalence for every OMP surface.

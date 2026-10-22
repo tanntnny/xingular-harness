@@ -22,7 +22,7 @@ model is told and can do — is the object that improves, with model weights fix
 | Harness trees | `src/tree/` | The eight-component surface, validation and repair, content-addressed versions and lineage, materialising a tree for Pi, plugin-code trust, seeding a first tree, the component library. |
 | Refinement | `src/refine/` | Evidence folders, the prompt pack, parallel and sequential recursion, the budget ledger, selection, reflection, the experience library, Pi-backed executor and improver, and the `refine` service. |
 | Accounts | `src/accounts/` | Several isolated Pi accounts and pools, sign-in, model lists, health and limits. A session keeps the account it started with. |
-| Sessions | `src/sessions/` | Pi SDK turns on a pinned harness tree, run records and `events.jsonl`, interrupt, approvals, questions, subagents (named by a tree's c5), recovery after a crash. |
+| Sessions | `src/sessions/` | Pi SDK turns on a pinned harness tree, run records and `events.jsonl`, interrupt, approvals, questions, subagents (named by a tree's c5), recovery after a crash. Startup recovery only interrupts an active run whose owner (`runs/<id>/owner.json`) has exited, so a second Harness on the same data folder leaves a running one alone. |
 | Prompt | `src/prompt/` | The system prompt compiled from the tree's sections and the application's, with budgets; a stable prefix, and changing state delivered as updates in native history. |
 | Wiki | `src/wiki/` | Project notes: linked Markdown, versions, search. Reference material, not instructions. |
 | History | `src/history/` | Recall over earlier runs and bounded trajectory reads. |
@@ -31,6 +31,8 @@ model is told and can do — is the object that improves, with model weights fix
 | Connected apps | `src/mcp/` | MCP connections, OAuth, per-session grants, redaction, a trace of what each call returned. |
 | Terminal | `src/terminal/` | A Harness-owned terminal frontend over persistent Pi sessions on a harness tree. |
 | Server | `src/server/` | The same API over newline-delimited JSON, for a host that is not a Node program. |
+
+The binding design of every part is the [architecture specification](docs/architecture/README.md).
 
 Try refinement with no model and no credentials: `npm run build && node dist/cli.js refine demo --k 2`.
 The [documentation index](docs/README.md) links current terminal architecture and decisions.
@@ -44,7 +46,10 @@ The [documentation index](docs/README.md) links current terminal architecture an
 - `providers: false` runs a session with the harness's own tools only.
 - `harness: { scope }` runs the session on that scope's head tree (or `{ scope, version }`, or `{ dir }` for a tree on disk). The version is pinned for the run and recorded on it.
 - On the caller, `recallExcludeAgents` hides those agents' conversations from history and trajectory tools.
-- `harnessTools: false` runs a session without the History, Wiki and skill tools.
+- `harnessTools: false` runs a session without the History, Wiki and skill tools (and without `ask_user` and `checklist_write`).
+- Every session with harness tools gets `checklist_write`: the model sends its whole checklist (`pending`, `in_progress`, `completed`, at most 50 steps) and the run records it as a `checklist.updated` event. `checklistOf(events)` or the `runs.checklist` method reads the latest one. Plan mode allows it.
+- `continueFrom: <run id>` continues a run that stopped before it finished (interrupted or failed) as a new run. `harness.recovery.interruptedRunIds` lists the runs `open` marked interrupted, and `continuationOf(root, runId, sessionDir)` (`runs.continuation`) says whether one can be continued and what it left: checklist, unanswered approvals and questions, the last tool and whether it finished, unfinished subagents. The new run reopens the same native history, records `resumedFromRunId`, keeps the account, tree version and capability set (`continuation_mismatch` otherwise), and the model is told where the earlier run stopped. The harness never continues a run by itself; which runs to continue, and when, is the application's choice.
+- The first-party `lessons` plugin (off by default) reflects on a completed top-level run with enough tool calls and may keep one general lesson in the Wiki under `library/lessons/`, in refinement's cue/lesson shape. It uses the run's own account and model, read-only file tools, and is capped (`minToolCalls`, `maxLessons`, `maxChars`). See PROP-0008.
 
 Every session also gets `trajectory_search` and `trajectory_read` from the built-in History plugin.
 Search lists runs in the current data root, including active runs, with filters and a continuation
@@ -191,7 +196,7 @@ working folder brings.
   terminal process claims once (`control.claim`) and shares with its bridge in memory; the socket's
   `plugins.list` is open to the session, and `plugins.attach`, `plugins.detach`, `plugins.trust`
   and `plugins.untrust` refuse without that key. A change applies when the session restarts.
-  Outside a session, `xingular-harness plugins list | show | install | remove | update | attach |
+  Outside a session, `xharness plugins list | show | install | remove | update | attach |
   detach | trust | untrust` acts directly, as the person who typed it; `trust` shows the files
   and wants a typed yes or `--yes`. It does not open the data root, so it settles no run.
 - **Unattended runs load no extension found on disk.** A harness tree's own trusted plugins still
@@ -260,13 +265,12 @@ After the CLI package is published to npm or your company's npm registry, instal
 
 ```sh
 npm install --global @xingular/harness
-xingular-harness
+xharness
 ```
 
-The machine needs Node 22.19 or newer. Harness runs its own terminal frontend through the
-active Node runtime on every platform, using its pinned Pi SDK; no separate global `pi`
-installation is required. On first launch, it creates a `Default` isolated account. Use
-`/accounts` or `/login` to sign in.
+The machine needs Node 22.19 or newer and Bun 1.3.14 or newer. Harness runs its own OpenTUI
+terminal frontend with Bun, using its pinned Pi SDK; no separate global `pi` installation is
+required. On first launch, it creates a `Default` isolated account. Use `/accounts` to sign in.
 
 Provider sign-in progress lives in the running Harness process. An embedding application can call
 `accounts.loginStatus` after reconnecting to recover the current device code or prompt by account;
@@ -281,35 +285,48 @@ npm run dev
 ```
 
 `npm run dev` rebuilds the CLI and opens the Harness terminal in the current working directory.
-It uses the normal Harness data and state directories. Press `/quit` or Ctrl+C to close it.
-For separate development data, pass the usual `--data <dir>` and `--state <dir>` arguments:
-`npm run dev -- --data <dir> --state <dir>`.
+It uses separate development directories by default: `~/.xingular-harness-dev/data` and
+`~/.xingular-harness-dev/state`. This keeps development harness data and device settings—including
+accounts, Pi settings, approvals, and connections—separate from the installed command. Press
+`/quit`, Ctrl+C or Ctrl+D to close it. Override either directory with `--data <dir>` or
+`--state <dir>`; for example: `npm run dev -- --data <dir> --state <dir>`. An omitted option keeps
+its development specific default.
 
-Building a checkout does not update an existing global `xingular-harness` installation.
+The OpenTUI/Solid frontend is the only terminal. Install Bun 1.3.14 or newer and run
+`npm run build:tui` (or `npm run build`); without Bun the build fails rather than producing a
+terminal that cannot start. The harness runs `dist/terminal-opentui.js`, which uses the same
+session runtime, accounts, command pages, approvals, questions, plugins and run records as the
+embedded SDK. See [the terminal guide](docs/terminal-tui.md).
+
+Building a checkout does not update an existing global `xharness` installation.
 To replace that command with this checkout, run `npm pack`, then install the exact tarball
 filename it prints with `npm install --global ./<tarball-filename>`. This is a local install;
 it does not publish a release. Close an already-running terminal session and launch the command
 again to load the new frontend. A package version alone cannot distinguish an unreleased local
 build from an older installed build with the same version.
 
-This opens the Harness-owned terminal frontend in the current working directory. Its
-presentation follows the inspected Oh My Pi 18.11.3 titanium and light palettes, centered welcome,
-colored text statusline and curved `╰─` prompt, with Harness identity and existing capabilities. Harness
-owns screen composition, editing/input dispatch, scrolling, command routing and plugin UI;
-Pi supplies the persistent execution runtime, native history and rich content components.
-The existing isolated account, compiled context, approval gate, telemetry and Wiki/socket
-commands remain behind the terminal. No Pi `InteractiveMode` is constructed.
+This opens the Harness-owned OpenTUI terminal in the current working directory. Its presentation
+uses the Harness titanium palette and an OpenCode-inspired layout: the transcript above a
+borderless composer with the working status above it and the model, context and token line below.
+Harness owns screen composition, editing/input dispatch, scrolling, command routing and plugin UI;
+Pi supplies the persistent execution runtime, native history and rich content components. The
+existing isolated account, compiled context, approval gate, telemetry and Wiki/socket commands
+remain behind the terminal. No Pi `InteractiveMode` is constructed.
 
-`/resume` stays inside the prepared history and working folder; `/import` accepts an explicitly
-selected native JSONL file only for the same working folder. Cancel an active response before
-changing or reloading a session. Full OMP visual parity is not established by the current
-verification. `/permissions` reviews device-local Pi terminal grants and the Full Permission switch;
-tool grants apply across terminal sessions sharing this Harness state, and Full Permission requires
-confirmation. `/trajectory` opens recorded runs for the current native conversation, with event
-navigation and a detail inspector. `/log` shows a static, redacted snapshot of Harness diagnostics
-and run events for the current conversation; press Escape to close. See
+`/resume` stays inside the prepared account history and working folder. Cancel an active response
+before changing or reloading a session. Full OMP visual parity is not established by the current
+verification. `/accounts`, `/permissions`, `/plugins`, `/hub`, `/components`, `/settings`, `/trajectory`
+and `/log` each open their own centered page dialog with local tabs. `/permissions` reviews device-local Pi
+terminal grants and the Full Permission switch; tool grants apply across terminal sessions sharing this
+Harness state, and Full Permission requires confirmation. `/components` browses reusable skills,
+prompts and rules; a confirmed skill or rule addition creates a tree version for future sessions while
+the current terminal stays pinned. `/trajectory` opens recorded runs for the current native conversation,
+with event navigation and a detail inspector. `/log` shows a static, redacted snapshot of Harness
+diagnostics and run events for the current conversation; press Escape to close. See
 [terminal architecture and evidence](docs/terminal-tui.md),
-[the decision](docs/decisions/ADR-0001-owned-terminal.md), and [third-party notices](NOTICE.md).
+[the ownership decision](docs/decisions/ADR-0001-owned-terminal.md),
+[the OpenTUI-only decision](docs/decisions/ADR-0006-opentui-only-terminal.md), and
+[third-party notices](NOTICE.md).
 
 ### `/accounts` in the terminal
 
@@ -321,14 +338,16 @@ command the model runs in the shell cannot make it.
 A running session stays on the account it started with. To use another account for this
 session, choose **Use for this session**: the terminal child restarts and the same conversation
 resumes on that account. Removing an account that a running terminal is using is refused. Only
-terminals in this process are counted, so an account used by another running `xingular-harness` window can
+terminals in this process are counted, so an account used by another running `xharness` window can
 still be removed; that session then asks for another account the next time it starts.
 
-The default data and device state directories are `~/.xingular-harness/data` and
-`~/.xingular-harness/state`. Override them with `--data <dir>` and `--state <dir>`. Session
-history is stored per working directory and can be reopened with the terminal's `/resume`
-command. The explicit `terminal` command is an alias for the default launch. Use `--help` to see the commands;
-`serve` remains the host-facing RPC service for integrations such as Xingular Agent/App.
+The installed standalone command defaults to `~/.xingular-harness/data` and
+`~/.xingular-harness/state`; `npm run dev` instead defaults to the separate
+`~/.xingular-harness-dev/data` and `~/.xingular-harness-dev/state`. Override either with
+`--data <dir>` and `--state <dir>`. Session history is stored per working directory and can be
+reopened with the terminal's `/resume` command. The explicit `terminal` command is an alias for
+the default launch. Use `--help` to see the commands; `serve` remains the host-facing RPC service
+for integrations such as Xingular Agent/App.
 
 ## Storage
 
@@ -367,18 +386,25 @@ The files are the source of truth; `index.sqlite` can be deleted and rebuilt
 
 ```sh
 npm run ci        # typecheck, unit/golden tests, and standalone proof; matches GitHub CI
-npm run build     # dist/cli.js (the xingular-harness command) and dist/terminal-pi.js
+npm run build     # dist/cli.js, dist/terminal-pi.js, and the OpenTUI frontend
+npm run build:tui # only the OpenTUI frontend
 ```
 
-Node 22.19 or newer.
+Node 22.19 or newer and Bun 1.3.14 or newer.
 
 ## Images
 
 `SessionRunInput.requiresImageInput` optionally requires a vision-capable resolved Pi model before a prompt is delivered. The check includes direct `images` input, and the generic tool wrapper rejects image results on text-only models. Direct prompt images use Pi's `{ type: 'image', data, mimeType }` content shape. Applications own attachment selection, extraction and image preparation; the Harness transports typed image content and validates model capability. In the standalone terminal, pasting Finder-copied HEIC/HEIF files on macOS converts them to temporary PNGs so Pi can read their pixels. See [the terminal guide](docs/terminal-tui.md#clipboard-image-paste).
 
+`SessionRunInput.initialBashCommand` is an opt-in for one new interactive user turn. It must match
+the leading `!` command in `text`; Harness checks it through the same per-call gate as model-issued
+Bash, executes it once in Pi's native session, records its bounded result, and asks the model to
+inspect that result before replying. Automatic, plan, resumed, relation, probe, and improver runs
+cannot carry it. See the [terminal guide](docs/terminal-tui.md#bash-command-mode).
+
 ## Curated Hub
 
-`xingular-harness hub list [--refresh]`, `hub show publisher/name@version`, and
+`xharness hub list [--refresh]`, `xharness hub show publisher/name@version`, and
 `hub install publisher/name@version` browse and install exact catalog versions. `/hub` offers the
 same review in the interactive terminal, using its private control key for installation. Both the
 terminal and embedding applications use `hub.list`, `hub.get`, `hub.preview`, `hub.install`,

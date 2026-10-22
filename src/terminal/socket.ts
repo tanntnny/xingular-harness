@@ -1,8 +1,10 @@
 // The session socket: how a process the harness did not start in-process (the `pi` command in
 // a terminal, with its extension and the `xagent-wiki` / `xagent-mcp` commands) reaches the
-// session it belongs to. Owner-only Unix socket (a named pipe on Windows), newline-delimited JSON,
-// one request per connection. Each terminal session holds a random token bound to its caller, its
-// connected-apps grant, and its controller; the token stops working when the terminal ends.
+// session it belongs to. Owner-only Unix socket (a named pipe on Windows), newline-delimited JSON.
+// A connection carries one request unless the request asks to `keep` it open, in which case the
+// reply leaves it open for the next request. Each terminal session holds a random token bound to
+// its caller, its connected-apps grant, and its controller; the token stops working when the
+// terminal ends.
 import { createHash, randomBytes } from 'node:crypto'
 import { chmodSync, mkdirSync, rmSync, statSync } from 'node:fs'
 import { createServer, type Server, type Socket } from 'node:net'
@@ -125,7 +127,7 @@ export class SessionSocket {
   }
 
   /** Runs one request line and returns the reply line's object. */
-  async handle(line: string, connection?: { waiting: (grant: SocketGrant | null) => void }): Promise<{ result: unknown } | { error: unknown }> {
+  async handle(line: string, connection?: { waiting: (grant: SocketGrant | null) => void; keep?: (keep: boolean) => void }): Promise<{ result: unknown } | { error: unknown }> {
     try {
       let request: Record<string, unknown>
       try {
@@ -133,6 +135,7 @@ export class SessionSocket {
       } catch {
         throw new HarnessError('invalid_request', 'The request is not JSON.')
       }
+      connection?.keep?.(request.keep === true)
       const token = typeof request.token === 'string' ? request.token : ''
       const grant = this.grants.get(token)
       if (!grant) throw new HarnessError('unauthorized', 'This session token is not valid. It ends when its terminal session ends.')
@@ -180,6 +183,8 @@ export class SessionSocket {
 
   private serve(client: Socket): void {
     let buffer = ''
+    let busy = false
+    let ended = false
     let waiting: SocketGrant | null = null
     this.clients.add(client)
     client.on('error', () => {})
@@ -188,16 +193,36 @@ export class SessionSocket {
       // A decision the native process was waiting on can no longer reach it.
       waiting?.terminal?.disconnected()
     })
+    // Requests on one connection run one at a time, in order.
+    const next = (): void => {
+      if (busy || ended) return
+      const newline = buffer.indexOf('\n')
+      if (newline < 0) return
+      const line = buffer.slice(0, newline)
+      buffer = buffer.slice(newline + 1)
+      busy = true
+      client.pause()
+      let keep = false
+      void this.handle(line, { waiting: (grant) => void (waiting = grant), keep: (value) => void (keep = value) }).then((reply) => {
+        busy = false
+        const text = `${JSON.stringify(reply)}\n`
+        if (!keep || client.destroyed) {
+          ended = true
+          client.end(text)
+          return
+        }
+        client.write(text)
+        client.resume()
+        next()
+      })
+    }
     client.on('data', (chunk) => {
       buffer += chunk.toString('utf8')
       if (Buffer.byteLength(buffer) > MAX_REQUEST_BYTES) {
         client.destroy()
         return
       }
-      const newline = buffer.indexOf('\n')
-      if (newline < 0) return
-      client.pause()
-      void this.handle(buffer.slice(0, newline), { waiting: (grant) => void (waiting = grant) }).then((reply) => client.end(`${JSON.stringify(reply)}\n`))
+      next()
     })
   }
 

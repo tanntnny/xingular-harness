@@ -7,11 +7,13 @@ declare module '@earendil-works/pi-tui' {
   interface Keybindings {
     'app.thinking.increase': true
     'app.thinking.decrease': true
+    'app.message.steer': true
   }
 }
 
 // Harness owns application actions. Editing and selection retain Pi's reusable bindings.
 const actions: Record<string, string | string[]> = {
+  'app.commands': 'ctrl+k',
   'app.interrupt': 'escape', 'app.clear': 'ctrl+c', 'app.exit': 'ctrl+d',
   'app.suspend': process.platform === 'win32' ? [] : 'ctrl+z',
   'app.thinking.cycle': [], 'app.thinking.save': 'ctrl+s',
@@ -19,13 +21,13 @@ const actions: Record<string, string | string[]> = {
   'app.model.cycleForward': 'ctrl+p', 'app.model.cycleBackward': 'alt+p',
   'app.model.select': 'ctrl+l', 'app.tools.expand': 'ctrl+o', 'app.thinking.toggle': 'ctrl+t',
   'app.editor.external': 'ctrl+g', 'app.message.copy': 'ctrl+x',
-  'app.message.followUp': 'alt+enter', 'app.message.dequeue': 'alt+up',
-  'app.clipboard.pasteImage': process.platform === 'darwin' ? 'alt+v' : 'ctrl+v',
+  'app.message.steer': ['super+enter', 'alt+enter'], 'app.message.dequeue': 'alt+up',
+  'app.clipboard.pasteImage': process.platform === 'darwin' ? ['ctrl+v', 'alt+v'] : 'ctrl+v',
   'app.session.toggleNamedFilter': 'ctrl+n', 'app.session.togglePath': 'ctrl+p',
   'app.session.toggleSort': 'ctrl+s', 'app.session.rename': 'ctrl+r',
   'app.session.delete': 'ctrl+d', 'app.session.deleteNoninvasive': 'ctrl+backspace',
   'app.tree.foldOrUp': ['alt+left', 'ctrl+left'], 'app.tree.unfoldOrDown': ['alt+right', 'ctrl+right'],
-  'app.tree.editLabel': 'shift+l', 'app.tree.toggleLabelTimestamp': 'shift+t',
+  'app.tree.editLabel': 'ctrl+e', 'app.tree.toggleLabelTimestamp': 'ctrl+y',
   'app.tree.filter.default': 'ctrl+d', 'app.tree.filter.noTools': 'ctrl+t',
   'app.tree.filter.userOnly': 'ctrl+u', 'app.tree.filter.labeledOnly': 'ctrl+l',
   'app.tree.filter.all': 'ctrl+a', 'app.tree.filter.cycleForward': 'ctrl+o',

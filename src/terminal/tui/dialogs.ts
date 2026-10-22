@@ -1,15 +1,25 @@
-// Rounded selector chrome follows Oh My Pi 18.11.3 (MIT; see NOTICE-oh-my-pi).
+// Dialogs are blocks or pages (see chrome.ts); the selector rows follow Oh My Pi 18.11.3 (MIT; see NOTICE-oh-my-pi).
 import type { ExtensionUIContext, ExtensionUIDialogOptions, KeybindingsManager, Theme } from '@earendil-works/pi-coding-agent'
-import { Editor, Input, SelectList, fuzzyFilter, matchesKey, stripTerminalSequences, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component, type Focusable, type OverlayHandle, type OverlayOptions, type SelectListTheme, type TUI } from '@earendil-works/pi-tui'
+import { Editor, Input, matchesKey, stripTerminalSequences, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component, type Focusable, type OverlayHandle, type OverlayOptions, type SelectListTheme, type TUI, type TuiMouseEventResult } from '@earendil-works/pi-tui'
+
+import { CENTER_DIALOG_PAD, CHROME_ROWS, blockFrame, centerDialogChromeRows, centerDialogContentWidth, centerDialogFrame, centerDialogVerticalPad, contentWidth, pageFrame, safeText, selectionText } from './chrome'
+import { centeredDialogHost, dialogFits, pageOverlayOptions, pageRows } from './dialogGeometry'
+import { FilterList } from './list'
+import { searchFieldRowsFor } from './search'
+import type { TerminalMouseInput } from './mouse'
 
 type DisposableComponent = Component & { dispose?(): void }
+/** `page` asks for a full-screen dialog; Pi's own dialogs ignore the field. */
+export type TerminalDialogOptions = ExtensionUIDialogOptions & { page?: boolean }
+export type DialogVariant = 'block' | 'page'
 export function selectTheme(theme: Theme): SelectListTheme {
   return {
-    selectedPrefix: text => theme.fg('accent', text), selectedText: text => theme.fg('accent', text.replace(/^→/, '❯')),
+    selectedPrefix: text => selectionText(theme, text), selectedText: text => selectionText(theme, text.replace(/^→/, '❯')),
     description: text => theme.fg('muted', text), scrollInfo: text => theme.fg('dim', text),
     noMatch: text => theme.fg('warning', text.replace('commands', 'options'))
   }
 }
+
 /** Input keeps the original value; only its rendered cells are masked. */
 export class SecretInput extends Input {
   override render(width: number): string[] {
@@ -22,71 +32,52 @@ export class SecretInput extends Input {
   }
 }
 
-function safe(text: string): string {
-  return stripTerminalSequences(text).replace(/[\x00-\x1f\x7f]/g, ' ')
-}
+const safe = safeText
 
-/** OMP hook-selector.ts uses type-to-search once its options exceed the list window. */
+/** Choices as a `FilterList`, with the standard search field visible for every list. */
 export class SearchableSelect implements Component, Focusable {
-  private search = new Input({ prompt: '' })
-  private list: SelectList
-  private query = ''
-  private limit = 0
-  private items: { value: string; label: string }[]
-  private filtered: { value: string; label: string }[] = []
+  private readonly list: FilterList<number>
+  private readonly labels: string[]
   private focusedValue = false
-  private currentTheme: Theme | undefined
-  constructor(options: string[], private readonly tui: TUI, private readonly theme: () => Theme, private readonly select: (index: number) => void, private readonly cancel: () => void) {
-    this.items = options.map((option, index) => ({ value: String(index), label: safe(option) }))
-    this.list = new SelectList([], 1, selectTheme(theme()))
-    this.rebuild()
+  constructor(options: string[], private readonly tui: TUI, theme: () => Theme, private readonly select: (index: number) => void, private readonly cancel: () => void, search: 'always' | 'never' = 'always') {
+    this.labels = options.map(safe)
+    this.list = new FilterList<number>({
+      theme, search,
+      rows: this.labels.map((label, index) => ({ id: String(index), label, data: index })),
+      limit: () => this.windowRows(),
+      noun: ['option', 'options'],
+      onActivate: row => this.select(row.data ?? 0),
+      onCancel: cancel
+    })
   }
   get focused(): boolean { return this.focusedValue }
-  set focused(value: boolean) { this.focusedValue = value; this.search.focused = value && this.searchEnabled() }
-  private searchEnabled(): boolean { return this.items.length > this.limit || this.query.length > 0 }
-  private rebuild(): void {
-    const selected = this.list.getSelectedItem()?.value
-    this.limit = Math.min(12, Math.max(1, Math.floor(this.tui.terminal.rows * 0.8) - 7))
-    this.currentTheme = this.theme()
-    this.filtered = fuzzyFilter(this.items, this.query, item => item.label)
-    this.list = new SelectList(this.filtered, this.limit, selectTheme(this.currentTheme))
-    if (selected) {
-      const index = this.filtered.findIndex(item => item.value === selected)
-      if (index >= 0) this.list.setSelectedIndex(index)
-    }
-    this.list.onSelect = item => this.select(Number(item.value))
-    this.list.onCancel = this.cancel
-    this.search.focused = this.focusedValue && this.searchEnabled()
+  set focused(value: boolean) { this.focusedValue = value; this.list.focused = value }
+  get pinnedRows(): number { return this.list.pinnedRows }
+  private contentRows(): number {
+    const centered = centeredDialogHost(this.tui)
+    const maxRows = centered ? pageRows(this.tui) : Math.max(3, Math.floor(this.tui.terminal.rows * 0.8))
+    const chromeRows = centered ? centerDialogChromeRows(maxRows) : CHROME_ROWS
+    return Math.max(1, maxRows - chromeRows)
   }
-  invalidate(): void { this.rebuild(); this.search.invalidate() }
+  private searchRows(): number { return searchFieldRowsFor(this.contentRows()) }
+  private windowRows(): number {
+    return Math.min(12, Math.max(1, this.contentRows() - this.searchRows()))
+  }
+  invalidate(): void { this.list.invalidate() }
+  handleMouse(event: TerminalMouseInput): TuiMouseEventResult | undefined {
+    return this.list.handleMouse(event)
+  }
   handleInput(data: string): void {
-    if (matchesKey(data, 'escape') || matchesKey(data, 'ctrl+c')) { this.cancel(); return }
-    if (!this.query && /^[1-9]$/.test(data)) {
-      const index = this.items.findIndex(item => item.label.startsWith(`${data}. `))
+    if (matchesKey(data, 'ctrl+c')) { this.cancel(); return }
+    if (!this.list.query && /^[1-9]$/.test(data)) {
+      const index = this.labels.findIndex(label => label.startsWith(`${data}. `))
       if (index >= 0) { this.select(index); return }
     }
-    if (matchesKey(data, 'up') || matchesKey(data, 'down') || matchesKey(data, 'enter') || matchesKey(data, 'pageUp') || matchesKey(data, 'pageDown')) {
-      this.list.handleInput(data)
-    } else if (this.searchEnabled()) {
-      this.search.handleInput(data)
-      if (this.query !== this.search.getValue()) { this.query = this.search.getValue(); this.rebuild() }
-    } else if (data === 'j' || data === 'k') this.list.handleInput(data === 'j' ? '\x1b[B' : '\x1b[A')
+    if (this.list.handleInput(data)) return
+    if (!this.list.query && this.list.pinnedRows === 0 && (data === 'j' || data === 'k')) this.list.handleInput(data === 'j' ? '\x1b[B' : '\x1b[A')
   }
   render(width: number): string[] {
-    if (this.limit !== Math.min(12, Math.max(1, Math.floor(this.tui.terminal.rows * 0.8) - 7)) || this.currentTheme !== this.theme()) this.rebuild()
-    const theme = this.theme()
-    const lines = this.list.render(Math.max(4, width)).map(line => {
-      const bounded = truncateToWidth(line, width, '')
-      return stripTerminalSequences(line).startsWith('❯')
-        ? theme.bg('selectedBg', bounded + ' '.repeat(Math.max(0, width - visibleWidth(bounded))))
-        : bounded
-    })
-    if (this.searchEnabled()) {
-      const selected = this.filtered.findIndex(item => item.value === this.list.getSelectedItem()?.value) + 1
-      const count = `(${selected}/${this.filtered.length}${this.query ? ` of ${this.items.length}` : ''})`
-      lines.push(this.query ? theme.fg('dim', `  ${count} Search: `) + (this.search.render(Math.max(2, width - count.length - 11))[0] ?? '') : theme.fg('dim', `  ${count} Type to search`))
-    }
-    return lines.map(line => truncateToWidth(line, width, ''))
+    return this.list.render(Math.max(4, width), this.windowRows() + this.searchRows()).map(line => truncateToWidth(line, width, ''))
   }
 }
 
@@ -94,17 +85,33 @@ export class SearchableSelect implements Component, Focusable {
 export class DialogPanel implements Component, Focusable {
   deadline?: number
   maxRows?: () => number
+  centered = false
   private focusedValue = false
   private detailOffset = 0
   private detailRows = 0
   private detailTotal = 0
-  constructor(readonly title: string, readonly content: Component, private readonly theme: () => Theme, readonly hint: string, private readonly message?: string) {}
+  private mouseBodyStart = 0
+  private mouseContentRows: (number | undefined)[] = []
+  constructor(readonly title: string, readonly content: Component, private readonly theme: () => Theme, readonly hint: string, private readonly message?: string, readonly variant: DialogVariant = 'block') {}
   get focused(): boolean { return this.focusedValue }
   set focused(value: boolean) {
     this.focusedValue = value
     if ('focused' in this.content) (this.content as Component & Focusable).focused = value
   }
   invalidate(): void { this.content.invalidate() }
+  handleMouse(event: TerminalMouseInput): TuiMouseEventResult | undefined {
+    if (event.type === 'wheel') {
+      const key = event.wheelDelta !== undefined && event.wheelDelta < 0 ? '\x1b[5~' : '\x1b[6~'
+      this.handleInput(key)
+      return { handled: true, render: true }
+    }
+    if (event.type !== 'move' && event.type !== 'click') return undefined
+    if (event.type === 'click' && event.button !== 'left') return undefined
+    const row = this.mouseContentRows[event.y - this.mouseBodyStart]
+    if (row === undefined) return undefined
+    const mouseAware = this.content as Component
+    return mouseAware.handleMouse?.({ ...event, y: row })
+  }
   handleInput(data: string): void {
     if (this.detailTotal > this.detailRows && (matchesKey(data, 'pageUp') || matchesKey(data, 'pageDown'))) {
       const delta = matchesKey(data, 'pageUp') ? -1 : 1
@@ -116,41 +123,44 @@ export class DialogPanel implements Component, Focusable {
   render(width: number): string[] {
     if (width < 1) return []
     const theme = this.theme()
-    const inner = Math.max(2, width - 4)
-    const cap = (value: string) => truncateToWidth(value, width, '')
-    const border = (value: string) => theme.fg('border', value)
-    const title = truncateToWidth(` ${safe(this.title)} `, Math.max(0, width - 4), '')
-    const top = cap(border('╭─') + theme.bold(theme.fg('accent', title)) + border('─'.repeat(Math.max(0, width - visibleWidth(title) - 3)) + '╮'))
-    const bottom = cap(border('╰' + '─'.repeat(Math.max(0, width - 2)) + '╯'))
-    const row = (line: string) => {
-      const shown = truncateToWidth(line, inner, '')
-      return cap(border('│') + ' ' + shown + ' '.repeat(Math.max(0, width - visibleWidth(shown) - 3)) + border('│'))
-    }
+    const inner = this.centered ? centerDialogContentWidth(width) : contentWidth(width)
     const details = this.message
       ? wrapTextWithAnsi(stripTerminalSequences(this.message).replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '').replace(/\t/g, '    '), inner)
       : []
     const content = this.content.render(inner)
-    const height = this.maxRows ? Math.max(3, Math.floor(this.maxRows())) : details.length + content.length + 4
-    const budget = Math.max(0, height - 3)
-    // Keep choices and the footer mounted even when an approval contains a large command or path.
+    const frameRows = this.centered ? CENTER_DIALOG_PAD * 2 + 2 : CHROME_ROWS
+    const maxHeight = this.maxRows ? Math.max(3, Math.floor(this.maxRows())) : details.length + content.length + frameRows
+    const chromeRows = this.centered ? centerDialogChromeRows(maxHeight) : CHROME_ROWS
+    const budget = Math.max(0, maxHeight - chromeRows)
+    // Keep choices mounted even when an approval contains a large command or path.
     const minContent = Math.min(content.length, Math.min(2, budget))
     const detailBudget = Math.min(details.length, Math.max(0, budget - Math.max(minContent, Math.min(content.length, budget))))
     this.detailRows = detailBudget
     this.detailTotal = details.length
     this.detailOffset = Math.max(0, Math.min(this.detailOffset, details.length - detailBudget))
     const body = details.slice(this.detailOffset, this.detailOffset + detailBudget).map(line => theme.fg('muted', line))
+    this.mouseContentRows = body.map(() => undefined)
     const available = Math.max(0, budget - body.length)
-    const cursor = content.findIndex(line => line.includes('\x1b_pi:c\x07') || stripTerminalSequences(line).startsWith('❯'))
-    const first = content.length <= available ? 0 : Math.max(0, Math.min(content.length - available, cursor - Math.floor(available / 2)))
-    body.push(...content.slice(first, first + available))
-    const seconds = this.deadline === undefined ? '' : ` · ${Math.max(0, Math.ceil((this.deadline - Date.now()) / 1000))}s`
-    let footerText = this.hint + seconds
+    // A search row stays on top when a tall list has to be cut.
+    const pinned = Math.min(Math.max(0, 'pinnedRows' in this.content ? Number(this.content.pinnedRows) || 0 : 0), content.length, available)
+    const scrolling = content.slice(pinned)
+    const room = available - pinned
+    const cursor = scrolling.findIndex(line => line.includes('\x1b_pi:c\x07') || stripTerminalSequences(line).startsWith('❯'))
+    const first = scrolling.length <= room ? 0 : Math.max(0, Math.min(scrolling.length - room, cursor - Math.floor(room / 2)))
+    body.push(...content.slice(0, pinned), ...scrolling.slice(first, first + room))
+    this.mouseContentRows.push(...Array.from({ length: pinned }, (_, index) => index))
+    this.mouseContentRows.push(...Array.from({ length: Math.min(room, scrolling.length - first) }, (_, index) => pinned + first + index))
+    const height = this.centered ? body.length + centerDialogChromeRows(body.length + chromeRows) : maxHeight
+    this.mouseBodyStart = this.centered ? centerDialogVerticalPad(height) + 2 : 2
+    const seconds = this.deadline === undefined ? undefined : `${Math.max(0, Math.ceil((this.deadline - Date.now()) / 1000))}s`
+    let footer = this.hint
     if (details.length > detailBudget) {
-      footerText = `PgUp/PgDn details ${this.detailOffset + 1}-${this.detailOffset + detailBudget}/${details.length} · ${footerText}`
-      if (visibleWidth(footerText) > inner) footerText = 'PgUp/PgDn details · Enter · Esc' + seconds
+      footer = `PgUp/PgDn details ${this.detailOffset + 1}-${this.detailOffset + detailBudget}/${details.length} · ${footer}`
+      if (visibleWidth(footer) > inner) footer = 'PgUp/PgDn details · Enter · Esc'
     }
-    const footer = row(theme.fg('dim', footerText))
-    return [top, ...body.map(row), footer, bottom].slice(0, height)
+    const frame = { title: this.title, meta: seconds, body, footer, width, theme }
+    if (this.centered) return centerDialogFrame({ title: this.title, body, width, rows: height, theme })
+    return (this.variant === 'page' && this.maxRows ? pageFrame({ ...frame, rows: height }) : blockFrame(frame)).slice(0, height)
   }
 }
 
@@ -187,14 +197,23 @@ export class TerminalDialogs {
       options?.signal?.addEventListener('abort', cancel, { once: true })
       try {
         panel = build(done)
-        panel.maxRows = () => Math.max(3, Math.floor(this.tui.terminal.rows * 0.8))
+        const page = panel.variant === 'page'
+        const centered = centeredDialogHost(this.tui)
+        panel.centered = centered && (!page || dialogFits(this.tui.terminal.columns, this.tui.terminal.rows))
+        // A centered host caps every dialog at the rows its overlay shows, so a long list is not cut at the bottom.
+        panel.maxRows = () => centered ? pageRows(this.tui) : page ? Math.max(3, Math.floor(this.tui.terminal.rows)) : Math.max(3, Math.floor(this.tui.terminal.rows * 0.8))
         if (options?.timeout !== undefined) {
           panel.deadline = Date.now() + Math.max(0, options.timeout)
           timer = setTimeout(cancel, Math.max(0, options.timeout))
           countdown = setInterval(this.changed, 250)
           countdown.unref?.()
         }
-        handle = this.tui.showOverlay(panel, { anchor: 'bottom-center', width: '100%', maxHeight: '80%' })
+        // Every dialog on a centered host is the same flat panel on the scrim that the page commands use.
+        handle = this.tui.showOverlay(panel, centered
+          ? pageOverlayOptions()
+          : page
+            ? { anchor: 'top-left', width: '100%', maxHeight: '100%' }
+            : { anchor: 'bottom-center', width: '100%', maxHeight: '80%' })
         if (settled) handle.hide()
         this.changed()
       } catch (error) {
@@ -203,18 +222,16 @@ export class TerminalDialogs {
     })
   }
 
-  select(title: string, options: string[], opts?: ExtensionUIDialogOptions): Promise<string | undefined> {
+  select(title: string, options: string[], opts?: TerminalDialogOptions): Promise<string | undefined> {
     return this.show<string>(done => {
       const list = new SearchableSelect(options, this.tui, this.theme, index => done(options[index]), () => done(undefined))
-      return new DialogPanel(title, list, this.theme, '↑/↓ select · Enter confirm · Esc cancel')
+      return new DialogPanel(title, list, this.theme, '↑/↓ select · Enter confirm · Esc cancel', undefined, opts?.page ? 'page' : 'block')
     }, opts)
   }
 
   async confirm(title: string, message: string, opts?: ExtensionUIDialogOptions): Promise<boolean> {
     return (await this.show<boolean>(done => {
-      const list = new SelectList([{ value: 'yes', label: 'Yes' }, { value: 'no', label: 'No' }], 2, selectTheme(this.theme()))
-      list.onSelect = item => done(item.value === 'yes')
-      list.onCancel = () => done(undefined)
+      const list = new SearchableSelect(['Yes', 'No'], this.tui, this.theme, index => done(index === 0), () => done(undefined), 'never')
       return new DialogPanel(title, list, this.theme, '↑/↓ select · Enter confirm · Esc cancel', message)
     }, opts)) ?? false
   }

@@ -7,6 +7,8 @@
     "types": ["node"],
     "strict": true,
     "noEmit": true,
+    "jsx": "preserve",
+    "jsxImportSource": "@opentui/solid",
     "skipLibCheck": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,

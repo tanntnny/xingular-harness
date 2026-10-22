@@ -1,0 +1,34 @@
+{
+  "scope": "OpenTUI command palette order and surface",
+  "passed": true,
+  "implementation": "production OpenTUI frontend built from src/terminal/opentui/",
+  "cli": "dist/cli.js",
+  "cliSha256": "2592dfbb6095dfad80e60a9d89f6e69abb263ce3b7319645f26f51a3b8069a50",
+  "frontend": "dist/terminal-opentui.js",
+  "frontendSha256": "8961873b760a0a4d5cb258c283ac3e30d4fa1cc61505e97d4df61ec543588d72",
+  "input": "isolated PTY at 80x24; / and the characters of \"account\" were sent one at a time",
+  "fixture": "copied isolated verifier state and data; the controlled loopback provider was running for model catalog calls",
+  "rule": "an exact name, a name prefix and a name part each rank above a description-only match",
+  "observed": [
+    "  /accounts Sign in, switch, check and remove Pi accounts",
+    "  /resume Resume a session in this account and folder"
+  ],
+  "selection": "the /accounts row is first and selected",
+  "surface": "only the command rows and their selection field; no border, title or key guide",
+  "captures": [
+    {
+      "file": "palette-command-order.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 80,
+      "rows": 24,
+      "rawBytes": 24431,
+      "rawSha256": "21af57ea56bf6502a36a200e34a043e3bd59441f6c02809fe21049a245a4dd53",
+      "archiveBytes": 3032,
+      "archiveSha256": "f5f8af7a1e7b7231d02ee6bf3bccbd1f7b03c1d7766dd931bc7f1491339693d6"
+    }
+  ],
+  "limits": [
+    "The capture covers the palette and composer only; it does not open the accounts page.",
+    "The fixture state is disposable and carries no user credentials."
+  ]
+}

@@ -21,6 +21,7 @@ import { FIRST_PARTY_PLUGINS, firstPartyExtensions, type InlineExtension } from 
 import { materialise, type HarnessChoice, type Materialised } from '../tree/materialise'
 import type { TreeTrust } from '../tree/trust'
 import { ASK_USER, askUserTool } from '../tools/askUser'
+import { CHECKLIST_WRITE, checklistTool } from '../tools/checklist'
 import { subagentTools } from '../tools/spawnSubagent'
 import { DEFAULT_TOOL_NAMES } from '../tools/definitions'
 import { harnessTools } from '../tools/harnessTools'
@@ -35,6 +36,8 @@ import type { ActiveRun, RunRegistry } from './registry'
 import { piSessionFactory, runTurn, summarize, type Effort, type PiSessionLike, type SessionFactory, type ToolGate, type TurnParams } from './runner'
 import { loadRun, runDir, saveRun, updateRun } from './runStore'
 import { planRefusal, planSection } from './planMode'
+import { CONTINUATION_SECTION_ID, continuationOf, continuationSection, type Continuation } from './continuation'
+import { deliveredSnapshot } from '../prompt/compile'
 
 /** The fields of a run record the caller decides; the harness fills in the rest. */
 export type RunFields = Pick<RunRecord, 'id' | 'sessionId'> & Partial<Pick<RunRecord, 'mode' | 'harness' | 'sessionType' | 'projectId' | 'agentId' | 'trigger' | 'goal' | 'attachmentCount' | 'resumedFromRunId' | 'parentRunId' | 'relation' | 'worktreeId' | 'handoffId'>>
@@ -52,6 +55,15 @@ export interface SessionRunInput {
   /** Continue exactly this recorded history; never another one. */
   resume?: { sessionFile?: string | null; nativeSessionId?: string | null } | null
   text: string
+  /** Run this user-authored Bash command before prompting the model. */
+  initialBashCommand?: string
+  /** A prior run's Bash attempt and result, supplied when retrying a ! command. */
+  initialBashContext?: {
+    runId: string
+    status: 'completed' | 'incomplete' | 'unknown'
+    ok?: boolean
+    output?: string
+  }
   images?: { mediaType: string; data: string }[]
   /** Reject a resolved model that cannot inspect image content. */
   requiresImageInput?: boolean
@@ -86,6 +98,35 @@ export interface SessionRunInput {
    * `<proposed_plan>` block. Other calls are refused at the gate; the tool list is unchanged.
    */
   plan?: boolean
+  /**
+   * Continue a run that stopped before it finished: the earlier run's id. The new run reopens its
+   * native history and pins its account, tree version and capability set, and the model is told
+   * where it stopped. The harness never does this by itself; the application asks for it.
+   */
+  continueFrom?: string | null
+}
+
+const CONTINUE_TEXT = 'Continue from where you stopped.'
+
+/** Fills a continuing run's input from the run it continues, refusing anything that would differ. */
+function continueInput(root: string, input: SessionRunInput): Continuation {
+  const continuation = continuationOf(root, input.continueFrom!, input.sessionDir)
+  if (!continuation.resumable || !continuation.resume) throw new HarnessError('continuation_unavailable', `Run ${input.continueFrom} cannot be continued (${continuation.reason ?? 'history_missing'}).`)
+  const mismatch = (what: string): HarnessError => new HarnessError('continuation_mismatch', `A continuation keeps the earlier run's ${what}.`)
+  if (continuation.sessionId !== input.run.sessionId) throw mismatch('session')
+  if (input.resume?.nativeSessionId && input.resume.nativeSessionId !== continuation.resume.nativeSessionId) throw mismatch('history')
+  if (input.accountId && input.accountId !== continuation.accountId) throw mismatch('account')
+  const pinned = continuation.harness
+  const chosen = input.harness ?? null
+  if (chosen && (!pinned || 'dir' in chosen || chosen.scope !== pinned.scope || (chosen.version && chosen.version !== pinned.version))) throw mismatch('harness version')
+  input.resume = continuation.resume
+  input.run.resumedFromRunId ??= continuation.runId
+  input.accountId = continuation.accountId
+  input.poolId = null
+  if (pinned) input.harness = { scope: pinned.scope, version: pinned.version }
+  if (!input.capabilities && continuation.capabilities) input.capabilities = continuation.capabilities
+  if (!input.text.trim()) input.text = CONTINUE_TEXT
+  return continuation
 }
 
 /** The connected-apps broker, as a session sees it. */
@@ -151,8 +192,9 @@ export class Sessions {
           return error instanceof Error ? error.message : 'Tool unavailable in the app settings.'
         }
         if (scope.allowed && !scope.humanOnly && (scope.automatic || !gated.has(tool))) return null
-        // Refinement runs have nobody to ask: what would need a person is refused, never queued.
+        // Refinement and reflection runs have nobody to ask: what would need a person is refused, never queued.
         if (call.run.trigger === 'probe' || call.run.trigger === 'improver') return scope.reason ? `Refused in a refinement run: ${scope.reason}` : 'Refused in a refinement run: this call needs a person to approve it.'
+        if (call.run.trigger === 'reflection') return scope.reason ? `Refused in a reflection run: ${scope.reason}` : 'Refused in a reflection run: this call needs a person to approve it.'
         // A call outside the scope is approved one at a time; a gated tool may be remembered, unless only a person may decide it.
         const decision = await run.requestApproval({
           target: tool,
@@ -185,6 +227,32 @@ export class Sessions {
     const { root } = this.env
     if (!input?.run?.id || !input.run.sessionId || typeof input.text !== 'string') throw invalid('A session turn needs a run id, a session, and text.')
     input = structuredClone(input)
+    if ((input.initialBashCommand !== undefined && input.initialBashCommand !== null) || (input.initialBashContext !== undefined && input.initialBashContext !== null)) {
+      const request = input.text.trimStart()
+      const requestedCommand = /^!\s*([\s\S]+)$/u.exec(request)?.[1]
+      if (!requestedCommand?.trim()) throw invalid('An initial Bash command must match a non-empty leading ! command in the user text.')
+      if (input.initialBashCommand != null) {
+        const matchesRequest = requestedCommand === input.initialBashCommand || requestedCommand.startsWith(`${input.initialBashCommand}\n\nAttached saved file references:`)
+        if (!input.initialBashCommand.trim() || !matchesRequest) throw invalid('An initial Bash command must match a non-empty leading ! command in the user text.')
+      }
+      if (input.initialBashContext != null && (
+        input.initialBashCommand != null
+        || typeof input.initialBashContext.runId !== 'string'
+        || !input.initialBashContext.runId.trim()
+        || input.initialBashContext.runId.length > 256
+        || typeof input.initialBashContext.status !== 'string'
+        || !['completed', 'incomplete', 'unknown'].includes(input.initialBashContext.status)
+        || input.initialBashContext.output !== undefined && typeof input.initialBashContext.output !== 'string'
+        || (input.initialBashContext.output?.length ?? 0) > 24_000
+        || input.initialBashContext.ok !== undefined && typeof input.initialBashContext.ok !== 'boolean'
+      )) {
+        throw invalid('A prior Bash result must be bounded and must not be combined with a new initial Bash command.')
+      }
+      if (input.automatic || input.plan || input.resume || input.continueFrom || input.run.relation || input.run.trigger != null && input.run.trigger !== 'user') {
+        throw invalid('An initial Bash command is available only for a new interactive user turn.')
+      }
+    }
+    const continuation = input.continueFrom ? continueInput(root, input) : null
     const historyFile = selectHistory({ sessionDir: input.sessionDir, resume: input.resume })
     const account = this.options.accounts.resolve(input.accountId, input.poolId)
     const context = this.options.accounts.context(account)
@@ -195,7 +263,7 @@ export class Sessions {
     const canSpawn = input.subagents !== null && (!input.automatic || input.subagents !== undefined) && subagentNesting(root, input.run) < subagentDepth(input.subagents ?? undefined)
     const requestedTools = [...new Set([
       ...input.tools.allow.filter((name) => name !== SPAWN_SUBAGENT && name !== WAIT_SUBAGENTS),
-      ...(input.harnessTools === false ? [] : [ASK_USER, ...DEFAULT_TOOL_NAMES]),
+      ...(input.harnessTools === false ? [] : [ASK_USER, CHECKLIST_WRITE, ...DEFAULT_TOOL_NAMES]),
       ...(broker?.toolNames ?? []),
       ...(canSpawn ? [SPAWN_SUBAGENT, WAIT_SUBAGENTS] : [])
     ])]
@@ -268,9 +336,12 @@ export class Sessions {
       if (!existsSync(input.sessionDir)) mkdirSync(input.sessionDir, { recursive: true })
       const launch = input.launch ?? {}
       const plan = planSection(input.plan === true, historyFile)
+      const delivered = historyFile ? deliveredSnapshot(historyFile) : null
+      const resumed = continuationSection(continuation, delivered?.some((entry) => entry.id === CONTINUATION_SECTION_ID) ?? false)
+      const own = [plan, resumed].filter((section): section is NonNullable<typeof section> => section !== null)
       const effectiveLaunch = {
         ...launch,
-        sections: plan ? [...(launch.sections ?? []).filter((section) => section.id !== plan.id), plan] : launch.sections,
+        sections: own.length ? [...(launch.sections ?? []).filter((section) => !own.some((entry) => entry.id === section.id)), ...own] : launch.sections,
         tools: capabilities.tools,
         connectionTools: (launch.connectionTools ?? []).filter((name) => capabilities.tools.includes(name)),
         toolGroups: launch.toolGroups?.map((group) => ({ ...group, tools: group.tools.filter((name) => capabilities.tools.includes(name)) })).filter((group) => group.tools.length > 0)
@@ -295,15 +366,29 @@ export class Sessions {
     try {
       const tools: ToolSpec[] = [
         ...(broker ? broker.tools(session, { readOnly: typeof input.connections === 'object' && input.connections.readOnly === true }) : []),
-        ...(input.harnessTools === false ? [] : [...harnessTools(this.options.env, caller, { treeDir: tree?.dir ?? null }), askUserTool(run)]),
+        ...(input.harnessTools === false ? [] : [...harnessTools(this.options.env, caller, { treeDir: tree?.dir ?? null }), askUserTool(run), checklistTool(run)]),
         ...subagentTools(this.options.subagents, runId).filter(tool => allow.includes(tool.name))
       ]
       if (input.providers !== false) for (const provider of this.providers) tools.push(...(await provider(session)))
       const readOnly = new Set(tools.filter((tool) => tool.readOnly).map((tool) => tool.name))
       const planModeSafety = new Map<string, NonNullable<ToolSpec['planModeSafe']>>()
       for (const tool of tools) if (tool.planModeSafe) planModeSafety.set(tool.name, tool.planModeSafe)
+      const gate = (() => {
+        const baseGate = this.gate(run, caller, new Set((input.tools.gated ?? []).filter((name) => capabilities.tools.includes(name))))
+        return {
+          ...baseGate,
+          check: (name: string, args: unknown) => {
+            if (input.run.relation === 'subagent' && !capabilities.tools.includes(name)) return Promise.resolve('This tool is outside the child capability snapshot.')
+            const refusal = input.plan ? planRefusal(name, readOnly, args, planModeSafety.get(name)) : null
+            return refusal ? Promise.resolve(refusal) : baseGate.check(name, args)
+          }
+        }
+      })()
       const params: TurnParams = {
         runId,
+        ...(input.initialBashCommand !== undefined && input.initialBashCommand !== null ? { initialBashCommand: input.initialBashCommand, initialBashAvailable: capabilities.tools.includes('bash') } : {}),
+        ...(input.initialBashContext !== undefined && input.initialBashContext !== null ? { initialBashContext: input.initialBashContext } : {}),
+        gate,
         restrictTools: input.run.relation === 'subagent',
         cwd: input.cwd,
         sessionDir: input.sessionDir,
@@ -326,17 +411,7 @@ export class Sessions {
       pi = await this.factory({
         params,
         allow,
-        gate: (() => {
-          const gate = this.gate(run, caller, new Set((input.tools.gated ?? []).filter((name) => capabilities.tools.includes(name))))
-          return {
-            ...gate,
-            check: (name: string, args: unknown) => {
-              if (input.run.relation === 'subagent' && !capabilities.tools.includes(name)) return Promise.resolve('This tool is outside the child capability snapshot.')
-              const refusal = input.plan ? planRefusal(name, readOnly, args, planModeSafety.get(name)) : null
-              return refusal ? Promise.resolve(refusal) : gate.check(name, args)
-            }
-          }
-        })(),
+        gate,
         tools,
         runtime: () => this.options.accounts.runtime(context),
         // An unattended run loads no extension, so it has nobody to relay for.

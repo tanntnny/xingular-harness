@@ -1,13 +1,13 @@
 #!/usr/bin/env node
-// The `xingular-harness` command.
+// The `xharness` command.
 //
-//   xingular-harness serve --state <dir> [--data <dir>] [--name <product>] [--builtins <dir>]…
-//                          [--host-secrets] [--host-policy] [--host-tools] [--host-directory]
+//   xharness serve --state <dir> [--data <dir>] [--name <product>] [--builtins <dir>]…
+//                  [--host-secrets] [--host-policy] [--host-tools] [--host-directory]
 //       Serves the harness to a host process over stdin/stdout (newline-delimited JSON).
-//   xingular-harness wiki <command>     Project notes, skills and history, from inside a terminal session.
-//   xingular-harness refine <command>   Refine a harness tree from evidence (refine demo needs no model).
-//   xingular-harness mcp <command>      Connected apps, from inside a terminal session.
-//   xingular-harness plugins <command>  List, install, switch and trust plugins.
+//   xharness wiki <command>     Project notes, skills and history, from inside a terminal session.
+//   xharness refine <command>   Refine a harness tree from evidence (refine demo needs no model).
+//   xharness mcp <command>      Connected apps, from inside a terminal session.
+//   xharness plugins <command>  List, install, switch and trust plugins.
 import { resolve } from 'node:path'
 
 import { log } from './core/bus'
@@ -21,8 +21,8 @@ import { attach } from './server/serve'
 import { runAppsCli, runWikiCli } from './terminal/cli'
 import { runStandaloneTerminal, standaloneArguments } from './terminal/standalone'
 
-const USAGE = `Usage: xingular-harness [--data <dir>] [--state <dir>]
-       xingular-harness <terminal | serve | wiki | mcp | plugins | hub | refine> [arguments]
+const USAGE = `Usage: xharness [--data <dir>] [--state <dir>]
+       xharness <terminal | serve | wiki | mcp | plugins | hub | refine> [arguments]
 
   (no command)       Start the interactive Harness terminal
   terminal           Start the interactive Harness terminal
@@ -36,8 +36,10 @@ const USAGE = `Usage: xingular-harness [--data <dir>] [--state <dir>]
   refine <command>   Refine a harness from evidence (refine demo, refine run)
 
 Standalone terminal options:
-  --data <dir>       Data directory (default: ~/.xingular-harness/data)
-  --state <dir>      State directory (default: ~/.xingular-harness/state)
+  --data <dir>       Data directory (installed default: ~/.xingular-harness/data;
+                     npm run dev default: ~/.xingular-harness-dev/data)
+  --state <dir>      State directory (installed default: ~/.xingular-harness/state;
+                     npm run dev default: ~/.xingular-harness-dev/state)
 `
 
 function flags(argv: string[]): { values: Record<string, string[]>; switches: Set<string> } {
@@ -96,7 +98,6 @@ function serveCommand(argv: string[]): Promise<number> {
 async function main(): Promise<number> {
   const argv = process.argv.slice(2)
   const [command, ...rest] = argv
-  if (command === 'terminal-frontend') return (await import('./terminal/tui/application')).runTerminalFrontend(rest)
   if (argv.includes('--help') || argv.includes('-h')) {
     process.stdout.write(USAGE)
     return 0

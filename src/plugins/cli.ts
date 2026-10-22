@@ -1,4 +1,4 @@
-// `xingular-harness plugins …`: plugin control for a person using the harness without an
+// `xharness plugins …`: plugin control for a person using the harness without an
 // application. It runs outside any session, as the person who typed it, and acts directly.
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -9,7 +9,7 @@ import * as api from './api'
 import * as install from './install'
 import type { Plugin } from './types'
 
-export const PLUGINS_USAGE = `Usage: xingular-harness plugins <command> [options]
+export const PLUGINS_USAGE = `Usage: xharness plugins <command> [options]
 
   list                         Every plugin and whether it is on
   show <plugin id>             One plugin: what it brings, where it is on, its code

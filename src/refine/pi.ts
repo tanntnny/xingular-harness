@@ -12,7 +12,7 @@ import type { RunRegistry } from '../sessions/registry'
 import type { Effort } from '../sessions/runner'
 import { findRun, readEvents } from '../sessions/runStore'
 import type { SessionRunInput } from '../sessions/sessions'
-import { defaultDeliverable, type RefineHost } from './host'
+import { defaultDeliverable, type RefineHost, type RolloutSession } from './host'
 import { costOf, finalText, renderEvents } from './trajectory'
 import { ImproverError, type Executor, type Improver, type ImproverCall, type ImproverReply, type RefineTask, type Rollout } from './types'
 
@@ -26,6 +26,18 @@ export interface RefineRuntime {
 /** Triggers that mark refinement's own runs; a tool policy can tell them apart. */
 export const PROBE_TRIGGER = 'probe'
 export const IMPROVER_TRIGGER = 'improver'
+
+/** How a session built on the improver differs from refinement's own improver. */
+export interface ImproverRole {
+  /** The run's trigger; refinement's improver is `improver`. */
+  trigger?: string
+  /** The one identity section the session gets. */
+  identity?: string
+  /** Its file tools; refinement's improver may also edit and write. */
+  tools?: string[]
+}
+
+const IMPROVER_IDENTITY = 'You improve the harness an autonomous agent runs with, from evidence of how it ran. Work only inside the current folder: the evidence is under `context/`. Follow the mission in the user message exactly.'
 
 /** Resolves when a run has settled, with its final status. Interrupts it when `signal` aborts. */
 export function settled(runtime: RefineRuntime, runId: string, signal?: AbortSignal, timeoutMs = 60 * 60_000): Promise<string> {
@@ -64,6 +76,39 @@ function events(runtime: RefineRuntime, runId: string): RunEvent[] {
   }
 }
 
+/** The folder, inside a rollout's record, that holds its retained workspace. */
+export const RETAINED_WORKSPACE = 'workspace'
+
+export interface ExecutorOptions {
+  /** Copy each execution's workspace into its record before the host cleans it up (PROP-0002). */
+  retainWorkspaces?: boolean
+  /** Model, effort and account for executions when the host's session settings name none (PROP-0003). */
+  settings?: ImproverSettings
+}
+
+/** The host's session settings win; the caller's executor settings fill what the host left out. */
+function withDefaults(session: RolloutSession, defaults: ImproverSettings | undefined): RolloutSession {
+  if (!defaults) return session
+  return {
+    ...session,
+    model: session.model ?? defaults.model ?? null,
+    effort: session.effort ?? defaults.effort ?? null,
+    accountId: session.accountId ?? defaults.accountId ?? null,
+    poolId: session.poolId ?? defaults.poolId ?? null
+  }
+}
+
+/** Copies a workspace whole, links as links; returns the error instead of throwing. */
+function retain(cwd: string, into: string): string {
+  try {
+    rmSync(into, { recursive: true, force: true })
+    cpSync(cwd, into, { recursive: true, dereference: false, verbatimSymlinks: true })
+    return ''
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error)
+  }
+}
+
 /** Runs each execution as a probe session in a workspace the host prepared. */
 export class PiExecutor implements Executor {
   constructor(
@@ -71,7 +116,8 @@ export class PiExecutor implements Executor {
     private readonly host: RefineHost,
     private readonly refineId: string,
     private readonly dir: string,
-    private readonly signal?: AbortSignal
+    private readonly signal?: AbortSignal,
+    private readonly options: ExecutorOptions = {}
   ) {}
 
   async execute(task: RefineTask, harnessDir: string | null, label: string, runId: string): Promise<Rollout> {
@@ -82,7 +128,7 @@ export class PiExecutor implements Executor {
     const base = { label, runId, dir, costUsd: 0, wallMs: 0 }
     const workspace = await this.host.prepareWorkspace({ refineId: this.refineId, label, task })
     try {
-      const settings = await this.host.session({ refineId: this.refineId, label, task })
+      const settings = withDefaults(await this.host.session({ refineId: this.refineId, label, task }), this.options.settings)
       await this.runtime.run({
         run: { id: runId, sessionId: runId, trigger: PROBE_TRIGGER, goal: task.prompt.slice(0, 4000), parentRunId: null, relation: null },
         accountId: settings.accountId ?? null,
@@ -116,6 +162,10 @@ export class PiExecutor implements Executor {
     } catch (error) {
       return { ...base, ok: false, delivered: false, wallMs: Date.now() - started, error: error instanceof Error ? error.message : String(error) }
     } finally {
+      if (this.options.retainWorkspaces) {
+        const workspaceError = retain(workspace.cwd, join(dir, RETAINED_WORKSPACE))
+        if (workspaceError) writeJson(join(dir, 'rollout.json'), { ...readJsonOr<Record<string, unknown>>(join(dir, 'rollout.json'), { runId }), workspaceError })
+      }
       await workspace.cleanup?.().catch(() => {})
     }
   }
@@ -158,7 +208,8 @@ export class PiImprover implements Improver {
     private readonly runtime: RefineRuntime,
     private readonly dir: string,
     private readonly settings: ImproverSettings = {},
-    private readonly signal?: AbortSignal
+    private readonly signal?: AbortSignal,
+    private readonly role: ImproverRole = {}
   ) {}
 
   async call(input: ImproverCall): Promise<ImproverReply> {
@@ -174,7 +225,7 @@ export class PiImprover implements Improver {
     try {
       cpSync(input.contextDir, join(work, 'context'), { recursive: true })
       await this.runtime.run({
-        run: { id: runId, sessionId: runId, trigger: IMPROVER_TRIGGER, goal: input.label },
+        run: { id: runId, sessionId: runId, trigger: this.role.trigger ?? IMPROVER_TRIGGER, goal: input.label },
         accountId: this.settings.accountId ?? null,
         poolId: this.settings.poolId ?? null,
         model: this.settings.model ?? null,
@@ -188,8 +239,8 @@ export class PiImprover implements Improver {
         connections: false,
         harnessTools: false,
         caller: { runId, sessionId: runId, actor: 'Code' },
-        launch: { sections: [{ id: 'identity', title: 'Identity', body: 'You improve the harness an autonomous agent runs with, from evidence of how it ran. Work only inside the current folder: the evidence is under `context/`. Follow the mission in the user message exactly.', budget: 1000, order: 10 }] },
-        tools: { allow: IMPROVER_TOOLS },
+        launch: { sections: [{ id: 'identity', title: 'Identity', body: this.role.identity ?? IMPROVER_IDENTITY, budget: 1000, order: 10 }] },
+        tools: { allow: this.role.tools ?? IMPROVER_TOOLS },
         harness: null
       })
       const status = await settled(this.runtime, runId, input.signal ?? this.signal)

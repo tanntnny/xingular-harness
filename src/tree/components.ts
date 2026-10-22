@@ -104,6 +104,24 @@ export function list(root: string): ComponentItem[] {
 }
 
 /** A tree with one library item added: a skill as `skills/<name>/` with its files, a rule as guardrail text. */
+function skillName(item: ComponentItem): string {
+  const slug = basename(item.path) === 'SKILL.md' ? basename(dirname(item.path)) : basename(item.path).replace(/\.md$/, '')
+  return slug.toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^[-_]+|-+$/g, '') || 'skill'
+}
+
+/** Whether a library skill or rule already has a corresponding entry in a tree. */
+export function isInTree(root: string, tree: Tree, id: string): boolean {
+  const item = list(root).find((candidate) => candidate.id === id)
+  if (!item) return false
+  if (item.kind === 'skills') return tree['skills/' + skillName(item) + '/SKILL.md'] !== undefined
+  if (item.kind === 'rules') {
+    const text = readFileSync(item.path, 'utf8')
+    const body = (frontmatter.parse(text)?.body ?? text).trim()
+    return Boolean(body) && (tree[GUARDRAILS] ?? '').includes(body)
+  }
+  return false
+}
+
 export function addToTree(root: string, tree: Tree, id: string): Tree {
   const item = list(root).find((candidate) => candidate.id === id)
   if (!item) throw notFound('That library item')
@@ -116,8 +134,7 @@ export function addToTree(root: string, tree: Tree, id: string): Tree {
     return next
   }
   if (item.kind !== 'skills') throw invalid('Only skills and rules can be added to a harness; prompts stay in the library.')
-  const slug = basename(item.path) === 'SKILL.md' ? basename(dirname(item.path)) : basename(item.path).replace(/\.md$/, '')
-  const name = slug.toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^[-_]+|-+$/g, '') || 'skill'
+  const name = skillName(item)
   next[`skills/${name}/SKILL.md`] = `---\nname: ${name}\ndescription: ${(item.description || `the ${name} workflow applies`).replace(/\n/g, ' ')}\n---\n${body}\n`
   // A folder skill's helpers travel with it.
   const folder = dirname(item.path)

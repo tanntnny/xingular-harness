@@ -18,13 +18,14 @@ import * as notes from '../wiki/notes'
 
 const WIKI_BUDGET = 2500
 const TOOLS_BUDGET = 8000
+const REPORTING_BUDGET = 2000
 export const REFERENCES_BUDGET = 12000
 /** Always-on tree text is capped when the tree is saved, so its sections are never cut here. */
 const TREE_BUDGET = 30_000
 const NOTES_LISTED = 25
 
 /** Where the harness's own sections sit; an application's sections are placed among them by `order`. */
-export const SECTION_ORDER = { system: 25, guardrails: 40, memory: 45, references: 50, subagents: 64, scripts: 66, wiki: 80, tools: 90 } as const
+export const SECTION_ORDER = { system: 25, guardrails: 40, memory: 45, references: 50, subagents: 64, scripts: 66, wiki: 80, tools: 90, reporting: 95 } as const
 
 /** Where a section's text came from. */
 export interface Source {
@@ -114,6 +115,20 @@ export interface Launch {
   profile?: string
 }
 
+/** How a run's final reply is shaped. Fixed text: it sits in the stable prefix of every pack. */
+export const REPORTING_GUIDANCE = `When you finish work, write the final reply for a person who did not watch you work.
+
+- Start with the answer or outcome in one or two sentences. If they asked a question, answer it first.
+- Keep it concise and use only headings or structure that help explain the outcome; do not force a fixed set of report headings.
+- When work involves files, identify the relevant paths and briefly state what changed or mattered. Use \`path:line\` references where useful, and a table (File | Change | Why) when there are three or more changed files.
+- Include blockers, risks, or next steps only when they are concrete and relevant.
+- Use **Need human inspection** only when a concrete verification requires a person because you could not perform or observe it. State what remains unverified, why you could not verify it, and the specific check the person should make. Do not use this for checks you ran or generic risks.
+- Name only checks actually run and their results; never claim a check you did not run.
+- Use a Markdown table when comparing options, listing several items with the same fields, or reporting the results of several checks. Use prose or bullets otherwise.
+- A one-line question gets a one-line answer.
+- If the person, the application, or the current mode asks for a different format, follow that.
+`
+
 export const HISTORY_GROUP = ['history_search', 'history_read', 'trajectory_search', 'trajectory_read']
 export const WIKI_GROUP = ['wiki_search', 'wiki_read', 'wiki_list', 'wiki_write']
 export const NATIVE_GROUP = ['read', 'grep', 'find', 'ls', 'edit', 'write', 'bash']
@@ -164,6 +179,9 @@ function wiki(root: string, context: CallerContext): Section | null {
   }
   const library = found.filter((note) => note.project === null).length
   text += `\nThe Library and Home have ${library} note${library === 1 ? '' : 's'}; every project's notes are readable.\n`
+  // Kept by the opt-in Lessons plugin (history/lessons.ts); named here so an agent knows to look.
+  const lessons = found.filter((note) => note.path.startsWith('library/lessons/')).length
+  if (lessons) text += `${lessons} of them ${lessons === 1 ? 'is a lesson' : 'are lessons'} from earlier runs, under library/lessons: when a situation looks familiar, search them with wiki_search before you start.\n`
   return section('wiki', 'Wiki', text, WIKI_BUDGET, '(More is in the Wiki: wiki_list and wiki_search.)', own.slice(0, NOTES_LISTED).map((note) => ({ id: note.path, kind: 'note', revision: note.updatedAt })))
 }
 
@@ -279,6 +297,7 @@ export function compile(env: HarnessEnv, context: CallerContext, launch: Launch 
     { order: SECTION_ORDER.references, section: selectedReferences(root, launch) },
     { order: SECTION_ORDER.wiki, section: wiki(root, context) },
     { order: SECTION_ORDER.tools, section: tools(groups, tree?.toolGuidance ?? '', launch.toolsPointer ?? '') },
+    { order: SECTION_ORDER.reporting, section: section('reporting', 'Reporting your work', REPORTING_GUIDANCE, REPORTING_BUDGET, '', []) },
     ...(launch.sections ?? []).map((host) => ({ order: host.order, section: hostSection(host) }))
   ].map((entry, index) => ({ ...entry, index }))
   const sections = built.sort((left, right) => left.order - right.order || left.index - right.index).flatMap((entry) => entry.section ?? [])

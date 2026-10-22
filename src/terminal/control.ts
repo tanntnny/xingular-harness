@@ -10,6 +10,10 @@ export function claimTerminalControl(connection: SocketConnection = connectionFr
     claim = socketCall<{ key: string }>(connection, 'control.claim', {}, 15_000).then(({ key }) => {
       if (!key) throw new Error('The terminal controller returned no control key.')
       return key
+    }).catch((error: unknown) => {
+      // A failed claim is retried by the next call; only a claim that succeeded is kept.
+      claims.delete(identity)
+      throw error
     })
     claims.set(identity, claim)
   }

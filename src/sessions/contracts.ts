@@ -24,6 +24,7 @@ export const runEventTypeSchema = z.enum([
   'extension.notice',
   'reaction.added',
   'agent.message',
+  'checklist.updated',
   'artifact.added',
   'file.changed',
   'usage.updated',
@@ -142,6 +143,12 @@ const extensionNoticePayload = z.object({
   text: z.string(),
   extension: z.string().optional()
 })
+/** One line of the run's checklist. The list has no ids: every update replaces all of it. */
+export const checklistItemSchema = z.object({ text: z.string().min(1).max(500), status: z.enum(['pending', 'in_progress', 'completed']) }).strict()
+export type ChecklistItem = z.infer<typeof checklistItemSchema>
+export const MAX_CHECKLIST_ITEMS = 50
+/** The whole checklist as the model last wrote it; the latest event replaces every earlier one. */
+const checklistPayload = z.object({ items: z.array(checklistItemSchema).max(MAX_CHECKLIST_ITEMS) }).strict()
 const artifactPayload = z.object({ artifactId: z.string(), name: z.string(), file: z.unknown().optional() })
 const fileChangedPayload = z.object({ path: z.string(), change: z.enum(['added', 'modified', 'deleted']) })
 /** Where a cost figure comes from: Pi reported it, or the tokens were priced at list rates. */
@@ -235,6 +242,7 @@ export const runEventPayloadSchemas = {
   'extension.notice': extensionNoticePayload,
   'reaction.added': reactionAddedPayload,
   'agent.message': agentMessagePayload,
+  'checklist.updated': checklistPayload,
   'artifact.added': artifactPayload,
   'file.changed': fileChangedPayload,
   'usage.updated': usagePayloadSchema,

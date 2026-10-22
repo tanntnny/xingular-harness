@@ -14,7 +14,6 @@ export interface BandState {
   account?: string
   inputTokens: number
   outputTokens: number
-  tokensPerSecond: number | null
 }
 
 // OMP's shipped light theme supplies status colors separately from transcript colors.
@@ -34,8 +33,12 @@ export function displayProjectName(cwd: string): string {
   return singleLine(basename(cwd) || cwd || sep)
 }
 
-function tokenCount(value: number): string {
-  return Math.max(0, Number.isFinite(value) ? Math.round(value) : 0).toLocaleString('en-US')
+export function formatTokenCount(value: number): string {
+  const count = Math.max(0, Number.isFinite(value) ? Math.floor(value) : 0)
+  if (count >= 1_000_000_000) return `${Math.floor(count / 1_000_000_000)}B`
+  if (count >= 1_000_000) return `${Math.floor(count / 1_000_000)}M`
+  if (count >= 1_000) return `${Math.floor(count / 1_000)}K`
+  return count.toLocaleString('en-US')
 }
 
 function fitParts(parts: StatusPart[], width: number): StatusPart[] {
@@ -69,13 +72,11 @@ export function renderStatusBand(state: BandState, width: number, theme: Theme):
   const model = state.model ? singleLine(state.model.name).replace(/^Claude /, '') || 'no-model' : 'no-model'
   const account = singleLine(state.account ?? '') || 'account unknown'
   const effort = singleLine(state.thinkingLevel) || 'off'
-  const rate = state.tokensPerSecond === null || !Number.isFinite(state.tokensPerSecond)
-    ? '— tok/s' : `${Math.max(0, Math.round(state.tokensPerSecond))} tok/s`
   const parts = fitParts([
     { text: displayProjectName(state.cwd), color: colors.brightAluminum },
     { text: singleLine(state.branch ?? '') || '—', color: colors.readoutGreen },
     { text: `${account} · ${model} · ${effort}`, color: colors.electricBlue },
-    { text: `${rate} in ${tokenCount(state.inputTokens)} out ${tokenCount(state.outputTokens)}`, color: colors.titaniumGold }
+    { text: `↑ ${formatTokenCount(state.inputTokens)} ↓ ${formatTokenCount(state.outputTokens)}`, color: colors.titaniumGold }
   ], size)
   const separator = color(theme, colors.subtleGray, ' | ')
   return parts.map(part => color(theme, part.color, part.text)).join(separator)

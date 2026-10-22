@@ -1,0 +1,96 @@
+{
+  "passed": true,
+  "implementation": "production standalone CLI + real Pi SDK + loopback OpenAI SSE transport",
+  "cli": "/Users/tanny/Documents/Projects/Xingular/Xingular Agent/Harness/dist/cli.js",
+  "cliSha256": "029c32e19955993be65b7031b50a77e463c0c799893de78c0a83f4d75cf128d3",
+  "verifierSha256": "6d3e14416f016d62d2fb9d112d13af63eff7b7f0e51dce93d495dbf50602c6f2",
+  "provider": "controlled loopback OpenAI-compatible streaming transport; no external model requests or user credentials",
+  "requestCount": 14,
+  "profiles": [
+    {
+      "size": "80x24",
+      "checks": [
+        "welcome and real configured model",
+        "actual settings tabs, section focus, keyboard search/control and Escape return",
+        "command autocomplete and independent Accounts, Permissions, and Components pages with local tabs",
+        "suspend/resume restores cooked/raw terminal modes and page command input",
+        "Unicode, real streaming/thinking/read/bash/approval/question, expansion, resizing and scrolling",
+        "trusted plugin custom overlay, widget, status and disposal",
+        "grouped question progress and atomic choice/text answers through real registry",
+        "approval deny and Escape cancellation prevent actual tool execution",
+        "question Escape cancellation settles pending tools and interrupts run",
+        "new session, explicit scoped resume and session naming",
+        "actual Escape stream cancellation and interrupted run record",
+        "/stop interrupts the live stream and records an interrupted run",
+        "explicit account switching, process restart and real run on newly pinned account",
+        "fatal asynchronous plugin failure exits 1 and restores terminal modes",
+        "plugin startup failure exits 1 and restores terminal modes"
+      ],
+      "persistedRunCount": 8,
+      "exitCode": 0,
+      "termiosRestored": true,
+      "bracketedPasteDisabled": true,
+      "cursorShown": true,
+      "fatalCleanup": {
+        "exitCode": 1,
+        "termiosRestored": true,
+        "bracketedPasteDisabled": true,
+        "cursorShown": true
+      },
+      "startupCleanup": {
+        "exitCode": 1,
+        "termiosRestored": true,
+        "bracketedPasteDisabled": true,
+        "cursorShown": true
+      }
+    }
+  ],
+  "captures": [
+    {
+      "file": "80x24-approval-0.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 80,
+      "rows": 24,
+      "rawBytes": 60562,
+      "rawSha256": "26811884c96bfe3a99274dc7910a61cbe1b61184da1992e23c001ad80cb4e3e9",
+      "archiveBytes": 3815,
+      "archiveSha256": "26d8db5895fe1bb5a30ff70de16c045b8142b74452d86d5d7b0a0b899c04d57a"
+    },
+    {
+      "file": "80x24-question.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 80,
+      "rows": 24,
+      "rawBytes": 75399,
+      "rawSha256": "342298a44980db39c2828fe7dfa98cab4e70bcfb45cf0d8b0112a07c6169cff4",
+      "archiveBytes": 4500,
+      "archiveSha256": "9f474fe4ee242afbf3c2b67e138dbf0ab2a9c2d98f56a7c93b8ca17324d1ba4b"
+    },
+    {
+      "file": "80x24-plugin-light.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 120,
+      "rows": 30,
+      "rawBytes": 106117,
+      "rawSha256": "7bf8c05b4ad11079fce59fc162b51796fdcbd83b6a73f8772a110358e26d9a69",
+      "archiveBytes": 5752,
+      "archiveSha256": "18170e33c0b32133ae57ea9d299f06779f0d997c60a386afed6a0ac0cb69fc4d"
+    },
+    {
+      "file": "80x24-question-batch.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 120,
+      "rows": 30,
+      "rawBytes": 149116,
+      "rawSha256": "d79ef92f78c344af5473a7f9d8ec0c058cc4f4e4e53068962e910f56fcf9a293",
+      "archiveBytes": 7135,
+      "archiveSha256": "c08ff96da805fd56528a0fc77a96ac883804b727426ed431354c95631217de8d"
+    }
+  ],
+  "limits": [
+    "The AgentSession, frontend, native tools, authorization and run writer are production code.",
+    "The controlled local transport supplies deterministic model responses and usage fixtures.",
+    "These functional checks do not establish external provider OAuth/service availability or visual equivalence to OMP.",
+    "Each compressed capture is a cumulative actual ANSI stream from PTY startup through the named interaction. Replay at its recorded dimensions."
+  ]
+}

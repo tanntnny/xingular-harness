@@ -26,7 +26,7 @@ async function session() {
   const root = rootWithProject()
   const base = mkdtempSync(join(tmpdir(), 'control-'))
   writeFile(join(root, 'registry/rules/tests.md'), '---\nname: Run tests\ndescription: Always test.\n---\nAlways run the tests.\n')
-  const harness = createHarness({ dataRoot: root, stateDir: join(base, 'state'), secrets: memorySecretStore(), piProgram: () => '/opt/pi/bin/pi', assets: { node: '/opt/node', cli: '/opt/harness/cli.js', piExtension: '/opt/harness/terminal-pi.js' } })
+  const harness = createHarness({ dataRoot: root, stateDir: join(base, 'state'), secrets: memorySecretStore(), assets: { node: '/opt/node', cli: '/opt/harness/cli.js', piExtension: '/opt/harness/terminal-pi.js', openTui: '/opt/harness/terminal-opentui.js' } })
   open.push(harness)
   const account = harness.accounts.create('Main', 'apiKey').accounts[0]
   harness.plugins.trust.adopt([])
@@ -80,7 +80,7 @@ describe('plugin control from a terminal session', () => {
     const { key } = await socketCall<{ key: string }>(connection, 'control.claim')
     const call = <T>(method: string, params?: Record<string, unknown>) => socketCall<T>(connection, method, params ?? {}, 5_000, key)
     const rows = menuRows(await call<Plugin[]>('plugins.list'), 'p1')
-    expect(rows.map((row) => row.label)).toEqual(['● review-kit · code not trusted', '○ Budget guard · runs code', '○ Output trim · runs code'])
+    expect(rows.map((row) => row.label)).toEqual(['● review-kit · code not trusted', '○ Budget guard · runs code', '○ Lessons · runs code', '○ Output trim · runs code'])
     expect(rowActions(rows[0], 'p1')).toEqual(['Switch off for this project', 'Switch off everywhere', 'Trust its code', 'Back'])
     expect(rowActions(rows[1], null)).toEqual(['Switch on everywhere', 'Back'])
     // A part that ships with the harness needs no trust: it is the harness's own code.

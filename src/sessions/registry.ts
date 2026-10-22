@@ -42,7 +42,14 @@ export interface QuestionAnswer {
 }
 
 function validateQuestionRecommendations(input: QuestionInput): void {
-  if (!input.multiSelect && input.options.filter((option) => option.recommended).length > 1) {
+  if (!Array.isArray(input.options) || input.options.length === 0) {
+    throw new HarnessError('invalid_request', 'Every question needs at least one choice.')
+  }
+  const recommendations = input.options.filter((option) => option.recommended).length
+  if (recommendations === 0) {
+    throw new HarnessError('invalid_request', 'Every question needs at least one recommended choice.')
+  }
+  if (!input.multiSelect && recommendations > 1) {
     throw new HarnessError('invalid_request', 'A single-choice question can recommend at most one option.')
   }
 }

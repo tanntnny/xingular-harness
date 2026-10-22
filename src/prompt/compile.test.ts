@@ -12,7 +12,7 @@ import { materialise } from '../tree/materialise'
 import * as store from '../tree/store'
 import type { Tree } from '../tree/surface'
 import * as notes from '../wiki/notes'
-import { compile, fit, load, render, sessionFile, sessionLaunch, SECTION_ORDER, type ContextUpdate, type HostSection, type Launch } from './compile'
+import { compile, fit, load, render, REPORTING_GUIDANCE, sessionFile, sessionLaunch, SECTION_ORDER, type ContextUpdate, type HostSection, type Launch } from './compile'
 
 const roots: string[] = []
 afterEach(() => roots.splice(0).forEach(closeIndex))
@@ -59,7 +59,7 @@ test('the harness tree supplies the instructions, guardrails, memory, subagents,
   const env = setup()
   const pack = compile(env, agent(), hosted(), scoped(env))
   const ids = pack.sections.map((entry) => entry.id)
-  expect(ids).toEqual(['identity', 'system', 'guardrails', 'memory', 'subagents', 'scripts', 'work', 'wiki', 'tools'])
+  expect(ids).toEqual(['identity', 'system', 'guardrails', 'memory', 'subagents', 'scripts', 'work', 'wiki', 'tools', 'reporting'])
   const text = render(env, pack)
   expect(text).toContain('You draft release notes.')
   expect(text).toContain('Never publish without a review.')
@@ -74,7 +74,7 @@ test('the harness tree supplies the instructions, guardrails, memory, subagents,
 test('without a tree, only the application, the Wiki and the tools speak', () => {
   const env = setup()
   const pack = compile(env, agent(), hosted())
-  expect(pack.sections.map((entry) => entry.id)).toEqual(['identity', 'work', 'wiki', 'tools'])
+  expect(pack.sections.map((entry) => entry.id)).toEqual(['identity', 'work', 'wiki', 'tools', 'reporting'])
   expect(pack.harness).toBeNull()
 })
 
@@ -85,6 +85,13 @@ test('the Wiki section lists the current project\'s notes and only describes wik
   expect(text).toContain('wiki_search, wiki_read and wiki_list read project notes.')
   expect(text).not.toContain('wiki_write')
   expect(render(env, compile(env, agent(), hosted({ tools: ['read', 'wiki_write'] })))).toContain('wiki_write saves one')
+})
+
+test('the Wiki section points at lessons from earlier runs only when there are some', () => {
+  const env = setup()
+  expect(render(env, compile(env, agent(), hosted()))).not.toContain('library/lessons')
+  notes.write(env.root, 'library/lessons/check-the-lockfile', '# Check the lockfile\n')
+  expect(render(env, compile(env, agent(), hosted()))).toContain('1 of them is a lesson from earlier runs, under library/lessons')
 })
 
 test('selected notes are references for this request only', () => {
@@ -147,4 +154,20 @@ test('a subagent section is left out when the session cannot start subagents', (
   store.seed(env.root, 'nora', tree)
   const pack = compile(env, agent(), hosted(), materialise(env.root, { scope: 'nora' }, { subagents: false }))
   expect(pack.sections.some((entry) => entry.id === 'subagents')).toBe(false)
+})
+
+test('the reporting guidance closes the stable prefix and never rides in a context update', () => {
+  const env = setup()
+  const first = sessionLaunch(env, agent(), hosted(), null)
+  expect(first.system).toContain(`## Reporting your work\n\n${REPORTING_GUIDANCE.trim()}`)
+  expect(first.system.indexOf('## Reporting your work')).toBeGreaterThan(first.system.indexOf('## Tools'))
+  expect(first.update!.content).not.toContain('Reporting your work')
+  expect(first.pack.delivery!.systemSectionIds.at(-1)).toBe('reporting')
+  expect(REPORTING_GUIDANCE).toContain('do not force a fixed set of report headings')
+  expect(REPORTING_GUIDANCE).toContain('**Need human inspection** only when a concrete verification requires a person')
+  expect(REPORTING_GUIDANCE).not.toContain('Worth a look')
+  expect(REPORTING_GUIDANCE).not.toContain('Check by hand')
+  const section = first.pack.sections.find((entry) => entry.id === 'reporting')!
+  expect(section.cut).toBe(false)
+  expect(sessionLaunch(env, agent(), hosted(), null).system).toBe(first.system)
 })

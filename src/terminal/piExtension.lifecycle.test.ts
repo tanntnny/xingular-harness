@@ -55,6 +55,22 @@ describe('terminal bridge lifecycle', () => {
     expect(transport.socket.mock.calls.filter(([, call]) => call === 'terminal.policy')).toHaveLength(policyCalls)
   })
 
+  it('names the cause when the harness cannot answer a tool call', async () => {
+    const { api, ctx, handlers } = extension()
+    await terminalExtension(api)
+    const original = transport.socket.getMockImplementation()
+    transport.socket.mockImplementation(async (_connection, call: string) => {
+      if (call === 'terminal.policy') throw new Error('The run is no longer active (its status is interrupted).')
+      return call === 'control.claim' ? { key: 'lexical-key' } : { tools: [] }
+    })
+    try {
+      const result = await handlers.get('tool_call')!({ toolName: 'read', toolCallId: 'call-2', input: { path: 'README.md' } }, ctx)
+      expect(result).toEqual({ block: true, reason: 'The terminal controller is unavailable: The run is no longer active (its status is interrupted).' })
+    } finally {
+      transport.socket.mockImplementation(original!)
+    }
+  })
+
   it('keeps one private control claim while replacing native session pollers and restoring readiness', async () => {
     vi.useFakeTimers()
     const first = extension()

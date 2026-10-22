@@ -19,6 +19,7 @@ import { closeIndex } from './core/index'
 import { ConnectedApps } from './mcp/service'
 import type { AppOAuthClients } from './mcp/types'
 import { migrateConnectionScopes } from './mcp/scopeMigration'
+import { Lessons } from './history/lessons'
 import * as recall from './history/recall'
 import type { RefineHost } from './refine/host'
 import { Refinements } from './refine/service'
@@ -58,7 +59,7 @@ export interface HarnessOptions {
   refineHost?: RefineHost
   /** Where the built commands a terminal session runs are, when they are not beside this package. */
   assets?: TerminalAssets
-  /** Optional legacy executable override. The default is the Harness-owned terminal frontend. */
+  /** @deprecated Ignored. The Harness-owned OpenTUI frontend is the only terminal. */
   piProgram?: () => string | null
   /** Folders of built-in skills, prompts, and rules for the component library, each laid out like `registry/`. */
   builtins?: string[]
@@ -81,6 +82,8 @@ export interface HarnessOptions {
 /** What starting on a data root found and repaired. */
 export interface Recovery {
   interruptedRuns: number
+  /** The runs marked interrupted, which the application may continue with `continueFrom`. */
+  interruptedRunIds: string[]
   /** Notes in the Wiki. */
   reindexedPages: number
   /** Where an earlier Wiki's memory, facts and revisions were moved, when they were. */
@@ -131,11 +134,13 @@ export class Harness {
   readonly trust: TreeTrust
   /** Refinement: improving a harness tree from evidence of how it ran. */
   readonly refine: Refinements
+  /** Reflection on finished runs, when the `lessons` plugin is on (page 08). */
+  readonly lessons: Lessons
   refineHost: RefineHost | null
   readonly terminals: Terminals
   /** Resolves when what was loaded in the background at construction is in place. */
   readonly ready: Promise<void>
-  recovery: Recovery = { interruptedRuns: 0, reindexedPages: 0, migrationError: null }
+  recovery: Recovery = { interruptedRuns: 0, interruptedRunIds: [], reindexedPages: 0, migrationError: null }
 
   constructor(options: HarnessOptions) {
     this.stateDir = options.stateDir
@@ -203,14 +208,17 @@ export class Harness {
       factory: options.sessionFactory,
       trust: this.trust
     })
-    this.refine = new Refinements({ root: () => this.env.root, bus: this.bus, trust: this.trust, host: () => this.refineHost, runtime: { root: () => this.env.root, runs: this.runs, run: (input) => this.sessions.run(input) } })
-    this.terminals = new Terminals({ trust: this.trust, subagents: this.subagents, resolveCapabilities: (caller, tools, cwd) => capabilities.resolve(this, { agentId: caller.agentId ?? null, projectId: caller.projectId ?? null, cwd, tools }), env: this.env, stateDir: this.stateDir, accounts: this.accounts, runs: this.runs, approvals: this.approvals, apps: this.apps, policy: this.policy, bus: this.bus, plugins: this.plugins, pluginControl: { list: (scope) => pluginApi.list(this, scope), attach: (params, on) => pluginApi.attach(this, params, on), trust: (scope) => pluginApi.trust(this, scope), untrust: (scope) => pluginApi.untrust(this, scope) }, assets: options.assets, program: options.piProgram, hub: this.hub })
+    const refineRuntime = { root: () => this.env.root, runs: this.runs, run: (input: Parameters<Sessions['run']>[0]) => this.sessions.run(input) }
+    this.refine = new Refinements({ root: () => this.env.root, bus: this.bus, trust: this.trust, host: () => this.refineHost, runtime: refineRuntime })
+    this.lessons = new Lessons({ root: () => this.env.root, runtime: refineRuntime })
+    this.terminals = new Terminals({ trust: this.trust, subagents: this.subagents, resolveCapabilities: (caller, tools, cwd) => capabilities.resolve(this, { agentId: caller.agentId ?? null, projectId: caller.projectId ?? null, cwd, tools }), env: this.env, stateDir: this.stateDir, accounts: this.accounts, runs: this.runs, approvals: this.approvals, apps: this.apps, policy: this.policy, bus: this.bus, plugins: this.plugins, pluginControl: { list: (scope) => pluginApi.list(this, scope), attach: (params, on) => pluginApi.attach(this, params, on), trust: (scope) => pluginApi.trust(this, scope), untrust: (scope) => pluginApi.untrust(this, scope) }, assets: options.assets, hub: this.hub })
     this.ready = this.apps.start().catch((error) => log('connected apps', error instanceof Error ? error.message : String(error)))
     this.runs.listen((event, run) => {
       this.accounts.onRunEvent(event, run)
       // Each run is indexed when it ends, so the next turn can already recall it.
       if (event.type === 'completed' || event.type === 'failed') recall.indexRun(this.env.root, event.runId)
       if ((event.type === 'completed' || event.type === 'failed') && run) {
+        if (event.type === 'completed') this.lessons.consider(run)
         this.hooks.emit({ type: 'history.run.ended', runId: run.id, sessionId: run.sessionId, status: run.status, goal: run.goal ?? null, agentId: run.agentId ?? null, projectId: run.projectId ?? null, startedAt: run.startedAt, endedAt: run.endedAt ?? null, at: event.timestamp })
       }
     })
@@ -259,9 +267,9 @@ export class Harness {
       migrationError = migrationError ? `${migrationError}; connector scope migration: ${detail}` : detail
       log('connector scope migration failed', detail)
     }
-    let interruptedRuns = 0
+    let interruptedRunIds: string[] = []
     try {
-      interruptedRuns = markInterruptedRuns(root, `${this.env.productName} stopped before the run settled.`)
+      interruptedRunIds = markInterruptedRuns(root, `${this.env.productName} stopped before the run settled.`)
     } catch (error) {
       log('run recovery', error instanceof Error ? error.message : String(error))
     }
@@ -271,7 +279,7 @@ export class Harness {
     } catch (error) {
       log('recall', error instanceof Error ? error.message : String(error))
     }
-    this.recovery = { interruptedRuns, reindexedPages: safeCount(root), migrationError, legacyWiki }
+    this.recovery = { interruptedRuns: interruptedRunIds.length, interruptedRunIds, reindexedPages: safeCount(root), migrationError, legacyWiki }
     return this.recovery
   }
 
@@ -287,6 +295,7 @@ export class Harness {
   async close(): Promise<void> {
     this.hub.close()
     await this.refine.close()
+    await this.lessons.close()
     await this.terminals.close()
     await this.runs.interruptAll()
     await this.hooks.settled().catch(() => undefined)

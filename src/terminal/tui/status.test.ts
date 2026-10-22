@@ -2,25 +2,42 @@ import { initTheme, Theme } from '@earendil-works/pi-coding-agent'
 import { stripTerminalSequences, visibleWidth } from '@earendil-works/pi-tui'
 import { describe, expect, it } from 'vitest'
 
-import { displayProjectName, renderStatusBand, type BandState } from './status'
+import { displayProjectName, formatTokenCount, renderStatusBand, type BandState } from './status'
 import { createHarnessTheme } from './theme'
 
 initTheme('dark', false)
 const theme = createHarnessTheme({ getColorMode: () => 'truecolor' } as Theme)
 const state: BandState = {
   cwd: '/work/project', model: { name: 'Claude Sonnet 4.6', reasoning: true, contextWindow: 200_000 },
-  thinkingLevel: 'high', branch: 'main', account: 'Tanny', inputTokens: 1300, outputTokens: 50,
-  tokensPerSecond: 30
+  thinkingLevel: 'high', branch: 'main', account: 'Tanny', inputTokens: 1300, outputTokens: 50
 }
 
 describe('composer status band', () => {
   it('renders the four text groups in order with distinct colors', () => {
     const line = renderStatusBand(state, 120, theme)
-    expect(stripTerminalSequences(line)).toBe('project | main | Tanny · Sonnet 4.6 · high | 30 tok/s in 1,300 out 50')
+    expect(stripTerminalSequences(line)).toBe('project | main | Tanny · Sonnet 4.6 · high | ↑ 1K ↓ 50')
     for (const color of ['38;2;232;236;244', '38;2;0;255;136', '38;2;0;180;255', '38;2;212;192;144']) {
       expect(line).toContain(color)
     }
     expect(visibleWidth(line)).toBe(stripTerminalSequences(line).length)
+  })
+
+  it('formats token counts with floor-rounded K, M and B suffixes', () => {
+    for (const [value, expected] of [
+      [999.9, '999'],
+      [1_000, '1K'],
+      [1_999, '1K'],
+      [999_999, '999K'],
+      [1_000_000, '1M'],
+      [1_999_999, '1M'],
+      [999_999_999, '999M'],
+      [1_000_000_000, '1B'],
+      [1_999_999_999, '1B'],
+      [-10, '0'],
+      [Number.NaN, '0']
+    ] as const) {
+      expect(formatTokenCount(value)).toBe(expected)
+    }
   })
 
   it('uses the last path component and a readable root fallback', () => {
@@ -28,9 +45,9 @@ describe('composer status band', () => {
     expect(displayProjectName('/')).toBe('/')
   })
 
-  it('shows text fallbacks when branch, account, model, and rate are unavailable', () => {
-    const line = renderStatusBand({ ...state, branch: null, account: undefined, model: undefined, tokensPerSecond: null }, 120, theme)
-    expect(stripTerminalSequences(line)).toBe('project | — | account unknown · no-model · high | — tok/s in 1,300 out 50')
+  it('shows text fallbacks when branch, account and model are unavailable', () => {
+    const line = renderStatusBand({ ...state, branch: null, account: undefined, model: undefined }, 120, theme)
+    expect(stripTerminalSequences(line)).toBe('project | — | account unknown · no-model · high | ↑ 1K ↓ 50')
   })
 
   it('stays within narrow terminal widths and sanitizes metadata', () => {

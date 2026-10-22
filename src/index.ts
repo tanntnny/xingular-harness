@@ -19,6 +19,7 @@ export { findBinary, searchPath } from './core/path'
 export { fileSecretStore, memorySecretStore, secretKey, type SecretStore } from './accounts/secrets'
 export type { Account, AccountsOverview, Pool } from './accounts/store'
 export type { AccountLoginSnapshot, ModelOption } from './accounts/accounts'
+export type { ChoicePatch, ModeChoice } from './accounts/choices'
 export type { Capability, CapabilityCatalogue, CapabilityKind, CapabilityScope, CapabilitySet } from './capabilities/types'
 export type { RunCapabilitySnapshot } from './capabilities/runSnapshot'
 
@@ -39,7 +40,7 @@ export {
   type Section
 } from './prompt/compile'
 
-export { runEventSchema, runRecordSchema, isActiveStatus, type RunEvent, type RunEventType, type RunRecord } from './sessions/contracts'
+export { runEventSchema, runRecordSchema, isActiveStatus, type ChecklistItem, type RunEvent, type RunEventType, type RunRecord } from './sessions/contracts'
 export type { ApprovalFacts, ApprovalPolicy, AutomaticReason } from './sessions/approvals'
 export type { ScopeDecision, ToolCall, ToolPolicy } from './sessions/policy'
 export type { ActiveRun, ApprovalDecision, ApprovalInput, QuestionAnswer, QuestionInput } from './sessions/registry'
@@ -49,6 +50,8 @@ export type { Effort } from './sessions/runner'
 export { describeTool, HARNESS_TOOLS, DEFAULT_TOOL_NAMES, WIKI_WRITE, type HarnessCall, type HarnessToolDefinition } from './tools/definitions'
 export type { ToolProvider, ToolResult, ToolSession, ToolSpec } from './tools/types'
 export { SPAWN_SUBAGENT, SUBAGENT_RELATION } from './tools/spawnSubagent'
+export { CHECKLIST_WRITE, checklistOf } from './tools/checklist'
+export { continuationOf, type Continuation, type ContinuationBlock } from './sessions/continuation'
 export { webTools, WEB_PLUGIN, WEB_SEARCH_KEY, type WebToolOptions } from './web/tools'
 export { safeRequest, type WebRequest, type WebResponse } from './web/safeRequest'
 

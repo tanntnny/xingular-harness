@@ -1,0 +1,63 @@
+{
+  "scope": "OpenTUI Bash mode in the chat composer",
+  "passed": true,
+  "implementation": "production OpenTUI frontend built from src/terminal/opentui/",
+  "cli": "dist/cli.js",
+  "cliSha256": "2592dfbb6095dfad80e60a9d89f6e69abb263ce3b7319645f26f51a3b8069a50",
+  "frontend": "dist/terminal-opentui.js",
+  "frontendSha256": "b446eb868b50f474bdcd5d817416b125b6f3e67811512c2fe479ac4f8e365550",
+  "input": "isolated PTY at 80x24; ! and the command characters were sent one at a time, Return and Backspace as their own keys",
+  "fixture": "copied isolated verifier state and data; the controlled loopback provider was running for model catalog calls",
+  "rule": {
+    "enter": "typing ! at the start of an empty prompt, with an optional pasted body",
+    "marker": "the chevron becomes ! and is hidden from the draft",
+    "divider": "both composer rules use theme.bashMode",
+    "body": "the command and its marker use theme.bashMode",
+    "exit": "Backspace on an empty Bash command restores the chevron and neutral rules",
+    "submit": "the command reaches the normal Bash gate as !command"
+  },
+  "colors": {
+    "bashMode": "#00ff88",
+    "neutralRule": "#3a3a44",
+    "neutralMarker": "#fab283"
+  },
+  "captures": [
+    {
+      "file": "bash-mode.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 80,
+      "rows": 24,
+      "note": "Bash mode entered with ! and no command yet",
+      "rawBytes": 11099,
+      "rawSha256": "6b3c1d193f2e9fc85bae3e82ac34f2230e59dd791eab4e695be5564c245d6503",
+      "archiveBytes": 1523,
+      "archiveSha256": "b1d87a6e1a79c40d307d83602ffd69df9106b62e312e165ba2ea7951b6cad176"
+    },
+    {
+      "file": "bash-mode-exit.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 80,
+      "rows": 24,
+      "note": "Backspace on the empty Bash command returns to the prompt",
+      "rawBytes": 11836,
+      "rawSha256": "94e301dad9461f800339e436e19be17063e8ea9e855c3a8b817b5b3537627579",
+      "archiveBytes": 1541,
+      "archiveSha256": "2a17dbb0c6a1e9b932fa02fd3030a916a590c7cc61462a14491e5591d18d3368"
+    },
+    {
+      "file": "bash-mode-submitted.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 80,
+      "rows": 24,
+      "note": "A Bash command submitted through the normal gate; approval shown",
+      "rawBytes": 20427,
+      "rawSha256": "fc990d28bb210dd372c33164036c7101da5821f0c3e8160506950d140c2c2b49",
+      "archiveBytes": 2254,
+      "archiveSha256": "4cf39047b842d2bef8204036441b50870d6e111ef2f93d77262196166009dd93"
+    }
+  ],
+  "limits": [
+    "The fixture state is disposable and carries no user credentials.",
+    "The capture stops at the approval gate; it does not accept or deny the command."
+  ]
+}

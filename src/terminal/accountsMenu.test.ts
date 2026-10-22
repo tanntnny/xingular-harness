@@ -93,7 +93,7 @@ async function session() {
   const root = rootWithProject()
   const base = mkdtempSync(join(tmpdir(), 'accounts-menu-'))
   writeFile(join(root, 'registry/rules/tests.md'), '---\nname: Run tests\ndescription: Always test.\n---\nAlways run the tests.\n')
-  const harness = createHarness({ dataRoot: root, stateDir: join(base, 'state'), secrets: memorySecretStore(), piProgram: () => '/opt/pi/bin/pi', assets: { node: '/opt/node', cli: '/opt/harness/cli.js', piExtension: '/opt/harness/terminal-pi.js' } })
+  const harness = createHarness({ dataRoot: root, stateDir: join(base, 'state'), secrets: memorySecretStore(), assets: { node: '/opt/node', cli: '/opt/harness/cli.js', piExtension: '/opt/harness/terminal-pi.js', openTui: '/opt/harness/terminal-opentui.js' } })
   open.push(harness)
   const main = harness.accounts.create('Main', 'apiKey').accounts[0]
   const spare = harness.accounts.create('Spare', 'apiKey').accounts.find((account) => account.label === 'Spare')!
@@ -115,6 +115,18 @@ describe('the accounts menu, over the session socket', () => {
     expect(listed.accounts.map((account) => account.id)).toContain(main.id)
     expect(await socketCall<{ accountId: string; label: string }>(connection, 'accounts.session', {}, 5_000, key)).toEqual({ accountId: main.id, label: 'Main' })
     expect(await socketCall(connection, 'accounts.deviceId', {}, 5_000, key)).toBe(await harness.accounts.installationDeviceId())
+  })
+
+  it('keeps each mode choice on the session account, and refuses it without the control key', async () => {
+    const { connection, key, call, main, spare, harness } = await session()
+    await expect(socketCall(connection, 'accounts.choices.get')).rejects.toMatchObject({ code: 'unauthorized' })
+    await expect(socketCall(connection, 'accounts.choices.set', { mode: 'plan', effort: 'low' })).rejects.toMatchObject({ code: 'unauthorized' })
+    await call('accounts.choices.set', { mode: 'normal', model: 'anthropic/fast', effort: 'high' })
+    // A caller names no account: the call always lands on this terminal's own account.
+    await call('accounts.choices.set', { mode: 'plan', effort: 'low', accountId: spare.id })
+    expect(await socketCall(connection, 'accounts.choices.get', {}, 5_000, key)).toMatchObject({ normal: { model: 'anthropic/fast', effort: 'high' }, plan: { effort: 'low' } })
+    expect(harness.accounts.choices(spare.id)).toEqual({})
+    expect(harness.accounts.choices(main.id)).toMatchObject({ plan: { effort: 'low' } })
   })
 
   it('will not remove an account a running terminal is using, this session included', async () => {

@@ -11,6 +11,7 @@ import type { CallerContext } from '../core/caller'
 import { BUILT_IN_DYNAMIC, compile, toolGroups, type Launch } from '../prompt/compile'
 import type { Materialised } from '../tree/materialise'
 import { ASK_USER } from '../tools/askUser'
+import { CHECKLIST_WRITE } from '../tools/checklist'
 import { DEFAULT_TOOL_NAMES } from '../tools/definitions'
 import { HARNESS_TREE_PLUGIN } from './builtin'
 import type { Contribution, Inventory, InventoryItem, Plugin, PluginDescriptor } from './types'
@@ -88,7 +89,7 @@ export function inventory(input: InventoryInput): Inventory {
 
   const names = [...input.tools]
   const extensionToolNames = new Set(input.plugins.filter((plugin) => ['project', 'package', 'shared', 'home'].includes(plugin.source)).flatMap((plugin) => plugin.contributions.filter((entry) => entry.kind === 'tool' && entry.state === 'on').map((entry) => entry.name)))
-  for (const name of [ASK_USER, ...DEFAULT_TOOL_NAMES, ...(input.connections ? ['mcp_list_tools', 'mcp_call_tool'] : [])]) if (!names.includes(name)) names.push(name)
+  for (const name of [ASK_USER, CHECKLIST_WRITE, ...DEFAULT_TOOL_NAMES, ...(input.connections ? ['mcp_list_tools', 'mcp_call_tool'] : [])]) if (!names.includes(name)) names.push(name)
   for (const name of names) {
     if (extensionToolNames.has(name)) continue
     const plugin = descriptors.find((descriptor) => descriptor.tools?.some((tool) => tool.name === name))

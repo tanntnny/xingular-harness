@@ -1,10 +1,11 @@
 ---
 id: ADR-0004
 title: Fullscreen terminal layout with a fixed dock
-status: accepted
+status: superseded
 created: 2026-10-18
-updated: 2026-10-18
+updated: 2026-10-21
 supersedes: none
+superseded_by: ADR-0006
 ---
 # ADR-0004 — Fullscreen terminal layout with a fixed dock
 

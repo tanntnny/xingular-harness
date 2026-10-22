@@ -23,6 +23,10 @@ export interface MenuRow {
   plugin: Plugin
   /** Set when the row is the whole plugin. */
   whole: boolean
+  /** The title of the plugin, or the name of the contribution. */
+  name: string
+  /** Trust or kind, in words: `code not trusted`, `runs code`, `skill in Notes`. */
+  note: string
 }
 
 const here = (attachment: Attachment, projectId: string | null): boolean => {
@@ -39,13 +43,18 @@ export function menuRows(plugins: readonly Plugin[], projectId: string | null): 
   for (const plugin of plugins) {
     if (plugin.attachment) {
       const on = here(plugin.attachment, projectId)
-      rows.push({ id: plugin.id, plugin, whole: true, on, label: `${mark(on)} ${plugin.title}${plugin.trust === 'untrusted' ? ' · code not trusted' : plugin.runsCode ? ' · runs code' : ''}` })
+      const note = plugin.trust === 'untrusted' ? 'code not trusted' : plugin.runsCode ? 'runs code' : ''
+      rows.push({ id: plugin.id, plugin, whole: true, on, name: plugin.title, note, label: `${mark(on)} ${plugin.title}${note ? ` · ${note}` : ''}` })
       continue
     }
-    if (plugin.trust !== 'none') rows.push({ id: plugin.id, plugin, whole: true, on: plugin.trust === 'trusted', label: `${mark(plugin.trust === 'trusted')} ${plugin.title} · ${plugin.trust === 'trusted' ? 'code trusted' : 'code not trusted'}` })
+    if (plugin.trust !== 'none') {
+      const note = plugin.trust === 'trusted' ? 'code trusted' : 'code not trusted'
+      rows.push({ id: plugin.id, plugin, whole: true, on: plugin.trust === 'trusted', name: plugin.title, note, label: `${mark(plugin.trust === 'trusted')} ${plugin.title} · ${note}` })
+    }
     for (const entry of plugin.contributions) {
       if (!entry.attachment) continue
-      rows.push({ id: entry.id, plugin, whole: false, on: entry.state === 'on', label: `${mark(entry.state === 'on')} ${entry.name} · ${kindWord(entry)} in ${plugin.title}` })
+      const note = `${kindWord(entry)} in ${plugin.title}`
+      rows.push({ id: entry.id, plugin, whole: false, on: entry.state === 'on', name: entry.name, note, label: `${mark(entry.state === 'on')} ${entry.name} · ${note}` })
     }
   }
   return rows
@@ -59,7 +68,7 @@ const SWITCH_OFF_EVERYWHERE = 'Switch off everywhere'
 const SWITCH_ON_EVERYWHERE = 'Switch on everywhere'
 const TRUST = 'Trust its code'
 const UNTRUST = 'Stop trusting its code'
-const BACK = 'Back'
+export const BACK = 'Back'
 const DONE = 'Done'
 
 /** What a person can do with one row. A whole plugin whose code waits for trust can be trusted here. */
@@ -72,6 +81,28 @@ export function rowActions(row: MenuRow, projectId: string | null): string[] {
   }
   if (row.whole && row.plugin.code) actions.push(row.plugin.trust === 'untrusted' ? TRUST : UNTRUST)
   return [...actions, BACK]
+}
+
+
+/** Applies one chosen action to a row; says whether something changed. Trusting code asks once more with the files in view. */
+export async function applyPluginAction(ui: MenuUi, call: MenuCall, row: MenuRow, action: string): Promise<boolean> {
+  try {
+    if (action === TRUST || action === UNTRUST) {
+      const code = row.plugin.code!
+      if (action === TRUST) {
+        const sure = await ui.confirm('Trust this code?', `${code.files.join('\n')}\n\nFingerprint ${code.hash.slice(0, 12)}. It runs inside the session and can do anything this app can, including reading your files and credentials.`)
+        if (!sure) return false
+      }
+      await call(action === TRUST ? 'plugins.trust' : 'plugins.untrust', { hash: code.hash })
+    } else {
+      const on = action === SWITCH_ON_PROJECT || action === SWITCH_ON_EVERYWHERE
+      await call(on ? 'plugins.attach' : 'plugins.detach', { id: row.id, everywhere: action === SWITCH_ON_EVERYWHERE || action === SWITCH_OFF_EVERYWHERE })
+    }
+    return true
+  } catch (error) {
+    ui.notify(error instanceof Error ? error.message : String(error), 'error')
+    return false
+  }
 }
 
 /**
@@ -91,22 +122,7 @@ export async function runPluginsMenu(ui: MenuUi, call: MenuCall, projectId: stri
     if (!row) break
     const action = await ui.select(`${row.plugin.title}: ${row.plugin.description || 'No description.'}`, rowActions(row, projectId))
     if (!action || action === BACK) continue
-    try {
-      if (action === TRUST || action === UNTRUST) {
-        const code = row.plugin.code!
-        if (action === TRUST) {
-          const sure = await ui.confirm('Trust this code?', `${code.files.join('\n')}\n\nFingerprint ${code.hash.slice(0, 12)}. It runs inside the session and can do anything this app can, including reading your files and credentials.`)
-          if (!sure) continue
-        }
-        await call(action === TRUST ? 'plugins.trust' : 'plugins.untrust', { hash: code.hash })
-      } else {
-        const on = action === SWITCH_ON_PROJECT || action === SWITCH_ON_EVERYWHERE
-        await call(on ? 'plugins.attach' : 'plugins.detach', { id: row.id, everywhere: action === SWITCH_ON_EVERYWHERE || action === SWITCH_OFF_EVERYWHERE })
-      }
-      changed = true
-    } catch (error) {
-      ui.notify(error instanceof Error ? error.message : String(error), 'error')
-    }
+    if (await applyPluginAction(ui, call, row, action)) changed = true
   }
   if (changed) ui.notify('Saved. It applies when this session restarts.', 'info')
 }

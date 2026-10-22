@@ -2,6 +2,7 @@
 // exists; none of it is loaded through Pi's extension system.
 import { CONNECTION_TOOLS, NATIVE_GROUP } from '../prompt/compile'
 import { ASK_USER } from '../tools/askUser'
+import { CHECKLIST_WRITE } from '../tools/checklist'
 import { SPAWN_SUBAGENT, WAIT_SUBAGENTS } from '../sessions/subagents'
 import { RECALL_TOOLS, SKILL_TOOLS, TRAJECTORY_TOOLS, WIKI_READ_TOOLS, WIKI_WRITE_TOOLS, type HarnessToolDefinition } from '../tools/definitions'
 import { FIRST_PARTY_PLUGINS } from './firstParty'
@@ -30,7 +31,8 @@ export const HARNESS_TREE_PLUGIN: PluginDescriptor = {
     { id: 'guardrails', name: 'Guardrails', description: 'c2: standing rules.' },
     { id: 'memory', name: 'Memory', description: 'c3: durable facts about this kind of work.' },
     { id: 'subagents', name: 'Subagents', description: 'c5: the list of this harness\'s subagents.' },
-    { id: 'scripts', name: 'Scripts', description: 'c7: where this harness\'s scripts are.' }
+    { id: 'scripts', name: 'Scripts', description: 'c7: where this harness\'s scripts are.' },
+    { id: 'reporting', name: 'Reporting', description: 'Fixed harness text, not part of the tree: how the final reply is shaped.' }
   ],
   tools: tools(SKILL_TOOLS)
 }
@@ -53,6 +55,7 @@ export const HARNESS_PLUGINS: readonly PluginDescriptor[] = [
   },
   { id: 'history', title: 'History', description: 'Search earlier conversations and inspect recorded run trajectories.', required: 'Earlier runs are how an agent picks up where work stopped.', tools: tools([...RECALL_TOOLS, ...TRAJECTORY_TOOLS]), toolGroups: ['History'] },
   { id: 'ask-user', title: 'Ask the user', description: 'Lets the agent stop and ask a question with choices.', required: 'An agent must be able to stop and ask you.', tools: [{ name: ASK_USER }] },
+  { id: 'checklist', title: 'Checklist', description: 'Lets the agent keep a checklist of the steps of its work, recorded with the run so progress can be shown and picked up again.', required: 'Progress of longer work is kept through it.', tools: [{ name: CHECKLIST_WRITE, description: 'Write the checklist' }] },
   {
     id: 'connected-apps',
     title: 'Connected apps',

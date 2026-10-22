@@ -1,7 +1,7 @@
 // Which native history a session opens. The prompt compiler compares against this file and Pi
 // opens it, so both always see the same conversation, including after a restart.
-import { readFileSync, realpathSync } from 'node:fs'
-import { isAbsolute, relative } from 'node:path'
+import { readdirSync, readFileSync, realpathSync } from 'node:fs'
+import { isAbsolute, join, relative } from 'node:path'
 
 import { HarnessError } from '../core/errors'
 import { sessionFile } from '../prompt/compile'
@@ -48,4 +48,22 @@ export function selectHistory(selection: HistorySelection): string | null {
   } catch {
     throw unavailable()
   }
+}
+
+/** The native history in `sessionDir` that carries this session id, or null. */
+export function findHistory(sessionDir: string, nativeSessionId: string): string | null {
+  let names: string[]
+  try {
+    names = readdirSync(sessionDir).filter((name) => name.endsWith('.jsonl'))
+  } catch {
+    return null
+  }
+  for (const name of names) {
+    try {
+      if (nativeId(sessionDir, join(sessionDir, name)) === nativeSessionId) return realpathSync(join(sessionDir, name))
+    } catch {
+      // Not a history file; keep looking.
+    }
+  }
+  return null
 }

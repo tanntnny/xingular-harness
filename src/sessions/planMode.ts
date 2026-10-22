@@ -51,6 +51,38 @@ export function planRefusal(tool: string, readOnly: ReadonlySet<string>, args?: 
   return `Plan mode is research-only: ${tool} is not permitted for this call. Use an approved research operation, or finish with a ${PLAN_OPEN_TAG} block.`
 }
 
+export interface ProposedPlan {
+  /** Reply text before the plan block. */
+  before: string
+  title: string
+  /** The plan block without its title heading. */
+  body: string
+  /** Reply text after a closed plan block. */
+  after: string
+  /** False while the closing tag has not arrived yet. */
+  complete: boolean
+}
+
+/** The last `<proposed_plan>` block in a reply, or null when the reply has none. */
+export function parseProposedPlan(text: string): ProposedPlan | null {
+  const open = text.lastIndexOf(PLAN_OPEN_TAG)
+  if (open < 0) return null
+  const start = open + PLAN_OPEN_TAG.length
+  const close = text.indexOf(PLAN_CLOSE_TAG, start)
+  const complete = close >= 0
+  const inner = (complete ? text.slice(start, close) : text.slice(start)).trim()
+  const heading = /^#\s+(.+)$/mu.exec(inner)
+  const title = heading?.[1]?.trim() || 'Plan'
+  const body = heading ? `${inner.slice(0, heading.index)}${inner.slice(heading.index + heading[0].length)}`.trim() : inner
+  return {
+    before: text.slice(0, open).trim(),
+    title,
+    body,
+    after: complete ? text.slice(close + PLAN_CLOSE_TAG.length).trim() : '',
+    complete
+  }
+}
+
 /**
  * The plan section for this request. While plan mode is on it carries the instructions; on the
  * first request after it, the empty slot withdraws the earlier instructions from the conversation.

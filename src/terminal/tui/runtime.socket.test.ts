@@ -27,7 +27,7 @@ async function setup(input: Partial<TerminalPrepareInput> = {}) {
   const root = mkdtempSync(join(tmpdir(), 'harness-sdk-socket-'))
   const cwd = join(root, 'project')
   mkdirSync(cwd)
-  const harness = createHarness({ dataRoot: join(root, 'data'), stateDir: join(root, 'state'), secrets: memorySecretStore(), resolver: async () => [], piProgram: () => '/not-spawned/pi', assets: { node: process.execPath, cli: join(root, 'cli.js'), piExtension: join(root, 'terminal-pi.js') } })
+  const harness = createHarness({ dataRoot: join(root, 'data'), stateDir: join(root, 'state'), secrets: memorySecretStore(), resolver: async () => [], assets: { node: process.execPath, cli: join(root, 'cli.js'), piExtension: join(root, 'terminal-pi.js'), openTui: join(root, 'terminal-opentui.js') } })
   const entry: { harness: Harness; runtime?: TerminalRuntime; root: string } = { harness, root }
   opened.push(entry)
   await harness.ready
@@ -36,7 +36,8 @@ async function setup(input: Partial<TerminalPrepareInput> = {}) {
   for (const [name, value] of Object.entries(launch.env)) vi.stubEnv(name, value === null ? undefined : value)
   vi.spyOn(process, 'cwd').mockReturnValue(cwd)
   const ui = { select: vi.fn(async () => undefined), confirm: vi.fn(async () => false), notify: vi.fn(), getEditorText: () => '' } as unknown as ExtensionUIContext
-  const runtime = await createTerminalRuntime(launch.args, { ui, notify: vi.fn(), changed: vi.fn(), shutdown: vi.fn() })
+  // Bun consumes its flags and the frontend script before the runtime sees process.argv.
+  const runtime = await createTerminalRuntime(launch.args.slice(2), { ui, notify: vi.fn(), changed: vi.fn(), shutdown: vi.fn() })
   entry.runtime = runtime
   return { harness, runtime, ui, account }
 }
@@ -117,7 +118,7 @@ describe('a native SDK runtime on the actual Harness terminal socket', () => {
   it('keeps the same account, command control and readiness after new/reload with no provider request', async () => {
     const { harness, runtime, ui } = await setup()
     expect(harness.terminals.state('offline-sdk')).toEqual({ ready: true, dirty: false, active: false })
-    expect(runtime.session.extensionRunner.getExtensionPaths()).toEqual(['<inline:harness-terminal-bridge>'])
+    expect(runtime.session.extensionRunner.getExtensionPaths()).toEqual(['<inline:harness-terminal-bridge>', '<inline:harness-mode-choices>'])
     expect(runtime.services.agentDir).toContain(harness.accounts.dir)
     for (const command of ['accounts', 'plugins', 'hub']) expect(runtime.session.extensionRunner.getCommand(command)).toBeDefined()
     await runtime.session.prompt('/accounts')
@@ -142,8 +143,8 @@ describe('a native SDK runtime on the actual Harness terminal socket', () => {
     await terminalCall('begin', { text: 'Grouped terminal fixture' })
     const tool = runtime.session.getToolDefinition('ask_user')!
     const result = tool.execute('batch-tool', { questions: [
-      { summary: 'First choice', question: 'Which?', options: [{ label: 'A', description: 'First option' }] },
-      { summary: 'Second answer', question: 'Why?' }
+      { summary: 'First choice', question: 'Which?', options: [{ label: 'A', description: 'First option', recommended: true }] },
+      { summary: 'Second answer', question: 'Why?', options: [{ label: 'A reason', description: 'Choose this or type another reason.', recommended: true }] }
     ] }, undefined, undefined, runtime.session.extensionRunner.createToolContext('batch-tool', undefined))
     let questions: Array<{ requestId: string; batchId: string }> = []
     await vi.waitFor(async () => {
@@ -161,6 +162,20 @@ describe('a native SDK runtime on the actual Harness terminal socket', () => {
     await expect(controlCall('terminal.pending')).resolves.toEqual({ requests: [] })
   })
 
+  it('requires choices and a recommendation for the single-question terminal tool', async () => {
+    const { runtime } = await setup()
+    try {
+      const tool = runtime.session.getToolDefinition('ask_user_question')!
+      const context = runtime.session.extensionRunner.createToolContext('invalid-question', undefined)
+      await expect(tool.execute('invalid-question', { question: 'Choose?', options: [] }, undefined, undefined, context))
+        .rejects.toThrow('Every question needs at least one choice.')
+      await expect(tool.execute('invalid-question', { question: 'Choose?', options: [{ label: 'A' }] }, undefined, undefined, context))
+        .rejects.toThrow('Every question needs at least one recommended choice.')
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
   it('settles an actual socket-backed pending question before disposing the native session', async () => {
     const { harness, runtime } = await setup()
     await terminalCall('begin', { text: 'Offline question bridge fixture' })
@@ -168,7 +183,7 @@ describe('a native SDK runtime on the actual Harness terminal socket', () => {
     const reached = new Promise<void>((resolve) => { questionReached = resolve })
     harness.runs.listen((event) => { if (event.type === 'question.requested') questionReached() })
     const tool = runtime.session.getToolDefinition('ask_user_question')!
-    const answer = tool.execute('offline-question', { question: 'Continue?', options: [] }, undefined, undefined, runtime.session.extensionRunner.createToolContext('offline-question', undefined))
+    const answer = tool.execute('offline-question', { question: 'Continue?', options: [{ label: 'Continue', recommended: true }] }, undefined, undefined, runtime.session.extensionRunner.createToolContext('offline-question', undefined))
     await reached
     await expect(controlCall<{ requests: unknown[] }>('terminal.pending')).resolves.toMatchObject({ requests: [expect.anything()] })
     await runtime.dispose()

@@ -77,14 +77,11 @@ function exitCode(code: number | null, signal: NodeJS.Signals | null): number {
 function spawnError(error: Error, launch: TerminalLaunch): Error {
   const code = (error as NodeJS.ErrnoException).code
   if (code !== 'ENOENT' && code !== 'EACCES' && code !== 'EPERM') return error
-  if (launch.program === process.execPath || launch.env.XINGULAR_HARNESS_NODE === launch.program) {
-    return new Error(`Could not start the Harness terminal because Node could not run "${launch.args[0] ?? 'the bundled Harness CLI'}" (${code}). Verify Node and the Harness package are installed.`, { cause: error })
-  }
   const problem = code === 'ENOENT' ? 'was not found' : `could not start (${code})`
-  return new Error(`Could not start Pi terminal. Pi executable "${launch.program}" ${problem}; verify it is installed and executable or check the configured terminal executable.`, { cause: error })
+  return new Error(`Could not start the Harness terminal. The Bun executable "${launch.program}" ${problem}; install Bun or set XINGULAR_HARNESS_BUN, then run npm run build:tui.`, { cause: error })
 }
 
-function spawnPi(launch: TerminalLaunch, cwd: string, spawn = nodeSpawn): Promise<number> {
+function spawnFrontend(launch: TerminalLaunch, cwd: string, spawn = nodeSpawn): Promise<number> {
   return new Promise((resolveExit, reject) => {
     const child = spawn(launch.program, launch.args, {
       cwd,
@@ -104,7 +101,7 @@ function spawnPi(launch: TerminalLaunch, cwd: string, spawn = nodeSpawn): Promis
       action()
     }
     // Ctrl+C is delivered to both processes in the foreground process group. Keep this host
-    // alive while Pi handles it so the account credentials and harness socket are cleaned up.
+    // alive while the frontend handles it so the account credentials and harness socket are cleaned up.
     const onInterrupt = (): void => undefined
     const onTerminate = (): void => {
       child.kill('SIGTERM')
@@ -121,7 +118,7 @@ function spawnPi(launch: TerminalLaunch, cwd: string, spawn = nodeSpawn): Promis
 
 export async function runStandaloneTerminal(argv: string[], dependencies: StandaloneDependencies = {}): Promise<number> {
   if (!(dependencies.stdinIsTTY ?? process.stdin.isTTY) || !(dependencies.stdoutIsTTY ?? process.stdout.isTTY)) {
-    throw new Error('The interactive Harness terminal needs a TTY. Run it from a terminal, or use `xingular-harness serve` for a host process.')
+    throw new Error('The interactive Harness terminal needs a TTY. Run it from a terminal, or use `xharness serve` for a host process.')
   }
 
   const cwd = resolve(dependencies.cwd ?? process.cwd())
@@ -148,8 +145,8 @@ export async function runStandaloneTerminal(argv: string[], dependencies: Standa
     const sessionFolder = join(paths.dataRoot, 'sessions', 'terminal', cwdHash)
     for (;;) {
       const launch = await harness.terminals.prepare({ ...current, cwd, sessionFolder })
-      const code = await spawnPi(launch, cwd, dependencies.spawn)
-      // `/accounts` asks for a switch and ends Pi. The conversation resumes on the chosen account.
+      const code = await spawnFrontend(launch, cwd, dependencies.spawn)
+      // `/accounts` asks for a switch and ends the frontend. The conversation resumes on the chosen account.
       const next = harness.terminals.takeRelaunch(current.sessionId)
       if (!next) return code
       const label = harness.accounts.find(next.accountId).label

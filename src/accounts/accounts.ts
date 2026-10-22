@@ -12,6 +12,7 @@ import { HarnessError, invalid } from '../core/errors'
 import { atomicWrite, now, readJson, safeId } from '../core/fs'
 import { loadPi } from '../pi/runtime'
 import type { RunEvent, RunRecord } from '../sessions/contracts'
+import * as choices from './choices'
 import * as env from './env'
 import { secretKey, type SecretStore } from './secrets'
 import * as store from './store'
@@ -143,6 +144,18 @@ export class Accounts {
 
   find(accountId: string): Account {
     return store.find(this.dir, accountId)
+  }
+
+  /** The model and effort each mode last used on this account. */
+  choices(accountId: string): Record<string, choices.ModeChoice> {
+    this.find(accountId)
+    return choices.readChoices(this.dir, accountId)
+  }
+
+  /** Records a mode's model or effort on this account. Every selection counts, session-only ones too. */
+  choose(accountId: string, mode: string, patch: choices.ChoicePatch): Record<string, choices.ModeChoice> {
+    this.find(accountId)
+    return choices.saveChoice(this.dir, accountId, mode, patch)
   }
 
   /** The account a new session uses; a session that already has one passes it and keeps it. */

@@ -24,6 +24,7 @@ describe('Claude-style working status', () => {
   it('animates the same glyph sequence, with the Ghostty-compatible ending', () => {
     expect(getWorkingSpinnerFrames()).toEqual(['·', '✢', '✳', '✶', '✻', '✽', '✽', '✻', '✶', '✳', '✢', '·'])
     expect(getWorkingSpinnerFrames('xterm-ghostty')).toEqual(['·', '✢', '✳', '✶', '✻', '✻', '✻', '✻', '✶', '✳', '✢', '·'])
+    expect(getWorkingSpinnerFrames('xterm-kitty')).toEqual(['·', '✢', '✳', '✶', '✻', '✽', '✽', '✻', '✶', '✳', '✢', '·'])
     const frames = getWorkingSpinnerFrames()
     expect(SPINNER_INTERVAL_MS).toBe(80)
     expect(spinnerFrameAt(0, frames)).toBe('·')

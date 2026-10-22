@@ -1,93 +1,61 @@
 # Xingular Harness — notes for coding agents
 
-Read [`README.md`](README.md) first: it has the parts, the extension points, and the storage
-layout. The family-level guide is [`../../AGENTS.md`](../../AGENTS.md).
+The family-level guide is [`../../AGENTS.md`](../../AGENTS.md). The embedding guide for
+application authors is [`README.md`](README.md).
 
-## What belongs here
+## The architecture spec is binding
 
-This package is consumed as source by Xingular Agent's sidecar, and is meant to be embedded by
-other applications. A change here changes every application built on it.
+[`docs/architecture/`](docs/architecture/README.md) is the core specification of this package.
+Everything you build here must follow it.
 
-- Belongs here: Pi sessions and accounts, harness trees (the eight components) and refinement
-  (Propose–Probe–Compose, selection, the experience library), the prompt compiler and its
-  delivery, project notes (the Wiki), recall, the tool gate and standing approvals, connectors
-  (MCP), terminal sessions and their owned standalone frontend, and the server protocol.
-- Stays in the application: agents, groups, conversations, tasks and coordination, projects and
-  worktrees, files, browser and computer use, windows, the PTY, the keychain, and application UI.
-- **No application's name in a string.** Text a model or a person sees uses `env.productName`
-  (`{product}` in a tool description, filled by `describeTool`). The default is `Xingular Harness`.
-- **No imports from an application, and no application nouns.** The harness knows a *caller*
-  (`CallerContext`), a *session*, and a *run*. It does not know what an agent's role is, what a
-  group is, or what a task is. `agentId` and a harness `scope` are opaque ids; names come in
-  through `Directory` or `CallerContext.agentName`.
-- When an application needs the harness to do something new, add an extension point (a prompt
-  section, a tool provider, a policy hook, a plugin description, an option). Do not add an application-name check or a
-  branch for one application's concept.
+1. **Read first.** Before changing code, read the spec pages for the modules you touch.
+2. **Within the spec: go ahead.** If the change keeps every contract and invariant, make it. If it
+   adds detail without changing a rule, update the page in the same commit.
+3. **Outside the spec: document and implement.** If the change would alter a contract, an
+   invariant (`INV-*`), a layer boundary, an extension point, or the storage layout, write a
+   `docs/architecture/proposals/PROP-NNNN-<slug>.md` from the
+   [template](docs/architecture/proposals/README.md#template), add it to the index, and implement
+   the requested change. Update affected spec pages in the same change.
+4. Add an ADR in `docs/decisions/` for a lasting architectural choice.
+5. **Drift.** If code and the spec already disagree, add it to
+   [Known drift](docs/architecture/README.md#known-drift) and tell the user. Do not silently
+   change either side.
 
-## Standalone terminal frontend
+When unsure whether a change alters the architecture, write the proposal.
 
-For terminal rendering, input, overlays, lifecycle or Pi SDK adapter changes, read
-[`docs/terminal-tui.md`](docs/terminal-tui.md). Harness owns this generic terminal application;
-a host owns its PTY and process supervision. Keep execution, account isolation, trust,
-authorization and run recording behind their existing layers.
+## Where the rules are
 
-## RFC-0009 capability contract
+| Area | Spec page |
+|---|---|
+| What belongs in the harness, layers, no application names | [00 Overview](docs/architecture/00-overview.md) |
+| The seven extension points | [01 Extension points](docs/architecture/01-extension-points.md) |
+| Sessions, runs, events, subagents, plan mode, token accounting, the run writer | [02 Sessions and runs](docs/architecture/02-sessions-and-runs.md) |
+| Harness trees c1–c8, versions, plugin-code trust | [03 Harness trees](docs/architecture/03-tree.md) |
+| The prompt compiler, stable prefix, context updates | [04 Prompt](docs/architecture/04-prompt.md) |
+| Refinement: answer-free, R=4k/P=3k, never acts in the world | [05 Refinement](docs/architecture/05-refinement.md) |
+| The only loader, trust, attachments, hooks, capability sets | [06 Plugins and capabilities](docs/architecture/06-plugins-and-capabilities.md) |
+| Harness tools, the gate, standing approvals | [07 Tools and the gate](docs/architecture/07-tools-and-gate.md) |
+| Wiki, recall, trajectories, the rebuildable index | [08 Memory and history](docs/architecture/08-memory-and-history.md) |
+| Isolated accounts, secrets, connected apps, the Hub | [09 Accounts and connectors](docs/architecture/09-accounts-and-connectors.md) |
+| The server protocol and method table | [10 Server protocol](docs/architecture/10-server-protocol.md) |
+| The Harness-owned terminal (detail in [`docs/terminal-tui.md`](docs/terminal-tui.md)) | [11 Terminal](docs/architecture/11-terminal.md) |
+| Data root and state directory | [12 Storage](docs/architecture/12-storage.md) |
 
-`capabilities.resolve` returns the versioned generic set of tools, connectors and contributions available to a caller. `capabilities.intersect` narrows a set for a child caller; it never adds access. `sessions.run` filters the requested set through current availability and freezes the result with its opaque caller metadata beside the run. The tool gate still decides whether a call needs approval. Do not introduce application-specific task, agent-role, or UI concepts into this contract.
+The rules agents break most often, in brief (the pages are authoritative):
 
-The capability snapshot and attachment-scope migration shipped in `@xingular/harness` 2.0.0 (commit `44471bc`); GitHub CI passed on Ubuntu and macOS. This verifies the automated package checks, not live-provider acceptance. Preserve per-run immutability and the generic boundary in further changes.
+- No application's name or concept in the harness; names come from `env.productName` and
+  `Directory` (`INV-BND-2`).
+- The prompt is assembled only in `src/prompt/compile.ts`; changing state never enters the system
+  prompt (`INV-PRM-1`, `INV-PRM-2`).
+- Trees, the prompt and the Wiki stay synchronous (`INV-BND-4`).
+- The harness is the only loader, and the gate is the last extension (`INV-PLG-1`, `INV-GATE-2`).
+- A run pins its account, tree version and capability set (`INV-RUN-1`).
+- Refinement is answer-free and never acts in the world (`INV-REF-1`, `INV-REF-4`).
 
-## Rules
+## Style
 
-- **Style.** TypeScript, two-space indent, single quotes, no semicolons, comments only where the
-  reason is not obvious.
-- **Trees and the prompt are synchronous.** Node is single-threaded, so a synchronous function
-  is a critical section. Keep `tree/`, `wiki/` and `prompt/` synchronous; accounts, Pi, MCP and
-  refinement (which runs sessions) are async.
-- **A harness tree is the only thing that shapes an agent's instructions.** Its always-on files
-  (c1–c4) are capped and validated when saved (`tree/tree.ts::validate`); a version is never
-  edited, only superseded (`tree/store.ts`). A run pins one version and records it.
-- **Refinement is answer-free.** No rubric, score, grader output or reviewer verdict may reach an
-  improver or the selector: `refine/evidence.ts` guards every evidence folder. Keep the R=4k /
-  P=3k identity (`refine/ledger.ts`); a change to the method changes both modes and the tests.
-- **Refinement never acts in the world.** Executions are unattended `probe` runs in a folder the
-  `RefineHost` prepared; anything that needs approval is refused. Improvers have file tools only
-  and work on a copy of the evidence.
-- **The prompt is assembled only in `src/prompt/compile.ts`.** Sessions use `sessionLaunch`
-  (stable system prefix plus a context update); terminal sessions use `compile` + `render`.
-  Nothing else builds model instructions.
-- **Keep the stable prefix stable.** Identity, role, the tree's sections and tool guidance are
-  the system prompt. `references`, `wiki`, `work`, and any section marked `dynamic` go into the
-  hidden `xingular-context` message appended to native history. Moving changing state into the
-  prefix invalidates cached input.
-- **The harness is the only loader.** A session or terminal loads the extensions, skills, prompts
-  and themes that `Plugins.loading` (`src/plugins/`) chose, with Pi's own discovery switched off.
-  Do not pass a session a loader that discovers on its own, and do not load a working folder's
-  code that was not trusted. The approval gate stays the last extension to see a tool call.
-- **Everything model-visible belongs to a plugin.** A new prompt section, tool group or tool is
-  declared by a `PluginDescriptor` (`src/plugins/builtin.ts` for the harness's own), or
-  `plugins.inventory` reports it as unattributed.
-- **A hook is told, never asked.** `src/plugins/hooks.ts` runs a plugin's hooks after a write,
-  in the background. The Wiki only calls `noteChange` once the file is in place; it never
-  waits for a hook, and a hook's failure never reaches it. A new write point that should be
-  heard calls `noteChange` too. Do not add a hook that can stop or change a write.
-- **Code waits for a person.** A tree's plugins (c8) load only when their exact code is trusted
-  (`tree/trust.ts`); refinement probes may run improver-written code only for a scope whose
-  person allowed it, and adopting such a tree still needs the code trusted.
-- **One store says what is switched on.** `src/plugins/attachments.ts` holds every choice about
-  a plugin or a contribution, per scope (everywhere, an agent, a project). Do not add a second
-  enablement file for a new kind of thing; give it a default and read it with `attached`.
-- **Accounts are isolated.** A session runs in its account's own Pi agent folder, never in
-  `~/.pi`. An account is never exchanged for another: a pinned session that cannot use its
-  account fails. A terminal's `/accounts` goes through the session socket's `accounts.*` calls,
-  and every one of them needs the session's control key, as `/plugins` does.
-- **Token accounting.** `inputTokens` is uncached input; cache reads and writes are separate;
-  reasoning tokens are part of output. `usage.updated` values are cumulative for the run.
-- **The index is rebuildable.** `index.sqlite` migrations are append-only once written.
-- **One writer for runs.** Only `sessions/runStore.ts` writes `runs/<id>/`. An application reads
-  them.
-- **The server table is the contract** for hosts that are not Node programs. Adding, renaming,
-  or changing a method in `src/server/methods.ts` changes it for all of them.
+TypeScript, two-space indent, single quotes, no semicolons, comments only where the reason is not
+obvious.
 
 ## Checks
 
@@ -98,8 +66,8 @@ npm run prove     # after changing the server, the CLI, or startup
 ```
 
 After a change, also run the checks of Xingular Agent (`npm run typecheck`, `npm test`,
-`npm run check:layers`, `cd src-tauri && cargo test` in `../App`). Its sidecar
-tests include one that parses every reply of this package with the interface's schemas.
+`npm run check:layers`, `cd src-tauri && cargo test` in `../App`). Its sidecar tests include one
+that parses every reply of this package with the interface's schemas.
 
 Tests use a fake Pi session and never make a model request. Whether a prompt change keeps the
 provider's cache has to be measured with real requests from the application

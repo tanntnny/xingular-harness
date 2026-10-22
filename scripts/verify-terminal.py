@@ -8,6 +8,7 @@ Run `npm run build` first, then `python3 scripts/verify-terminal.py`.
 The report and raw PTY captures are retained in the printed disposable output directory.
 """
 import argparse
+import base64
 import errno
 import fcntl
 import gzip
@@ -28,11 +29,38 @@ import threading
 import time
 
 REPOSITORY = Path(__file__).resolve().parent.parent
+QUESTION_SELECTED_BG = '#193322'
+QUESTION_ACTION_BG = '#35754a'
+try:
+    import pyte  # Optional: matches text on the rendered screen, not only in the raw byte stream.
+except ImportError:
+    pyte = None
 ANSI = re.compile(r'\x1b\][^\x07]*(?:\x07|\x1b\\)|\x1b\[[0-?]*[ -/]*[@-~]|\x1b[()][A-Z0-9]|\x1b[=>]')
 
 
 def normalized(value):
     return ANSI.sub('', value.decode('utf-8', errors='replace') if isinstance(value, (bytes, bytearray)) else value)
+
+
+def has_truecolor_background(raw, color):
+    channels = bytes.fromhex(color.removeprefix('#'))
+    pattern = rb'\x1b\[[0-9;]*48;2;' + b';'.join(str(channel).encode() for channel in channels) + rb'(?:;[0-9]+)*m'
+    return re.search(pattern, raw) is not None
+
+
+def assert_prompt_gutter(terminal, marker, first_line, second_line, wrapped_word, label):
+    if terminal.screen is None:
+        return
+    rows = terminal.screen.display
+    first_rows = [line for line in rows if first_line in line]
+    assert first_rows, f'{label}: PTY screen did not show {first_line!r}: {rows!r}'
+    assert all(0 <= line.find(marker) < line.find(first_line) for line in first_rows), f'{label}: {marker!r} was not in the first-row gutter'
+    continuation_rows = [line for line in rows if second_line in line]
+    assert continuation_rows, f'{label}: PTY screen did not show {second_line!r}: {rows!r}'
+    assert all(line.find(marker) < 0 or line.find(marker) > line.find(second_line) for line in continuation_rows), f'{label}: {marker!r} repeated on an explicit continuation row'
+    wrapped_rows = [line for line in rows if wrapped_word in line]
+    assert len(wrapped_rows) >= 2, f'{label}: input did not soft-wrap across multiple rows: {rows!r}'
+    assert all(line.find(marker) < 0 or line.find(marker) > line.find(wrapped_word) for line in wrapped_rows), f'{label}: {marker!r} repeated on a soft-wrapped row: {wrapped_rows!r}'
 
 
 class LocalProvider(http.server.BaseHTTPRequestHandler):
@@ -63,16 +91,19 @@ class LocalProvider(http.server.BaseHTTPRequestHandler):
             sequence = [
                 ('read', {'path': str(LocalProvider.root / 'fixture.txt')}),
                 ('bash', {'command': "printf 'LOCAL_BASH_EXECUTED\\n'"}),
-                ('ask_user_question', {'question': 'LOCAL_QUESTION: choose the actual option', 'options': [{'label': 'Verified', 'description': 'Exercise the real question bridge'}, {'label': 'Other'}]})]
+                ('ask_user_question', {'question': 'LOCAL_QUESTION: choose the actual option', 'options': [{'label': 'Verified', 'description': 'Exercise the real question bridge', 'recommended': True}, {'label': 'Other'}]})]
         elif 'verify-batch' in user:
             sequence = [('ask_user', {'questions': [
-                {'summary': 'Batch choice', 'question': 'LOCAL_BATCH_CHOICE', 'options': [{'label': 'Batch A', 'description': 'First batch answer'}]},
-                {'summary': 'Batch reason', 'question': 'LOCAL_BATCH_REASON'}]})]
+                {'summary': 'Batch choice', 'question': 'LOCAL_BATCH_CHOICE', 'options': [{'label': 'Batch A', 'description': 'First batch answer', 'recommended': True}]},
+                {'summary': 'Batch reason', 'question': 'LOCAL_BATCH_REASON', 'options': [{'label': 'A listed reason', 'description': 'Choose this reason or enter another.', 'recommended': True}]}]})]
         elif 'verify-deny' in user or 'verify-approval-cancel' in user:
             sequence = [('bash', {'command': "printf 'blocked' > decision-must-not-execute.txt"})]
         elif 'verify-question-cancel' in user:
-            sequence = [('ask_user_question', {'question': 'LOCAL_CANCEL_QUESTION', 'options': [{'label': 'Continue'}]})]
-        LocalProvider.requests.append({'at': time.time(), 'path': self.path, 'user': user, 'toolResults': index})
+            sequence = [('ask_user_question', {'question': 'LOCAL_CANCEL_QUESTION', 'options': [{'label': 'Continue', 'recommended': True}]})]
+        offered = [tool.get('function', {}).get('name') for tool in request.get('tools', [])]
+        parts = messages[user_index].get('content') if user_index >= 0 else None
+        images = sum(1 for part in parts if isinstance(part, dict) and part.get('type') == 'image_url') if isinstance(parts, list) else 0
+        LocalProvider.requests.append({'at': time.time(), 'path': self.path, 'user': user, 'toolResults': index, 'tools': offered, 'images': images})
         self.send_response(200)
         self.send_header('Content-Type', 'text/event-stream')
         self.send_header('Cache-Control', 'no-cache')
@@ -91,7 +122,7 @@ class LocalProvider(http.server.BaseHTTPRequestHandler):
             chunk({'role': 'assistant'})
             chunk({'reasoning_content': 'LOCAL_THINKING: inspect the real isolated fixture. '})
             time.sleep(0.08)
-            if 'verify-cancel' in user:
+            if 'verify-cancel' in user or 'verify-stop' in user:
                 for number in range(200):
                     chunk({'content': f'CANCEL_STREAM_{number:03d} '})
                     time.sleep(0.08)
@@ -108,7 +139,30 @@ class LocalProvider(http.server.BaseHTTPRequestHandler):
                 self.wfile.flush()
                 return
             else:
-                for text in ['LOCAL_FINAL: ', 'real SDK ', 'and terminal ', 'completed. ', 'Unicode 知識 🧠.\n']:
+                if 'Implement the plan' in user:
+                    texts = ['LOCAL_IMPLEMENTED: ', 'the plan was carried out.\n']
+                elif 'verify-markdown' in user:
+                    texts = [
+                        'LOCAL_MARKDOWN_START\n',
+                        '# Primary heading\n\n',
+                        '## Secondary heading\n\n',
+                        '[Harness docs](https://example.test/docs)\n\n',
+                        '**bold**, *italic*, ~~deleted~~, and `inline code`.\n\n',
+                        '```ts\nconst answer = 42\n```\n\n',
+                        '> Quoted guidance.\n\n',
+                        '- unordered item\n1. ordered item\n- [x] complete\n- [ ] pending\n\n',
+                        '| Name | Value |\n| --- | --- |\n| Markdown | styled |\n\n',
+                        '---\n\n![Alt text](https://example.test/image.png)\n',
+                        'LOCAL_MARKDOWN_DONE'
+                    ]
+                elif 'verify-plan' in user:
+                    texts = ['LOCAL_PLAN: here is the plan. ', '<proposed_plan>', '# Verified plan\n\n', '1. Read `fixture.txt`.\n', '2. Confirm the result.\n', '</proposed_plan>']
+                elif 'verify-scroll-latest' in user:
+                    rows = '\n\n'.join(f'LOCAL_SCROLL_ROW_{number:02d}' for number in range(40))
+                    texts = [f'LOCAL_SCROLL_START\n\n{rows}\n\nLOCAL_SCROLL_TAIL']
+                else:
+                    texts = ['LOCAL_FINAL: ', 'real SDK ', 'and terminal ', 'completed. ', 'Unicode 知識 🧠.\n']
+                for text in texts:
                     chunk({'content': text})
                     time.sleep(0.07)
             chunk(finish='stop', usage={'prompt_tokens': 43, 'completion_tokens': 20, 'total_tokens': 63})
@@ -127,6 +181,9 @@ class Terminal:
         self.output = output
         self.data = bytearray()
         self.width, self.height = width, height
+        # A renderer that rewrites only changed cells may never emit a phrase contiguously.
+        self.screen = pyte.Screen(width, height) if pyte else None
+        self.screen_stream = pyte.ByteStream(self.screen) if pyte else None
         self.resize(width, height, initial=True)
         environment = {key: value for key, value in os.environ.items()
                        if not key.upper().endswith(('_API_KEY', '_AUTH_TOKEN', '_OAUTH_TOKEN', '_ACCESS_TOKEN'))
@@ -150,6 +207,8 @@ class Terminal:
     def resize(self, width, height, initial=False):
         fcntl.ioctl(self.slave, termios.TIOCSWINSZ, struct.pack('HHHH', height, width, 0, 0))
         self.width, self.height = width, height
+        if getattr(self, 'screen', None) is not None:
+            self.screen.resize(height, width)
         if not initial:
             os.killpg(self.process.pid, signal.SIGWINCH)
 
@@ -167,6 +226,11 @@ class Terminal:
                 if not part:
                     return
                 self.data.extend(part)
+                if self.screen_stream is not None:
+                    try:
+                        self.screen_stream.feed(part)
+                    except Exception:
+                        pass
                 # Startup can fail after emitting a query but before the emulator replies.
                 # Darwin returns EIO once the controlling tty has already gone away.
                 replies = []
@@ -185,11 +249,60 @@ class Terminal:
         os.write(self.master, text.encode() if isinstance(text, str) else text)
         self.read(0.12)
 
+    def click(self, x, y):
+        self.send(f'\x1b[<0;{x};{y}M')
+        self.send(f'\x1b[<0;{x};{y}m')
+
+    def move(self, x, y):
+        self.send(f'\x1b[<35;{x};{y}M')
+
+    def scroll(self, x, y, direction='up'):
+        button = 64 if direction == 'up' else 65
+        self.send(f'\x1b[<{button};{x};{y}M')
+
+    def locate(self, needle):
+        if self.screen is None:
+            raise AssertionError('Install pyte to locate terminal controls for mouse verification')
+        for y, line in enumerate(self.screen.display):
+            x = line.find(needle)
+            if x >= 0:
+                return x + 1, y + 1
+        raise AssertionError(f'Could not locate {needle!r} on the PTY screen: {self.screen.display!r}')
+
+    def click_text(self, needle):
+        x, y = self.locate(needle)
+        self.click(x, y)
+
+    def blank_rows_before(self, needle):
+        _, y = self.locate(needle)
+        count = 0
+        for line in reversed(self.screen.display[:y - 1]):
+            if line.strip(' │█'):
+                break
+            count += 1
+        return count
+
+    def assert_blank_rows_before(self, needle, expected, label):
+        actual = self.blank_rows_before(needle)
+        if actual != expected:
+            raise AssertionError(f'{label}: expected {expected} blank row(s) above {needle!r}, found {actual}')
+
+    def assert_blank_line_before(self, needle, label):
+        if self.blank_rows_before(needle) < 1:
+            raise AssertionError(f'{label}: expected a blank row above {needle!r}')
+
+    def assert_blank_line_after(self, needle, label):
+        _, y = self.locate(needle)
+        if y >= self.height or self.screen.display[y].strip(' │█'):
+            raise AssertionError(f'{label}: expected a blank row below {needle!r}')
+
     def wait(self, needle, start=0, timeout=35):
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             self.read(0.08)
             if needle in normalized(self.data[start:]):
+                return
+            if self.screen is not None and any(needle in line for line in self.screen.display):
                 return
             if self.process.poll() is not None:
                 break
@@ -277,6 +390,16 @@ def records(root):
     return result
 
 
+def wait_for_goal(terminal, root, goal, timeout=30):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        matching = [record for record in records(root) if record.get('goal') == goal]
+        if matching and matching[-1].get('status') in {'completed', 'failed', 'interrupted'}:
+            return matching[-1]
+        terminal.read(0.1)
+    raise AssertionError(f'Run for {goal!r} did not settle')
+
+
 def save_evidence(report, source, destination):
     """Keep bounded replayable evidence, without copying disposable runtime/account data."""
     destination.mkdir(parents=True, exist_ok=True)
@@ -312,7 +435,19 @@ def save_evidence(report, source, destination):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path)
-    parser.add_argument('--sizes', default='40x20,80x24,120x40')
+    parser.add_argument('--sizes', help='Comma-separated terminal sizes to verify')
+    parser.add_argument('--click-focus-only', action='store_true', help='Verify chat-click composer focus without running the full interaction suite')
+    parser.add_argument('--composer-only', action='store_true', help='Verify normal, plan, and Bash composer modes and multiline gutters in an isolated PTY')
+    parser.add_argument('--file-completion-only', action='store_true', help='Verify file and folder completion in an isolated PTY')
+    parser.add_argument('--history-only', action='store_true', help='Verify active-session prompt history in an isolated PTY')
+    parser.add_argument('--questions-only', action='store_true', help='Verify question choices, recommendation, and green action colors in an isolated PTY')
+    parser.add_argument('--jump-latest-only', action='store_true', help='Verify the transcript jump-to-latest badge and click behavior in an isolated PTY (screen assertions use optional pyte)')
+    parser.add_argument('--help-only', action='store_true', help='Verify /help replaces the welcome screen in an isolated PTY')
+    parser.add_argument('--palette-only', action='store_true', help='Verify two-column slash-command wrapping and selection in an isolated PTY')
+    parser.add_argument('--markdown-only', action='store_true', help='Verify streamed Markdown rendering in an isolated PTY')
+    parser.add_argument('--attachments-only', action='store_true', help='Verify pasted images, collapsed large pastes, whole-label deletion and image delivery in an isolated PTY')
+    parser.add_argument('--thinking-only', action='store_true', help='Verify /thinking show, hide, and toggle in an isolated PTY')
+    parser.add_argument('--compaction-only', action='store_true', help='Verify a persisted compaction card, collapsed summary and Ctrl+O expansion in an isolated PTY')
     parser.add_argument('--cli', type=Path, default=REPOSITORY / 'dist' / 'cli.js', help='Actual bundled Harness CLI to exercise (including an embedding sidecar CLI)')
     parser.add_argument('--save-evidence', type=Path, help='Save concise durable verification evidence and compressed representative PTY captures')
     args = parser.parse_args()
@@ -329,11 +464,25 @@ def main():
               'verifierSha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(), 'profiles': []}
     print(f'Isolated terminal evidence: {output}', flush=True)
     try:
-        for dimensions in args.sizes.split(','):
+        sizes = args.sizes.split(',') if args.sizes else ['40x20', '80x24', '120x40']
+        if not args.sizes and args.palette_only:
+            sizes = ['40x20', '80x24']
+        elif not args.sizes and (args.attachments_only or args.composer_only or args.file_completion_only or args.history_only or args.questions_only or args.jump_latest_only or args.help_only or args.thinking_only or args.compaction_only):
+            sizes = ['80x24']
+        elif not args.sizes and args.markdown_only:
+            sizes = ['120x40']
+        for dimensions in sizes:
             width, height = map(int, dimensions.split('x'))
             root = output / dimensions
             root.mkdir()
             (root / 'fixture.txt').write_text('LOCAL_FILE_CONTENT: real read tool executed. 知識 🧠\n')
+            completion_fixture = root / 'completion-fixture'
+            completion_fixture.mkdir()
+            (completion_fixture / 'alpha.ts').write_text('')
+            (completion_fixture / 'assets').mkdir()
+            component = root / 'data' / 'registry' / 'skills' / 'verifier' / 'SKILL.md'
+            component.parent.mkdir(parents=True)
+            component.write_text('---\nname: Verifier skill\ndescription: Verify the terminal UI.\n---\nRead the current page.\n')
             LocalProvider.root = root
             shared = root / 'state' / 'accounts' / '_shared' / 'pi'
             shared.mkdir(parents=True)
@@ -341,7 +490,7 @@ def main():
                 'baseUrl': report['provider'] + '/v1', 'api': 'openai-completions', 'apiKey': 'isolated-loopback-fixture',
                 'compat': {'supportsDeveloperRole': False, 'supportsReasoningEffort': False, 'supportsStore': False},
                 'models': [{'id': 'terminal-verifier', 'name': 'Local terminal verifier', 'reasoning': True,
-                            'input': ['text'], 'contextWindow': 32768, 'maxTokens': 2048,
+                            'input': ['text', 'image'] if args.attachments_only else ['text'], 'contextWindow': 32768, 'maxTokens': 2048,
                             'cost': {'input': 0, 'output': 0, 'cacheRead': 0, 'cacheWrite': 0}}]}}}))
             (shared / 'settings.json').write_text(json.dumps({'defaultProvider': 'terminal-local', 'defaultModel': 'terminal-verifier',
                                                               'defaultThinkingLevel': 'medium', 'enableAnalytics': False}))
@@ -365,28 +514,502 @@ def main():
                 setTimeout(() => { throw new Error('PLUGIN_FATAL_FIXTURE') }, 50);
                 setTimeout(() => { throw new Error('PLUGIN_SECOND_FATAL_FIXTURE') }, 80);
               }});
+              pi.registerCommand('verify-palette-short', { description: 'SHORT_DESC_START Wrap this description into several lines. SHORT_DESC_END', handler: async (_args, ctx) => {
+                ctx.ui.notify('PALETTE_SHORT_EXECUTED');
+              }});
+              pi.registerCommand('verify-palette-with-a-deliberately-long-command-name-that-wraps', { description: 'LONG_DESC_START Wrap this description into several lines. LONG_DESC_END', handler: async (_args, ctx) => {
+                ctx.ui.notify('PALETTE_LONG_EXECUTED');
+              }});
             }''')
             rpc_accounts(cli, root)
+            compaction_session = None
+            if args.compaction_only:
+                cwd = str(root.resolve())
+                history_dir = root / 'data' / 'sessions' / 'terminal' / hashlib.sha256(cwd.encode()).hexdigest() / 'pi'
+                history_dir.mkdir(parents=True, exist_ok=True)
+                fixture = """
+                  import { SessionManager } from '@earendil-works/pi-coding-agent'
+                  const [cwd, sessionDir] = process.argv.slice(1)
+                  const session = SessionManager.create(cwd, sessionDir, { id: 'compaction-verifier' })
+                  session.appendMessage({ role: 'user', content: 'An earlier discussion is now represented by the compacted summary.' })
+                  session.appendCompaction('COMPACTION_FIXTURE_BODY: Keep the implementation decision and restore the remaining state.', null, 12345)
+                  session.appendMessage({ role: 'user', content: 'Please inspect the persisted compaction summary card.' })
+                  console.log(session.getSessionFile())
+                """
+                compaction_session = os.path.realpath(subprocess.check_output(
+                    ['node', '--input-type=module', '-e', fixture, cwd, str(history_dir)],
+                    cwd=REPOSITORY, text=True
+                ).strip())
             terminal = Terminal(['node', str(cli), '--state', str(root / 'state'), '--data', str(root / 'data')], root, width, height, root)
             profile = {'size': dimensions, 'checks': []}
             report['profiles'].append(profile)
             try:
-                terminal.wait('Local terminal verifier', timeout=50)
+                terminal.wait('Verifier First', timeout=50)
+                terminal.read(2.0)
                 terminal.snapshot('welcome')
-                profile['checks'].append('welcome and real configured model')
+                if args.markdown_only or args.jump_latest_only:
+                    profile['checks'].append('welcome and isolated local session startup')
+                else:
+                    profile['checks'].append('welcome and real configured model')
+                if args.palette_only:
+                    start = len(terminal.data)
+                    terminal.send('/verify-palette')
+                    terminal.read(0.4)
+                    terminal.snapshot('palette-wrapped-columns')
+                    if terminal.screen is not None:
+                        rows = terminal.screen.display
+
+                        def locate_row(fragment):
+                            for row, line in enumerate(rows):
+                                if fragment in line:
+                                    return row, line.index(fragment)
+                            raise AssertionError(f'Could not locate {fragment!r} in the palette: {rows!r}')
+
+                        short_description = locate_row('SHORT_DESC_START')
+                        long_description = locate_row('LONG_DESC_START')
+                        assert short_description[1] == long_description[1], f'Description columns were not aligned: {rows!r}'
+                        command_start = locate_row('/verify-palette')
+                        command_end = locate_row('name-that-wraps')
+                        assert command_start[0] != command_end[0], f'The long command name did not wrap: {rows!r}'
+                        short_end = locate_row('SHORT_DESC_END')
+                        long_end = locate_row('LONG_DESC_END')
+                        assert short_description[0] != short_end[0] and long_description[0] != long_end[0], f'Descriptions did not wrap: {rows!r}'
+                        profile['checks'].append('command and description columns align; long names and both descriptions wrap in the rendered PTY')
+                    else:
+                        rendered = normalized(bytes(terminal.data[start:]))
+                        for marker in ['SHORT_DESC_START', 'SHORT_DESC_END', 'LONG_DESC_START', 'LONG_DESC_END', 'name-that-wraps']:
+                            assert marker in rendered, f'The wrapped palette did not render {marker!r}'
+                        profile['checks'].append('long command and descriptions render; column geometry skipped because optional pyte is unavailable')
+                    terminal.send('\x1b[B')
+                    terminal.send('\r')
+                    terminal.wait('PALETTE_LONG_EXECUTED', start, timeout=10)
+                    profile['checks'].append('Down and Enter activate the second wrapped palette row')
+                    terminal.send('/quit')
+                    terminal.send('\r')
+                    continue
+                if args.help_only:
+                    start = len(terminal.data)
+                    terminal.send('/help\r')
+                    terminal.wait('/quit', start, timeout=10)
+                    terminal.read(0.3)
+                    if terminal.screen is not None:
+                        visible = '\n'.join(terminal.screen.display)
+                        assert 'One run, done well.' not in visible, f'/help left the welcome message visible: {terminal.screen.display!r}'
+                        assert '/quit' in visible, f'/help command list is not visible: {terminal.screen.display!r}'
+                        profile['checks'].append('/help shows its command list without the welcome message')
+                    else:
+                        profile['checks'].append('/help command list renders; welcome-screen assertion skipped because optional pyte is unavailable')
+                    terminal.snapshot('help-transcript')
+                    terminal.send('/quit\r')
+                    continue
+                if args.jump_latest_only:
+                    start = len(terminal.data)
+                    terminal.send('verify-scroll-latest\r')
+                    terminal.wait('LOCAL_SCROLL_TAIL', start, timeout=50)
+                    record = wait_for_goal(terminal, root, 'verify-scroll-latest')
+                    assert record.get('status') == 'completed', 'The long transcript fixture did not complete'
+                    terminal.read(0.3)
+                    if terminal.screen is not None:
+                        assert 'Jump to latest' not in '\n'.join(terminal.screen.display), 'The jump badge appeared while pinned to the latest message'
+                    terminal.scroll(max(1, width // 2), max(1, height // 2))
+                    terminal.wait('Jump to latest', start, timeout=10)
+                    if terminal.screen is not None:
+                        assert 'Jump to latest' in '\n'.join(terminal.screen.display), 'Mouse-wheel scrolling away did not show the jump badge'
+                        terminal.click_text('Jump to latest')
+                        terminal.read(0.3)
+                        visible = '\n'.join(terminal.screen.display)
+                        assert 'Jump to latest' not in visible, 'Clicking the badge did not hide it at the latest message'
+                        assert 'LOCAL_SCROLL_TAIL' in visible, 'Clicking the badge did not return to the latest transcript content'
+                        terminal.send('\x1b[5~')
+                        terminal.wait('Jump to latest', start, timeout=10)
+                        terminal.click_text('Jump to latest')
+                        terminal.read(0.3)
+                        visible = '\n'.join(terminal.screen.display)
+                        assert 'Jump to latest' not in visible and 'LOCAL_SCROLL_TAIL' in visible, 'Clicking the badge after PgUp did not return to the latest message'
+                        profile['checks'].append('badge hidden while pinned, shown after wheel and PageUp scrolling, and clicked to return to latest content')
+                    else:
+                        terminal.click(max(1, width - 10), max(1, height - 7))
+                        terminal.read(0.3)
+                        terminal.send('\x1b[5~')
+                        terminal.wait('Jump to latest', start, timeout=10)
+                        terminal.click(max(1, width - 10), max(1, height - 7))
+                        terminal.read(0.3)
+                        profile['checks'].append('badge appears after wheel and PageUp scrolling; clicks sent at expected lower-right position, with screen assertions skipped because optional pyte is unavailable')
+                    terminal.send('/quit\r')
+                    continue
+                if args.compaction_only:
+                    start = len(terminal.data)
+                    terminal.send(f'/resume {compaction_session}\r')
+                    terminal.wait('Compacted from 12,345 tokens', start, timeout=20)
+                    collapsed = normalized(bytes(terminal.data[start:]))
+                    assert 'COMPACTION_FIXTURE_BODY' not in collapsed, 'Compaction summary was not collapsed by default'
+                    if terminal.screen is not None:
+                        visible = '\n'.join(terminal.screen.display)
+                        assert visible.count('Compacted from 12,345 tokens') == 1, 'Reloaded history did not show exactly one compaction card'
+                    terminal.snapshot('compaction-collapsed-after-resume')
+                    start = len(terminal.data)
+                    terminal.send('\x0f')
+                    terminal.wait('COMPACTION_FIXTURE_BODY', start, timeout=15)
+                    profile['checks'].append('persisted Pi compaction history reloads as one collapsed token-count card; Ctrl+O expands its Markdown summary')
+                    continue
+                if args.thinking_only:
+                    start = len(terminal.data)
+                    terminal.send('verify-thinking')
+                    terminal.send('\r')
+                    terminal.wait('LOCAL_FINAL:', start, timeout=50)
+                    record = wait_for_goal(terminal, root, 'verify-thinking')
+                    assert record.get('status') == 'completed', 'The thinking-visibility fixture did not complete'
+                    terminal.read(0.3)
+                    request_count = len(LocalProvider.requests)
+                    thinking = 'LOCAL_THINKING: inspect the real isolated fixture.'
+                    if terminal.screen is not None:
+                        visible = '\n'.join(terminal.screen.display)
+                        assert thinking in visible, f'Thinking should initially be visible: {terminal.screen.display!r}'
+                    terminal.snapshot('thinking-visible')
+
+                    start = len(terminal.data)
+                    terminal.send('/thinking hide')
+                    terminal.send('\r')
+                    terminal.wait('Thinking blocks hidden.', start)
+                    if terminal.screen is not None:
+                        visible = '\n'.join(terminal.screen.display)
+                        assert thinking not in visible, f'/thinking hide left thinking visible: {terminal.screen.display!r}'
+                        assert 'LOCAL_FINAL:' in visible, 'Hiding thinking also hid the assistant response'
+                    terminal.snapshot('thinking-hidden')
+
+                    start = len(terminal.data)
+                    terminal.send('/thinking show')
+                    terminal.send('\r')
+                    terminal.wait('Thinking blocks shown.', start)
+                    terminal.read(0.2)
+                    if terminal.screen is not None:
+                        visible = '\n'.join(terminal.screen.display)
+                        assert thinking in visible, f'/thinking show did not restore thinking: {terminal.screen.display!r}'
+                    terminal.snapshot('thinking-shown')
+
+                    start = len(terminal.data)
+                    terminal.send('/thinking')
+                    terminal.send('\r')
+                    terminal.wait('Thinking blocks hidden.', start)
+                    if terminal.screen is not None:
+                        assert thinking not in '\n'.join(terminal.screen.display), '/thinking did not toggle thinking off'
+                    terminal.send('/thinking')
+                    terminal.send('\r')
+                    terminal.wait('Thinking blocks shown.', start)
+                    if terminal.screen is not None:
+                        assert thinking in '\n'.join(terminal.screen.display), '/thinking did not toggle thinking on'
+                    assert len(LocalProvider.requests) == request_count, '/thinking sent a model request instead of changing display settings'
+                    if terminal.screen is None:
+                        profile['checks'].append('/thinking show, hide, and bare toggle are handled without sending model requests')
+                        profile['checks'].append('rendered visibility assertions skipped because pyte is unavailable')
+                    else:
+                        profile['checks'].append('/thinking show, hide, and bare toggle update rendered transcript visibility without sending model requests')
+                    terminal.send('/quit')
+                    terminal.send('\r')
+                    continue
+                if args.markdown_only:
+                    start = len(terminal.data)
+                    terminal.send('verify-markdown\r')
+                    terminal.wait('LOCAL_MARKDOWN_START', start, timeout=50)
+                    if terminal.screen is not None:
+                        terminal.assert_blank_line_before('verify-markdown', 'user bubble top padding')
+                        terminal.assert_blank_line_after('verify-markdown', 'user bubble bottom padding')
+                        terminal.assert_blank_rows_before(
+                            'LOCAL_THINKING: inspect the real isolated fixture.', 2,
+                            'one user bubble bottom-padding row and one inter-entry row before thinking'
+                        )
+                        terminal.assert_blank_rows_before(
+                            'LOCAL_MARKDOWN_START', 1, 'one row between thinking and assistant'
+                        )
+                    terminal.wait('LOCAL_MARKDOWN_DONE', start, timeout=50)
+                    terminal.read(0.4)
+                    raw = bytes(terminal.data[start:])
+                    visible = '\n'.join(terminal.screen.display) if terminal.screen is not None else normalized(raw)
+                    captured = normalized(raw)
+                    for phrase in ['Primary heading', 'Secondary heading', 'Harness docs', 'bold', 'italic', 'deleted',
+                                   'inline code', 'const answer = 42', 'Quoted guidance', 'unordered item',
+                                   'ordered item', 'complete', 'pending', 'Name', 'Value', 'Markdown', 'Alt text',
+                                   'R0%', 'LOCAL_MARKDOWN_DONE']:
+                        assert phrase in visible or phrase in captured, f'Markdown PTY output did not include {phrase!r}'
+                    assert 'https://example.test/docs' not in visible and 'https://example.test/docs' not in captured, 'Markdown displayed the link destination instead of only its label'
+                    assert 'https://example.test/image.png' not in visible and 'https://example.test/image.png' not in captured, 'Markdown displayed an image destination instead of only its alt text'
+                    assert re.search(rb'\x1b\[[0-9;]*38;2;138;180;248(?:;[0-9]+)*m', raw), 'Markdown link color was not emitted as Harness blue'
+                    terminal.snapshot('markdown-transcript')
+                    if terminal.screen is not None:
+                        terminal.assert_blank_line_after('Primary heading', 'H1 bottom spacing')
+                        profile['checks'].append('one row of user-bubble top/bottom padding, one row between entries, and Markdown H1 spacing')
+                    else:
+                        profile['checks'].append('transcript spacing assertions skipped because pyte is unavailable')
+                    if terminal.screen is not None:
+                        link_x, link_y = terminal.locate('Harness docs')
+                        terminal.move(link_x, link_y)
+                        terminal.wait('Click to open link', start, timeout=10)
+                        terminal.snapshot('markdown-link-hover')
+                        terminal.move(1, 1)
+                        terminal.read(0.2)
+                        assert 'Click to open link' not in '\n'.join(terminal.screen.display), 'Markdown link hover hint remained after moving away'
+                        profile['checks'].append('label-only Markdown links, PTY mouse hover hint, and hover hint clears after pointer leaves')
+                    else:
+                        profile['checks'].append('label-only Markdown links; PTY hover inspection skipped because optional pyte is unavailable')
+                    profile['checks'].append('streamed Markdown, status-bar cache rate, code, quotes, lists, tables, dividers and image alt text')
+                    continue
+                if args.file_completion_only:
+                    start = len(terminal.data)
+                    terminal.send('inspect completion-fixture/al')
+                    terminal.send('\t')
+                    terminal.wait('completion-fixture/alpha.ts', start)
+                    terminal.snapshot('file-completion-list')
+                    accepted = len(terminal.data)
+                    terminal.send('\r')
+                    terminal.read(0.2)
+                    visible = '\n'.join(terminal.screen.display) if terminal.screen is not None else normalized(terminal.data[accepted:])
+                    assert ('inspect completion-fixture/alpha.ts' in visible if terminal.screen is not None else 'pha.ts' in visible), 'Enter did not insert the selected file path into the prompt'
+
+                    terminal.send('\x03')
+                    start = len(terminal.data)
+                    terminal.send('inspect completion-fixture/ass')
+                    terminal.send('\t')
+                    terminal.wait('completion-fixture/assets/', start)
+                    terminal.snapshot('folder-completion-list')
+                    accepted = len(terminal.data)
+                    terminal.send('\t')
+                    terminal.read(0.2)
+                    visible = '\n'.join(terminal.screen.display) if terminal.screen is not None else normalized(terminal.data[accepted:])
+                    assert ('inspect completion-fixture/assets/' in visible if terminal.screen is not None else 'ets/' in visible), 'Tab did not insert the selected folder with a trailing slash'
+                    profile['checks'].append('Tab opens matching file/folder suggestions; Enter and Tab insert the selected path')
+                    terminal.send('\x03')
+                    terminal.send('/quit')
+                    terminal.send('\r')
+                    continue
+                if args.questions_only:
+                    start = len(terminal.data)
+                    terminal.send('verify-batch\r')
+                    terminal.wait('Approve ask_user?', start)
+                    terminal.send('\r')
+                    terminal.wait('1 of 2', start)
+                    color_start = len(terminal.data)
+                    terminal.send('\r')
+                    terminal.read(0.2)
+                    color_output = bytes(terminal.data[color_start:])
+                    assert has_truecolor_background(color_output, QUESTION_SELECTED_BG), 'Selected question choice did not emit the dark-green row background'
+                    assert has_truecolor_background(color_output, QUESTION_ACTION_BG), 'Continue action did not emit its green button background'
+                    terminal.snapshot('question-selected')
+                    terminal.send('\r')
+                    terminal.wait('Something else…', start)
+                    terminal.send('\t')
+                    terminal.send('PTY grouped reason')
+                    terminal.snapshot('question-something-else')
+                    terminal.send('\r')
+                    terminal.wait('LOCAL_FINAL', start)
+                    terminal.read(0.4)
+                    batch_record = next(item for item in records(root) if item.get('goal') == 'verify-batch')
+                    batch_answers = [event['payload'] for event in batch_record['_events'] if event['type'] == 'question.answered']
+                    assert len(batch_answers) == 2 and batch_answers[0]['batchId'] == batch_answers[1]['batchId'], 'Grouped answers lost their actual batch identity'
+                    assert batch_answers[0]['selected'] == ['Batch A'] and batch_answers[1]['text'] == 'PTY grouped reason', 'Choice-backed Something else answer was not persisted exactly'
+                    profile['checks'].append('recommended choice selection row and Continue/Submit button use green backgrounds; Something else remains available')
+                    terminal.send('/quit')
+                    terminal.send('\r')
+                    continue
+                if args.history_only:
+                    def wait_for_history_runs(goal, count, native_session_id):
+                        deadline = time.monotonic() + 30
+                        while time.monotonic() < deadline:
+                            completed = [record for record in records(root)
+                                         if record.get('goal') == goal and record.get('status') == 'completed']
+                            if len(completed) >= count and all(record.get('nativeSessionId') == native_session_id for record in completed):
+                                return completed
+                            terminal.read(0.1)
+                        raise AssertionError(f'{count} completed history runs for {goal!r} were not recorded in session {native_session_id!r}')
+
+                    first_goal = 'verify-history-first-session'
+                    terminal.send(first_goal)
+                    terminal.send('\r')
+                    first_record = wait_for_goal(terminal, root, first_goal)
+                    assert first_record.get('status') == 'completed', 'Initial prompt-history turn did not complete'
+                    first_session = first_record.get('nativeSessionId')
+                    assert first_session and Path(first_session).is_file(), 'Initial prompt history did not retain its native session'
+
+                    terminal.send('/new\r')
+                    terminal.read(0.8)
+                    second_goal = 'verify-history-second-session'
+                    terminal.send('\x1b[A')
+                    terminal.send(second_goal)
+                    terminal.send('\r')
+                    second_record = wait_for_goal(terminal, root, second_goal)
+                    assert second_record.get('status') == 'completed', 'The new session did not accept a fresh prompt after Up'
+                    second_session = second_record.get('nativeSessionId')
+                    assert second_session and second_session != first_session, 'The new prompt was not recorded in a distinct native session'
+
+                    terminal.read(0.3)
+                    terminal.send('\x1b[A')
+                    terminal.send('\r')
+                    wait_for_history_runs(second_goal, 2, second_session)
+
+                    terminal.send(f'/resume {first_session}\r')
+                    terminal.read(1)
+                    terminal.send('\x1b[A')
+                    terminal.send('\r')
+                    wait_for_history_runs(first_goal, 2, first_session)
+                    profile['checks'].append('empty-composer Up recalls only the active session prompt across /new and /resume; session history is persisted natively')
+                    terminal.send('/quit')
+                    terminal.send('\r')
+                    continue
+                if args.attachments_only:
+                    image = root / 'dropped shot.png'
+                    image.write_bytes(base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='))
+                    paste = lambda text: terminal.send('\x1b[200~' + text + '\x1b[201~')
+                    visible = lambda: '\n'.join(terminal.screen.display) if terminal.screen is not None else terminal.data.decode(errors='ignore')
+                    start = len(terminal.data)
+                    paste(str(image).replace(' ', '\\ '))
+                    terminal.wait('[Image #1]', start, timeout=10)
+                    terminal.read(0.3)
+                    assert b'38;2;94;161;255' in terminal.data[start:], 'The image label was not drawn in the attachment colour'
+                    profile['checks'].append('a dropped image path becomes a blue [Image #1] label')
+                    lines = '\r'.join(f'PASTED_LINE_{number}' for number in range(5))
+                    terminal.send('describe ')
+                    start = len(terminal.data)
+                    paste(lines)
+                    terminal.wait('[Pasted text #2 +5 lines]', start, timeout=10)
+                    terminal.read(0.3)
+                    assert 'PASTED_LINE_' not in visible(), 'A large paste was drawn in the composer instead of collapsing'
+                    terminal.send('\x1b\x7f')
+                    terminal.read(0.4)
+                    assert '[Pasted' not in visible() and '+5 lines' not in visible(), 'Alt+Backspace left part of the pasted-text label'
+                    assert '[Image #1]' in visible(), 'Word delete removed more than the pasted-text label'
+                    start = len(terminal.data)
+                    paste(lines)
+                    terminal.wait('[Pasted text #3 +5 lines]', start, timeout=10)
+                    terminal.send('\x7f')
+                    terminal.read(0.4)
+                    assert '[Pasted' not in visible() and 'lines]' not in visible(), 'Backspace did not remove the whole pasted-text label'
+                    profile['checks'].append('large pastes collapse to labels; Backspace and Alt+Backspace remove a whole label')
+                    start = len(terminal.data)
+                    paste(lines)
+                    terminal.wait('[Pasted text #4 +5 lines]', start, timeout=10)
+                    terminal.send(' verify-attachments')
+                    terminal.snapshot('attachments-composer')
+                    sent = len(LocalProvider.requests)
+                    terminal.send('\r')
+                    terminal.wait('completed.', start, timeout=30)
+                    request = next(item for item in LocalProvider.requests[sent:] if 'verify-attachments' in item['user'])
+                    assert request['images'] == 1, f'The model did not receive the image: {request!r}'
+                    assert 'PASTED_LINE_4' in request['user'] and '[Pasted text' not in request['user'], 'The pasted text was not expanded for the model'
+                    assert '[Image #1]' in request['user'], 'The image label did not reach the model'
+                    profile['checks'].append('the model receives the image as content and the pasted text expanded')
+                    terminal.snapshot('attachments-sent')
+                    terminal.send('/quit')
+                    terminal.send('\r')
+                    continue
+                if args.composer_only:
+                    terminal.send('explicit-first')
+                    terminal.send('\x1b[13;2u')
+                    terminal.send('explicit-second')
+                    terminal.send(' ' + 'wrap-token ' * 18)
+                    terminal.read(0.2)
+                    terminal.snapshot('composer-multiline')
+                    assert_prompt_gutter(terminal, '❯', 'explicit-first', 'explicit-second', 'wrap-token', 'normal composer')
+                    start = len(terminal.data)
+                    terminal.send('\r')
+                    terminal.wait('LOCAL_FINAL', start)
+                    terminal.read(0.3)
+                    terminal.send('!')
+                    terminal.send('bash-first')
+                    terminal.send('\x1b[13;2u')
+                    terminal.send('bash-second')
+                    terminal.send(' ' + 'bash-wrap ' * 18)
+                    terminal.read(0.2)
+                    terminal.snapshot('composer-bash-multiline')
+                    assert_prompt_gutter(terminal, '!', 'bash-first', 'bash-second', 'bash-wrap', 'Bash composer')
+                    profile['checks'].append('normal and Bash markers appear only on the first row across explicit newlines and soft wraps')
+                    terminal.send('\x03')
+                    terminal.read(0.2)
+                    terminal.send('\x1b[Z')
+                    terminal.read(0.2)
+                    terminal.snapshot('composer-plan-mode')
+                    if terminal.screen is not None:
+                        display = '\n'.join(terminal.screen.display)
+                        assert 'plan mode' in display and 'Describe a plan…' in display, f'Plan mode did not replace the normal composer: {terminal.screen.display!r}'
+                    terminal.send('!')
+                    terminal.read(0.2)
+                    terminal.snapshot('composer-bash-from-plan')
+                    if terminal.screen is not None:
+                        display = '\n'.join(terminal.screen.display)
+                        assert 'Run a shell command…' in display and 'plan mode' not in display, f'Bash mode did not replace plan mode: {terminal.screen.display!r}'
+                    terminal.send('cmd')
+                    terminal.read(0.1)
+                    terminal.send('\x1b[Z')
+                    terminal.read(0.2)
+                    terminal.snapshot('composer-plan-from-bash')
+                    if terminal.screen is not None:
+                        display = '\n'.join(terminal.screen.display)
+                        assert 'plan mode' in display and 'cmd' in display and 'Run a shell command…' not in display, f'Shift+Tab did not switch Bash to plan while preserving the draft: {terminal.screen.display!r}'
+                    terminal.send('\x1b[Z')
+                    terminal.read(0.2)
+                    terminal.snapshot('composer-normal-mode')
+                    if terminal.screen is not None:
+                        display = '\n'.join(terminal.screen.display)
+                        assert 'plan mode' not in display and 'Run a shell command…' not in display, f'Turning plan mode off did not restore normal mode: {terminal.screen.display!r}'
+                    profile['checks'].append('plan, Bash and normal composer modes are exclusive; Shift+Tab preserves the draft when switching')
+                    terminal.send('\x03')
+                    terminal.read(0.1)
+                    terminal.send('/quit')
+                    terminal.send('\r')
+                    continue
+                if args.click_focus_only:
+                    click_x = max(1, width // 2)
+                    click_y = max(2, height // 3)
+                    start = len(terminal.data)
+                    terminal.click(click_x, click_y)
+                    terminal.send('verify-click-home')
+                    terminal.wait('verify-click-home', start)
+                    terminal.send('\r')
+                    assert wait_for_goal(terminal, root, 'verify-click-home').get('status') == 'completed', 'Clicking the empty chat did not send through the composer'
+                    terminal.read(0.4)
+                    start = len(terminal.data)
+                    terminal.click(min(6, width - 1), min(5, height - 1))
+                    terminal.send('verify-click-transcript')
+                    terminal.wait('verify-click-transcript', start)
+                    terminal.send('\x15')
+                    start = len(terminal.data)
+                    terminal.click(click_x, click_y)
+                    terminal.send('verify-click-transcript-empty')
+                    terminal.wait('verify-click-transcript-empty', start)
+                    terminal.send('\x15')
+                    profile['checks'].extend([
+                        'clicking the empty chat focuses the composer',
+                        'clicking transcript text focuses the composer',
+                        'clicking empty transcript space focuses the composer'
+                    ])
+                    terminal.send('/quit')
+                    terminal.send('\r')
+                    continue
+                click_x = max(1, width // 2)
+                click_y = max(2, height // 3)
+                start = len(terminal.data)
+                terminal.click(click_x, click_y)
+                terminal.send('verify-click-home')
+                terminal.wait('verify-click-home', start)
+                terminal.send('\r')
+                assert wait_for_goal(terminal, root, 'verify-click-home').get('status') == 'completed', 'Clicking the empty chat did not send through the composer'
+                profile['checks'].append('clicking the empty chat focuses the composer')
+                start = len(terminal.data)
+                terminal.click(min(6, width - 1), min(5, height - 1))
+                terminal.send('verify-click-transcript')
+                terminal.wait('verify-click-transcript', start)
+                terminal.send('\x15')
+                profile['checks'].append('clicking the transcript focuses the composer')
                 start = len(terminal.data)
                 terminal.send('/settings\r')
-                terminal.wait('Settings', start)
-                terminal.send('\x1b[C\x1b[C')
-                terminal.send('\t')
+                terminal.wait('Appearance', start)
+                terminal.send('\t\t')
                 terminal.snapshot('settings-interaction')
                 terminal.send('Keyboard')
                 terminal.wait('Keyboard controls', start)
                 terminal.snapshot('settings-keyboard')
-                terminal.send('\t\r')
-                terminal.read(0.3)
                 terminal.send('\x1b')
-                terminal.wait('escape: interrupt', start)
+                terminal.wait('6 settings', start)
+                terminal.send('\x1b')
+                terminal.wait('Reply…', start)
                 profile['checks'].append('actual settings tabs, section focus, keyboard search/control and Escape return')
                 start = len(terminal.data)
                 terminal.send('/acc')
@@ -398,9 +1021,30 @@ def main():
                     terminal.send('\r')
                 terminal.wait('Verifier Second', start)
                 terminal.snapshot('accounts')
+                terminal.send('\t')
+                terminal.wait('New pool', start)
+                terminal.snapshot('accounts-pools')
                 terminal.send('\x1b')
                 terminal.read(0.2)
-                profile['checks'].append('command autocomplete and real accounts selector')
+                start = len(terminal.data)
+                terminal.send('/permissions\r')
+                terminal.wait('Full Permission', start)
+                terminal.snapshot('permissions')
+                terminal.send('\t')
+                terminal.wait('Tools', start)
+                terminal.snapshot('permissions-tools')
+                terminal.send('\x1b')
+                terminal.read(0.2)
+                start = len(terminal.data)
+                terminal.send('/components\r')
+                terminal.wait('Verifier skill', start)
+                terminal.snapshot('components-skills')
+                terminal.send('\t\t')
+                terminal.wait('Rules', start)
+                terminal.snapshot('components-rules')
+                terminal.send('\x1b')
+                terminal.read(0.2)
+                profile['checks'].append('command autocomplete and independent Accounts, Permissions, and Components pages with local tabs')
                 if os.name == 'posix':
                     terminal.send('\x1a')
                     terminal.read(0.4)
@@ -409,9 +1053,11 @@ def main():
                     terminal.read(0.5)
                     assert termios.tcgetattr(terminal.slave) != terminal.before, 'Resume did not restore interactive raw mode'
                     start = len(terminal.data)
-                    terminal.send('/help\r')
-                    terminal.wait('Available terminal commands', start)
-                    profile['checks'].append('suspend/resume restores cooked/raw terminal modes and command input')
+                    terminal.send('/accounts\r')
+                    terminal.wait('Verifier First', start)
+                    terminal.send('\x1b')
+                    terminal.read(0.2)
+                    profile['checks'].append('suspend/resume restores cooked/raw terminal modes and page command input')
                 start = len(terminal.data)
                 terminal.send('verify-flow Unicode 知識 🧠\r')
                 terminal.wait('LOCAL_STAGE_0', start)
@@ -421,8 +1067,9 @@ def main():
                 cursor = start
                 while time.monotonic() < deadline:
                     terminal.read(0.1)
-                    recent = normalized(terminal.data[cursor:])
-                    if 'LOCAL_FINAL' in recent:
+                    recent = '\n'.join(terminal.screen.display) if terminal.screen is not None else normalized(terminal.data[cursor:])
+                    flow_runs = [item for item in records(root) if item.get('goal') == 'verify-flow Unicode 知識 🧠']
+                    if flow_runs and flow_runs[-1].get('status') == 'completed':
                         break
                     if 'Allow ' in recent and '?' in recent:
                         terminal.snapshot(f'approval-{approval_count}')
@@ -431,14 +1078,38 @@ def main():
                         cursor = len(terminal.data)
                     elif not question_answered and any(item.get('status') == 'waiting_for_input' for item in records(root)):
                         terminal.snapshot('question')
-                        terminal.send('\r')
+                        if terminal.screen is not None:
+                            option_x, option_y = terminal.locate('Other')
+                            original_background = terminal.screen.buffer[option_y - 1][option_x - 1].bg
+                            terminal.move(option_x, option_y)
+                            terminal.read(0.15)
+                            hovered_x, hovered_y = terminal.locate('Other')
+                            hovered_background = terminal.screen.buffer[hovered_y - 1][hovered_x - 1].bg
+                            assert hovered_background != original_background, 'Hovering a question option did not highlight it'
+                            selected_start = len(terminal.data)
+                            terminal.click(hovered_x, hovered_y)
+                            terminal.read(0.15)
+                            selected_output = bytes(terminal.data[selected_start:])
+                            assert has_truecolor_background(selected_output, QUESTION_SELECTED_BG), 'Selecting a question option did not render the dark-green row background'
+                            assert has_truecolor_background(selected_output, QUESTION_ACTION_BG), 'Continue and Submit did not render a green button background'
+                            terminal.click_text('Continue and Submit')
+                            profile['checks'].append('question option hover highlight, dark-green selected row, and green Continue/Submit button')
+                        else:
+                            terminal.send('\r')
+                            terminal.send('\r')
                         question_answered = True
                         cursor = len(terminal.data)
-                terminal.wait('LOCAL_FINAL', start)
+                flow_record = wait_for_goal(terminal, root, 'verify-flow Unicode 知識 🧠')
                 terminal.read(0.5)
                 assert approval_count >= 1, 'No real approval dialog was exercised'
                 assert question_answered, 'No real question dialog was exercised'
                 terminal.snapshot('completed-transcript')
+                start = len(terminal.data)
+                terminal.click(click_x, click_y)
+                terminal.send('verify-click-transcript-empty')
+                terminal.wait('verify-click-transcript-empty', start)
+                terminal.send('\x15')
+                profile['checks'].append('clicking empty transcript space focuses the composer')
                 terminal.send('\x0f')
                 terminal.snapshot('expanded-tools')
                 terminal.resize(80 if width != 80 else 120, 30)
@@ -457,11 +1128,44 @@ def main():
                     assert required in event_types, f'Missing persisted {required}: {event_types}'
                 names = {event['payload'].get('name') for event in events if event['type'] == 'tool.completed' and event['payload'].get('ok')}
                 assert {'read', 'bash', 'ask_user_question'} <= names, f'Real tools did not all succeed: {names}'
-                assert any(event['type'] == 'question.answered' and event['payload'].get('selected') == ['Verified'] for event in events), 'Actual question answer was not persisted'
+                expected_choice = 'Other' if terminal.screen is not None else 'Verified'
+                assert any(event['type'] == 'question.answered' and event['payload'].get('selected') == [expected_choice] for event in events), 'Actual question answer was not persisted'
                 native = record.get('nativeSessionId')
                 assert native and Path(native).is_file(), 'Run did not retain its real native history'
                 native_text = Path(native).read_text()
                 assert 'LOCAL_FILE_CONTENT' in native_text and 'LOCAL_BASH_EXECUTED' in native_text, 'Native history lacks real tool outputs'
+                start = len(terminal.data)
+                terminal.send('\x1b[Z')
+                terminal.read(0.3)
+                terminal.send('verify-plan Unicode 知識\r')
+                terminal.wait('Plan ready', start)
+                terminal.read(0.5)
+                terminal.snapshot('plan-choice')
+                plan_view = normalized(terminal.data[start:])
+                assert 'LOCAL_PLAN' in plan_view and 'Implement "Verified plan"' in plan_view, 'Plan reply did not offer the choice'
+                terminal.send('\x1b[B')
+                terminal.read(0.2)
+                terminal.send('\r')
+                terminal.wait('Describe what to change', start)
+                terminal.read(0.3)
+                start = len(terminal.data)
+                terminal.send('verify-plan revise\r')
+                terminal.wait('Plan ready', start)
+                terminal.read(0.5)
+                terminal.snapshot('plan-revised')
+                start = len(terminal.data)
+                terminal.send('\r')
+                terminal.wait('LOCAL_IMPLEMENTED', start)
+                terminal.read(0.5)
+                terminal.snapshot('plan-implemented')
+                assert 'Implement the plan: Verified plan' in normalized(terminal.data[start:]), 'Implement did not send the plan prompt'
+                plan_runs = [record for record in records(root) if 'verify-plan' in str(record.get('goal'))]
+                assert len(plan_runs) >= 2 and all(record.get('status') == 'completed' for record in plan_runs[-2:]), f'Plan runs were not recorded as completed: {[(record.get("goal"), record.get("status")) for record in plan_runs]}'
+                plan_requests = [item for item in LocalProvider.requests if 'verify-plan' in item.get('user', '')]
+                implement_requests = [item for item in LocalProvider.requests if 'Implement the plan' in item.get('user', '')]
+                assert plan_requests and implement_requests, 'Provider did not see the plan and implement prompts'
+                assert 'bash' not in plan_requests[-1]['tools'] and 'bash' in implement_requests[-1]['tools'], 'Plan run did not stay read-only, or Implement did not restore normal tools'
+                profile['checks'].append('plan mode: plan card and choice block, Edit revises, Implement restores normal tools')
                 start = len(terminal.data)
                 terminal.send('/verify-plugin\r')
                 terminal.wait('PLUGIN_CUSTOM_UI', start)
@@ -471,13 +1175,21 @@ def main():
                 profile['checks'].append('trusted plugin custom overlay, widget, status and disposal')
                 start = len(terminal.data)
                 terminal.send('verify-batch\r')
-                terminal.wait('Allow ask_user?', start)
+                terminal.wait('Approve ask_user?', start)
                 terminal.send('\r')
                 terminal.wait('1 of 2', start)
                 terminal.send('\r')
-                terminal.wait('2 of 2', start)
+                terminal.send('\r')
+                terminal.wait('Something else…', start)
                 terminal.snapshot('question-batch')
-                terminal.send('PTY grouped reason\r')
+                if terminal.screen is not None:
+                    terminal.click_text('Something else…')
+                    terminal.send('PTY grouped reason')
+                    terminal.read(0.2)
+                    assert 'PTY grouped reason' in '\n'.join(terminal.screen.display), 'Question answer typing did not reach its editor'
+                    terminal.send('\r')
+                else:
+                    terminal.send('\tPTY grouped reason\r')
                 terminal.wait('LOCAL_FINAL', start)
                 terminal.read(0.4)
                 batch_record = next(item for item in records(root) if item.get('goal') == 'verify-batch')
@@ -485,10 +1197,10 @@ def main():
                 assert len(batch_answers) == 2 and batch_answers[0]['batchId'] == batch_answers[1]['batchId'], 'Grouped answers lost their actual batch identity'
                 assert batch_answers[0]['selected'] == ['Batch A'] and batch_answers[1]['text'] == 'PTY grouped reason', 'Grouped answers were not persisted exactly'
                 profile['checks'].append('grouped question progress and atomic choice/text answers through real registry')
-                for scenario, decision in [('verify-deny', '\x1b[B\r'), ('verify-approval-cancel', '\x1b')]:
+                for scenario, decision in [('verify-deny', '\x1b[B\x1b[B\r'), ('verify-approval-cancel', '\x1b')]:
                     start = len(terminal.data)
                     terminal.send(scenario + '\r')
-                    terminal.wait('Allow bash?', start)
+                    terminal.wait('Approve bash?', start)
                     terminal.send(decision)
                     terminal.wait('LOCAL_FINAL', start)
                     terminal.read(0.4)
@@ -498,7 +1210,7 @@ def main():
                 profile['checks'].append('approval deny and Escape cancellation prevent actual tool execution')
                 start = len(terminal.data)
                 terminal.send('verify-question-cancel\r')
-                terminal.wait('Allow ask_user_question?', start)
+                terminal.wait('Approve ask_user_question?', start)
                 terminal.send('\r')
                 terminal.wait('LOCAL_CANCEL_QUESTION', start)
                 terminal.send('\x1b')
@@ -521,7 +1233,16 @@ def main():
                 terminal.read(1)
                 terminal.snapshot('cancelled')
                 assert any(record.get('status') == 'interrupted' and 'verify-cancel' in str(record.get('goal')) for record in records(root)), 'Cancellation was not persisted as interrupted'
-                profile['checks'].append('actual stream cancellation and interrupted run record')
+                profile['checks'].append('actual Escape stream cancellation and interrupted run record')
+                start = len(terminal.data)
+                terminal.send('verify-stop\r')
+                terminal.wait('CANCEL_STREAM_', start)
+                terminal.send('/stop\r')
+                terminal.read(0.8)
+                terminal.snapshot('stopped-command')
+                stopped = [record for record in records(root) if 'verify-stop' in str(record.get('goal'))]
+                assert stopped and stopped[-1]['status'] == 'interrupted', 'The /stop command did not interrupt and persist the active run'
+                profile['checks'].append('/stop interrupts the live stream and records an interrupted run')
                 start = len(terminal.data)
                 terminal.send('/accounts\r')
                 terminal.wait('Verifier Second', start)
@@ -533,8 +1254,8 @@ def main():
                 marker = 'Switching this session to account Verifier Second.'
                 terminal.wait(marker, start, timeout=40)
                 restarted = terminal.data.index(marker.encode(), start) + len(marker.encode())
-                terminal.wait('Local terminal verifier', restarted, timeout=40)
-                terminal.read(0.2)
+                terminal.wait('Verifier Second', restarted, timeout=40)
+                terminal.read(0.5)
                 terminal.snapshot('account-switched')
                 start = len(terminal.data)
                 terminal.send('verify-after-switch\r')
@@ -558,7 +1279,7 @@ def main():
             fatal_output.mkdir()
             fatal = Terminal(['node', str(cli), '--state', str(root / 'state'), '--data', str(root / 'data')], root, width, height, fatal_output)
             try:
-                fatal.wait('Local terminal verifier', timeout=50)
+                fatal.wait('Verifier First', timeout=50)
                 fatal.send('/verify-plugin-fatal\r')
                 fatal.wait('PLUGIN_FATAL_FIXTURE')
             finally:

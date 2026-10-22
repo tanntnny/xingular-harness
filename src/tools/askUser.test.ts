@@ -18,7 +18,7 @@ test('ask_user requests one to five summarized questions and returns answers in 
 
   const response = await tool.execute({ questions: [
     { summary: 'Navigation style', question: 'Which navigation?', options: [{ label: 'Keyboard', description: 'Move through controls with keys.', recommended: true }, { label: 'Pointer', description: 'Select controls with a mouse or trackpad.', recommended: true }], multiSelect: true },
-    { summary: 'Delivery timing', question: 'When?', options: [{ label: 'Today', description: 'Start immediately.' }, { label: 'Next week', description: 'Start after the current week.' }], allowText: true }
+    { summary: 'Delivery timing', question: 'When?', options: [{ label: 'Today', description: 'Start immediately.' }, { label: 'Next week', description: 'Start after the current week.', recommended: true }], allowText: true }
   ] })
 
   expect(requested).toMatchObject([
@@ -29,10 +29,15 @@ test('ask_user requests one to five summarized questions and returns answers in 
   expect(response).toContain('Delivery timing: The user answered: Next week')
 })
 
-test('ask_user exposes optional recommendation metadata in its option schema', () => {
+test('ask_user requires choices and at least one recommendation while leaving each marker optional', () => {
   const tool = askUserTool({ requestAnswers: async () => [] } as unknown as ActiveRun)
   const schema = tool.parameters(Type) as any
-  const option = schema.properties.questions.items.properties.options.items
+  const question = schema.properties.questions.items
+  const options = question.properties.options
+  const option = options.items
+  expect(question.required).toContain('options')
+  expect(options).toMatchObject({ minItems: 1, maxItems: 6 })
+  expect(options.contains.properties.recommended.const).toBe(true)
   expect(option.properties.recommended).toMatchObject({ type: 'boolean' })
   expect(option.required).not.toContain('recommended')
 })
@@ -41,6 +46,16 @@ test('ask_user rejects empty questions and summaries', async () => {
   const tool = askUserTool({ requestAnswers: async () => [] } as unknown as ActiveRun)
   await expect(tool.execute({ questions: [] })).resolves.toBe('Ask between one and five questions.')
   await expect(tool.execute({ questions: [{ summary: '', question: 'Pick one' }] })).resolves.toBe('Each question needs a short summary of no more than 100 characters.')
+})
+
+test('ask_user rejects questions without a choice or a recommended choice', async () => {
+  let requested = false
+  const tool = askUserTool({ requestAnswers: async () => { requested = true; return [] } } as unknown as ActiveRun)
+  const base = { summary: 'Plan choice', question: 'Which plan?' }
+  await expect(tool.execute({ questions: [{ ...base, options: [] }] })).resolves.toBe('Every question needs at least one choice.')
+  await expect(tool.execute({ questions: [{ ...base, options: [{ label: 'Plan A', description: 'First plan.' }] }] }))
+    .resolves.toBe('Every question needs at least one recommended choice.')
+  expect(requested).toBe(false)
 })
 
 test('ask_user rejects multiple recommendations on a single-choice question', async () => {
@@ -57,7 +72,7 @@ test('ask_user rejects multiple recommendations on a single-choice question', as
 test('ask_user requires a description for every choice', async () => {
   let requested = false
   const tool = askUserTool({ requestAnswers: async () => { requested = true; return [] } } as unknown as ActiveRun)
-  await expect(tool.execute({ questions: [{ summary: 'Plan choice', question: 'Which plan?', options: [{ label: 'Plan A' }] }] }))
+  await expect(tool.execute({ questions: [{ summary: 'Plan choice', question: 'Which plan?', options: [{ label: 'Plan A', recommended: true }] }] }))
     .resolves.toBe('Every choice needs a short description. Aim for 25 words or fewer.')
   expect(requested).toBe(false)
 })
@@ -75,13 +90,15 @@ test('ask_user treats 25 words as guidance for questions and choice descriptions
   const response = await tool.execute({ questions: [{
     summary: 'Reply detail',
     question: longQuestion,
-    options: [{ label: 'Detailed', description: longDescription }]
+    options: [{ label: 'Detailed', description: longDescription, recommended: true }]
   }] })
 
   expect(requested[0]).toMatchObject({ question: longQuestion, options: [{ label: 'Detailed', description: longDescription }] })
   expect(response).toContain('Reply detail: The user chose: Detailed.')
   expect(tool.description).toContain('aim to keep each question to 25 words or fewer')
-  expect(tool.description).toContain('every option must include a helpful description of 25 words or fewer')
+  expect(tool.description).toContain('Every question must offer 1–6 short choices')
+  expect(tool.description).toContain('at least one choice must be marked recommended: true')
+  expect(tool.description).toContain('each with a helpful description of 25 words or fewer')
   expect(tool.description).toContain('recommended: true')
 })
 

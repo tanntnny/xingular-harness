@@ -27,6 +27,8 @@
  */
 import { Theme, type ThemeBg, type ThemeColor } from '@earendil-works/pi-coding-agent'
 
+import { SELECTION_COLORS } from './selection'
+
 const orange = { dark: '#ffb347', light: '#9a7326' } as const
 
 export const TITANIUM = {
@@ -96,7 +98,7 @@ const foreground = {
 } satisfies Record<ThemeColor, string>
 
 const background = {
-  selectedBg: '#0082b3',
+  selectedBg: SELECTION_COLORS.dark.background,
   searchMatchBg: '#0082b3',
   userMessageBg: '#0f1216',
   customMessageBg: '#2a3038',
@@ -162,7 +164,7 @@ const lightForeground = {
 } satisfies Record<ThemeColor, string>
 
 const lightBackground = {
-  selectedBg: '#d0d0e0',
+  selectedBg: SELECTION_COLORS.light.background,
   searchMatchBg: '#d0d0e0',
   userMessageBg: '#e8e8e8',
   customMessageBg: '#ede7f6',
@@ -177,7 +179,7 @@ export function createHarnessLightTheme(base: Theme): Theme {
 
 // The composer keeps its neutral frame; the slash completion divider uses warning amber.
 export function composerRuleColor(theme: Theme): string {
-  return theme.appearance === 'light' ? '#8a8a8a' : '#888888'
+  return theme.appearance === 'light' ? '#9a9a9a' : '#999999'
 }
 
 export function autocompleteRuleColor(theme: Theme): string {

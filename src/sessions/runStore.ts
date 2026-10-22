@@ -6,7 +6,7 @@ import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync } fro
 import { join } from 'node:path'
 
 import { notFound } from '../core/errors'
-import { newId, now, readJson, safeId, writeJson } from '../core/fs'
+import { newId, now, readJson, readJsonOr, safeId, writeJson } from '../core/fs'
 import { compareText, lines } from '../core/text'
 import { isActiveStatus, runEventSchema, runRecordSchema, usagePayloadSchema, type RunEvent, type RunRecord, type UsagePayload } from './contracts'
 import { readAllRuns, recordRun, runsForSession } from './runIndex'
@@ -50,7 +50,29 @@ function ordered(record: RunRecord): RunRecord {
 
 function write(root: string, record: RunRecord): void {
   writeJson(recordPath(root, record.id), ordered(record))
+  if (isActiveStatus(record.status)) claimOwner(root, record.id)
   recordRun(root, record)
+}
+
+// The process that is driving an active run. Startup recovery leaves such a run alone while that process lives.
+const ownerPath = (root: string, runId: string): string => join(runDir(root, runId), 'owner.json')
+
+function claimOwner(root: string, runId: string): void {
+  const path = ownerPath(root, runId)
+  if (readJsonOr<{ pid?: unknown } | null>(path, null)?.pid === process.pid) return
+  writeJson(path, { pid: process.pid })
+}
+
+/** True only when a different live process owns the run. No marker, or a dead owner, means nothing holds it. */
+function ownedElsewhere(root: string, runId: string): boolean {
+  const pid = readJsonOr<{ pid?: unknown } | null>(ownerPath(root, runId), null)?.pid
+  if (typeof pid !== 'number' || pid <= 0 || pid === process.pid) return false
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'EPERM'
+  }
 }
 
 export function saveRun(root: string, record: RunRecord): void {
@@ -201,8 +223,8 @@ export function persistEvent(root: string, event: RunEvent): boolean {
 const STOPPED = 'The harness stopped before the run settled.'
 
 /** Startup reconciliation for every run that did not settle before the process stopped. */
-export function markInterruptedRuns(root: string, reason = STOPPED): number {
-  let count = 0
+export function markInterruptedRuns(root: string, reason = STOPPED): string[] {
+  const interrupted: string[] = []
   for (const record of readAllRuns(root)) {
     const path = recordPath(root, record.id)
     const events = readEvents(root, record.id)
@@ -218,15 +240,17 @@ export function markInterruptedRuns(root: string, reason = STOPPED): number {
       }
     }
     if (!isActiveStatus(record.status)) continue
+    // Another live Harness on the same data folder is still running this; it is not an orphan.
+    if (ownedElsewhere(root, record.id)) continue
     record.status = 'interrupted'
     record.terminalReason = reason
     record.endedAt ??= now()
     const last = events.reduce((highest, event) => Math.max(highest, event.sequence), -1)
     appendEvent(root, { id: newId(), runId: record.id, sessionId: record.sessionId, sequence: last + 1, timestamp: now(), type: 'status.changed', payload: { status: 'interrupted', reason } })
     write(root, record)
-    count += 1
+    interrupted.push(record.id)
   }
-  return count
+  return interrupted
 }
 
 /** An approval or question a run asked for that nothing has answered yet. */

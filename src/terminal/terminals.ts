@@ -27,6 +27,8 @@ import type { BrokerSession, ConnectedApps } from '../mcp/service'
 import type { CallerContext } from '../core/caller'
 import { dispatch } from '../tools/dispatch'
 import { materialise, type HarnessChoice } from '../tree/materialise'
+import * as componentLibrary from '../tree/components'
+import * as treeStore from '../tree/store'
 import type { TreeTrust } from '../tree/trust'
 import type { AttachParams, PluginScope } from '../plugins/api'
 import type { Loading, Plugins } from '../plugins/plugins'
@@ -42,7 +44,7 @@ import type { ToolSpec } from '../tools/types'
 import { APPS_COMMAND, WIKI_COMMAND } from './cli'
 import { SOCKET_ENV, TOKEN_ENV } from './client'
 import { TerminalController, type PolicyReply } from './controller'
-import { resolvePiCommand, terminalCommandFiles } from './launch'
+import { terminalCommandFiles } from './launch'
 import { SessionSocket, socketPath } from './socket'
 import { harnessLogInfo, readHarnessLogChunk } from './logs'
 import { listTerminalTrajectoryRuns, readTerminalTrajectory } from './trajectory'
@@ -61,17 +63,24 @@ function resourceIdentity(loading: Loading | null): string {
 export interface TerminalAssets {
   /** The Node binary that runs the commands. */
   node: string
-  /** The built `xingular-harness` command (`dist/cli.js`). */
+  /** The built `xharness` command (`dist/cli.js`). */
   cli: string
   /** The built Pi extension (`dist/terminal-pi.js`). */
   piExtension: string
+  /** The built OpenTUI frontend (`dist/terminal-opentui.js`). */
+  openTui: string
 }
 
 /** Where the package's own build puts them. An application that bundles the harness passes its own. */
 export function defaultAssets(): TerminalAssets {
   const here = dirname(fileURLToPath(import.meta.url))
   const dist = [here, join(here, '..', '..', 'dist'), join(here, '..', 'dist')].find((folder) => existsSync(join(folder, 'terminal-pi.js'))) ?? here
-  return { node: process.execPath, cli: join(dist, 'cli.js'), piExtension: join(dist, 'terminal-pi.js') }
+  return {
+    node: process.execPath,
+    cli: join(dist, 'cli.js'),
+    piExtension: join(dist, 'terminal-pi.js'),
+    openTui: join(dist, 'terminal-opentui.js')
+  }
 }
 
 export interface TerminalPrepareInput {
@@ -133,8 +142,6 @@ export interface TerminalsOptions {
   pluginControl?: PluginControl
   hub?: Hub
   assets?: TerminalAssets
-  /** The `pi` executable. Defaults to the pinned bundled CLI through the active Node runtime. */
-  program?: () => string | null
 }
 
 /** What `/plugins` in a terminal can do. Each takes the session's folder, account and project. */
@@ -313,6 +320,14 @@ export class Terminals {
         return accounts.refresh(optional('accountId'))
       case 'accounts.providers':
         return accounts.providers()
+      // A terminal reads and writes only its own account's choices, never the id a caller names.
+      case 'accounts.choices.get':
+        return accounts.choices(live.account.id)
+      case 'accounts.choices.set':
+        return accounts.choose(live.account.id, text('mode'), {
+          ...(typeof params.model === 'string' ? { model: params.model } : {}),
+          ...(typeof params.effort === 'string' ? { effort: params.effort as Effort } : {})
+        })
       case 'accounts.loginStart':
         return accounts.loginStart(text('accountId'), text('provider'), optional('method'))
       case 'accounts.loginStatus':
@@ -414,7 +429,7 @@ export class Terminals {
 
   private async decide(live: Live, run: ActiveRun, tool: string, args: unknown): Promise<PolicyReply> {
     const record = loadRun(this.options.env.root, run.runId)
-    if (!isActiveStatus(record.status)) throw invalid('The run is no longer active.')
+    if (!isActiveStatus(record.status)) throw invalid(`The run is no longer active (its status is ${record.status}).`)
     const call = { run: record, caller: { ...live.caller, runId: run.runId }, tool, args }
     const { policy } = this.options
     if (policy.scope) {
@@ -482,6 +497,40 @@ export class Terminals {
     throw invalid('Unknown subagent operation.')
   }
 
+  private componentsCall(live: Live, call: string, params: Record<string, unknown>): unknown {
+    const root = this.options.env.root
+    const choice = live.input.harness
+    const scope = choice && 'scope' in choice ? choice.scope ?? null : null
+    const head = scope ? treeStore.headTree(root, scope) : null
+    const items = componentLibrary.list(root)
+
+    if (call === 'terminal.components.list') {
+      return {
+        items,
+        addedIds: head ? items.filter(item => componentLibrary.isInTree(root, head.tree, item.id)).map(item => item.id) : [],
+        writable: Boolean(scope && head),
+        fingerprint: head?.fingerprint ?? null
+      }
+    }
+    if (call === 'terminal.components.add') {
+      if (typeof params.id !== 'string' || !params.id) throw invalid('A component id is required.')
+      if (!scope || !head) throw invalid('This terminal has no writable Harness scope.')
+      const item = items.find(candidate => candidate.id === params.id)
+      if (!item) throw invalid('That component is no longer in the library.')
+      if (item.kind === 'prompts') throw invalid('Prompts stay in the library and cannot be added to a Harness tree.')
+      if (componentLibrary.isInTree(root, head.tree, item.id)) {
+        return { fingerprint: head.fingerprint, alreadyPresent: true }
+      }
+      const tree = componentLibrary.addToTree(root, head.tree, item.id)
+      const record = treeStore.commit(root, scope, tree, {
+        kind: 'edit', note: 'Added library component ' + item.id, components: [item.id]
+      })
+      this.options.bus.emit({ type: 'harnesses.changed', scope })
+      return { fingerprint: record.fingerprint, alreadyPresent: false }
+    }
+    throw new HarnessError('unknown_method', 'Unknown terminal component operation.')
+  }
+
   private trajectoryCall(live: Live, call: string, params: Record<string, unknown>): unknown {
     if (call === 'terminal.trajectory.list') {
       return { runs: listTerminalTrajectoryRuns(this.options.env.root, live.input.sessionId, live.controller.nativeSessionId) }
@@ -495,8 +544,17 @@ export class Terminals {
     throw new HarnessError('unknown_method', `Unknown call ${call}.`)
   }
 
+  /** The only terminal frontend: the Bun-run OpenTUI application. */
+  private frontendCommand(): { program: string; argsPrefix: string[] } {
+    return {
+      program: process.env.XINGULAR_HARNESS_BUN || 'bun',
+      // Solid must resolve to its client build for OpenTUI's effects, wherever it is imported.
+      argsPrefix: ['--conditions=browser', this.assets.openTui]
+    }
+  }
+
   /**
-   * Prepares a `pi` terminal session and returns what to spawn. The caller must report the
+   * Prepares an OpenTUI terminal session and returns what to spawn. The caller must report the
    * process's end with `dispose`, also when it never starts.
    */
   async prepare(input: TerminalPrepareInput): Promise<TerminalLaunch> {
@@ -505,7 +563,7 @@ export class Terminals {
     const { root } = env
     if (!input?.sessionId || !input.cwd || !input.sessionFolder) throw invalid('A terminal session needs an id, a working folder, and its own folder.')
     await this.dispose(input.sessionId)
-    const command = resolvePiCommand({ platform: process.platform, node: this.assets.node, cli: this.assets.cli, programOverride: this.options.program })
+    const command = this.frontendCommand()
     // A pinned account is used as it is; it is never exchanged for another one.
     const account = input.accountId ? accounts.find(input.accountId) : accounts.resolve(null, null)
     const launch = launchEnv(accounts.dir, account)
@@ -563,6 +621,7 @@ export class Terminals {
             if (current === null || snapshotSize > current) throw invalid('The diagnostics snapshot is no longer available.')
             return readHarnessLogChunk(this.options.stateDir, snapshotSize, offset)
           }
+          if (call.startsWith('terminal.components.')) return this.componentsCall(live, call, params)
           if (call.startsWith('terminal.trajectory.')) return this.trajectoryCall(live, call, params)
           if (call === 'terminal.permissions.get') {
             const policy = this.options.approvals.read()

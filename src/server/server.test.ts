@@ -84,7 +84,7 @@ describe('the harness served to a host', () => {
 
     const status = await request('harness.status')
     expect(status).toMatchObject({ dataRoot: harness.env.root, productName: 'Xingular Harness', activeRuns: [] })
-    expect(await request<string[]>('harness.methods')).toEqual(expect.arrayContaining(['accounts.list', 'sessions.run', 'sessions.spawnSubagent', 'subagents.spawn', 'subagents.wait', 'subagents.results', 'wiki.list', 'wiki.write', 'terminal.prepare', 'harnesses.seed', 'harnesses.save', 'refine.start', 'refine.adopt', 'library.list', 'connections.list', 'harness.shutdown']))
+    expect(await request<string[]>('harness.methods')).toEqual(expect.arrayContaining(['accounts.list', 'accounts.choices', 'accounts.choose', 'sessions.run', 'sessions.spawnSubagent', 'subagents.spawn', 'subagents.wait', 'subagents.results', 'wiki.list', 'wiki.write', 'terminal.prepare', 'harnesses.seed', 'harnesses.save', 'refine.start', 'refine.adopt', 'library.list', 'connections.list', 'harness.shutdown']))
 
     await expect(request('sessions.spawnSubagent', { parentRunId: 'missing', brief: 'Review' })).rejects.toMatchObject({ code: 'run_not_active' })
 
@@ -93,6 +93,10 @@ describe('the harness served to a host', () => {
     expect(notices).toContainEqual(expect.objectContaining({ type: 'accounts.changed' }))
     await expect(request('accounts.rename', { accountId: 'nope', label: 'x' })).rejects.toMatchObject({ code: 'not_found' })
     await expect(request('accounts.rename', {})).rejects.toMatchObject({ code: 'invalid_request', message: 'accountId is required.' })
+    const accountId = overview.accounts[0].id
+    expect(await request('accounts.choose', { accountId, mode: 'plan', effort: 'low' })).toMatchObject({ plan: { effort: 'low' } })
+    expect(await request('accounts.choices', { accountId })).toMatchObject({ plan: { effort: 'low' } })
+    await expect(request('accounts.choose', { accountId, mode: 'plan', effort: 'extreme' })).rejects.toMatchObject({ code: 'invalid_request' })
     await expect(request('nope.nothing')).rejects.toMatchObject({ code: 'unknown_method' })
 
     await request('wiki.write', { path: 'projects/app/decisions', text: '# Decisions\n\nShip on Fridays.\n' })
@@ -107,6 +111,8 @@ describe('the harness served to a host', () => {
     expect(events.map((event) => event.type)).toEqual(['started', 'status.changed', 'context.snapshot', 'completed'])
     expect((await request('runs.load', { runId: 'r1' })).run).toMatchObject({ id: 'r1', status: 'completed' })
     expect((await request<any[]>('runs.list', { filter: { sessionId: 'a1' } })).map((run) => run.id)).toEqual(['r1'])
+    expect(await request('runs.checklist', { runId: 'r1' })).toEqual([])
+    expect(await request('runs.continuation', { runId: 'r1' })).toMatchObject({ runId: 'r1', resumable: false, reason: 'completed' })
     expect((await request('context.runPack', { runId: 'r1' })).sections.map((section: { id: string }) => section.id)).toContain('tools')
   })
 

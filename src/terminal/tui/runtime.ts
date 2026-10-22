@@ -16,6 +16,9 @@ import type { SessionAccount } from '../accountsMenu'
 import type { QuestionAnswer } from '../../sessions/registry'
 import type { TerminalQuestion } from './questions'
 import { sessionUiContext } from './sessionUi'
+import { ModeChoices, type ChoiceModel, type ChoiceStore, type ComposerMode } from './modeChoices'
+import type { ModeChoice } from '../../accounts/choices'
+import type { Effort } from '../../core/effort'
 
 export interface TerminalArguments {
   appendSystemPrompt: string[]
@@ -93,6 +96,9 @@ export interface TerminalPermissionState {
   readonly globalTools: readonly string[]
 }
 
+/** An image the user attached to a prompt, as Pi sends it to the model. */
+export interface TerminalImage { type: 'image'; data: string; mimeType: string }
+
 export interface TerminalRuntime {
   pending(): Promise<TerminalDecision[]>
   approve(requestId: string, decision: 'approved' | 'denied', alwaysAllowTool?: boolean): Promise<void>
@@ -102,8 +108,11 @@ export interface TerminalRuntime {
   answer(requestId: string, answer: QuestionAnswer): Promise<void>
   answerBatch(batchId: string, answers: Array<{ questionId: string; answer: QuestionAnswer }>): Promise<void>
   snapshot(): TerminalSnapshot
-  submit(text: string, followUp?: boolean): Promise<void>
-  submitPlan(text: string): Promise<void>
+  /** Images go to the model in the same user message as `text`. */
+  submit(text: string, followUp?: boolean, images?: TerminalImage[]): Promise<void>
+  submitPlan(text: string, images?: TerminalImage[]): Promise<void>
+  /** The composer's mode. Its saved model and effort apply now, or when a running turn settles. */
+  setMode(mode: ComposerMode): Promise<void>
   readonly session: AgentSession
   readonly services: AgentSessionServices
   readonly cwd: string
@@ -205,7 +214,25 @@ export async function createTerminalRuntime(args: string[], host: TerminalRuntim
     return sessionUiContext(host.ui, () => !disposed && generation === uiGeneration)
   }
   const planRun: TerminalPlanRunState = { active: false, allowedTools: new Set() }
+  let currentMode: ComposerMode = 'normal'
+  let pendingApply = false
+  const choiceStore: ChoiceStore = {
+    read: () => controlCall<Record<string, ModeChoice>>('accounts.choices.get'),
+    write: (mode, patch) => controlCall('accounts.choices.set', { mode, ...patch })
+  }
+  const modeChoices = new ModeChoices(choiceStore)
+  // A selection is recorded against the mode it was made in; a one-shot plan run is always plan.
+  const recordingMode = (): ComposerMode => (planRun.active ? 'plan' : currentMode)
+  const modelFor = (reference: string): ChoiceModel | undefined => resolveCliModel({ cliModel: reference, modelRuntime }).model
+  const applyMode = (): Promise<void> => modeChoices.apply(native.session, currentMode, modelFor)
+  const restoreChoice = async (session: AgentSession, previous: { model: AgentSession['model']; effort: AgentSession['thinkingLevel'] }): Promise<void> => {
+    if (previous.model && (session.model?.provider !== previous.model.provider || session.model?.id !== previous.model.id)) {
+      await session.setModel(previous.model, { persist: false }).catch(() => undefined)
+    }
+    session.setThinkingLevel(previous.effort, { persist: false })
+  }
 
+  let native: AgentSessionRuntime
   const factory: CreateAgentSessionRuntimeFactory = async ({ cwd: targetCwd, sessionManager, sessionStartEvent }) => {
     if (realpathSync(targetCwd) !== cwd) throw new Error('A native session cannot change this terminal working folder.')
     const settingsManager = SettingsManager.create(cwd, agentDir)
@@ -218,7 +245,12 @@ export async function createTerminalRuntime(args: string[], host: TerminalRuntim
       additionalExtensionPaths: prepared.extensions.slice(0, -1),
       additionalSkillPaths: prepared.skills, additionalPromptTemplatePaths: prepared.prompts,
       additionalThemePaths: prepared.themes,
-      extensionFactories: [...adapter.builtins, { name: 'harness-terminal-bridge', factory: pi => terminalExtension(pi, planRun), hidden: true }],
+      extensionFactories: [
+        ...adapter.builtins,
+        { name: 'harness-terminal-bridge', factory: pi => terminalExtension(pi, planRun, () => native.session), hidden: true },
+        // A model picked in the terminal reaches Pi as this event. A restore is not a pick.
+        { name: 'harness-mode-choices', factory: pi => { pi.on('model_select', event => { if (event.source !== 'restore') void modeChoices.record(recordingMode(), { model: `${event.model.provider}/${event.model.id}` }) }) }, hidden: true }
+      ],
       appendSystemPromptOverride: (base) => [...base, ...prepared.appendSystemPrompt]
     })
     const reloadResources = resourceLoader.reload.bind(resourceLoader)
@@ -236,16 +268,26 @@ export async function createTerminalRuntime(args: string[], host: TerminalRuntim
       selected = resolveCliModel({ cliModel: prepared.model, modelRuntime })
       if (selected.error || !selected.model) throw new Error(selected.error ?? `Model ${prepared.model} is unavailable.`)
     }
+    // A fresh conversation starts on this account's latest normal-mode choice. A resumed one keeps its history,
+    // and an explicit --model wins. A saved model the account cannot use is skipped.
+    const fresh = !prepared.model && (sessionStartEvent?.reason === 'new' || (sessionStartEvent?.reason === 'startup' && !resume))
+    const saved: { model?: string; effort?: Effort } = fresh ? modeChoices.resolve('normal') : {}
+    if (fresh && saved.model) {
+      const chosen = resolveCliModel({ cliModel: saved.model, modelRuntime })
+      if (chosen.model && !chosen.error && await modelRuntime.checkAuth(chosen.model.provider)) selected = chosen
+    }
+    const thinkingLevel = selected?.thinkingLevel ?? (fresh ? saved.effort : undefined)
     const created = await createAgentSession({
       cwd, agentDir, modelRuntime, settingsManager, resourceLoader, sessionManager, sessionStartEvent,
       ...(selected?.model ? { model: selected.model } : {}),
-      ...(selected?.thinkingLevel ? { thinkingLevel: selected.thinkingLevel } : {})
+      ...(thinkingLevel ? { thinkingLevel } : {})
     })
     const services: AgentSessionServices = { cwd, agentDir, modelRuntime, settingsManager, resourceLoader, diagnostics: [] }
     host.resources?.(services)
     return { ...created, services, diagnostics: services.diagnostics }
   }
-  const native = await createAgentSessionRuntime(factory, {
+  await modeChoices.load()
+  native = await createAgentSessionRuntime(factory, {
     cwd, agentDir,
     sessionManager: resume ? SessionManager.open(resume, sessionDirectory) : SessionManager.create(cwd, sessionDirectory),
     sessionStartEvent: { type: 'session_start', reason: 'startup' }
@@ -268,7 +310,8 @@ export async function createTerminalRuntime(args: string[], host: TerminalRuntim
     changing = true
     try {
       await controlCall('terminal.resources', {}, 30_000)
-      return await action()
+      // A model or effort a switch restores belongs to the session's history, not to a choice the person made.
+      return await modeChoices.quietly(action)
     } finally {
       changing = false
     }
@@ -308,13 +351,16 @@ export async function createTerminalRuntime(args: string[], host: TerminalRuntim
         queue: Object.freeze({ steering: Object.freeze([...session.getSteeringMessages()]), followUp: Object.freeze([...session.getFollowUpMessages()]) })
       })
     },
-    async submit(text, followUp = false) {
+    async submit(text, followUp = false, images) {
       if (disposed) throw new Error('The terminal runtime has closed.')
       if (changing) throw new Error('Wait for the native session change to finish before submitting.')
       const input = text.trimStart().startsWith('/') ? text.trimStart() : text
-      await native.session.prompt(input, native.session.isStreaming ? { streamingBehavior: followUp ? 'followUp' : 'steer' } : {})
+      await native.session.prompt(input, {
+        ...(native.session.isStreaming ? { streamingBehavior: followUp ? 'followUp' : 'steer' } : {}),
+        ...(images?.length ? { images } : {})
+      })
     },
-    async submitPlan(text) {
+    async submitPlan(text, images) {
       if (disposed) throw new Error('The terminal runtime has closed.')
       if (changing) throw new Error('Wait for the native session change to finish before submitting.')
       if (!text.trim()) throw new Error('Use /plan <plan brief>.')
@@ -322,16 +368,33 @@ export async function createTerminalRuntime(args: string[], host: TerminalRuntim
       if (!session.isIdle) throw new Error('A plan request must wait until the current response settles.')
       const originalTools = session.getActiveToolNames()
       const allowedTools = planModeTools(originalTools)
+      // The session's own model and effort come back once the plan is done.
+      const previous = { model: session.model, effort: session.thinkingLevel }
       planRun.allowedTools = new Set(allowedTools)
       planRun.active = true
       try {
         session.setActiveToolsByName(allowedTools)
-        await session.prompt(text, { expandPromptTemplates: false })
+        await modeChoices.apply(session, 'plan', modelFor)
+        await session.prompt(text, { expandPromptTemplates: false, ...(images?.length ? { images } : {}) })
       } finally {
         planRun.active = false
         planRun.allowedTools = new Set()
-        if (!disposed && native.session === session) session.setActiveToolsByName(originalTools)
+        if (!disposed && native.session === session) {
+          session.setActiveToolsByName(originalTools)
+          await modeChoices.quietly(() => restoreChoice(session, previous))
+          if (pendingApply) {
+            pendingApply = false
+            await applyMode()
+          }
+        }
       }
+    },
+    async setMode(mode) {
+      if (disposed) throw new Error('The terminal runtime has closed.')
+      currentMode = mode
+      // A switch during a running turn waits for it to settle, so the turn keeps the model it started with.
+      if (native.session.isIdle && !planRun.active) await applyMode()
+      else pendingApply = true
     },
     get session() { return native.session },
     get services() { return native.services },
@@ -339,7 +402,11 @@ export async function createTerminalRuntime(args: string[], host: TerminalRuntim
     subscribe(listener) { listeners.add(listener); return () => { listeners.delete(listener) } },
     onSessionChange(listener) { changes.add(listener); return () => { changes.delete(listener) } },
     onBeforeSessionChange(listener) { beforeChanges.add(listener); return () => { beforeChanges.delete(listener) } },
-    newSession: (options) => exclusive(() => native.newSession(options)),
+    newSession: (options) => exclusive(async () => {
+      // Re-read the choices so a new conversation starts on what was chosen most recently.
+      await modeChoices.load()
+      return native.newSession(options)
+    }),
     switchSession: (path, options) => exclusive(async () => {
       const target = resolve(cwd, path)
       assertTerminalHistoryPath(target, sessionDirectory)
@@ -371,6 +438,8 @@ export async function createTerminalRuntime(args: string[], host: TerminalRuntim
       host.changed()
     }),
     async interrupt() {
+      // Bash executions use their own abort controllers, outside Pi's agent tool loop.
+      native.session.abortBash()
       // Socket-backed questions and approvals must settle before Pi can finish aborting tools.
       await controlCall('terminal.interrupt', {}, 15_000).catch(() => {})
       await native.session.abort()
@@ -392,6 +461,11 @@ export async function createTerminalRuntime(args: string[], host: TerminalRuntim
   const observeSession = () => {
     unsubscribe?.()
     unsubscribe = native.session.subscribe(event => {
+      if (event.type === 'thinking_level_changed') void modeChoices.record(recordingMode(), { effort: event.level as Effort })
+      if (event.type === 'agent_settled' && pendingApply && !planRun.active) {
+        pendingApply = false
+        void applyMode().catch(() => undefined)
+      }
       for (const listener of listeners) listener(event)
       host.changed()
     })

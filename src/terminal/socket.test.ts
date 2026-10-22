@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
+import { socketCall } from './client'
 import { SessionSocket, socketPath } from './socket'
 
 const handlers = { memory: () => '', apps: async () => null }
@@ -90,5 +91,63 @@ describe('session socket', () => {
       chmodSync(run, 0o700)
       rmSync(base, { recursive: true, force: true })
     }
+  })
+
+  describe.skipIf(process.platform === 'win32')('connection reuse', () => {
+    const open = async () => {
+      const base = mkdtempSync(join(tmpdir(), 'sock-keep-'))
+      const reads: string[] = []
+      const socket = new SessionSocket(socketPath(base), { memory: (_caller, _call, params) => { reads.push(String(params.name)); return `page ${String(params.name)}` }, apps: async () => null })
+      await socket.listen()
+      const token = socket.issue({ sessionId: 's', caller: () => ({ agentId: 'a' }) as never, broker: null })
+      const clients = () => (socket as unknown as { clients: Set<unknown> }).clients.size
+      return { socket, token, reads, clients, close: async () => { await socket.close(); rmSync(base, { recursive: true, force: true }) } }
+    }
+
+    it('answers consecutive requests on one kept connection, in order', async () => {
+      const server = await open()
+      try {
+        const connection = { socket: server.socket.path, token: server.token }
+        expect(await socketCall(connection, 'wiki.read', { name: 'one' })).toBe('page one')
+        expect(await socketCall(connection, 'wiki.read', { name: 'two' })).toBe('page two')
+        const both = await Promise.all([socketCall(connection, 'wiki.read', { name: 'three' }), socketCall(connection, 'wiki.read', { name: 'four' })])
+        expect(both).toEqual(['page three', 'page four'])
+        expect(server.reads).toEqual(['one', 'two', 'three', 'four'])
+        // The sequential calls shared a connection; the concurrent pair needed a second one.
+        expect(server.clients()).toBe(2)
+      } finally {
+        await server.close()
+      }
+    })
+
+    it('still closes a connection after a request that does not ask to keep it', async () => {
+      const server = await open()
+      try {
+        const reply = await new Promise<string>((resolve, reject) => {
+          const client = createConnection(server.socket.path)
+          let buffer = ''
+          client.on('connect', () => client.write(`${JSON.stringify({ token: server.token, call: 'wiki.read', params: { name: 'once' } })}\n`))
+          client.on('data', (chunk) => (buffer += chunk.toString('utf8')))
+          client.on('end', () => resolve(buffer))
+          client.on('error', reject)
+        })
+        expect(JSON.parse(reply)).toEqual({ result: 'page once' })
+      } finally {
+        await server.close()
+      }
+    })
+
+    it('opens a fresh connection when the harness closed an idle one', async () => {
+      const server = await open()
+      try {
+        const connection = { socket: server.socket.path, token: server.token }
+        expect(await socketCall(connection, 'wiki.read', { name: 'first' })).toBe('page first')
+        for (const client of (server.socket as unknown as { clients: Set<{ destroy(): void }> }).clients) client.destroy()
+        await new Promise(resolve => setTimeout(resolve, 20))
+        expect(await socketCall(connection, 'wiki.read', { name: 'second' })).toBe('page second')
+      } finally {
+        await server.close()
+      }
+    })
   })
 })

@@ -6,7 +6,7 @@ export interface TerminalQuestion {
   requestId: string
   question?: string
   summary?: string
-  options?: { label: string; description?: string; recommended?: boolean }[]
+  options: { label: string; description?: string; recommended?: boolean }[]
   multiSelect?: boolean
   allowText?: boolean
   batchId?: string
@@ -16,15 +16,12 @@ export interface TerminalQuestion {
 
 /** Answers stay local until the complete group can be submitted to the registry. */
 export async function answerTerminalQuestion(ui: ExtensionUIContext, request: TerminalQuestion, signal: AbortSignal): Promise<QuestionAnswer | undefined> {
-  const choices = request.options ?? []
+  const choices = request.options
   const progress = request.batchId ? `${request.batchIndex} of ${request.batchCount} · ` : ''
   const title = `${progress}${request.summary ?? 'Question'}`
   const inputTitle = `${progress}${request.summary ? `${request.summary}: ` : ''}${request.question ?? 'Question'}`
-  if (!choices.length) {
-    if (request.allowText === false) return { selected: [] }
-    const text = await ui.input(inputTitle, undefined, { signal })
-    return text === undefined || signal.aborted ? undefined : { selected: [], text }
-  }
+  if (!Array.isArray(choices) || choices.length === 0) throw new Error('Every question needs at least one choice.')
+  if (!choices.some(choice => choice.recommended)) throw new Error('Every question needs at least one recommended choice.')
   let selected: string[] = []
   while (!signal.aborted) {
     let cancelPicker = () => {}

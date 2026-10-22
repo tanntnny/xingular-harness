@@ -3,6 +3,7 @@
 // directly. Methods are grouped by the part of the harness they belong to.
 import { ensureSharedDir, nativeConfig } from '../accounts/env'
 import { audit, readAudit, summaryAuthentication } from '../accounts/store'
+import type { Effort } from '../core/effort'
 import { HarnessError, invalid } from '../core/errors'
 import * as capabilities from '../capabilities/api'
 import { loadRun as loadCapabilitySnapshot } from '../capabilities/runSnapshot'
@@ -15,12 +16,14 @@ import * as plugins from '../plugins/api'
 import * as install from '../plugins/install'
 import { compile, load, render, type Launch } from '../prompt/compile'
 import { readSummary } from '../refine/runner'
+import { continuationOf } from '../sessions/continuation'
 import { selectHistory } from '../sessions/history'
 import { runsSince } from '../sessions/runIndex'
 import { findRun, listRuns, loadRun, pendingDecisions, readEvents, runFamily, snapshot } from '../sessions/runStore'
 import type { SubagentInput, SubagentSelection } from '../sessions/subagents'
 import type { SessionRunInput } from '../sessions/sessions'
 import type { TerminalPrepareInput } from '../terminal/terminals'
+import { checklistOf } from '../tools/checklist'
 import { dispatch } from '../tools/dispatch'
 import * as components from '../tree/components'
 import { materialise, type HarnessChoice } from '../tree/materialise'
@@ -113,6 +116,11 @@ export function methods(harness: Harness): Record<string, Handler> {
     'accounts.signOut': (params: Params) => accounts.signOut(text(params, 'accountId')),
     'accounts.providers': () => accounts.providers(),
     'accounts.models': (params: Params) => accounts.models(optional(params, 'accountId')),
+    'accounts.choices': (params: Params) => accounts.choices(text(params, 'accountId')),
+    'accounts.choose': (params: Params) => accounts.choose(text(params, 'accountId'), text(params, 'mode'), {
+      ...(typeof params.model === 'string' ? { model: params.model } : {}),
+      ...(typeof params.effort === 'string' ? { effort: params.effort as Effort } : {})
+    }),
     'accounts.authentication': () => summaryAuthentication(accounts.dir),
     'accounts.status': (params: Params) => accounts.status(optional(params, 'accountId')),
 
@@ -221,7 +229,7 @@ export function methods(harness: Harness): Record<string, Handler> {
     },
 
     // ---- Refinement: improving a harness from evidence -------------------------------------------
-    'refine.start': (params: Params) => harness.refine.start({ task: params.task, k: typeof params.k === 'number' ? params.k : 1, mode: params.mode === 'sequential' ? 'sequential' : 'parallel', improver: params.improver ?? {}, baseVersion: optional(params, 'baseVersion'), id: optional(params, 'id') ?? undefined }),
+    'refine.start': (params: Params) => harness.refine.start({ task: params.task, k: typeof params.k === 'number' ? params.k : 1, mode: params.mode === 'sequential' ? 'sequential' : 'parallel', improver: params.improver ?? {}, executor: params.executor ?? undefined, baseVersion: optional(params, 'baseVersion'), retainWorkspaces: params.retainWorkspaces === true, id: optional(params, 'id') ?? undefined }),
     'refine.get': (params: Params) => harness.refine.get(text(params, 'id')),
     'refine.list': (params: Params) => harness.refine.list({ scope: optional(params, 'scope'), limit: typeof params.limit === 'number' ? params.limit : undefined }),
     'refine.running': () => harness.refine.running(),
@@ -313,6 +321,8 @@ export function methods(harness: Harness): Record<string, Handler> {
     'runs.since': (params: Params) => runsSince(root(), { session: optional(params.filter ?? {}, 'session'), agent: optional(params.filter ?? {}, 'agent'), account: optional(params.filter ?? {}, 'account') }, optional(params, 'since')),
     'runs.events': (params: Params) => readEvents(root(), text(params, 'runId')),
     'runs.pending': (params: Params) => pendingDecisions(readEvents(root(), text(params, 'runId'))),
+    'runs.checklist': (params: Params) => checklistOf(readEvents(root(), text(params, 'runId'))),
+    'runs.continuation': (params: Params) => continuationOf(root(), text(params, 'runId'), optional(params, 'sessionDir')),
     'runs.active': () => runs.activeRunIds(),
     'runs.interrupt': async (params: Params) => {
       const runId = text(params, 'runId')

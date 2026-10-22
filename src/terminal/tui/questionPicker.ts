@@ -2,6 +2,8 @@ import type { Theme } from '@earendil-works/pi-coding-agent'
 import { SelectList, stripTerminalSequences, truncateToWidth, visibleWidth, type Component, type Focusable, type SelectListTheme, type TUI } from '@earendil-works/pi-tui'
 
 import type { QuestionOption } from '../../sessions/contracts'
+import { selectedRow, selectionText } from './chrome'
+import { centeredDialogHost, dialogFits } from './dialogGeometry'
 import { DialogPanel } from './dialogs'
 
 const RECOMMENDED = '(Recommended)'
@@ -20,12 +22,12 @@ export function questionOptionsInDisplayOrder(options: readonly QuestionOption[]
 
 function recommendedSelectTheme(theme: Theme): SelectListTheme {
   return {
-    selectedPrefix: text => theme.fg('accent', text),
+    selectedPrefix: text => selectionText(theme, text),
     selectedText: text => {
       const marker = text.lastIndexOf(RECOMMENDED)
-      if (marker < 0) return theme.fg('accent', text.replace(/^→/, '❯'))
+      if (marker < 0) return selectionText(theme, text.replace(/^→/, '❯'))
       const afterMarker = marker + RECOMMENDED.length
-      return theme.fg('accent', text.slice(0, marker).replace(/^→/, '❯')) + theme.fg('warning', RECOMMENDED) + theme.fg('accent', text.slice(afterMarker))
+      return selectionText(theme, text.slice(0, marker).replace(/^→/, '❯')) + theme.fg('warning', RECOMMENDED) + selectionText(theme, text.slice(afterMarker))
     },
     description: text => theme.fg('muted', text),
     scrollInfo: text => theme.fg('dim', text),
@@ -142,9 +144,7 @@ class QuestionPickerContent implements Component, Focusable {
   render(width: number): string[] {
     return this.list.render(width).map(line => {
       const bounded = truncateToWidth(line, width, '')
-      return stripTerminalSequences(line).startsWith('❯')
-        ? this.theme.bg('selectedBg', bounded + ' '.repeat(Math.max(0, width - visibleWidth(bounded))))
-        : bounded
+      return stripTerminalSequences(line).startsWith('❯') ? selectedRow(bounded, width, this.theme) : bounded
     })
   }
 }
@@ -163,6 +163,7 @@ export function createQuestionPicker(
   const content = new QuestionPickerContent(tui, theme, options, multiSelect, allowText, selected, done)
   const hint = multiSelect ? '↑/↓ select · Enter toggle · Submit choices · Esc cancel' : '↑/↓ select · Enter choose · Esc cancel'
   const panel = new DialogPanel(title, content, () => theme, hint, question)
+  panel.centered = centeredDialogHost(tui) && dialogFits(tui.terminal.columns, tui.terminal.rows)
   panel.maxRows = () => Math.max(3, Math.floor(tui.terminal.rows * 0.8))
   return panel
 }

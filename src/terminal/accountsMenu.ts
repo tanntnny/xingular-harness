@@ -38,7 +38,7 @@ interface LoginSnapshot {
 }
 
 /** The same words the app shows for each health state (`App/src/modes/accounts/accountModel.ts`). */
-const HEALTH: Record<string, string> = {
+export const HEALTH: Record<string, string> = {
   ok: 'Ready',
   limited: 'Limit reached',
   auth_expired: 'Sign in again',
@@ -162,10 +162,73 @@ export async function runAccountsMenu(ui: AccountsUi, call: AccountsCall, sessio
   }
 }
 
-async function addAccount(ui: AccountsUi, call: AccountsCall): Promise<void> {
+export async function addAccount(ui: AccountsUi, call: AccountsCall): Promise<void> {
   const label = await ui.input('Name for the new account', 'Work, Personal, …')
   if (!label?.trim()) return
   if (await attempt(ui, () => call('accounts.create', { label: label.trim(), authKind: 'subscription' }))) ui.notify('Account added. Sign in to use it.', 'info')
+}
+
+/** What can be done with one account; `details` is left out where the screen already shows them. */
+export function accountActions(account: AccountView, isSession: boolean, details = true): string[] {
+  return [
+    ...(isSession ? [] : [USE_HERE]),
+    ...(account.isDefault ? [] : [MAKE_DEFAULT]),
+    RENAME,
+    CHECK,
+    ...(details ? [DETAILS] : []),
+    ACTIVITY,
+    SIGN_IN,
+    ...(account.state.piProviders.length ? [REMOVE_PROVIDER] : []),
+    SIGN_OUT,
+    // The session's own account is in use, so it cannot be removed from inside the session.
+    ...(isSession ? [] : [REMOVE])
+  ]
+}
+
+/**
+ * Runs one chosen action. `'relaunch'` means the session is switching to this account; `'gone'` that the
+ * account was removed. Anything the person declines or that fails leaves everything as it was.
+ */
+export async function runAccountAction(ui: AccountsUi, call: AccountsCall, overview: AccountsOverview, account: AccountView, action: string): Promise<'relaunch' | 'gone' | void> {
+  const accountId = account.id
+  if (action === USE_HERE) {
+    if (!(await ui.confirm('Switch this session?', `This ends the terminal's Pi process and resumes the conversation on ${account.label}. Work in progress stops.`))) return
+    if (await attempt(ui, () => call('accounts.relaunch', { accountId }))) {
+      ui.notify(`Switching to ${account.label}.`, 'info')
+      return 'relaunch'
+    }
+  } else if (action === MAKE_DEFAULT) {
+    if (await attempt(ui, () => call('accounts.setDefault', { accountId }))) ui.notify(`${account.label} is the default for new sessions.`, 'info')
+  } else if (action === RENAME) {
+    const label = await ui.input('New name', account.label)
+    if (label?.trim()) await attempt(ui, () => call('accounts.rename', { accountId, label: label.trim() }))
+  } else if (action === CHECK) {
+    if (await attempt(ui, () => call('accounts.refresh', { accountId }))) ui.notify('Checked.', 'info')
+  } else if (action === DETAILS) {
+    await ui.select(accountDetails(account), [BACK])
+  } else if (action === ACTIVITY) {
+    await showActivity(ui, call, accountId, account.label)
+  } else if (action === SIGN_IN) {
+    await signIn(ui, call, account)
+  } else if (action === REMOVE_PROVIDER) {
+    const provider = await ui.select('Remove which provider?', [...account.state.piProviders, BACK])
+    if (!provider || provider === BACK) return
+    if (await ui.confirm(`Remove ${provider}?`, `The stored ${provider} sign-in for ${account.label} is deleted from this device.`)) await attempt(ui, () => call('accounts.removeProvider', { accountId, provider }))
+  } else if (action === SIGN_OUT) {
+    if (await ui.confirm(`Sign out of ${account.label}?`, 'Stored sign-ins are deleted. The account stays, so you can sign in again.')) await attempt(ui, () => call('accounts.signOut', { accountId }))
+  } else if (action === REMOVE) {
+    const last = overview.accounts.length === 1
+    const consequence = last
+      ? 'This is the only account. New sessions will ask you to add one.'
+      : account.isDefault
+        ? 'New sessions will use another account.'
+        : 'Sessions pinned to it will ask for another account next time they start.'
+    if (!(await ui.confirm(`Remove ${account.label}?`, `Its stored sign-in and its runtime folder are deleted. ${consequence}`))) return
+    if (await attempt(ui, () => call('accounts.remove', { accountId }))) {
+      ui.notify(`${account.label} was removed.`, 'info')
+      return 'gone'
+    }
+  }
 }
 
 async function accountMenu(ui: AccountsUi, call: AccountsCall, session: SessionAccount, accountId: string): Promise<'relaunch' | void> {
@@ -174,58 +237,11 @@ async function accountMenu(ui: AccountsUi, call: AccountsCall, session: SessionA
     const overview = await call<AccountsOverview>('accounts.list')
     const account = overview.accounts.find((candidate) => candidate.id === accountId)
     if (!account) return
-    const actions = [
-      ...(isSession ? [] : [USE_HERE]),
-      ...(account.isDefault ? [] : [MAKE_DEFAULT]),
-      RENAME,
-      CHECK,
-      DETAILS,
-      ACTIVITY,
-      SIGN_IN,
-      ...(account.state.piProviders.length ? [REMOVE_PROVIDER] : []),
-      SIGN_OUT,
-      // The session's own account is in use, so it cannot be removed from inside the session.
-      ...(isSession ? [] : [REMOVE]),
-      BACK
-    ]
-    const action = await ui.select(`${account.label} · ${HEALTH[account.state.health] ?? HEALTH.unknown}`, actions)
+    const action = await ui.select(`${account.label} · ${HEALTH[account.state.health] ?? HEALTH.unknown}`, [...accountActions(account, isSession), BACK])
     if (!action || action === BACK) return
-    if (action === USE_HERE) {
-      if (!(await ui.confirm('Switch this session?', `This ends the terminal's Pi process and resumes the conversation on ${account.label}. Work in progress stops.`))) continue
-      if (await attempt(ui, () => call('accounts.relaunch', { accountId }))) {
-        ui.notify(`Switching to ${account.label}.`, 'info')
-        return 'relaunch'
-      }
-    } else if (action === MAKE_DEFAULT) {
-      if (await attempt(ui, () => call('accounts.setDefault', { accountId }))) ui.notify(`${account.label} is the default for new sessions.`, 'info')
-    } else if (action === RENAME) {
-      const label = await ui.input('New name', account.label)
-      if (label?.trim()) await attempt(ui, () => call('accounts.rename', { accountId, label: label.trim() }))
-    } else if (action === CHECK) {
-      if (await attempt(ui, () => call('accounts.refresh', { accountId }))) ui.notify('Checked.', 'info')
-    } else if (action === DETAILS) {
-      await ui.select(accountDetails(account), [BACK])
-    } else if (action === ACTIVITY) {
-      await showActivity(ui, call, accountId, account.label)
-    } else if (action === SIGN_IN) {
-      await signIn(ui, call, account)
-    } else if (action === REMOVE_PROVIDER) {
-      const provider = await ui.select('Remove which provider?', [...account.state.piProviders, BACK])
-      if (!provider || provider === BACK) continue
-      if (await ui.confirm(`Remove ${provider}?`, `The stored ${provider} sign-in for ${account.label} is deleted from this device.`)) await attempt(ui, () => call('accounts.removeProvider', { accountId, provider }))
-    } else if (action === SIGN_OUT) {
-      if (await ui.confirm(`Sign out of ${account.label}?`, 'Stored sign-ins are deleted. The account stays, so you can sign in again.')) await attempt(ui, () => call('accounts.signOut', { accountId }))
-    } else if (action === REMOVE) {
-      const last = overview.accounts.length === 1
-      const consequence = last
-        ? 'This is the only account. New sessions will ask you to add one.'
-        : account.isDefault
-          ? 'New sessions will use another account.'
-          : 'Sessions pinned to it will ask for another account next time they start.'
-      if (!(await ui.confirm(`Remove ${account.label}?`, `Its stored sign-in and its runtime folder are deleted. ${consequence}`))) continue
-      if (await attempt(ui, () => call('accounts.remove', { accountId }))) ui.notify(`${account.label} was removed.`, 'info')
-      return
-    }
+    const outcome = await runAccountAction(ui, call, overview, account, action)
+    if (outcome === 'relaunch') return 'relaunch'
+    if (outcome === 'gone') return
   }
 }
 
@@ -352,7 +368,7 @@ async function poolsMenu(ui: AccountsUi, call: AccountsCall): Promise<void> {
   }
 }
 
-async function editPool(ui: AccountsUi, call: AccountsCall, overview: AccountsOverview, pool: { id: string; label: string; accountIds: string[] } | null): Promise<void> {
+export async function editPool(ui: AccountsUi, call: AccountsCall, overview: AccountsOverview, pool: { id: string; label: string; accountIds: string[] } | null): Promise<void> {
   const label = await ui.input('Pool name', pool?.label)
   if (!label?.trim()) return
   const names = new Map(overview.accounts.map((account) => [account.id, account.label]))

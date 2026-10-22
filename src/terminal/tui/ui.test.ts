@@ -2,7 +2,7 @@ import { type KeybindingsManager, Theme } from '@earendil-works/pi-coding-agent'
 import { Input, KeybindingsManager as TuiKeybindingsManager, TuiMainScreen, TUI_KEYBINDINGS, stripTerminalSequences, visibleWidth, type AutocompleteProvider, type Component, type Terminal } from '@earendil-works/pi-tui'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { DialogPanel, SecretInput } from './dialogs'
+import { DialogPanel, SecretInput, type TerminalDialogOptions } from './dialogs'
 import { createHarnessTheme } from './theme'
 import { createTerminalUi, type TerminalUi } from './ui'
 
@@ -270,6 +270,10 @@ describe('the complete terminal extension UI host', () => {
     const message = Array.from({ length: 50 }, (_, index) => `Action detail ${index}: /important/path/file-${index}.txt`).join('\n')
     const confirmation = host.confirm('Allow this action?', message)
     const panel = tui.getFocusedComponent()!
+    const selected = panel.render(80).find(row => stripTerminalSequences(row).includes('❯ Yes'))
+    expect(selected).toContain(theme.getBgAnsi('selectedBg'))
+    expect(selected).not.toContain(theme.getFgAnsi('accent'))
+    expect(visibleWidth(selected ?? '')).toBe(78)
     const observed: string[] = []
     for (let page = 0; page < 20; page++) {
       const rows = plain(panel, 40)
@@ -297,6 +301,40 @@ describe('the complete terminal extension UI host', () => {
     expect(rows.join('\n')).toContain('❯ Write an answer')
     key(tui, '\r')
     expect(await selected).toBe('Write an answer')
+  })
+
+  it('docks a dialog as a block under an amber rule, with no box around it', async () => {
+    const { host, tui } = setup()
+    const choice = host.select('Choose one', ['Alpha', 'Beta'])
+    const panel = tui.getFocusedComponent() as DialogPanel
+    expect(panel.variant).toBe('block')
+    const rows = plain(panel)
+    expect(rows[0]).toBe('─'.repeat(80))
+    expect(rows[1]).toContain('Choose one')
+    expect(rows.some(row => row.includes('Type to search'))).toBe(true)
+    expect(rows.join('\n')).toContain('❯ Alpha')
+    expect(rows.join('\n')).not.toMatch(/[╭╮╰╯│├┤]/)
+    expect(panel.render(80)[0]).toContain(theme.getFgAnsi('warning'))
+    key(tui, '\r')
+    expect(await choice).toBe('Alpha')
+  })
+
+  it('shows a page dialog full screen and still answers from it', async () => {
+    const { host, tui, terminal } = setup()
+    Object.defineProperty(terminal, 'rows', { value: 24 })
+    const asPage: TerminalDialogOptions = { page: true }
+    const choice = host.select('Accounts', ['Add account', 'Done'], asPage)
+    const panel = tui.getFocusedComponent() as DialogPanel
+    expect(panel.variant).toBe('page')
+    const rows = plain(panel)
+    expect(rows).toHaveLength(24)
+    expect(rows[0]).toContain('Accounts')
+    expect(rows[1]).toBe('─'.repeat(80))
+    expect(rows.at(-2)).toBe('─'.repeat(80))
+    expect(rows.join('\n')).not.toMatch(/[╭╮╰╯│├┤]/)
+    key(tui, '\x1b[B')
+    key(tui, '\r')
+    expect(await choice).toBe('Done')
   })
 
   it('cancels all pending dialogs on shutdown and keeps every dialog row within the terminal width', async () => {

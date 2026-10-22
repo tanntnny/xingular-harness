@@ -62,12 +62,19 @@ describe('the persistent terminal SDK adapter', () => {
     expect(() => parseTerminalArguments(['--session-dir', '/history'])).toThrow('bridge extension')
   })
 
+  it('starts a conversation without a saved model the account cannot use', async () => {
+    transport.call.mockImplementation(async (call: string) => (call === 'accounts.choices.get' ? { normal: { model: 'no-such-provider/unknown', effort: 'low', updatedAt: 'then' } } : {}))
+    const { runtime } = await openFixture()
+    expect(runtime.session.model?.provider).not.toBe('no-such-provider')
+  })
+
   it('loads only explicit plugins and keeps events and commands alive across new, resume, fork and reload', async () => {
     const { runtime, args, root, cwd } = await openFixture()
     const first = runtime.session
     const firstFile = first.sessionFile!
     expect(first.systemPrompt).toContain('Fixed Harness context.')
-    expect(first.extensionRunner.getExtensionPaths()).toEqual([args[5], '<inline:harness-terminal-bridge>'])
+    // Only the explicit plugin and the Harness's own inline extensions load: the bridge and the mode-choice recorder.
+    expect(first.extensionRunner.getExtensionPaths()).toEqual([args[5], '<inline:harness-terminal-bridge>', '<inline:harness-mode-choices>'])
     expect(first.sessionManager.getEntries().filter((entry) => entry.type === 'custom').map((entry) => entry.data)).toEqual([{ mode: 'tui' }, { mode: 'tui' }])
     const events: string[] = []
     runtime.subscribe((event) => events.push(event.type))
@@ -95,7 +102,8 @@ describe('the persistent terminal SDK adapter', () => {
     expect(before).toHaveBeenCalledTimes(4)
     expect(transport.claim).toHaveBeenCalledTimes(1)
     expect(transport.call.mock.calls.length).toBeGreaterThanOrEqual(6)
-    expect(transport.call.mock.calls.every(([call]) => ['terminal.resources', 'terminal.interrupt', 'accounts.session'].includes(call))).toBe(true)
+    // The account's saved model and effort are read when a conversation starts; nothing else is written here.
+    expect(transport.call.mock.calls.every(([call]) => ['terminal.resources', 'terminal.interrupt', 'accounts.session', 'accounts.choices.get'].includes(call))).toBe(true)
     expect(readFileSync(firstFile, 'utf8')).toContain(cwd)
     expect(readdirSync(root)).not.toContain('.pi')
   })
@@ -138,6 +146,29 @@ describe('the persistent terminal SDK adapter', () => {
     expect(runtime.session.sessionManager.getEntries().some(entry => entry.type === 'custom' && entry.customType === 'marker' && (entry.data as { text: string }).text === 'from-runtime')).toBe(true)
     await runtime.dispose()
     await expect(runtime.submit('late')).rejects.toThrow('closed')
+  })
+
+  it('sends attached images to the model in the same prompt', async () => {
+    const { runtime } = await openFixture()
+    const prompt = vi.spyOn(runtime.session, 'prompt').mockResolvedValue()
+    const images = [{ type: 'image' as const, data: 'AAAA', mimeType: 'image/png' }]
+    await runtime.submit('what is in [Image #1]?', false, images)
+    expect(prompt).toHaveBeenCalledWith('what is in [Image #1]?', { images })
+    await runtime.submit('plain')
+    expect(prompt).toHaveBeenLastCalledWith('plain', {})
+    await runtime.dispose()
+  })
+
+  it('aborts standalone Bash executions before settling the native session', async () => {
+    const { runtime } = await openFixture()
+    const session = runtime.session
+    const abortBash = vi.spyOn(session, 'abortBash')
+    const abort = vi.spyOn(session, 'abort')
+
+    await runtime.interrupt()
+
+    expect(abortBash).toHaveBeenCalledOnce()
+    expect(abort).toHaveBeenCalledOnce()
   })
 
   it('refuses changed resource trust before invalidating the existing session or loading new code', async () => {

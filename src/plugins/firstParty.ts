@@ -22,6 +22,8 @@ interface ToolResult {
 
 export const OUTPUT_TRIM = 'output-trim'
 export const BUDGET_GUARD = 'budget-guard'
+export const LESSONS = 'lessons'
+export const LESSONS_CODE = 'Reflect after a run'
 
 const OUTPUT_TRIM_SETTINGS: PluginSetting[] = [
   { key: 'maxChars', label: 'Longest tool result', description: 'A tool result longer than this many characters is cut to its beginning and its end.', default: 20_000, min: 2_000, max: 400_000 }
@@ -30,6 +32,12 @@ const OUTPUT_TRIM_SETTINGS: PluginSetting[] = [
 const BUDGET_GUARD_SETTINGS: PluginSetting[] = [
   { key: 'maxRequests', label: 'Model requests in one reply', description: 'After this many model requests in one reply or one run of work, tool calls are refused so the agent wraps up.', default: 60, min: 5, max: 2_000 },
   { key: 'maxTokens', label: 'Tokens in one reply', description: 'The same, counted in tokens of every kind (cached ones included). 0 means no token limit.', default: 0, min: 0, max: 500_000_000 }
+]
+
+export const LESSONS_SETTINGS: PluginSetting[] = [
+  { key: 'minToolCalls', label: 'Tool calls before reflecting', description: 'Only a run that made at least this many tool calls is reflected on; shorter runs rarely teach anything.', default: 4, min: 1, max: 1_000 },
+  { key: 'maxLessons', label: 'Most lessons kept', description: 'Once the Wiki holds this many lessons, no new one is written until some are removed.', default: 100, min: 1, max: 1_000 },
+  { key: 'maxChars', label: 'Longest lesson', description: 'A lesson longer than this many characters is not kept.', default: 2_000, min: 200, max: 10_000 }
 ]
 
 export const FIRST_PARTY_PLUGINS: readonly PluginDescriptor[] = [
@@ -48,6 +56,14 @@ export const FIRST_PARTY_PLUGINS: readonly PluginDescriptor[] = [
     switchable: { on: false },
     settings: BUDGET_GUARD_SETTINGS,
     code: [{ name: 'Refuse tool calls past the limit', description: 'Counts model requests and tokens in one reply, in conversations, task threads and unattended work. Not in terminal sessions yet.' }]
+  },
+  {
+    id: LESSONS,
+    title: 'Lessons',
+    description: 'After a finished run, a short reflection reads what happened and may keep one general lesson in the Wiki under library/lessons, for later runs to find. It uses the same account and model as the run, so it costs tokens.',
+    switchable: { on: false },
+    settings: LESSONS_SETTINGS,
+    code: [{ name: LESSONS_CODE, description: 'Runs in the background after a completed top-level run with enough tool calls. It reads only that run\'s record, has no tools that change anything, and writes at most one Wiki note.' }]
   }
 ]
 
