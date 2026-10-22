@@ -41,6 +41,7 @@ import type { ToolPolicy } from '../sessions/policy'
 import type { ActiveRun, RunRegistry } from '../sessions/registry'
 import { findRun, loadRun, saveRun, updateRun } from '../sessions/runStore'
 import type { ToolSpec } from '../tools/types'
+import { SESSION_NAME } from '../tools/sessionName'
 import { contributionId } from '../plugins/identity'
 import type { World } from '../world/world'
 import { APPS_COMMAND, WIKI_COMMAND } from './cli'
@@ -76,7 +77,7 @@ export interface TerminalAssets {
 /** Where the package's own build puts them. An application that bundles the harness passes its own. */
 export function defaultAssets(): TerminalAssets {
   const here = dirname(fileURLToPath(import.meta.url))
-  const dist = [here, join(here, '..', '..', 'dist'), join(here, '..', 'dist')].find((folder) => existsSync(join(folder, 'terminal-pi.js'))) ?? here
+  const dist = [here, join(here, '..', '..'), join(here, '..', '..', 'dist'), join(here, '..', 'dist')].find((folder) => existsSync(join(folder, 'terminal-pi.js'))) ?? here
   return {
     node: process.execPath,
     cli: join(dist, 'cli.js'),
@@ -126,6 +127,7 @@ interface Live {
 }
 
 export interface TerminalsOptions {
+  doctor?: import('../doctor/service').Doctor
   /** Which plugin code in variants a person trusted. */
   trust?: VariantTrust | null
   subagents?: Subagents
@@ -160,6 +162,7 @@ const READ_ONLY_TOOLS = new Set(['read', 'grep', 'find', 'ls'])
 
 export class Terminals {
   private readonly sessions = new Map<string, Live>()
+  private readonly diagnosticOwners = new Map<string, string>()
   /** The variant each live session runs, for loading its skills. */
   private readonly variantDirs = new Map<string, string>()
   /** The world tools each session was given, so a call can only reach one of them. */
@@ -490,7 +493,7 @@ export class Terminals {
     }
     // With no application policy: reads run, a read-only session refuses the rest, and anything else asks.
     const name = tool.toLowerCase()
-    if (name === SPAWN_SUBAGENT || name === WAIT_SUBAGENTS || READ_ONLY_TOOLS.has(name) || this.worldReadOnly.has(name) || this.options.apps.toolNames.includes(name as never)) return { allowed: true }
+    if (name === SESSION_NAME || name === SPAWN_SUBAGENT || name === WAIT_SUBAGENTS || READ_ONLY_TOOLS.has(name) || this.worldReadOnly.has(name) || this.options.apps.toolNames.includes(name as never)) return { allowed: true }
     if (live.input.readOnly) return { allowed: false, reason: 'This session is read-only.' }
     return { allowed: false, requiresApproval: true, rememberable: true, reason: 'This native action requires approval.' }
   }
@@ -507,7 +510,7 @@ export class Terminals {
     if (call === 'terminal.subagents.register') {
       if (!Array.isArray(params.tools) || params.tools.some((name: unknown) => typeof name !== 'string')) throw invalid('Native tool names are required.')
       const readOnly = live.input.readOnly === true
-      const readTools = new Set([...READ_ONLY_TOOLS, SPAWN_SUBAGENT, WAIT_SUBAGENTS, 'ask_user', 'mcp_list_tools', 'mcp_call_tool', 'history_search', 'history_read', 'wiki_search', 'wiki_read', 'wiki_list', 'memory_facts', 'skill_load'])
+      const readTools = new Set([...READ_ONLY_TOOLS, SESSION_NAME, SPAWN_SUBAGENT, WAIT_SUBAGENTS, 'ask_user', 'mcp_list_tools', 'mcp_call_tool', 'history_search', 'history_read', 'wiki_search', 'wiki_read', 'wiki_list', 'memory_facts', 'skill_load'])
       const tools = params.tools.filter((name: string) => !readOnly || readTools.has(name)) as string[]
       const capabilities = this.options.resolveCapabilities ? await this.options.resolveCapabilities(live.caller, tools, live.input.cwd) : { version: 1 as const, tools, connectors: [], contributions: [] }
       freezeRun(this.options.env.root, run.runId, live.caller, capabilities)
@@ -620,7 +623,8 @@ export class Terminals {
       const variant = input.variant ? materialise(root, input.variant, { trust: this.options.trust ?? null }) : null
       if (variant) this.variantDirs.set(sessionId, variant.dir)
       const worldTools = await this.worldToolNames(input, account)
-      const pack = compile(env, caller, worldTools.length ? { ...input.launch, tools: [...(input.launch?.tools ?? []), ...worldTools] } : input.launch ?? {}, variant)
+      const launchTools = [...new Set([...(input.launch?.tools ?? []), SESSION_NAME, ...worldTools])]
+      const pack = compile(env, caller, { ...input.launch, tools: launchTools }, variant)
       record(root, pack)
       mkdirSync(this.historyDir(input), { recursive: true })
       saveForSession(input.sessionFolder, pack)
@@ -650,6 +654,32 @@ export class Terminals {
         caller: () => ({ ...caller, runId: live.controller.activeRun?.runId ?? null }),
         broker,
         terminal: { accept: (event, data) => live.controller.accept(event, data), disconnected: () => live.controller.disconnected(), control: async (call, params) => {
+          if (call.startsWith('terminal.doctor.')) {
+            const doctor = this.options.doctor
+            if (!doctor) throw invalid('Diagnostics are unavailable in this host.')
+            if (call === 'terminal.doctor.start') {
+              const model = typeof params.model === 'string' ? params.model : live.input.model ?? null
+              const tools = [...new Set([
+                ...(Array.isArray(params.tools) ? params.tools.filter((name): name is string => typeof name === 'string') : []),
+                ...await this.worldToolNames(live.input, live.account)
+              ])]
+              const variantDir = this.variantDirs.get(sessionId)
+              const report = doctor.start({
+                context: { caller: live.caller, cwd: live.input.cwd, accountId: live.account.id, model, tools,
+                  variant: variantDir ? { dir: variantDir, scope: live.input.variant?.scope } : null },
+                mode: params.mode === 'live' ? 'live' : 'local',
+                checks: Array.isArray(params.checks) ? params.checks.filter((id): id is string => typeof id === 'string') : [],
+                confirmed: params.confirmed === true
+              })
+              this.diagnosticOwners.set(report.id, sessionId)
+              return report
+            }
+            const id = typeof params.id === 'string' ? params.id : ''
+            if (this.diagnosticOwners.get(id) !== sessionId) throw invalid('This diagnostic job belongs to another terminal.')
+            if (call === 'terminal.doctor.read') return doctor.read(id)
+            if (call === 'terminal.doctor.cancel') return doctor.cancel(id)
+            throw invalid('Unknown diagnostic operation.')
+          }
           if (call.startsWith('terminal.subagents.')) return this.subagentsCall(live, call, params)
           if (call === 'terminal.logs.info') return harnessLogInfo(this.options.stateDir)
           if (call === 'terminal.logs.read') {
@@ -764,6 +794,10 @@ export class Terminals {
   async dispose(sessionId: string): Promise<void> {
     const live = this.sessions.get(sessionId)
     if (!live) return
+    for (const [id, owner] of this.diagnosticOwners) if (owner === sessionId) {
+      this.options.doctor?.cancel(id)
+      this.diagnosticOwners.delete(id)
+    }
     this.sessions.delete(sessionId)
     this.worldNames.delete(sessionId)
     void this.options.world?.release(sessionId).catch(() => undefined)

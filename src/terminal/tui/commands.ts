@@ -39,6 +39,7 @@ export interface TerminalCommandHost {
 export interface TerminalCommandCompletion { name: string; description?: string }
 
 const BUILTINS: TerminalCommandCompletion[] = [
+  { name: 'doctor', description: 'Check account, model, tools and runtime readiness' },
   { name: 'help', description: 'List the commands' },
   { name: 'plan', description: 'Plan one request, read-only: /plan <brief>' },
   { name: 'btw', description: 'Ask a side question without interrupting: /btw <question>' },
@@ -211,6 +212,7 @@ export function createTerminalCommands(host: TerminalCommandHost) {
           if (selected) await session.setModel(selected.model, { persist: selected.persist })
           break
         }
+        case 'doctor': await openPage('doctor'); break
         case 'settings': await openPage('settings'); break
         case 'permissions': await openPage('permissions'); break
         case 'accounts': await openPage('accounts'); break

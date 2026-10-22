@@ -210,6 +210,7 @@ describe('a pi terminal session', () => {
     await tell('ready', {})
     await tell('begin', { text: 'Edit' })
     expect(await tell('policy', { tool: 'read', args: { path: 'a' } })).toEqual({ allowed: true })
+    expect(await tell('policy', { tool: 'session_name', args: { name: 'Inspect browser tools' } })).toEqual({ allowed: true })
     expect(await tell('policy', { tool: 'bash', args: { command: 'rm -rf x' } })).toMatchObject({ allowed: false, requiresApproval: true })
     const decision = tell('approval', { requestId: 'call-1', target: 'bash', action: '{"command":"rm -rf x"}', tool: 'bash', args: { command: 'rm -rf x' } })
     await vi.waitFor(() => expect(events.some((event) => event.type === 'approval.requested')).toBe(true))
@@ -372,7 +373,7 @@ describe('a pi terminal session', () => {
     expect(await socketCall<string>(connection, 'skill.load')).toBe('You have no skills.')
     expect(await socketCall<string>(connection, 'wiki.list')).toContain('home')
     const listed = await socketCall<{ tools: { name: string; parameters: { type: string } }[] }>(connection, 'tools.list')
-    expect(listed.tools.map((tool) => tool.name)).toEqual(['mcp_list_tools', 'mcp_call_tool', 'web_search', 'web_fetch'])
+    expect(listed.tools.map((tool) => tool.name)).toEqual(['mcp_list_tools', 'mcp_call_tool', 'web_search', 'web_fetch', 'browser_navigate', 'browser_snapshot', 'browser_read', 'browser_screenshot', 'browser_click', 'browser_type', 'browser_select', 'browser_press', 'browser_scroll', 'browser_wait', 'browser_tabs'])
     expect(listed.tools[0].parameters.type).toBe('object')
     // Account calls exist, but only the session's extension holds the key that unlocks them.
     await expect(socketCall(connection, 'accounts.list')).rejects.toMatchObject({ code: 'unauthorized' })

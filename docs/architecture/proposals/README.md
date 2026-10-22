@@ -29,6 +29,12 @@ proposal is `Accepted`.
 | [PROP-0008](PROP-0008-lessons-from-runs.md) | Opt-in lessons from finished runs, kept in the Wiki | Implemented | INV-MEM-2, 02, 06, 08-memory-and-history.md, 12-storage.md, ADR-0010 | 2026-10-22 |
 | [PROP-0009](PROP-0009-foundation-and-variants.md) | Name the fixed half the foundation and the mutating half the variant | Accepted | INV-TREE→INV-VAR, new INV-FND-1/2, 00, 03, 05, 10, 12, ADR-0011 | 2026-10-22 |
 
+| [PROP-0010](PROP-0010-session-names.md) | Agent-managed native session names | Implemented | 02, 04, 07, 11 | 2026-10-22 |
+
+| [PROP-0011](PROP-0011-doctor.md) | Readiness diagnostics and explicit live probes | Accepted; implementation in working tree | INV-EXT-1/4, INV-GATE-1, INV-TUI-4, 01, 07, 09, 10, 11 | 2026-10-22 |
+
+| [PROP-0012](PROP-0012-release-baseline.md) | Public 1.0.0 distribution and generic browser ownership | Accepted; candidate implementation | INV-BND-2, 00, 07, 11, 13 | 2026-10-22 |
+
 Numbers are four digits, start at `0001`, and are never reused.
 
 ## Template

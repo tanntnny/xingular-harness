@@ -26,6 +26,7 @@ import type { TerminalPrepareInput } from '../terminal/terminals'
 import { checklistOf } from '../tools/checklist'
 import { dispatch } from '../tools/dispatch'
 import * as components from '../variant/components'
+import type { BrowserConfig } from '../browser/config'
 import { materialise, type VariantChoice } from '../variant/materialise'
 import { seedVariant } from '../variant/seed'
 import * as variants from '../variant/store'
@@ -73,6 +74,11 @@ function check(variant: Variant): { ok: true; census: ReturnType<typeof validate
   }
 }
 
+/** Only the named fields of a parameter object. */
+function pick<T extends string>(params: Params, keys: readonly T[]): Record<T, unknown> {
+  return Object.fromEntries(keys.filter((key) => key in params).map((key) => [key, params[key]])) as Record<T, unknown>
+}
+
 export function methods(harness: Harness): Record<string, Handler> {
   const { accounts, approvals, apps, runs, sessions, terminals, env } = harness
   const root = (): string => env.root
@@ -80,7 +86,14 @@ export function methods(harness: Harness): Record<string, Handler> {
 
   return {
     // ---- The harness itself --------------------------------------------------------------------
+    'web.status': () => harness.world.searchStatus(),
+    'web.setKey': (params: Params) => harness.world.setSearchKey(text(params, 'provider'), typeof params.key === 'string' ? params.key : null),
+    'browser.config': () => harness.world.browserConfig(),
+    'browser.configure': (params: Params) => harness.world.configureBrowser(pick(params, ['headed', 'cdpUrl', 'executablePath', 'allowPrivate', 'allowedDomains']) as Partial<BrowserConfig>),
     'harness.status': () => ({ dataRoot: harness.dataRoot, productName: env.productName, recovery: harness.recovery, activeRuns: runs.activeRunIds() }),
+    'doctor.start': (params: Params) => harness.doctor.start(params as import('../doctor/types').DoctorInput),
+    'doctor.read': (params: Params) => harness.doctor.read(text(params, 'id')),
+    'doctor.cancel': (params: Params) => harness.doctor.cancel(text(params, 'id')),
     'harness.open': (params: Params) => harness.open(text(params, 'dataRoot'), Array.isArray(params.agentIds) ? params.agentIds : []),
     'harness.rebuildIndex': () => harness.rebuildIndex(),
     'hub.list': (params: Params) => harness.hub.list(params.refresh === true),

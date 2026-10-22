@@ -93,3 +93,10 @@ what this page states is binding. Adopting parts of that draft is an architectur
 `src/prompt/compile.ts`, `src/sessions/sessions.ts` (calls `sessionLaunch`),
 `src/terminal/terminals.ts` (calls `compile` + `render`), `src/variant/materialise.ts` (variant
 sections), `src/sessions/planMode.ts` (`plan` section).
+
+## Session naming guidance (PROP-0010)
+
+The Session tool group describes `session_name` when available: name meaningful work early
+with an imperative sentence of at most six words, and revise when the objective changes.
+This is fixed foundation guidance. The current name stays in native session metadata and
+the terminal snapshot; it is never interpolated into the stable system prompt.

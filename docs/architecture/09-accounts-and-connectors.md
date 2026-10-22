@@ -79,3 +79,12 @@ skills, prompts, rules and Pi packages.
 
 `src/accounts/*.ts`, `src/mcp/*.ts`, `src/hub/*.ts`. Decision:
 [ADR-0005](../decisions/ADR-0005-app-provided-oauth-clients.md).
+
+## Account and connector diagnostics
+
+`Accounts.inspect` reads credentials and a non-refreshing Pi model catalogue through a read-only
+credential store. It never refreshes OAuth tokens or verifies a key over the network. `/doctor`
+labels this local readiness. A selected live model probe sends one synthetic request, caps output
+at 64 tokens, and records usage through the normal run writer. It never substitutes an account.
+MCP live diagnostics connect and list tools on the selected scoped connector, without calling
+connector tools or starting sign-in. Disposable grants and clients are closed afterwards.

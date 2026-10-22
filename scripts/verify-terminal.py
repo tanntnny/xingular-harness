@@ -48,6 +48,15 @@ def has_truecolor_background(raw, color):
     return re.search(pattern, raw) is not None
 
 
+def has_slim_scrollbar_at_right_edge(output, width):
+    glyph = '▕'.encode()
+    for marker in re.finditer(re.escape(glyph), output):
+        cursor_positions = list(re.finditer(rb'\x1b\[(\d+);(\d+)H', output[:marker.start()]))
+        if cursor_positions and int(cursor_positions[-1].group(2)) >= width - 2:
+            return True
+    return False
+
+
 def assert_prompt_gutter(terminal, marker, first_line, second_line, wrapped_word, label):
     if terminal.screen is None:
         return
@@ -609,11 +618,13 @@ def main():
                     record = wait_for_goal(terminal, root, 'verify-scroll-latest')
                     assert record.get('status') == 'completed', 'The long transcript fixture did not complete'
                     terminal.read(0.3)
+                    assert has_slim_scrollbar_at_right_edge(bytes(terminal.data[start:]), width), 'The slim transcript scrollbar thumb was not emitted at the right edge'
                     if terminal.screen is not None:
                         assert 'Jump to latest' not in '\n'.join(terminal.screen.display), 'The jump badge appeared while pinned to the latest message'
                         assert any('▕' in line[-4:] for line in terminal.screen.display), 'The slim transcript scrollbar thumb was not rendered at the right edge'
                     terminal.scroll(max(1, width // 2), max(1, height // 2))
                     terminal.wait('Jump to latest', start, timeout=10)
+                    assert has_slim_scrollbar_at_right_edge(bytes(terminal.data[start:]), width), 'The slim transcript scrollbar thumb disappeared from the right edge after scrolling away'
                     if terminal.screen is not None:
                         assert 'Jump to latest' in '\n'.join(terminal.screen.display), 'Mouse-wheel scrolling away did not show the jump badge'
                         assert any('▕' in line[-4:] for line in terminal.screen.display), 'The slim scrollbar thumb disappeared after scrolling away'
@@ -628,7 +639,7 @@ def main():
                         terminal.read(0.3)
                         visible = '\n'.join(terminal.screen.display)
                         assert 'Jump to latest' not in visible and 'LOCAL_SCROLL_TAIL' in visible, 'Clicking the badge after PgUp did not return to the latest message'
-                        profile['checks'].append('badge hidden while pinned, shown after wheel and PageUp scrolling, and clicked to return to latest content')
+                        profile['checks'].append('slim right-edge scrollbar thumb; badge hidden while pinned, shown after wheel and PageUp scrolling, and clicked to return to latest content')
                     else:
                         terminal.click(max(1, width - 10), max(1, height - 7))
                         terminal.read(0.3)
@@ -636,7 +647,7 @@ def main():
                         terminal.wait('Jump to latest', start, timeout=10)
                         terminal.click(max(1, width - 10), max(1, height - 7))
                         terminal.read(0.3)
-                        profile['checks'].append('badge appears after wheel and PageUp scrolling; clicks sent at expected lower-right position, with screen assertions skipped because optional pyte is unavailable')
+                        profile['checks'].append('slim right-edge glyph emitted; badge appears after wheel and PageUp scrolling; screen rendering assertions skipped because optional pyte is unavailable')
                     terminal.send('/quit\r')
                     continue
                 if args.compaction_only:

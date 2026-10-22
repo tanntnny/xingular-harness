@@ -12,6 +12,7 @@ import { runHubMenu } from './hubMenu'
 import { claimTerminalControl, controlCall } from './control'
 import { SUBAGENT_OWNER, SUBAGENT_RECEIPT, SUBAGENT_RESULTS, subagentHistory, type SubagentReceipt } from '../sessions/subagents'
 import { askUserTool } from '../tools/askUser'
+import { sessionNameTool } from '../tools/sessionName'
 import type { QuestionAnswer } from '../sessions/registry'
 import { PLAN_INSTRUCTIONS, planRefusal } from '../sessions/planMode'
 import { pruneToolImages } from '../world/images'
@@ -333,6 +334,18 @@ export default async function (pi: ExtensionAPI, planRun?: TerminalPlanRunState,
     // This clears the controller's readiness while the next native session binds. The
     // process-level control claim survives replacement; only the session poller stops.
     await terminalCall('shutdown').catch(() => {})
+  })
+  const naming = sessionNameTool(() => ({
+    get sessionName() { return pi.getSessionName() },
+    setSessionName: name => pi.setSessionName(name)
+  }))
+  pi.registerTool({
+    name: naming.name, label: naming.label, description: naming.description,
+    parameters: Type.Unsafe(naming.parameters(Type) as Record<string, unknown>),
+    async execute(_id, input) {
+      const result = await naming.execute(input as Record<string, unknown>)
+      return { content: [{ type: 'text', text: typeof result === 'string' ? result : result.text }], details: undefined }
+    }
   })
   const ask = askUserTool({ requestAnswers: questions => terminalCall<QuestionAnswer[]>('questions', { questions }, 1_230_000) })
   pi.registerTool({

@@ -4,6 +4,7 @@ import type { CallerContext } from '../core/caller'
 import type { CapabilitySet } from '../capabilities/types'
 import type { ActiveRun } from '../sessions/registry'
 import type { ToolAttachmentRef } from '../sessions/contracts'
+import type { ProviderDiagnostics } from '../doctor/types'
 
 export interface ToolResult {
   text: string
@@ -44,4 +45,4 @@ export interface ToolSession {
 }
 
 /** Builds the tools a session may be given. Only those named in `allow` are registered. */
-export type ToolProvider = (session: ToolSession) => ToolSpec[] | Promise<ToolSpec[]>
+export type ToolProvider = ((session: ToolSession) => ToolSpec[] | Promise<ToolSpec[]>) & ProviderDiagnostics

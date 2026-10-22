@@ -31,6 +31,9 @@ import * as pluginApi from './plugins/api'
 import * as attachments from './plugins/attachments'
 import { HARNESS_PLUGINS } from './plugins/builtin'
 import { World } from './world/world'
+import { Doctor } from './doctor/service'
+import { builtinChecks } from './doctor/checks'
+import { diagnosticProbe } from './doctor/probe'
 import type { Resolver } from './plugins/discover'
 import { Hooks } from './plugins/hooks'
 import { packageFolders, Plugins } from './plugins/plugins'
@@ -44,6 +47,8 @@ import { Sessions } from './sessions/sessions'
 import { Terminals, type TerminalAssets } from './terminal/terminals'
 
 export interface HarnessOptions {
+  /** Disable the generic backend when a host supplies its own browser tools. */
+  browser?: boolean
   hub?: HubOptions
   /** Where knowledge and history live. May be set later with `open`. */
   dataRoot?: string | null
@@ -115,6 +120,7 @@ class Env implements HarnessEnv {
 }
 
 export class Harness {
+  private readonly browserEnabled: boolean
   readonly hub: Hub
   readonly bus = new Bus()
   readonly env: Env
@@ -142,11 +148,13 @@ export class Harness {
   readonly lessons: Lessons
   refineHost: RefineHost | null
   readonly terminals: Terminals
+  readonly doctor: Doctor
   /** Resolves when what was loaded in the background at construction is in place. */
   readonly ready: Promise<void>
   recovery: Recovery = { interruptedRuns: 0, interruptedRunIds: [], reindexedPages: 0, migrationError: null }
 
   constructor(options: HarnessOptions) {
+    this.browserEnabled = options.browser !== false
     this.stateDir = options.stateDir
     mkdirSync(this.stateDir, { recursive: true })
     // Before anything can start a session: no inherited credential, no `~/.pi`.
@@ -212,18 +220,23 @@ export class Harness {
       factory: options.sessionFactory,
       trust: this.trust
     })
-    this.world = new World({ root: () => this.env.root, stateDir: this.stateDir, secrets })
+    this.world = new World({ root: () => this.env.root, stateDir: this.stateDir, secrets, browser: this.browserEnabled ? undefined : false })
     // The harness's own world tools come first; a tool an application provides under the same name is not added again.
     this.sessions.provide(this.world.provider())
+    this.doctor = new Doctor({
+      checks: context => builtinChecks(this, context, secrets, options.assets),
+      probe: (context, signal, action) => diagnosticProbe(this, context, signal, action)
+    })
     const refineRuntime = { root: () => this.env.root, runs: this.runs, run: (input: Parameters<Sessions['run']>[0]) => this.sessions.run(input) }
     this.refine = new Refinements({ root: () => this.env.root, bus: this.bus, trust: this.trust, host: () => this.refineHost, runtime: refineRuntime })
     this.lessons = new Lessons({ root: () => this.env.root, runtime: refineRuntime })
-    this.terminals = new Terminals({ trust: this.trust, subagents: this.subagents, resolveCapabilities: (caller, tools, cwd) => capabilities.resolve(this, { agentId: caller.agentId ?? null, projectId: caller.projectId ?? null, cwd, tools }), env: this.env, stateDir: this.stateDir, accounts: this.accounts, runs: this.runs, approvals: this.approvals, apps: this.apps, policy: this.policy, bus: this.bus, plugins: this.plugins, pluginControl: { list: (scope) => pluginApi.list(this, scope), attach: (params, on) => pluginApi.attach(this, params, on), trust: (scope) => pluginApi.trust(this, scope), untrust: (scope) => pluginApi.untrust(this, scope) }, assets: options.assets, hub: this.hub, world: this.world })
+    this.terminals = new Terminals({ trust: this.trust, subagents: this.subagents, resolveCapabilities: (caller, tools, cwd) => capabilities.resolve(this, { agentId: caller.agentId ?? null, projectId: caller.projectId ?? null, cwd, tools }), env: this.env, stateDir: this.stateDir, accounts: this.accounts, runs: this.runs, approvals: this.approvals, apps: this.apps, policy: this.policy, bus: this.bus, plugins: this.plugins, pluginControl: { list: (scope) => pluginApi.list(this, scope), attach: (params, on) => pluginApi.attach(this, params, on), trust: (scope) => pluginApi.trust(this, scope), untrust: (scope) => pluginApi.untrust(this, scope) }, assets: options.assets, hub: this.hub, world: this.world, doctor: this.doctor })
     this.ready = this.apps.start().catch((error) => log('connected apps', error instanceof Error ? error.message : String(error)))
     this.runs.listen((event, run) => {
       this.accounts.onRunEvent(event, run)
       // Each run is indexed when it ends, so the next turn can already recall it.
       if (event.type === 'completed' || event.type === 'failed') recall.indexRun(this.env.root, event.runId)
+      if (run?.trigger === 'doctor') return
       if ((event.type === 'completed' || event.type === 'failed') && run) {
         if (event.type === 'completed') this.lessons.consider(run)
         this.hooks.emit({ type: 'history.run.ended', runId: run.id, sessionId: run.sessionId, status: run.status, goal: run.goal ?? null, agentId: run.agentId ?? null, projectId: run.projectId ?? null, startedAt: run.startedAt, endedAt: run.endedAt ?? null, at: event.timestamp })
@@ -237,9 +250,10 @@ export class Harness {
 
   /** Sets the application's own parts, described as plugins. One with a harness plugin's id is ignored. */
   describe(plugins: readonly PluginDescriptor[]): void {
-    const own = new Set(HARNESS_PLUGINS.map((plugin) => plugin.id))
+    const foundation = HARNESS_PLUGINS.filter(plugin => this.browserEnabled || plugin.id !== 'browser')
+    const own = new Set(foundation.map((plugin) => plugin.id))
     const supplied = plugins.filter((plugin) => plugin && typeof plugin.id === 'string' && !own.has(plugin.id))
-    this.descriptors = [...HARNESS_PLUGINS, ...supplied]
+    this.descriptors = [...foundation, ...supplied]
     this.applicationPlugins = new Set(supplied.map((plugin) => plugin.id))
   }
 
@@ -308,6 +322,7 @@ export class Harness {
 
   /** Stops live runs and refinements and releases the index. */
   async close(): Promise<void> {
+    await this.doctor.close()
     this.hub.close()
     await this.refine.close()
     await this.lessons.close()

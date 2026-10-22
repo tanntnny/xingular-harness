@@ -71,3 +71,18 @@ the switch and global tools.
 
 `src/tools/*.ts`, `src/web/*.ts`, `src/sessions/sessions.ts`, `src/sessions/runner.ts`,
 `src/sessions/approvals.ts`, `src/sessions/policy.ts`.
+
+## Session naming (PROP-0010)
+
+`session_name` (`tools/sessionName.ts`) binds to the current native session. It maintains
+only Pi session metadata and is explicitly plan-safe, while still subject to capability
+selection and the host policy. The terminal registers the same definition through its Pi
+bridge; standalone policy permits naming without approval. See page 02 for validation and
+persistence. It is a foundation tool, not mutable variant data.
+
+## Diagnostic probes
+
+`/doctor` is a user command, never a model tool. Live diagnostics create separate real runs,
+intersect current capabilities, and execute tool calls through the existing gate. Calls that
+require an additional per-call approval report blocked; batch diagnostic consent does not grant
+standing permission. No raw tool inputs, results, or screenshots enter diagnostic findings.

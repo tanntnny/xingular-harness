@@ -68,3 +68,11 @@ None of its own. Secrets go to the `SecretStore`; everything else is passed per 
 `src/core/caller.ts`, `src/core/env.ts`, `src/prompt/compile.ts` (`Launch`), `src/tools/types.ts`,
 `src/sessions/policy.ts`, `src/accounts/secrets.ts`, `src/plugins/types.ts`
 (`PluginDescriptor`), `src/refine/host.ts`, `src/server/remote.ts` (protocol equivalents).
+
+## Provider diagnostics
+
+Tool providers optionally carry `diagnostics(context)` metadata (PROP-0011). Checks expose local
+readiness callbacks and declared live probes. Existing callable provider functions remain valid.
+This extends surface 2; the number of extension points remains seven. `WorldPart` forwards the
+same callback. Remote `tools.register` accepts diagnostic descriptors; `tools.diagnose` returns
+local readiness data. Optional remote single-tool probe recipes go through the normal gate.

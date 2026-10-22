@@ -321,3 +321,10 @@ describe('owned terminal commands', () => {
   })
 
 })
+
+it('offers /doctor and consumes it as a local command', async () => {
+  const { commands, ui } = setup()
+  expect(commands.completions().some(command => command.name === 'doctor')).toBe(true)
+  expect(await commands.execute('/doctor')).toBe(true)
+  expect(ui.custom).toHaveBeenCalledOnce()
+})

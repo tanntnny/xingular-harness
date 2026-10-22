@@ -10,6 +10,7 @@ vi.mock('../piExtension', () => ({ default: (pi: ExtensionAPI) => {
   pi.on('session_start', (_event, ctx) => { pi.appendEntry('bridge-start', { mode: ctx.mode }) })
 } }))
 
+import { sessionNameTool } from '../../tools/sessionName'
 import { assertTerminalSessionScope, createTerminalRuntime, parseTerminalArguments, type TerminalRuntime } from './runtime'
 import { assertPiAdapterVersion, loadPiAdapter, withBuiltInRenderers } from './piAdapter'
 
@@ -60,6 +61,27 @@ describe('the persistent terminal SDK adapter', () => {
     expect(() => parseTerminalArguments(['--serve'])).toThrow('Unsupported')
     expect(() => parseTerminalArguments(['--session-dir'])).toThrow('needs a value')
     expect(() => parseTerminalArguments(['--session-dir', '/history'])).toThrow('bridge extension')
+  })
+
+  it('persists names across reopen, emits updates, and isolates new sessions', async () => {
+    const { runtime, host } = await openFixture()
+    const events: string[] = []
+    runtime.subscribe(event => events.push(event.type))
+    // A user message materializes the native history without requesting a model.
+    runtime.session.sessionManager.appendMessage({ role: 'user', content: 'Inspect browser tools', timestamp: Date.now() })
+    const file = runtime.session.sessionFile!
+    await sessionNameTool(() => runtime.session).execute({ name: 'Inspect browser tools' })
+    expect(runtime.snapshot().name).toBe('Inspect browser tools')
+    expect(events).toContain('session_info_changed')
+    expect(host.changed).toHaveBeenCalled()
+    await runtime.newSession()
+    expect(runtime.snapshot().name).toBeUndefined()
+    await runtime.switchSession(file)
+    expect(runtime.snapshot().name).toBe('Inspect browser tools')
+    await sessionNameTool(() => runtime.session).execute({ name: 'Add browser integration tests' })
+    await runtime.newSession()
+    await runtime.switchSession(file)
+    expect(runtime.snapshot().name).toBe('Add browser integration tests')
   })
 
   it('starts a conversation without a saved model the account cannot use', async () => {

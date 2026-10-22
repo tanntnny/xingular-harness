@@ -230,7 +230,7 @@ export function formatWorkingDuration(durationMs: number): string {
   const seconds = Math.floor((Number.isFinite(durationMs) ? Math.max(0, durationMs) : 0) / 1000)
   const minutes = Math.floor(seconds / 60)
   const remainingSeconds = seconds % 60
-  return minutes > 0 ? `${minutes}m ${remainingSeconds}s` : `${seconds}s`
+  return minutes > 0 ? `${minutes}m${remainingSeconds ? ` ${remainingSeconds}s` : ''}` : `${seconds}s`
 }
 
 export function createCompletionStatus(turnId: string, durationMs: number): string {

@@ -97,6 +97,8 @@ export type PiEvent =
 
 export interface PiSessionLike {
   sessionId: string
+  readonly sessionName?: string
+  setSessionName?(name: string): void
   sessionManager?: { getBranch(): unknown[] }
   thinkingLevel?: Effort
   systemPrompt?: string

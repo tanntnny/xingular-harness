@@ -1,4 +1,4 @@
-import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent'
+import type { ExtensionAPI, ExtensionContext, ExtensionToolContext } from '@earendil-works/pi-coding-agent'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 const transport = vi.hoisted(() => ({
@@ -29,6 +29,20 @@ function extension() {
 afterEach(() => vi.useRealTimers())
 
 describe('terminal bridge lifecycle', () => {
+  it('registers the shared naming tool against Pi metadata', async () => {
+    const { api } = extension()
+    let name: string | undefined
+    api.getSessionName = () => name
+    api.setSessionName = vi.fn(value => { name = value })
+    await terminalExtension(api)
+    const naming = vi.mocked(api.registerTool).mock.calls.map(([tool]) => tool).find(tool => tool.name === 'session_name')!
+    await naming.execute('name-1', { name: 'Add web browser integrations' }, undefined, undefined, {} as ExtensionToolContext)
+    await naming.execute('name-2', { name: 'Add web browser integrations' }, undefined, undefined, {} as ExtensionToolContext)
+    expect(name).toBe('Add web browser integrations')
+    expect(api.setSessionName).toHaveBeenCalledOnce()
+    await expect(naming.execute('name-3', { name: 'Add web browser integrations for all agents' }, undefined, undefined, {} as ExtensionToolContext)).rejects.toThrow('six words')
+  })
+
   it('adds plan instructions as a one-run context section and withdraws them on the next user request', async () => {
     const state: TerminalPlanRunState = { active: true, allowedTools: new Set(['read']) }
     const { api, ctx, handlers } = extension()

@@ -129,6 +129,7 @@ export interface OpenTuiView {
   /** The pending question form above the composer, or null. */
   questionDock: QuestionDockView | null
   working: {
+    sessionName?: string
     active: boolean
     frame: string
     label: string
@@ -1567,7 +1568,7 @@ export class OpenTuiApplication {
       planMode: this.planMode,
       planChoice: this.draft === '' && !this.bashMode ? this.planChoice.view : null,
       questionDock: this.questionDock?.view ?? null,
-      working: this.working(),
+      working: { ...this.working(), sessionName: snapshot?.name },
       statuses: [...this.statuses.values()],
       linkHovered: this.hoveredLink !== null,
       toast: this.toastMessage ?? null,

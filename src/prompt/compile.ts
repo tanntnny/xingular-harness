@@ -16,6 +16,7 @@ import { charCount, compareText, lines, takeChars } from '../core/text'
 import type { Materialised } from '../variant/materialise'
 import * as notes from '../wiki/notes'
 import { isWorldTool, WORLD_GUIDANCE } from '../world/untrusted'
+import { SESSION_NAME } from '../tools/sessionName'
 
 const WIKI_BUDGET = 2500
 const TOOLS_BUDGET = 8000
@@ -228,6 +229,12 @@ export function toolGroups(context: CallerContext, launch: Launch): OrderedGroup
     { group: 'World', tools: enabled.filter((name) => isWorldTool(name) && !(launch.toolGroups ?? []).some((group) => group.tools.includes(name))), order: GROUP_ORDER.World, guidance: `Web, browser and screen: ${WORLD_GUIDANCE}` },
     ...(launch.toolGroups ?? []).map((group) => ({ group: group.group, tools: group.tools, order: group.order, guidance: group.guidance }))
   ]
+  if (enabled.includes(SESSION_NAME)) {
+    groups.push({
+      group: 'Session', tools: [SESSION_NAME], order: 88,
+      guidance: 'Session: use session_name to name meaningful work early with a short imperative sentence of at most six words. Revise when the overall objective changes, including a manually assigned name. Greetings alone need no name.'
+    })
+  }
   if (launch.connections?.trim()) {
     groups.push({ group: 'Connections', tools: launch.connectionTools ?? CONNECTION_TOOLS, order: GROUP_ORDER.Connections, guidance: `App tools and connected apps: ${launch.connections.trim()}` })
   }

@@ -8,46 +8,32 @@ halves:
 - **The foundation is fixed.** Pi sessions, the prompt compiler, the run recorder, the tool gate,
   accounts, plugin-code trust, the refinement method and the extension points. Only a release
   changes it.
-- **A variant mutates.** It is what a model is told and can load: eight components (c1–c8) for one
-  scope. Each scope has versioned, validated variants; a run pins one version, and refinement
-  proposes a better variant that a person adopts.
+- **A Harness Variant (HV) mutates.** It is what a model is told and can load: eight components
+  (c1–c8) for one scope. Each scope has versioned, validated HVs; a run pins one version, and
+  refinement proposes a better HV that a person adopts.
 
 *The foundation runs a variant, records how it went, and lets refinement propose a better
 variant; only a person adopts one.* Refinement edits a copy of a variant and never the
 foundation. See [Foundation and variants](docs/architecture/00-overview.md#foundation-and-variants).
 
-- **A variant is a tree of eight components** (c1–c8): system prompt, guardrails, memory and tool
-  guidance (always in the prompt, capped), subagents, skills and scripts (on demand), and plugins
-  (in the tool loop).
-- **Task-level recursion** refines a variant on one task through *Propose–Probe–Compose*: k base
-  executions, improvers that edit the variant from the evidence (INV: how the agent works; DOM: what a
-  practitioner knows), a probe execution of each candidate, and compositions built from the
-  behavioural contrasts. Parallel mode explores wider; sequential mode refines deeper. Each costs
-  4k executions and 3k improver sessions.
-- **Blind, answer-free selection** picks one final output from anonymised candidates; no rubric,
-  score or reviewer verdict ever reaches an improver.
-- **Harnessing-level recursion** keeps an experience library per scope: each adopted variant with
-  what each edit did and one evidence-backed lesson, read by the next task's improvers.
+Recursive refinement proposes HV improvements from run evidence. A person adopts candidates;
+model weights and the foundation stay fixed. See the [Google Harness² feature guide](docs/features/google-harness2/README.md)
+for the method and HV components.
 
-| Part | Folder | What it does |
+| Area | Main features | Guide |
 |---|---|---|
-| Variants | `src/variant/` | The eight-component surface, validation and repair, content-addressed versions and lineage, materialising a variant for Pi, plugin-code trust, seeding a first variant, the component library. |
-| Refinement | `src/refine/` | Evidence folders, the prompt pack, parallel and sequential recursion, the budget ledger, selection, reflection, the experience library, Pi-backed executor and improver, and the `refine` service. |
-| Accounts | `src/accounts/` | Several isolated Pi accounts and pools, sign-in, model lists, health and limits. A session keeps the account it started with. |
-| Sessions | `src/sessions/` | Pi SDK turns on a pinned variant, run records and `events.jsonl`, interrupt, approvals, questions, subagents (named by a variant's c5), recovery after a crash. Startup recovery only interrupts an active run whose owner (`runs/<id>/owner.json`) has exited, so a second Harness on the same data folder leaves a running one alone. |
-| Prompt | `src/prompt/` | The system prompt compiled from the variant's sections and the application's, with budgets; a stable prefix, and changing state delivered as updates in native history. |
-| Wiki | `src/wiki/` | Project notes: linked Markdown, versions, search. Reference material, not instructions. |
-| History | `src/history/` | Recall over earlier runs and bounded trajectory reads. |
-| Plugins | `src/plugins/` | What a Pi session loads, chosen by the harness and never by Pi's own discovery; trust for a working folder's code; the list of every plugin and what reaches one caller. |
-| Tools | `src/tools/` | Tool definitions, History/Wiki/skill tools, `ask_user`; a gate that asks the application's policy, then standing approvals, then the person. |
-| Connected apps | `src/mcp/` | MCP connections, OAuth, per-session grants, redaction, a trace of what each call returned. |
-| Terminal | `src/terminal/` | A Harness-owned terminal frontend over persistent Pi sessions on a variant. |
-| Server | `src/server/` | The same API over newline-delimited JSON, for a host that is not a Node program. |
+| Core runtime | Accounts, sessions and runs, prompt compilation, tool governance | [Cores](docs/features/cores/README.md) |
+| Harness² | HVs, recursive refinement, answer-free selection, experience library | [Google Harness²](docs/features/google-harness2/README.md) |
+| Automations | Subagents, recovery, optional run reflections, plugin hooks | [Automations](docs/features/automations/README.md) |
+| Memory | Wiki notes, run recall, trajectory search and reads | [Memory](docs/features/memory/README.md) |
+| Integrations | Application extension points, plugins, connected apps and Hub | [Integrations](docs/features/integrations/README.md) |
+| Interfaces | Node embedding, standalone terminal and JSON-lines server | [Interfaces](docs/features/interfaces/README.md) |
 
 The binding design of every part is the [architecture specification](docs/architecture/README.md).
 
 Try refinement with no model and no credentials: `npm run build && node dist/cli.js refine demo --k 2`.
-The [documentation index](docs/README.md) links current terminal architecture and decisions.
+The [feature guide](docs/features/README.md) groups capabilities by area; the [documentation
+index](docs/README.md) links the architecture and other project records.
 
 ### Session options for applications
 
@@ -458,3 +444,25 @@ which requests a batch may claim. These fields are trusted host context, never m
 `maintenance_read_batch` reads those assigned requests together; `maintenance_apply_batch` records
 one decision for each and applies the evidence-checked Wiki set atomically. Standalone callers that
 omit this option retain the existing lifecycle and direct-write contract.
+
+## Readiness diagnostics
+
+Use `/doctor` in the terminal for local readiness checks and explicitly selected live probes. The same
+structured jobs are available through `harness.doctor` and `doctor.*` server methods. See
+[Doctor](docs/doctor.md) for coverage, consent, isolation, and provider callbacks.
+
+## Public 1.0.0 release candidate
+
+The public package is ESM: import from `@xingular/harness` or supported subpaths such as
+`@xingular/harness/variant/seed`. JavaScript and declarations are shipped in `dist/sdk`; a
+TypeScript loader is not required. Node 22.19 or later is required. The interactive terminal
+also requires Bun (release builds use 1.4.2); the CLI reports its version with `xharness --version`.
+Original project code is Apache-2.0. See LICENSE, NOTICE.md and THIRD_PARTY_LICENSES.md.
+
+A host providing its own browser tools sets `browser: false` on `createHarness` to disable the
+generic backend and prevent tool-name collisions. The desktop App uses this for shared tabs.
+The default standalone Harness keeps its isolated browser backend enabled.
+
+This candidate intentionally resets development numbering to 1.0.0 while preserving old versions.
+See [release notes](docs/releases/1.0.0.md) and [release procedure](docs/releases/README.md).
+Publication requires registry verification, green CI and approval of the candidate/tag push.

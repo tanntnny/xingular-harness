@@ -8,13 +8,17 @@
 //   xharness refine <command>   Refine a variant from evidence (refine demo needs no model).
 //   xharness mcp <command>      Connected apps, from inside a terminal session.
 //   xharness plugins <command>  List, install, switch and trust plugins.
+//   xharness web <command>      Search keys for web_search.
+//   xharness browser <command>  How the agent's browser runs.
 import { resolve } from 'node:path'
+import manifest from '../package.json' with { type: 'json' }
 
 import { log } from './core/bus'
 import { createHarness, type HarnessOptions } from './harness'
 import { runPluginsCli, terminalAsk } from './plugins/cli'
 import { runHubCli } from './hub/cli'
 import { runRefineCli } from './refine/cli'
+import { runBrowserCli, runWebCli } from './world/cli'
 import { remoteDirectory, remotePolicy, remoteSecrets, remoteTools } from './server/remote'
 import { RpcPeer, stdioTransport } from './server/rpc'
 import { attach } from './server/serve'
@@ -22,8 +26,9 @@ import { runAppsCli, runWikiCli } from './terminal/cli'
 import { runStandaloneTerminal, standaloneArguments } from './terminal/standalone'
 
 const USAGE = `Usage: xharness [--data <dir>] [--state <dir>]
-       xharness <terminal | serve | wiki | mcp | plugins | hub | refine> [arguments]
+       xharness <terminal | serve | wiki | mcp | plugins | hub | refine | web | browser> [arguments]
 
+  --version          Print the package version
   (no command)       Start the interactive Harness terminal
   terminal           Start the interactive Harness terminal
   serve --state <dir> [--data <dir>] [--name <product>] [--builtins <dir>]
@@ -34,6 +39,8 @@ const USAGE = `Usage: xharness [--data <dir>] [--state <dir>]
   plugins <command>  List, install, switch and trust plugins (plugins help)
   hub <command>      Browse and install curated items (hub help)
   refine <command>   Refine a harness from evidence (refine demo, refine run)
+  web <command>      Search keys for the web tools (web help)
+  browser <command>  How the agent's browser runs (browser help)
 
 Standalone terminal options:
   --data <dir>       Data directory (installed default: ~/.xingular-harness/data;
@@ -97,6 +104,10 @@ function serveCommand(argv: string[]): Promise<number> {
 
 async function main(): Promise<number> {
   const argv = process.argv.slice(2)
+  if (argv.length === 1 && (argv[0] === '--version' || argv[0] === '-v')) {
+    process.stdout.write(`${manifest.version}\n`)
+    return 0
+  }
   const [command, ...rest] = argv
   if (argv.includes('--help') || argv.includes('-h')) {
     process.stdout.write(USAGE)
@@ -110,6 +121,8 @@ async function main(): Promise<number> {
   if (command === 'plugins') return runPluginsCli(rest, { ask: terminalAsk() })
   if (command === 'hub') return runHubCli(rest)
   if (command === 'refine') return runRefineCli(rest)
+  if (command === 'web') return runWebCli(rest)
+  if (command === 'browser') return runBrowserCli(rest)
   process.stdout.write(USAGE)
   return command ? 2 : 0
 }

@@ -56,6 +56,13 @@ describe('world tools', () => {
     expect((await world.provider()(session(['web/tool/web_fetch']))).map((tool) => tool.name)).toEqual(['web_fetch'])
     expect((await world.provider()(session(['wiki/tool/wiki_read']))).map((tool) => tool.name)).toEqual([])
     // A host with no capability catalogue gets them all.
-    expect((await world.provider()(session([]))).map((tool) => tool.name)).toEqual(['web_search', 'web_fetch'])
+    expect((await world.provider()(session([]))).map((tool) => tool.name).slice(0, 3)).toEqual(['web_search', 'web_fetch', 'browser_navigate'])
   })
+  it('lets an embedding host disable the generic browser without disabling web tools', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'world-host-browser-'))
+    const world = new World({ root: () => root, stateDir: root, secrets: memorySecretStore(), browser: false })
+    expect(world.plugins.map(plugin => plugin.id)).toEqual(['web'])
+    await world.close()
+  })
+
 })

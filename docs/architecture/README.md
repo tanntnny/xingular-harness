@@ -40,6 +40,7 @@ not one class (a set of functions in one module, say), it says so.
 | [10 Server protocol](10-server-protocol.md) | The newline-delimited JSON protocol and the method table | `INV-SRV` |
 | [11 Terminal](11-terminal.md) | The Harness-owned terminal frontend and its process boundary | `INV-TUI` |
 | [12 Storage](12-storage.md) | The data root and state directory, and who writes what | `INV-STO` |
+| [13 World tools](13-world-tools.md) | Generic web and isolated browser backends, host boundary and diagnostics | — |
 | [Proposals](proposals/README.md) | Architecture change proposals and their status | — |
 
 Related records, not binding by themselves:
@@ -110,3 +111,4 @@ proposal, or a correction to the other document).
 | D-6 | `INV-BND-2` | Plan-mode instructions (`sessions/planMode.ts`) name a managed browser and computer controls, which the harness does not provide. |
 | D-7 | `INV-MEM-3` | `wiki/notes.ts::remove` keeps a version but does not call `noteChange`, so hooks hear saves but not removals. |
 | D-8 | old `AGENTS.md` | Listed `work` among the sections delivered as updates. The compiler's built-in dynamic sections are only `references` and `wiki`; `work` is dynamic only when the application marks it so. `INV-PRM-3` states the code's rule. |
+| D-9 | World/browser implementation | Resolved for the 1.0.0 candidate by PROP-0012/ADR-0014 and page 13: the Harness owns a generic isolated browser; App browser UI, tab sharing and computer integration remain with the host. |

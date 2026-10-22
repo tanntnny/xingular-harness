@@ -3,15 +3,21 @@
 **Binding specification:** [Architecture](architecture/README.md). Code must follow it; a change
 to it starts as a [proposal](architecture/proposals/README.md) the user reviews.
 
+**Feature guide:** [Harness features](features/README.md) organizes current capabilities by area;
+its pages are descriptive, while the architecture specification remains binding.
+
 Current implementation: [Harness terminal frontend](terminal-tui.md). The package-level
 [README](../README.md) describes the embedding API, accounts, plugins, memory and storage.
 
 | ID | Record | Type | Status | Related |
 |---|---|---|---|---|
+| ADR-0014 | [Public release baseline](decisions/ADR-0014-public-release-baseline.md) | Decision | Accepted; candidate preparation | [Release procedure](releases/README.md), [PROP-0012](architecture/proposals/PROP-0012-release-baseline.md) |
+| ADR-0013 | [Evidence-based diagnostics with opt-in live probes](decisions/ADR-0013-doctor.md) | Decision | Accepted; working tree implementation | [PROP-0011](architecture/proposals/PROP-0011-doctor.md), [Doctor guide](doctor.md) |
 | SPEC | [Harness architecture specification](architecture/README.md) | Specification | Binding; as of 2026-10-21 | [Proposals](architecture/proposals/README.md), [Known drift](architecture/README.md#known-drift) |
 | STUDY-0001 | [Agent-harness arm study](study/00-index.md) | Study | Arms 01–10 audited (core sources); matrix + roadmap done; remaining-source fills pending | [insights.md](study/insights.md), [roadmap.md](study/roadmap.md), [`/btw` comparison](study/btw-comparison.md) |
 | DESIGN-0001 | [System-prompt design: fixed foundation + adapting harness](system-prompt-design.md) | Design | Draft — not yet accepted; refs current `compile.ts`/tree contracts | STUDY-0001 (arms 01, 10), [roadmap.md](study/roadmap.md) T1-1/9 |
 | EXP-0001 | [Terminal input latency profile](experiments/EXP-0001-terminal-input-latency/plan.md) | Experiment | Completed on one local machine; slow-machine validation pending | ADR-0001, [Profile instructions](terminal-tui.md#input-performance-profile) |
+| ADR-0012 | [Agents name their own native Pi sessions](decisions/ADR-0012-native-session-names.md) | Decision | Accepted; working tree implementation verified | [PROP-0010](architecture/proposals/PROP-0010-session-names.md) |
 | ADR-0011 | [The harness is a fixed foundation running a mutating variant](decisions/ADR-0011-foundation-and-variants.md) | Decision | Accepted; implemented in 5.0.0 | [PROP-0009](architecture/proposals/PROP-0009-foundation-and-variants.md), [Foundation and variants](architecture/00-overview.md#foundation-and-variants) |
 | ADR-0010 | [Lessons from ordinary runs live in the Wiki](decisions/ADR-0010-lessons-in-the-wiki.md) | Decision | Accepted; working tree implementation | [PROP-0008](architecture/proposals/PROP-0008-lessons-from-runs.md), [08 Memory and history](architecture/08-memory-and-history.md), [feature-gap review](study/feature-gap-review.md) |
 | ADR-0009 | [Publish the Harness CLI as xharness](decisions/ADR-0009-xharness-command.md) | Decision | Accepted; implementation verified, npm publication pending authorization | [PROP-0005](architecture/proposals/PROP-0005-xharness-cli-name.md), [11 Terminal](architecture/11-terminal.md) |

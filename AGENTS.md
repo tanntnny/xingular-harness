@@ -48,6 +48,7 @@ two words in code, docs, data and the protocol; do not write "harness tree". See
 | Isolated accounts, secrets, connected apps, the Hub | [09 Accounts and connectors](docs/architecture/09-accounts-and-connectors.md) |
 | The server protocol and method table | [10 Server protocol](docs/architecture/10-server-protocol.md) |
 | The Harness-owned terminal (detail in [`docs/terminal-tui.md`](docs/terminal-tui.md)) | [11 Terminal](docs/architecture/11-terminal.md) |
+| Generic web and isolated browser tools | [13 World tools](docs/architecture/13-world-tools.md) |
 | Data root and state directory | [12 Storage](docs/architecture/12-storage.md) |
 
 The rules agents break most often, in brief (the pages are authoritative):

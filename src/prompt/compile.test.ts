@@ -171,3 +171,16 @@ test('the reporting guidance closes the stable prefix and never rides in a conte
   expect(section.cut).toBe(false)
   expect(sessionLaunch(env, agent(), hosted(), null).system).toBe(first.system)
 })
+
+
+test('describes naming only when available, including for CLI callers', () => {
+  const env = setup()
+  for (const surface of [undefined, 'cli']) {
+    const caller = agent({ surface })
+    const disabled = compile(env, caller, hosted())
+    expect(disabled.toolGroups.some(group => group.tools.includes('session_name'))).toBe(false)
+    const enabled = compile(env, caller, hosted({ tools: ['read', 'session_name'] }))
+    expect(enabled.toolGroups).toContainEqual({ group: 'Session', tools: ['session_name'] })
+    expect(render(env, enabled)).toContain('at most six words')
+  }
+})

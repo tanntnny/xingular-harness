@@ -28,10 +28,10 @@ Pi                                          model calls, native JSONL history, t
 **Belongs in the harness:** Pi sessions and accounts, variants and refinement
 (Propose–Probe–Compose, selection, the experience library), the prompt compiler and its delivery,
 project notes (the Wiki), recall, the tool gate and standing approvals, connectors (MCP), terminal
-sessions and their owned standalone frontend, and the server protocol.
+sessions and their owned standalone frontend, generic web/isolated-browser tools, and the server protocol.
 
 **Stays in the application:** agents, groups, conversations, tasks and coordination, projects and
-worktrees, files, browser and computer use, windows, the PTY, the keychain, and application UI.
+worktrees, App browser UI and tab sharing, computer use, windows, the PTY, the keychain, and application UI.
 
 This package is consumed as source by the App's sidecar and is meant to be embedded by other
 applications, so a change here changes every application built on it.
@@ -140,7 +140,7 @@ The application's column (PTY, worktrees, roles, tasks, review, schedules, UI) i
 - **INV-BND-1** The harness imports nothing from an application. Application data reaches it only
   through the extension points (page 01) or the server protocol (page 10).
 - **INV-BND-2** The harness names no application and no application concept (agent role, group,
-  task, pane, worktree, handoff, browser, computer use) in code paths it reads or text a model or
+  task, pane, worktree, handoff, App browser workspace, computer use) in code paths it reads or text a model or
   person sees. Text names the product through `env.productName` (default `Xingular Harness`;
   `{product}` in a tool description). Ids such as `agentId`, `projectId` and a variant `scope` are
   opaque; names come from `Directory` or `CallerContext.agentName`.

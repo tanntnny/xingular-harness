@@ -39,6 +39,7 @@ describe('Claude-style working status', () => {
     expect(COMPLETION_VERBS).toHaveLength(8)
     expect(chooseCompletionVerb(turnId)).toBe(chooseCompletionVerb(turnId))
     expect(formatWorkingDuration(65_900)).toBe('1m 5s')
+    expect(formatWorkingDuration(120_000)).toBe('2m')
     expect(formatWorkingDuration(-100)).toBe('0s')
     expect(createCompletionStatus(turnId, 65_900)).toBe('✻ ' + chooseCompletionVerb(turnId) + ' for 1m 5s')
   })

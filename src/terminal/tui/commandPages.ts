@@ -1,5 +1,6 @@
 import type { TerminalPage } from './page'
 import type { TerminalCommandHost } from './commands'
+import { DoctorPage } from './pages/doctorPage'
 import { AccountsPage } from './pages/accountsPage'
 import { ComponentsPage } from './pages/componentsPage'
 import { HubPage } from './pages/hubPage'
@@ -10,13 +11,20 @@ import { SettingsPage } from './pages/settingsPage'
 import { TrajectoryPage } from './pages/trajectoryPage'
 import { createSettingsModel } from './settingsModel'
 
-export type CommandPageId = 'accounts' | 'permissions' | 'plugins' | 'hub' | 'components' | 'settings' | 'trajectory' | 'log'
+export type CommandPageId = 'doctor' | 'accounts' | 'permissions' | 'plugins' | 'hub' | 'components' | 'settings' | 'trajectory' | 'log'
 
 /** Construct one independent full-screen page for a slash command. */
 export function createCommandPage(host: TerminalCommandHost, id: CommandPageId, options: { runId?: string } = {}): TerminalPage {
   const theme = () => host.ui.theme
   const notify = (message: string, type?: string) => host.ui.notify(message, type === 'error' || type === 'warning' ? type : 'info')
   switch (id) {
+    case 'doctor':
+      return new DoctorPage({ theme, call: host.control, confirm: host.ui.confirm.bind(host.ui), select: host.ui.select.bind(host.ui), changed: host.changed,
+        selection: () => {
+          const model = host.runtime().snapshot().model
+          return { model: model ? `${model.provider}/${model.id}` : null, tools: host.session().getActiveToolNames() }
+        }
+      })
     case 'accounts':
       return new AccountsPage({
         theme, call: host.control, ui: host.ui,

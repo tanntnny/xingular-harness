@@ -10,9 +10,11 @@ import * as pluginApi from '../plugins/api'
 import * as packages from '../plugins/install'
 import * as registry from '../variant/components'
 import * as attachments from '../plugins/attachments'
-import { version as variantVersion } from '../../package.json'
-import bundled from './catalog.json'
+import manifest from '../../package.json' with { type: 'json' }
+import bundled from './catalog.json' with { type: 'json' }
 import { HUB_CATALOG_URL, HUB_MAX_BYTES, HUB_PREVIEW_PAGE_BYTES, hubCatalogSchema, hubEntrySchema, hubReceiptSchema, meetsMinimum, type HubCatalog, type HubEntry, type HubOverview, type HubReceipt } from './schema'
+
+const variantVersion = manifest.version
 
 export interface HubOptions {
   catalogUrl?: string

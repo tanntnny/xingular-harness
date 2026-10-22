@@ -1,9 +1,13 @@
+import { stripTerminalSequences, truncateToWidth, visibleWidth } from '@earendil-works/pi-tui'
+
 import { formatWorkingDuration } from '../tui/workingStatus'
+import { singleLine } from '../tui/status'
 
 const SHIMMER_INTERVAL_MS = 120
 const SHIMMER_RADIUS = 2
 
 export interface WorkingLineState {
+  sessionName?: string
   active: boolean
   frame: string
   label: string
@@ -17,7 +21,7 @@ export interface WorkingLineParts {
   suffix: string
 }
 
-export function workingLineParts(state: WorkingLineState): WorkingLineParts {
+export function workingLineParts(state: WorkingLineState, width?: number): WorkingLineParts {
   const displayLabel = state.active
     ? `${state.frame} ${state.label}`.trim() || 'Working…'
     : state.label
@@ -43,7 +47,16 @@ export function workingLineParts(state: WorkingLineState): WorkingLineParts {
       : String(Math.max(0, Math.round(state.tokensPerSecond)))
     suffix = ` (${formatWorkingDuration(state.elapsedMs)}, ${rate} tok/s)`
   }
-  return { prefix, label, suffix }
+  const name = singleLine(state.sessionName ?? '')
+  if (name) suffix += ` – ${name}`
+  if (width === undefined) return { prefix, label, suffix }
+  let remaining = Math.max(0, Math.floor(width))
+  const fit = (text: string): string => {
+    const fitted = stripTerminalSequences(truncateToWidth(text, remaining, '…', false))
+    remaining = Math.max(0, remaining - visibleWidth(fitted))
+    return fitted
+  }
+  return { prefix: fit(prefix), label: fit(label), suffix: fit(suffix) }
 }
 
 export function workingVerbShimmerProfile(state: WorkingLineState): number[] {
@@ -67,7 +80,7 @@ export function workingVerbShimmerProfile(state: WorkingLineState): number[] {
   })
 }
 
-export function workingLineText(state: WorkingLineState): string {
-  const { prefix, label, suffix } = workingLineParts(state)
+export function workingLineText(state: WorkingLineState, width?: number): string {
+  const { prefix, label, suffix } = workingLineParts(state, width)
   return `${prefix}${label}${suffix}`
 }

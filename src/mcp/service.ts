@@ -209,6 +209,25 @@ export class ConnectedApps implements SessionBroker {
     return frozen.filter((connection) => ids.includes(connection.id))
   }
 
+  /** A diagnostic lists only the selected server; it never calls a connector tool. */
+  async diagnosticList(session: BrokerSession, connectionId: string, signal: AbortSignal): Promise<number> {
+    this.valid(session)
+    const connection = (await this.reachable(session)).find(item => item.id === connectionId)
+    if (!connection) throw new HarnessError('doctor_blocked', 'The selected connector is outside this scope.')
+    signal.throwIfAborted()
+    const cancel = () => { void this.manager.close(connectionId, session.sessionId) }
+    signal.addEventListener('abort', cancel, { once: true })
+    try {
+      const config = await this.connections.launch(connection)
+      const client = await this.manager.client(session.sessionId, config)
+      signal.throwIfAborted()
+      return (await client.listTools({}, { signal, timeout: 15_000 })).tools.length
+    } finally {
+      signal.removeEventListener('abort', cancel)
+      await this.manager.close(connectionId, session.sessionId)
+    }
+  }
+
   /** The application's tools and every reachable connection's tools, with the connections that could not be read. */
   async list(session: BrokerSession): Promise<{ tools: ListedTool[]; errors: { connection: string; message: string }[] }> {
     const own = (await this.brokered?.list(session)) ?? []

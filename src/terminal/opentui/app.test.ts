@@ -47,6 +47,24 @@ describe('OpenTuiApplication', () => {
     await app.shutdown()
   })
 
+  it('refreshes the working name on native metadata changes and retains it after completion', async () => {
+    const app = new OpenTuiApplication([])
+    let name = 'Inspect browser tools'
+    const internals = app as unknown as { accept(event: AgentSessionEvent): void; runtime?: TerminalRuntime }
+    internals.runtime = {
+      session: { messages: [], state: {}, getSessionStats: () => ({ tokens: {} }) },
+      snapshot: () => ({ name, context: { percent: null } }), dispose: async () => {}
+    } as unknown as TerminalRuntime
+    internals.accept({ type: 'agent_start' } as AgentSessionEvent)
+    expect(workingLineText(app.view().working)).toContain(' – Inspect browser tools')
+    name = 'Add web browser integrations'
+    internals.accept({ type: 'session_info_changed', name } as AgentSessionEvent)
+    expect(workingLineText(app.view().working)).toContain(' – Add web browser integrations')
+    internals.accept({ type: 'agent_settled', aborted: false } as AgentSessionEvent)
+    expect(workingLineText(app.view().working)).toContain(' – Add web browser integrations')
+    await app.shutdown()
+  })
+
   it('keeps the welcome for one-line notices and hides it for multiline output', async () => {
     const app = new OpenTuiApplication([])
     const internals = app as unknown as { notify(message: string, type?: string): void }

@@ -537,7 +537,7 @@ describe('session turns on Pi', () => {
     expect(received!.allow.slice(0, 2)).toEqual(['react', 'ask_user'])
     expect(received!.allow).toEqual(expect.arrayContaining(['history_search', 'wiki_search', 'wiki_read', 'skill_load', 'trajectory_read']))
     expect(received!.allow).not.toContain('wiki_write')
-    expect(received!.tools.map((tool) => tool.name)).toEqual(['history_search', 'history_read', 'trajectory_search', 'trajectory_read', 'wiki_search', 'wiki_read', 'wiki_list', 'wiki_write', 'skill_load', 'ask_user', 'checklist_write', 'spawn_subagent', 'wait_subagents', 'web_search', 'web_fetch', 'react'])
+    expect(received!.tools.map((tool) => tool.name)).toEqual(['history_search', 'history_read', 'trajectory_search', 'trajectory_read', 'wiki_search', 'wiki_read', 'wiki_list', 'wiki_write', 'skill_load', 'ask_user', 'checklist_write', 'session_name', 'spawn_subagent', 'wait_subagents', 'web_search', 'web_fetch', 'browser_navigate', 'browser_snapshot', 'browser_read', 'browser_screenshot', 'browser_click', 'browser_type', 'browser_select', 'browser_press', 'browser_scroll', 'browser_wait', 'browser_tabs', 'react'])
     expect(await received!.tools.find((tool) => tool.name === 'skill_load')!.execute({})).toBe('You have no skills.')
     expect(received!.params.system).toContain('# Xingular Harness context')
   })
@@ -559,6 +559,39 @@ describe('session turns on Pi', () => {
     ])
   })
 
+  it('binds naming to each native session and allows metadata changes in plan mode', async () => {
+    const names = new Map<string, string>()
+    const { run } = setup(async input => {
+      const id = input.params.runId
+      return {
+        ...fakeSession(async () => {
+          const tool = input.tools.find(tool => tool.name === 'session_name')!
+          expect(input.allow).toContain('session_name')
+          expect(await input.gate.check(tool.name, { name: 'Add web browser integrations' })).toBeNull()
+          await tool.execute({ name: 'Add web browser integrations' })
+          expect(names.get(id)).toBe('Add web browser integrations')
+        }, input.gate),
+        get sessionName() { return names.get(id) },
+        setSessionName: name => { names.set(id, name) }
+      }
+    })
+    await run('named-plan', { plan: true })
+    await tick()
+    await run('named-next')
+    await tick()
+    expect([...names.keys()]).toEqual(['named-plan', 'named-next'])
+  })
+
+  it('applies host restrictions to session naming', async () => {
+    let received: Parameters<SessionFactory>[0] | undefined
+    const { run } = setup(async input => {
+      received = input
+      return fakeSession(async () => undefined, input.gate)
+    }, { scope: async () => ({ allowed: false, reason: 'Naming disabled by host' }) })
+    await run('name-denied', { plan: true })
+    expect(await received!.gate.check('session_name', { name: 'Inspect browser tools' })).toBe('Naming disabled by host')
+  })
+
   it('gives no checklist tool when the harness tools are off', async () => {
     let received: Parameters<SessionFactory>[0] | null = null
     const { run } = setup(async (input) => {
@@ -568,6 +601,8 @@ describe('session turns on Pi', () => {
     await run('run-no-checklist', { harnessTools: false })
     await tick()
     expect(received!.tools.map((tool) => tool.name)).not.toContain('checklist_write')
+    expect(received!.tools.map((tool) => tool.name)).not.toContain('session_name')
+    expect(received!.allow).not.toContain('session_name')
   })
 
   it('refuses, never asks, when a refinement run reaches a call that needs a person', async () => {
@@ -739,6 +774,7 @@ describe('subagents', () => {
     const child = seen.get(childId)!
     expect(child.allow).toContain('read')
     expect(child.allow).not.toContain('bash')
+    expect(child.allow).not.toContain('session_name')
     // At the depth limit the child cannot start subagents of its own.
     expect(child.allow).not.toContain('spawn_subagent')
     expect(loadRun(harness.env.root, childId)).toMatchObject({ parentRunId: 'parent', relation: 'subagent', agentId: 'agent-1', status: 'completed' })

@@ -645,3 +645,23 @@ inherit that retained ledger.
 - The portable OMP/Harness runtime evidence IDs and selected frame numbers are recorded in
   the readable comparison and manifest linked above. An earlier OMP capture sent input before
   startup completed; it is retained as incomplete evidence and excluded from the comparison.
+
+## Agent-managed session names
+
+Agents can use `session_name({ name: string })` to name meaningful work early and revise
+its name when the objective changes. Names submitted by agents are short imperative
+sentences with at most six words. The agent may revise a manual name; `/name` remains
+available and manual names have no new word limit. Pi stores the name in native history,
+so resuming the same conversation restores it without another model request.
+
+The working line shows `Working (2m, 50 tok/s) – Add web browser integrations`; the name
+also stays on the completion line. Unnamed sessions have no separator, and narrow terminals
+truncate trailing text. Renaming refreshes the line through Pi's existing metadata event.
+
+## `/doctor`
+
+Checks accounts/models, tools, MCP, plugins/skills, variant/prompt validity, runtime assets, storage
+and startup recovery. Every finding says whether it is local readiness or live verification.
+`r` refreshes, `t` retries one local finding, `l` selects live checks, `c` cancels, arrows scroll,
+and Escape closes/cancels. Live checks show their costs and isolated resources before confirmation.
+Providers without diagnostic callbacks are reported unverified. See [Doctor](doctor.md).

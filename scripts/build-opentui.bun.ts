@@ -8,6 +8,7 @@ const result = await Bun.build({
   outdir: join(root, 'dist'),
   naming: 'terminal-opentui.js',
   target: 'bun',
+  packages: 'external',
   format: 'esm',
   plugins: [solidPlugin],
   external: [

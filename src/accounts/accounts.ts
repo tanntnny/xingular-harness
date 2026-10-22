@@ -274,6 +274,18 @@ export class Accounts {
     return available.map((model) => ({ id: `${model.provider}/${model.id}`, name: model.name || model.id, provider: String(model.provider), supportsImages: model.input.includes('image'), reasoning: model.reasoning }))
   }
 
+  /** Offline inspection never refreshes OAuth tokens, contacts a provider, or changes credentials. */
+  async inspect(accountId: string, signal?: AbortSignal): Promise<{ credentials: number; models: ModelOption[] }> {
+    this.find(accountId)
+    const { ModelRuntime } = await loadPi()
+    const credentials = this.credentialStore(accountId)
+    const readOnly = { read: credentials.read, list: credentials.list, modify: async () => undefined, delete: async () => undefined }
+    const runtime = await ModelRuntime.create({ credentials: readOnly as never, modelsPath: join(env.configDir(this.dir, { id: accountId }), 'models.json'), refreshOnCreate: false, allowModelNetwork: false, signal })
+    const saved = await runtime.listCredentials({ signal })
+    const providers = new Set(saved.map(item => item.providerId))
+    return { credentials: saved.length, models: runtime.getModels().filter(model => providers.has(String(model.provider))).map(model => ({ id: `${model.provider}/${model.id}`, name: model.name || model.id, provider: String(model.provider), supportsImages: model.input.includes('image'), reasoning: model.reasoning })) }
+  }
+
   /** Whether sessions can run, and why not. */
   async status(accountId?: string | null): Promise<{ available: boolean; reason: string | null; models: number }> {
     const account = accountId ? this.find(accountId) : store.defaultAccount(this.dir)

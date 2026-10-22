@@ -9,6 +9,9 @@
 // providers, a tool policy, a secret store, a directory of its own names, a description of its
 // own parts as plugins, and a refinement host. Everything else is reachable by path.
 export { createHarness, Harness, type HarnessOptions, type Recovery } from './harness'
+export { Doctor } from './doctor/service'
+export { doctorInputSchema, doctorReportSchema, findingSchema } from './doctor/types'
+export type { DoctorCheck, DoctorContext, DoctorFinding, DoctorInput, DoctorProbeContext, DoctorReport, ProviderDiagnostics, CheckResult } from './doctor/types'
 export { hubCatalogSchema, hubEntrySchema, hubOverviewSchema, hubReceiptSchema, type HubCatalog, type HubEntry, type HubOverview, type HubReceipt } from './hub/schema'
 
 export { Bus, log, type Notice } from './core/bus'

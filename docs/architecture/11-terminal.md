@@ -62,3 +62,20 @@ Screen: transcript above the composer, centred page dialogs
 
 `src/terminal/**`. Decisions: ADR-0001, [ADR-0004](../decisions/ADR-0004-fullscreen-terminal-layout.md)
 (superseded), ADR-0006. Experiments: EXP-0001, EXP-0002 in `../experiments/`.
+
+## Session name in the working line (PROP-0010)
+
+The bridge registers `session_name` against Pi's `getSessionName` / `setSessionName` APIs.
+The native `session_info_changed` event invalidates the frontend's cached snapshot and
+refreshes the working line. Both the active and retained completion line append
+` – <name>` after duration and token rate, for example
+`Working (2m, 50 tok/s) – Add web browser integrations`. Unnamed sessions omit the suffix.
+Names use the existing terminal text sanitization, remain outside the verb shimmer, and
+truncate at the right edge. Manual `/name` and existing long names remain supported.
+
+## Doctor command
+
+`/doctor` opens a command page and runs local readiness checks. Refresh and retry are local;
+Live checks opens an explicit selection followed by account/model, destination, cost and isolation
+confirmation. The page polls structured reports, retains findings after cancellation, and cancels
+on close. No command text is sent to the conversation model. See [Doctor](../doctor.md).

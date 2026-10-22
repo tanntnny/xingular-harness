@@ -1,3 +1,4 @@
+import { visibleWidth } from '@earendil-works/pi-tui'
 import { describe, expect, it } from 'vitest'
 
 import { workingLineParts, workingLineText, workingVerbShimmerProfile } from './workingLine'
@@ -11,6 +12,32 @@ describe('working line display', () => {
       elapsedMs: 65_900,
       tokensPerSecond: 28.6
     })).toBe('✢ Brewing (1m 5s, 29 tok/s)')
+  })
+
+  it('appends a name after metrics for active and completed work', () => {
+    const state = { active: true, frame: '✢', label: 'Working', elapsedMs: 120_000, tokensPerSecond: 50, sessionName: 'Add web browser integrations' }
+    expect(workingLineText(state)).toBe('✢ Working (2m, 50 tok/s) – Add web browser integrations')
+    expect(workingLineParts(state).label).toBe('Working')
+    expect(workingVerbShimmerProfile(state)).toHaveLength('Working'.length)
+    expect(workingLineText({ ...state, active: false, frame: '', label: '✻ Cooked' })).toBe('✻ Cooked (2m, 50 tok/s) – Add web browser integrations')
+    expect(workingLineText({ ...state, sessionName: '  ' })).toBe('✢ Working (2m, 50 tok/s)')
+    expect(workingLineText({ ...state, label: '', frame: '', active: false })).toBe('')
+  })
+
+  it('truncates the trailing name while preserving metrics in narrow terminals', () => {
+    const state = { active: true, frame: '✢', label: 'Working', elapsedMs: 120_000, tokensPerSecond: 50, sessionName: 'Add web browser integrations' }
+    const fitted = workingLineText(state, 36)
+    expect(fitted).toMatch(/^✢ Working \(2m, 50 tok\/s\) – Add/)
+    expect(fitted.endsWith('…')).toBe(true)
+    expect(visibleWidth(fitted)).toBeLessThanOrEqual(36)
+    expect(workingLineText({ ...state, sessionName: '調査する ブラウザ 機能' }, 36)).toContain('tok/s) – ')
+    expect(visibleWidth(workingLineText({ ...state, sessionName: '調査する ブラウザ 機能' }, 36))).toBeLessThanOrEqual(36)
+    expect(workingLineText(state, 0)).toBe('')
+    expect(visibleWidth(workingLineText(state, 8))).toBeLessThanOrEqual(8)
+  })
+
+  it('sanitizes legacy manual names before terminal rendering', () => {
+    expect(workingLineText({ active: true, frame: '', label: 'Working', elapsedMs: null, tokensPerSecond: null, sessionName: '\u001b[31mAdd\n browser' })).toBe('Working – Add browser')
   })
 
   it('splits the active spinner, verb and metrics for separate rendering', () => {

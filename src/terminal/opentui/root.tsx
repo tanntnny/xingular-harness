@@ -456,11 +456,11 @@ function StatusBar(props: { view: OpenTuiView }) {
   )
 }
 
-function WorkingLine(props: { view: OpenTuiView }) {
+function WorkingLine(props: { view: OpenTuiView; width: number }) {
   const view = () => props.view
   const statusColor = () => view().working.active ? theme.primary : theme.muted
   const statusText = () => workingLineText(view().working)
-  const parts = () => workingLineParts(view().working)
+  const parts = () => workingLineParts(view().working, props.width)
   const shimmerProfile = createMemo(() => workingVerbShimmerProfile(view().working))
   const characterColor = (index: number) => blendHexColor(
     statusColor(),
@@ -1030,7 +1030,7 @@ export function OpenTuiRoot(props: { app: OpenTuiApplication }) {
           </box>
         </Show>
 
-        <WorkingLine view={view()} />
+        <WorkingLine view={view()} width={Math.max(0, dimensions().width - 4)} />
         <For each={view().widgets.above}>
           {lines => <AnsiView lines={lines} fg={theme.text} />}
         </For>

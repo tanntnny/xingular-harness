@@ -132,3 +132,15 @@ the session directory the caller passes (`sessionDir`), owned by Pi.
 `src/sessions/*.ts`, `src/capabilities/runSnapshot.ts`, `src/tools/spawnSubagent.ts`.
 Decisions: [ADR-0002](../decisions/ADR-0002-native-subagent-lifecycle.md) (superseded),
 [ADR-0003](../decisions/ADR-0003-shared-asynchronous-subagents.md).
+
+## Native session names (PROP-0010)
+
+`session_name({ name: string })` adds or revises the current Pi session's name in embedded
+and terminal execution. The agent names meaningful work early and revises it when the overall
+objective changes, including a manual name. Agent-submitted names are imperative sentences
+of at most six whitespace-separated words; whitespace is normalized, and empty names,
+terminal escapes, non-whitespace controls and longer names fail without writing. Identical
+names are a no-op. Pi's native session-info history is the only storage; continuation and
+reopen preserve it. Each child names only itself. There is no additional model request or
+run-event schema. The normal capability selection and host gate apply; `harnessTools: false`
+omits the tool. Plan mode permits it as session metadata maintenance.

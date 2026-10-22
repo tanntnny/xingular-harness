@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, harness2, 'release/**']
   pull_request:
 
 permissions:
@@ -20,7 +20,18 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: '22.19.0'
           cache: npm
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.2'
       - run: npm ci
+      - run: npx --no-install playwright-core install --with-deps chromium
       - run: npm run ci
+      - run: npm run release:pack -- outputs/ci-candidate
+      - run: npm run release:smoke -- outputs/ci-candidate/xingular-harness-1.0.0.tgz --terminal
+      - uses: actions/upload-artifact@v4
+        with:
+          name: harness-ci-${{ matrix.os }}
+          path: outputs/ci-candidate/
+          if-no-files-found: error

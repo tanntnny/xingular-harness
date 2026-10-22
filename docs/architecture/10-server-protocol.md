@@ -59,3 +59,26 @@ harness → host   { v: 1, id, call, params }          host → harness   { v: 1
 ## Source map
 
 `src/server/*.ts`, `src/cli.ts`, `src/core/errors.ts`, `scripts/prove-standalone.mjs`.
+
+## Doctor jobs (PROP-0011)
+
+| Method | Input | Reply |
+|---|---|---|
+| `doctor.start` | `{ context: { caller, cwd, accountId, model, tools, variant?, capabilities? }, mode?: "local" \| "live", checks?: string[], confirmed?: boolean }` | `DoctorReport` |
+| `doctor.read` | `{ id }` | `DoctorReport` |
+| `doctor.cancel` | `{ id }` | `DoctorReport` |
+
+A trusted host attests confirmation for the exact selected live checks. Live mode requires both
+`confirmed: true` and non-empty `checks`. Terminal equivalents are `terminal.doctor.*`; every call
+requires the control key and each job belongs to its originating terminal. The terminal supplies
+its account and pinned variant; the controlled frontend supplies its current model and tool list.
+
+Reports carry job state (`running`, `completed`, `cancelled`), progress, timestamps, selected
+account/model, findings, and available live-check notices. Findings distinguish `local` from
+`live` and statuses `pass`, `warning`, `fail`, `disabled`, `blocked`, `unverified`. Schemas and
+Node types are exported. Jobs are in-memory until shutdown; real live-run records remain.
+
+Remote `tools.register` may include `diagnostics: [{ id, category, title, tools, probe?: { notice,
+tool, input, contains } }]`. The host answers `tools.diagnose({ id, context })` with `{ status,
+evidence, remedy? }` for local inspection. A probe is a declared registered tool call through
+the gate, with an expected response marker; it cannot supply arbitrary executable code.

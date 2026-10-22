@@ -1,34 +1,81 @@
 name: Release
 
-# Publishes when a version tag such as v0.1.3 is pushed. `npm version patch` creates the tag,
-# so a release is: npm version patch && git push --follow-tags
+# A tag push is a publication request. Prepare and approve the candidate before pushing it.
 on:
   push:
     tags: ['v*']
 
 permissions:
   contents: read
-  id-token: write # npm trusted publishing and provenance
 
 jobs:
-  publish:
+  check:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.19.0'
+          cache: npm
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.2'
+      - name: Match the release tag
+        run: node --input-type=module -e "import p from './package.json' with {type:'json'}; if (process.env.GITHUB_REF_NAME !== 'v' + p.version) process.exit(1)"
+      - run: npm ci
+      - run: npx --no-install playwright-core install --with-deps chromium
+      - run: npm run ci
+
+  candidate:
+    needs: check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: '22.19.0'
           cache: npm
-      - name: The tag must match package.json
-        run: |
-          version=$(node -p "require('./package.json').version")
-          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
-            echo "Tag $GITHUB_REF_NAME does not match package.json version $version." >&2
-            exit 1
-          fi
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.2'
       - run: npm ci
-      - run: npm run ci
-      - name: Upgrade npm (trusted publishing needs 11.5.1 or newer)
-        run: npm install -g npm@^11.5.1
-      - name: Publish with provenance
-        run: npm publish --provenance --access public
+      - run: npm run release:pack -- outputs/release
+      - run: npm run release:smoke -- outputs/release/xingular-harness-1.0.0.tgz --terminal
+      - uses: actions/upload-artifact@v4
+        with:
+          name: harness-candidate
+          path: outputs/release/
+          if-no-files-found: error
+
+  publish:
+    needs: candidate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.19.0'
+      - run: npm install --global npm@11.19.1
+      - uses: actions/download-artifact@v4
+        with:
+          name: harness-candidate
+          path: outputs/release
+      - run: npm run release:preflight -- --tagged
+      - name: Check candidate integrity
+        working-directory: outputs/release
+        run: sha256sum --check SHA256SUMS
+      - name: Publish the tested tarball with provenance
+        run: npm publish ./outputs/release/xingular-harness-1.0.0.tgz --ignore-scripts --provenance --access public --tag latest
+      - name: Verify published package
+        run: node scripts/release-verify.mjs outputs/release/candidate.json
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" outputs/release/xingular-harness-1.0.0.tgz outputs/release/SHA256SUMS --verify-tag --title "Xingular Harness 1.0.0" --notes-file docs/releases/1.0.0.md

@@ -23,6 +23,7 @@ import { materialise, type VariantChoice, type Materialised } from '../variant/m
 import type { VariantTrust } from '../variant/trust'
 import { ASK_USER, askUserTool } from '../tools/askUser'
 import { CHECKLIST_WRITE, checklistTool } from '../tools/checklist'
+import { SESSION_NAME, sessionNameTool } from '../tools/sessionName'
 import { subagentTools } from '../tools/spawnSubagent'
 import { DEFAULT_TOOL_NAMES } from '../tools/definitions'
 import { harnessTools } from '../tools/harnessTools'
@@ -177,7 +178,24 @@ export class Sessions {
     this.providers.push(provider)
   }
 
-  private gate(run: ActiveRun, caller: CallerContext, gated: Set<string>): ToolGate {
+  async diagnostics(context: import('../doctor/types').DoctorContext): Promise<import('../doctor/types').DoctorCheck[]> {
+    const results = await Promise.allSettled(this.providers.map(provider => Promise.resolve().then(() => provider.diagnostics?.(context) ?? [])))
+    return results.flatMap((result, index) => result.status === 'fulfilled' ? result.value : [{
+      id: `provider.${index}`, category: 'tools', title: 'Provider diagnostics',
+      local: async () => ({ status: 'fail' as const, evidence: 'This provider could not describe its readiness checks.', remedy: 'Review the provider configuration.' })
+    }])
+  }
+
+  /** The same registered providers used by real runs; no native Pi session is constructed. */
+  async diagnosticTools(session: import('../tools/types').ToolSession): Promise<import('../tools/types').ToolSpec[]> {
+    return (await Promise.all(this.providers.map(provider => provider(session)))).flat()
+  }
+
+  diagnosticGate(run: ActiveRun, caller: CallerContext) {
+    return this.gate(run, caller, new Set(), true)
+  }
+
+  private gate(run: ActiveRun, caller: CallerContext, gated: Set<string>, diagnostic = false): ToolGate {
     const { policy } = this.options
     return {
       ask: (names) => {
@@ -193,6 +211,7 @@ export class Sessions {
           return error instanceof Error ? error.message : 'Tool unavailable in the app settings.'
         }
         if (scope.allowed && !scope.humanOnly && (scope.automatic || !gated.has(tool))) return null
+        if (diagnostic) return 'This diagnostic call requires a separate per-call approval.'
         // Refinement and reflection runs have nobody to ask: what would need a person is refused, never queued.
         if (call.run.trigger === 'probe' || call.run.trigger === 'improver') return scope.reason ? `Refused in a refinement run: ${scope.reason}` : 'Refused in a refinement run: this call needs a person to approve it.'
         if (call.run.trigger === 'reflection') return scope.reason ? `Refused in a reflection run: ${scope.reason}` : 'Refused in a reflection run: this call needs a person to approve it.'
@@ -264,7 +283,7 @@ export class Sessions {
     const canSpawn = input.subagents !== null && (!input.automatic || input.subagents !== undefined) && subagentNesting(root, input.run) < subagentDepth(input.subagents ?? undefined)
     const requestedTools = [...new Set([
       ...input.tools.allow.filter((name) => name !== SPAWN_SUBAGENT && name !== WAIT_SUBAGENTS),
-      ...(input.harnessTools === false ? [] : [ASK_USER, CHECKLIST_WRITE, ...DEFAULT_TOOL_NAMES]),
+      ...(input.harnessTools === false ? [] : [ASK_USER, CHECKLIST_WRITE, SESSION_NAME, ...DEFAULT_TOOL_NAMES]),
       ...(broker?.toolNames ?? []),
       ...(canSpawn ? [SPAWN_SUBAGENT, WAIT_SUBAGENTS] : [])
     ])]
@@ -364,10 +383,18 @@ export class Sessions {
     const { plugins } = this.options
 
     let pi: PiSessionLike | undefined
+    const naming = sessionNameTool(() => {
+      const current = pi
+      if (!current?.setSessionName) return undefined
+      return {
+        get sessionName() { return current.sessionName },
+        setSessionName: name => current.setSessionName!(name)
+      }
+    })
     try {
       const tools: ToolSpec[] = [
         ...(broker ? broker.tools(session, { readOnly: typeof input.connections === 'object' && input.connections.readOnly === true }) : []),
-        ...(input.harnessTools === false ? [] : [...harnessTools(this.options.env, caller, { variantDir: variant?.dir ?? null }), askUserTool(run), checklistTool(run)]),
+        ...(input.harnessTools === false ? [] : [...harnessTools(this.options.env, caller, { variantDir: variant?.dir ?? null }), askUserTool(run), checklistTool(run), naming]),
         ...subagentTools(this.options.subagents, runId).filter(tool => allow.includes(tool.name))
       ]
       if (input.providers !== false) {

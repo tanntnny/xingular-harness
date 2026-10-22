@@ -1,6 +1,8 @@
 // What a host that is not a Node program supplies over the protocol instead of in-process:
 // its secret store, its policy, its names for agents, and its own tools. Each is a call to the
 // host; the harness works without any of them.
+import { z } from 'zod'
+import { findingSchema } from '../doctor/types'
 import type { SecretStore } from '../accounts/secrets'
 import type { Directory } from '../core/env'
 import type { ToolPolicy } from '../sessions/policy'
@@ -55,11 +57,17 @@ interface HostTool {
  */
 export function remoteTools(peer: RpcPeer): ToolProvider {
   let registered: HostTool[] = []
-  peer.handle('tools.register', (params: { tools?: HostTool[] }) => {
+  const descriptor = z.object({
+    id: z.string().min(1), category: z.string(), title: z.string(), tools: z.array(z.string()),
+    probe: z.object({ notice: z.string(), tool: z.string(), input: z.record(z.string(), z.unknown()), contains: z.string().min(1) }).optional()
+  })
+  let diagnostics: z.infer<typeof descriptor>[] = []
+  peer.handle('tools.register', (params: { tools?: HostTool[]; diagnostics?: unknown[] }) => {
+    diagnostics = z.array(descriptor).parse(params.diagnostics ?? [])
     registered = Array.isArray(params.tools) ? params.tools : []
     return { registered: registered.map((tool) => tool.name) }
   })
-  return (session) =>
+  const provider: ToolProvider = (session) =>
     registered
       .filter((tool) => session.allow.includes(tool.name))
       .map(
@@ -74,4 +82,21 @@ export function remoteTools(peer: RpcPeer): ToolProvider {
           }
         })
       )
+  provider.diagnostics = context => diagnostics.map(check => ({
+    id: `host.${check.id}`, category: check.category, title: check.title, tools: check.tools,
+    local: async signal => {
+      signal.throwIfAborted()
+      const result = await peer.callHost('tools.diagnose', { id: check.id, context }, 8000)
+      return findingSchema.pick({ status: true, evidence: true, remedy: true }).parse(result)
+    },
+    live: check.probe ? {
+      notice: check.probe.notice,
+      run: async probe => {
+        const result = await probe.call(check.probe!.tool, check.probe!.input)
+        const text = typeof result === 'string' ? result : result.text
+        return { status: text.includes(check.probe!.contains) ? 'pass' as const : 'fail' as const, evidence: 'The registered host tool probe completed; the expected response marker was checked.' }
+      }
+    } : undefined
+  }))
+  return provider
 }
