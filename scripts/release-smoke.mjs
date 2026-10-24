@@ -31,7 +31,7 @@ try {
       symlinkSync(source, target, 'junction')
     }
   } else {
-    run('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund', '--save-exact', '--cache', process.env.XINGULAR_RELEASE_NPM_CACHE ?? '/private/tmp/xingular-release-npm-cache', tarball, 'typescript@5.9.3', '@types/node@22.19.1'])
+    run('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund', '--save-exact', '--cache', process.env.XINGULAR_RELEASE_NPM_CACHE ?? join(tmpdir(), 'xingular-release-npm-cache'), tarball, 'typescript@5.9.3', '@types/node@22.19.1'])
   }
   report.checks.push('Candidate contents and dependency resolution')
   writeFileSync(join(scratch, 'consumer.mjs'), `

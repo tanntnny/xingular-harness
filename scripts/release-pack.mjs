@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
+import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
@@ -15,7 +16,7 @@ const filename = `${pkg.name.replace('@', '').replace('/', '-')}-${pkg.version}.
 if (existsSync(join(output, filename))) throw new Error('A candidate already exists at this location. Choose a new output directory.')
 mkdirSync(output, { recursive: true })
 execFileSync('npm', ['run', 'build'], { cwd: root, stdio: 'inherit' })
-const packed = JSON.parse(execFileSync('npm', ['pack', '--ignore-scripts', '--json', '--pack-destination', output, '--cache', process.env.XINGULAR_RELEASE_NPM_CACHE ?? '/private/tmp/xingular-release-npm-cache'], { cwd: root, encoding: 'utf8' }))[0]
+const packed = JSON.parse(execFileSync('npm', ['pack', '--ignore-scripts', '--json', '--pack-destination', output, '--cache', process.env.XINGULAR_RELEASE_NPM_CACHE ?? join(tmpdir(), 'xingular-release-npm-cache')], { cwd: root, encoding: 'utf8' }))[0]
 const files = packed.files.map(file => file.path)
 if (!(packed.files.find(file => file.path === 'dist/cli.js')?.mode & 0o111)) throw new Error('The CLI is not executable in the candidate.')
 for (const required of ['LICENSE', 'NOTICE.md', 'THIRD_PARTY_LICENSES.md', 'dist/cli.js', 'dist/terminal-opentui.js', 'dist/terminal-pi.js', 'dist/sdk/index.js', 'dist/sdk/index.d.ts']) {
