@@ -610,6 +610,7 @@ def main():
                     terminal.send('\x1b')
                     terminal.send('/quit')
                     terminal.send('\r')
+                    print(f'PASS {dimensions}: full-screen searchable trajectory page', flush=True)
                     continue
                 if args.browser_only:
                     requests_before = len(LocalProvider.requests)
