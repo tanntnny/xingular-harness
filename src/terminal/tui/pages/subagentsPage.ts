@@ -5,6 +5,7 @@ import { headerRow, neutralRule, padded, type TabInfo } from '../chrome'
 import { FilterList, type ListRow } from '../list'
 import type { TerminalPage } from '../page'
 import { ACTIVE_SUBAGENT_STATUSES, terminalSubagentDuration, terminalSubagentTone, type TerminalSubagentActivity } from '../../subagentMonitor'
+import { subagentTasks } from '../../opentui/subagentsWidget'
 
 export interface SubagentsPageOptions {
   theme(): Theme
@@ -33,15 +34,15 @@ export class SubagentsPage implements TerminalPage {
 
   tabs(): readonly TabInfo[] { return TABS }
   activeTab(): string { return 'subagents' }
-  hint(): string { return '↑↓ select · type to search · Esc close' }
+  hint(): string { return '↑↓ select · type to search' }
 
   private rows(): ListRow<TerminalSubagentActivity>[] {
     return this.options.snapshot().map(item => ({
       id: item.id,
-      label: clean(item.goal || 'Subagent'),
-      detail: `${item.status.replaceAll('_', ' ')} · ${terminalSubagentDuration(item)}`,
+      label: `${clean(item.profile?.name ?? '') || 'subagent'} · ${clean(item.title) || 'Subagent'}`,
+      detail: [item.status.replaceAll('_', ' '), subagentTasks(item.checklist), terminalSubagentDuration(item)].filter(Boolean).join(' · '),
       tone: terminalSubagentTone(item.status),
-      searchText: `${item.goal ?? ''} ${item.status} ${item.activity}`,
+      searchText: `${item.profile?.name ?? ''} ${item.title} ${item.goal ?? ''} ${item.status} ${item.activity}`,
       data: item
     }))
   }
@@ -59,9 +60,10 @@ export class SubagentsPage implements TerminalPage {
       const theme = this.options.theme()
       const textWidth = Math.max(1, width - 4)
       output.push(neutralRule(width, theme))
+      output.push(padded(theme.fg('muted', `Profile: ${clean(selected.profile?.name ?? '') || 'copy of the parent'}`), width))
       output.push(padded(theme.fg('accent', 'Task'), width))
       output.push(...wrapTextWithAnsi(theme.fg('text', clean(selected.goal || 'Subagent')), textWidth))
-      output.push(padded(theme.fg('muted', `Status: ${selected.status.replaceAll('_', ' ')} · ${terminalSubagentDuration(selected)}`), width))
+      output.push(padded(theme.fg('muted', `Status: ${[selected.status.replaceAll('_', ' '), subagentTasks(selected.checklist), terminalSubagentDuration(selected)].filter(Boolean).join(' · ')}`), width))
       output.push(padded(theme.fg('accent', 'Current activity'), width))
       output.push(...wrapTextWithAnsi(theme.fg('text', clean(selected.activity)), textWidth))
     } else {

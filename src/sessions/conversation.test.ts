@@ -60,7 +60,7 @@ describe('a whole reply, with a scripted model', () => {
       const users = context.messages.filter(message => message.role === 'user').map(message => typeof message.content === 'string' ? message.content : (message.content as Array<{ text?: string }>).map(part => part.text ?? '').join(''))
       if (users.includes('native-child-brief')) return model.says('CHILD_EVIDENCE')
       if (JSON.stringify(context.messages).includes('CHILD_EVIDENCE')) return model.says('Final with CHILD_EVIDENCE')
-      if (!context.messages.some(message => message.role === 'toolResult')) return model.calls(['spawn_subagent', { brief: 'native-child-brief' }])
+      if (!context.messages.some(message => message.role === 'toolResult')) return model.calls(['spawn_subagent', { title: 'Run native child', brief: 'native-child-brief' }])
       return model.says('Draft before joining')
     }
     model.script(Array(8).fill(route))
@@ -78,7 +78,7 @@ describe('a whole reply, with a scripted model', () => {
 
   it('uses blocking native results without adding an unsolicited duplicate delivery', async () => {
     const { root, model, start, until, settled, of } = await setup()
-    model.script([model.calls(['spawn_subagent', { brief: 'Find proof', wait: true }]), model.says('INLINE_CHILD_PROOF'), model.says('Final')])
+    model.script([model.calls(['spawn_subagent', { title: 'Find proof', brief: 'Find proof', wait: true }]), model.says('INLINE_CHILD_PROOF'), model.says('Final')])
     const id = await start()
     await until(() => settled(id))
     expect(of(id).at(-1)?.type).toBe('completed')
@@ -89,24 +89,23 @@ describe('a whole reply, with a scripted model', () => {
     expect(model.requests()).toBe(3)
   })
 
-  it('interrupts a parent waiting on a child question without deadlocking SDK abort', async () => {
+  it('interrupts a parent waiting on a child approval without deadlocking SDK abort', async () => {
     const { harness, model, start, until, settled } = await setup()
     const ai = await import('@earendil-works/pi-ai')
     model.script([
-      model.calls(['spawn_subagent', { brief: 'Ask for a decision', wait: true }]),
-      ai.fauxAssistantMessage([ai.fauxToolCall('ask_user', { questions: [{ summary: 'A decision', question: 'Which approach?', options: [{ label: 'Approach A', description: 'Use the first approach.', recommended: true }] }] })], { stopReason: 'toolUse' })
+      model.calls(['spawn_subagent', { title: 'Run gated command', brief: 'Run a gated command', wait: true }]),
+      ai.fauxAssistantMessage([ai.fauxToolCall('bash', { command: 'echo approval' })], { stopReason: 'toolUse' })
     ])
     let childRunId: string | null = null
-    harness.runs.listen((event, run) => { if (event.type === 'question.requested' && run?.relation === 'subagent') childRunId = event.runId })
-    const id = await start()
+    harness.runs.listen((event, run) => { if (event.type === 'approval.requested' && run?.relation === 'subagent') childRunId = event.runId })
+    const id = await start({ tools: { allow: ['read', 'bash'], gated: ['bash'] } })
     await until(() => childRunId !== null || settled(id))
     expect(childRunId).not.toBeNull()
     await harness.runs.interrupt(id)
-    const { loadRun } = await import('./runStore')
+    const { loadRun, readEvents } = await import('./runStore')
     expect(loadRun(harness.env.root, id).status).toBe('interrupted')
     expect(loadRun(harness.env.root, childRunId!).status).toBe('interrupted')
-    const { readEvents } = await import('./runStore')
-    expect(readEvents(harness.env.root, childRunId!).some(event => event.type === 'question.answered')).toBe(true)
+    expect(readEvents(harness.env.root, childRunId!).some(event => event.type === 'approval.resolved')).toBe(true)
     expect(harness.runs.activeRunIds()).toEqual([])
   })
 

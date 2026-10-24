@@ -1,4 +1,4 @@
-import type { AgentSession } from '@earendil-works/pi-coding-agent'
+import { sessionEntryToContextMessages, type AgentSession, type SessionEntry } from '@earendil-works/pi-coding-agent'
 
 import { parseProposedPlan } from '../tui/planMode'
 import type { TerminalCommandHelpGroup } from '../commandHelp'
@@ -103,6 +103,20 @@ export interface CompactionItem {
   tokensBefore?: number
 }
 
+/** A `checklist_write` call, shown as the list it wrote rather than as a tool row. */
+export interface ChecklistTranscriptItem {
+  kind: 'checklist'
+  id: string
+  toolCallId: string
+  status: ToolStatus
+  items: readonly ChecklistEntry[]
+}
+
+export interface ChecklistEntry {
+  text: string
+  status: 'pending' | 'in_progress' | 'completed'
+}
+
 /** A proposed plan block from a plan-mode reply, shown as a card. */
 export interface PlanItem {
   kind: 'plan'
@@ -125,6 +139,7 @@ export type TranscriptItem =
   | SummaryItem
   | CompactionItem
   | PlanItem
+  | ChecklistTranscriptItem
 
 export interface TranscriptView {
   items: readonly TranscriptItem[]
@@ -209,7 +224,7 @@ function argumentSummary(name: string, args: unknown): string {
           : name === 'webfetch' || name === 'web_fetch'
             ? pick('url')
             : name === 'spawn_subagent' || name === 'spawnSubagent'
-              ? pick('description', 'prompt')
+              ? [pick('agent'), pick('title', 'brief', 'description', 'prompt')].filter(Boolean).join(' · ')
               : path
   if (summary) return ansiLabel(summary, 100)
   if (!args || typeof args !== 'object') return ''
@@ -227,8 +242,27 @@ function toolOutput(message: LooseMessage): string {
   return clip(text)
 }
 
+const CHECKLIST_STATUSES = new Set(['pending', 'in_progress', 'completed'])
+
+/** The items of a `checklist_write` call, or null when the arguments are not a checklist. */
+export function checklistEntries(args: unknown): ChecklistEntry[] | null {
+  const items = (args as { items?: unknown } | null | undefined)?.items
+  if (!Array.isArray(items)) return null
+  const entries: ChecklistEntry[] = []
+  for (const item of items) {
+    const entry = item as { text?: unknown; status?: unknown } | null
+    if (!entry || typeof entry.text !== 'string' || !entry.text.trim() || typeof entry.status !== 'string' || !CHECKLIST_STATUSES.has(entry.status)) return null
+    entries.push({ text: ansiLabel(entry.text.trim(), 500), status: entry.status as ChecklistEntry['status'] })
+  }
+  return entries
+}
+
 function sameTranscriptItem(left: TranscriptItem, right: TranscriptItem): boolean {
   if (left.kind !== right.kind) return false
+  if (left.kind === 'checklist' && right.kind === 'checklist') {
+    return left.id === right.id && left.toolCallId === right.toolCallId && left.status === right.status
+      && JSON.stringify(left.items) === JSON.stringify(right.items)
+  }
   const leftFields = Object.entries(left)
   const rightValues = right as unknown as Record<string, unknown>
   return leftFields.length === Object.keys(right).length
@@ -244,6 +278,43 @@ function objectId(value: object): number {
   return id
 }
 
+interface CompactedHistory {
+  /** Every message before the latest compaction, in order, kept messages included. */
+  archive: LooseMessage[]
+  /** Where the summary sits in Pi's list. */
+  summaryIndex: number
+  /** How many leading messages of Pi's list come from the compaction and the kept entries. */
+  head: number
+}
+
+interface HistorySource {
+  getBranch(): SessionEntry[]
+  buildSessionProjection(): { entries: { sourceEntry: SessionEntry; messages: unknown[] }[] }
+}
+
+function compactedHistory(session: AgentSession): CompactedHistory | null {
+  const manager = (session as unknown as { sessionManager?: Partial<HistorySource> }).sessionManager
+  if (typeof manager?.getBranch !== 'function' || typeof manager.buildSessionProjection !== 'function') return null
+  const branch = manager.getBranch()
+  const at = branch.findLastIndex(entry => entry.type === 'compaction')
+  if (at < 0) return null
+  const compactionId = branch[at]!.id
+  const earlier = new Set(branch.slice(0, at).map(entry => entry.id))
+  const projected = manager.buildSessionProjection().entries
+  const first = projected[0]
+  if (!first || first.sourceEntry.id !== compactionId || first.messages.length === 0) return null
+  let head = 0
+  for (const entry of projected) {
+    if (entry.sourceEntry.id !== compactionId && !earlier.has(entry.sourceEntry.id)) break
+    head += entry.messages.length
+  }
+  return {
+    archive: branch.slice(0, at).flatMap(entry => sessionEntryToContextMessages(entry) as unknown as LooseMessage[]),
+    summaryIndex: first.messages.length - 1,
+    head
+  }
+}
+
 export class TranscriptModel {
   private session?: AgentSession
   /** Items derived from a finished message, reused while its position and tool results stay the same. */
@@ -256,14 +327,18 @@ export class TranscriptModel {
   private liveBash?: { command: string; id?: string; output: string; previousCount: number }
   private cachedView?: TranscriptView
   private readonly cachedItems = new Map<string, TranscriptItem>()
+  /** What a compaction took out of Pi's message list, rebuilt from the session history on bind. */
+  private history?: CompactedHistory | null
 
   bind(session: AgentSession): void {
     this.session = session
+    this.history = undefined
     this.invalidate()
   }
 
   clear(): void {
     this.session = undefined
+    this.history = undefined
     this.notices = []
     this.liveBash = undefined
     this.invalidate()
@@ -372,7 +447,8 @@ export class TranscriptModel {
       hasUserMessages: false,
       hasMultilineNotice: this.notices.some(notice => notice.multiline)
     }
-    const messages = session.messages as readonly LooseMessage[]
+    const live = session.messages as readonly LooseMessage[]
+    const messages = this.displayMessages(live)
     const streaming = (session.state as unknown as { streamingMessage?: LooseMessage }).streamingMessage
     const all = streaming && !messages.includes(streaming) ? [...messages, streaming] : messages
     const pending = (session.state as unknown as { pendingToolCalls?: ReadonlySet<string> }).pendingToolCalls ?? new Set<string>()
@@ -381,7 +457,7 @@ export class TranscriptModel {
       if (message.role === 'toolResult' && typeof message.toolCallId === 'string') results.set(message.toolCallId, message)
     }
     const items: TranscriptItem[] = []
-    const bashExecutionCount = messages.filter(message => message.role === 'bashExecution').length
+    const bashExecutionCount = live.filter(message => message.role === 'bashExecution').length
     const notices = this.placedNotices(messages)
     let noticeIndex = 0
     for (let index = 0; index < all.length; index += 1) {
@@ -415,6 +491,21 @@ export class TranscriptModel {
       hasUserMessages: messages.some(message => message.role === 'user'),
       hasMultilineNotice: this.notices.some(notice => notice.multiline)
     }
+  }
+
+  /**
+   * Pi's list after a compaction starts with the summary and the kept messages. The transcript
+   * shows the whole conversation instead: everything before the compaction from the session
+   * history, the summary, then what came after.
+   */
+  private displayMessages(live: readonly LooseMessage[]): readonly LooseMessage[] {
+    if (this.history === undefined) {
+      try { this.history = this.session ? compactedHistory(this.session) : null }
+      catch { this.history = null }
+    }
+    const history = this.history
+    if (!history || live.length < history.head || live[history.summaryIndex]?.role !== 'compactionSummary') return live
+    return [...history.archive, live[history.summaryIndex]!, ...live.slice(history.head)]
   }
 
   /** What a message's items depend on besides the message itself. */
@@ -463,6 +554,11 @@ export class TranscriptModel {
           const status: ToolStatus = result ? (result.isError === true ? 'error' : 'ok') : pending.has(block.id) ? 'running' : 'pending'
           const resultImageCount = result ? imageCount(result.content) : 0
           const id = `m${index}.c${textIndex++}`
+          const checklist = block.name === 'checklist_write' && result?.isError !== true ? checklistEntries(block.arguments) : null
+          if (checklist) {
+            items.push({ kind: 'checklist', id, toolCallId: block.id, status, items: checklist })
+            continue
+          }
           items.push({
             kind: 'tool', id, toolCallId: block.id, name: block.name,
             summary: argumentSummary(block.name, block.arguments), status,

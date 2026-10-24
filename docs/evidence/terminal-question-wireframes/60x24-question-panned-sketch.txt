@@ -1,0 +1,24 @@
+   · Starting session…
+  ✶ Perusing (7s, 75 tok/s)
+ ──────────────────────────────────────────────────────────
+   UI layout
+
+   1 Short (           DESC_A contextual masthead choice.
+     Recommended)
+   2 LongMastheadLabe  DESC_B retains neighboring panels.
+     lWithoutSpaces
+
+  +------------------------------------------------------+
+  || Context row 01                               |      |
+  || Context row 02                               |      |
+  || Context row 03                               |      |
+  || Context row 04                               |      |
+  || Context row 05                               |      |
+  || Context row 06                               |      |
+  || Context row 07                               |      |
+  |A_BOTTOM                                              |
+  +------------------------------------------------------+
+
+   3 Something else…                     Skip and Submit
+
+  ↑↓ · Enter · Tab · Esc · ⇧arrows pan

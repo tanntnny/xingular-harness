@@ -45,6 +45,7 @@ import { RunRegistry } from './sessions/registry'
 import { loadRun, markInterruptedRuns } from './sessions/runStore'
 import type { SessionFactory } from './sessions/runner'
 import { Sessions } from './sessions/sessions'
+import { SideQuestions } from './sessions/sideQuestions'
 import { Terminals, type TerminalAssets } from './terminal/terminals'
 import { Worktrees } from './worktrees/service'
 import { AnnotationCapture } from './annotations/capture'
@@ -145,6 +146,8 @@ export class Harness {
   applicationPlugins: ReadonlySet<string> = new Set()
   readonly subagents: Subagents
   readonly sessions: Sessions
+  /** Tool-free, run-backed questions over a redacted projection of the main conversation. */
+  readonly sideQuestions: SideQuestions
   /** Web, browser and computer tools (page 13). */
   readonly world: World
   /** Which plugin code in variants a person trusted. */
@@ -222,7 +225,7 @@ export class Harness {
     this.describe(options.plugins ?? [])
     this.worktrees = new Worktrees(this.stateDir, options.worktrees)
     this.noteCapture = new AnnotationCapture({ stateDir: this.stateDir })
-    this.subagents = new Subagents(this.env, this.runs, (input) => this.sessions.run(input))
+    this.subagents = new Subagents(this.env, this.runs, (input) => this.sessions.run(input), { descriptors: () => HARNESS_PLUGINS })
     this.sessions = new Sessions({
       subagents: this.subagents,
       env: this.env,
@@ -236,6 +239,7 @@ export class Harness {
       trust: this.trust,
       worktrees: this.worktrees
     })
+    this.sideQuestions = new SideQuestions({ env: this.env, sessions: this.sessions, runs: this.runs })
     this.world = new World({ root: () => this.env.root, stateDir: this.stateDir, secrets, browser: this.browserEnabled ? undefined : false, notesChanged: (sessionId, ids) => this.bus.emit({ type: 'annotations.changed', sessionId, ids }) })
     // The harness's own world tools come first; a tool an application provides under the same name is not added again.
     this.sessions.provide(this.world.provider())
@@ -247,7 +251,7 @@ export class Harness {
     this.refine = new Refinements({ root: () => this.env.root, bus: this.bus, trust: this.trust, host: () => this.refineHost, runtime: refineRuntime })
     this.lessons = new Lessons({ root: () => this.env.root, runtime: refineRuntime })
     this.pageNotes = new NoteDeliveries({ root: () => this.env.root, bus: this.bus, terminals: () => this.terminals ?? null })
-    this.terminals = new Terminals({ trust: this.trust, subagents: this.subagents, resolveCapabilities: (caller, tools, cwd) => capabilities.resolve(this, { agentId: caller.agentId ?? null, projectId: caller.projectId ?? null, cwd, tools }), env: this.env, stateDir: this.stateDir, accounts: this.accounts, runs: this.runs, approvals: this.approvals, apps: this.apps, policy: this.policy, bus: this.bus, plugins: this.plugins, pluginControl: { list: (scope) => pluginApi.list(this, scope), attach: (params, on) => pluginApi.attach(this, params, on), trust: (scope) => pluginApi.trust(this, scope), untrust: (scope) => pluginApi.untrust(this, scope), configure: (params) => pluginApi.configure(this, params), install: params => pluginInstall.install(this, params), remove: params => pluginInstall.remove(this, params) }, assets: options.assets, hub: this.hub, world: this.world, doctor: this.doctor, worktrees: this.worktrees, noteCapture: this.noteCapture, pageNotes: this.pageNotes })
+    this.terminals = new Terminals({ trust: this.trust, subagents: this.subagents, sideQuestions: this.sideQuestions, resolveCapabilities: (caller, tools, cwd) => capabilities.resolve(this, { agentId: caller.agentId ?? null, projectId: caller.projectId ?? null, cwd, tools }), env: this.env, stateDir: this.stateDir, accounts: this.accounts, runs: this.runs, approvals: this.approvals, apps: this.apps, policy: this.policy, bus: this.bus, plugins: this.plugins, pluginControl: { list: (scope) => pluginApi.list(this, scope), attach: (params, on) => pluginApi.attach(this, params, on), trust: (scope) => pluginApi.trust(this, scope), untrust: (scope) => pluginApi.untrust(this, scope), configure: (params) => pluginApi.configure(this, params), install: params => pluginInstall.install(this, params), remove: params => pluginInstall.remove(this, params) }, assets: options.assets, hub: this.hub, world: this.world, doctor: this.doctor, worktrees: this.worktrees, noteCapture: this.noteCapture, pageNotes: this.pageNotes })
     this.ready = this.apps.start().catch((error) => log('connected apps', error instanceof Error ? error.message : String(error)))
     this.runs.listen((event, run) => {
       this.accounts.onRunEvent(event, run)
@@ -362,6 +366,7 @@ export class Harness {
     await this.lessons.close()
     await this.terminals.close()
     await this.noteCapture.close()
+    await this.sideQuestions.close()
     await this.runs.interruptAll()
     await this.world.close()
     await this.hooks.settled().catch(() => undefined)

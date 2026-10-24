@@ -80,6 +80,23 @@ describe('OpenTuiApplication', () => {
     await app.shutdown()
   })
 
+  it('publishes and refreshes the active slash-command vocabulary', async () => {
+    const app = new OpenTuiApplication([])
+    let completions = [{ name: 'help', aliases: ['h'] }, { name: 'plugin:notes' }, { name: 'review' }]
+    const internals = app as unknown as {
+      commands: { completions(): typeof completions; skills(): { name: string }[] }
+      refresh(): void
+    }
+    internals.commands = { completions: () => completions, skills: () => [{ name: 'diagnose' }] }
+
+    expect(app.view().slashCommandNames).toEqual(['help', 'h', 'plugin:notes', 'review', 'skill:diagnose'])
+
+    completions = [{ name: 'plan' }]
+    internals.refresh()
+    expect(app.view().slashCommandNames).toEqual(['plan', 'skill:diagnose'])
+    await app.shutdown()
+  })
+
   it('shows grouped help as one transcript item and replaces the welcome', async () => {
     const app = new OpenTuiApplication([])
     const internals = app as unknown as { showHelp(groups: TerminalCommandHelpGroup[]): void }
@@ -131,7 +148,7 @@ describe('OpenTuiApplication', () => {
     await app.shutdown()
   })
 
-  it('shows work after compaction below the compacting notice', async () => {
+  it('shows work after compaction without a compacting notice', async () => {
     const app = new OpenTuiApplication([])
     const internals = app as unknown as { accept(event: AgentSessionEvent): void; runtime?: TerminalRuntime }
     const before = Array.from({ length: 30 }, (_, index) => ({ role: 'user', content: `message ${index}` }))
@@ -147,7 +164,28 @@ describe('OpenTuiApplication', () => {
 
     const items = app.view().items
     expect(items.at(-1)).toMatchObject({ kind: 'assistant', text: 'next step' })
-    expect(items.at(-2)).toMatchObject({ kind: 'notice', text: 'Compacting context…' })
+    expect(items.some(item => item.kind === 'notice')).toBe(false)
+    await app.shutdown()
+  })
+
+  it('shows a /compact while idle in the working line with the spinner', async () => {
+    const app = new OpenTuiApplication([])
+    const internals = app as unknown as { accept(event: AgentSessionEvent): void; runtime?: TerminalRuntime }
+    internals.runtime = {
+      session: { messages: [{ role: 'user', content: 'hello' }], state: {}, getSessionStats: () => ({ tokens: {} }) },
+      snapshot: () => undefined,
+      dispose: async () => {}
+    } as unknown as TerminalRuntime
+
+    expect(app.view().working.active).toBe(false)
+    internals.accept({ type: 'compaction_start', reason: 'manual' } as AgentSessionEvent)
+    const working = app.view().working
+    expect(working).toMatchObject({ active: true, label: 'Compacting context' })
+    expect(working.frame).not.toBe('')
+    expect(working.elapsedMs).toEqual(expect.any(Number))
+    expect(working.tokensPerSecond).toBeNull()
+    internals.accept({ type: 'compaction_end', reason: 'manual', result: { summary: 'short', tokensBefore: 10 } } as AgentSessionEvent)
+    expect(app.view().working).toMatchObject({ active: false, label: '' })
     await app.shutdown()
   })
 
@@ -171,7 +209,7 @@ describe('OpenTuiApplication', () => {
     await app.shutdown()
   })
 
-  it('puts retry and compaction lifecycle updates in chat, not the working line', async () => {
+  it('puts retry updates in chat and shows compaction in the working line', async () => {
     const app = new OpenTuiApplication([])
     const internals = app as unknown as { accept(event: AgentSessionEvent): void; runtime?: TerminalRuntime }
     internals.runtime = {
@@ -189,8 +227,11 @@ describe('OpenTuiApplication', () => {
       kind: 'notice', level: 'warning', text: 'Retry 1/3 in 1.5s: rate limited'
     })
 
+    const runElapsed = app.view().working.elapsedMs
     internals.accept({ type: 'compaction_start', reason: 'threshold' } as AgentSessionEvent)
-    expect(app.view().items.at(-1)).toMatchObject({ kind: 'notice', text: 'Compacting context…' })
+    expect(app.view().working).toMatchObject({ active: true, label: 'Compacting context' })
+    expect(app.view().working.elapsedMs).toBeGreaterThanOrEqual(runElapsed ?? 0)
+    expect(app.view().items.some(item => item.kind === 'notice' && item.text === 'Compacting context…')).toBe(false)
     internals.accept({
       type: 'summarization_retry_scheduled', attempt: 2, maxAttempts: 4, delayMs: 2500, errorMessage: 'temporary failure'
     } as AgentSessionEvent)
@@ -200,11 +241,13 @@ describe('OpenTuiApplication', () => {
     internals.accept({
       type: 'summarization_retry_attempt_start', source: 'compaction', reason: 'threshold'
     } as AgentSessionEvent)
-    expect(app.view().items.at(-1)).toMatchObject({ kind: 'notice', text: 'Retrying context compaction…' })
+    expect(app.view().working.label).toBe('Retrying compaction')
+    expect(app.view().items.at(-1)).toMatchObject({ kind: 'notice', text: 'Retry 2/4 in 2.5s: temporary failure' })
     internals.accept({ type: 'summarization_retry_attempt_start', source: 'branchSummary' } as AgentSessionEvent)
     expect(app.view().items.at(-1)).toMatchObject({ kind: 'notice', text: 'Retrying branch summary…' })
     internals.accept({ type: 'summarization_retry_finished' } as AgentSessionEvent)
     expect(app.view().items.at(-1)).toMatchObject({ kind: 'notice', text: 'Summarization retry finished.' })
+    internals.accept({ type: 'compaction_end', reason: 'threshold', aborted: false, willRetry: false } as AgentSessionEvent)
     expect(app.view().working.label).toBe(workingLabel)
     await app.shutdown()
   })
@@ -266,35 +309,37 @@ describe('OpenTuiApplication', () => {
     }
   })
 
-  it('renders the live subagent roster above the composer', async () => {
+  it('gives the live subagent rows their own place instead of the widgets above the composer', async () => {
     const app = new OpenTuiApplication([])
     const internals = app as unknown as { subagents: TerminalSubagentActivity[]; themeValue: Theme }
     internals.themeValue = createHarnessTheme({ getColorMode: () => 'truecolor' } as Theme)
     internals.subagents = [{
       id: 'child', parentRunId: 'parent', relation: 'subagent', goal: 'Inspect auth flow', status: 'running',
-      startedAt: new Date(Date.now() - 3000).toISOString(), endedAt: null, activity: 'read'
+      startedAt: new Date(Date.now() - 3000).toISOString(), endedAt: null, activity: 'read',
+      profile: { name: 'explorer', color: 'cyan' }, title: 'Map the auth flow', checklist: { done: 1, total: 3 }
     }]
 
-    const roster = app.view().widgets.above.flatMap(lines => lines.flatMap(line => line.spans.map(span => span.text))).join('\n')
-    expect(roster).toContain('Subagents · 1 active · 0 finished · /plugin:subagents')
-    expect(roster).toContain('Inspect auth flow · running · read')
+    expect(app.view().widgets.above).toEqual([])
+    expect(app.view().subagents?.rows).toEqual([expect.objectContaining({ mark: expect.stringMatching(/^[·✢✳✶✻✽]$/u), profile: 'explorer', color: 'cyan', title: 'Map the auth flow', tasks: '1 of 3 tasks' })])
+    internals.subagents = []
+    expect(app.view().subagents).toBeNull()
     await app.shutdown()
   })
 
-  it('shows successful transcript copies as a temporary toast, not a transcript notice', async () => {
+  it('shows successful selection copies as a temporary toast, not a transcript notice', async () => {
     vi.useFakeTimers()
     const app = new OpenTuiApplication([])
     try {
       vi.mocked(copyToClipboard).mockClear()
-      app.copySelection('selected transcript text')
+      app.copySelection('selected TUI text')
       await Promise.resolve()
       await Promise.resolve()
 
-      expect(copyToClipboard).toHaveBeenCalledWith('selected transcript text')
-      expect(app.view().toast).toBe('Copied transcript selection')
+      expect(copyToClipboard).toHaveBeenCalledWith('selected TUI text')
+      expect(app.view().toast).toBe('Copied to clipboard')
       expect(app.view().items).toHaveLength(0)
       vi.advanceTimersByTime(2499)
-      expect(app.view().toast).toBe('Copied transcript selection')
+      expect(app.view().toast).toBe('Copied to clipboard')
       vi.advanceTimersByTime(1)
       expect(app.view().toast).toBeNull()
     } finally {
@@ -604,7 +649,7 @@ describe('OpenTuiApplication', () => {
     await app.shutdown()
   })
 
-  it('keeps a batch in an above-composer question dock until the full answer is submitted', async () => {
+  it('keeps a batch in the question dock until the full answer is submitted', async () => {
     const first = question('q1', {
       batchId: 'batch', batchIndex: 1, batchCount: 2,
       options: [{ label: 'A', description: 'Option A', recommended: true }, { label: 'B', description: 'Option B' }],
@@ -635,7 +680,7 @@ describe('OpenTuiApplication', () => {
     expect(app.handleKey(key('tab', '\t'))).toBe(true)
     expect(app.view().questionDock?.focus).toBe('action')
     expect(app.handleKey(key('tab', '\t'))).toBe(true)
-    expect(app.view().questionDock?.focus).toBe('composer')
+    expect(app.view().questionDock?.focus).toBe('options')
 
     internals.questionDock!.toggleOption(1)
     app.activateQuestionAction()
@@ -652,6 +697,34 @@ describe('OpenTuiApplication', () => {
     expect(app.view().questionDock).toBeNull()
 
     internals.runtime = undefined
+    await app.shutdown()
+  })
+
+  it('leaves question scrolling to the dock before effort, history and answer shortcuts', async () => {
+    const app = new OpenTuiApplication([])
+    const dock = new QuestionDockState([{
+      ...question('q1'), type: 'question', uiSketch: true,
+      options: [{ label: 'A', recommended: true, sketch: 'A' }, { label: 'B', sketch: 'B' }]
+    }])
+    const internals = app as unknown as { questionDock?: QuestionDockState }
+    internals.questionDock = dock
+    dock.toggleOption(0)
+    for (const name of ['up', 'down', 'left', 'right']) {
+      expect(app.handleKey(key(name, '', true))).toBe(false)
+    }
+    for (const name of ['pageup', 'pagedown', 'home', 'end']) {
+      expect(app.handleKey({ ...key(name, ''), ctrl: name === 'home' || name === 'end' })).toBe(false)
+    }
+    expect(dock.view).toMatchObject({ selected: ['A'], optionIndex: 0, text: '', focus: 'options' })
+    expect(app.handleKey(key('down', '\u001b[B'))).toBe(true)
+    expect(dock.view.optionIndex).toBe(1)
+    expect(dock.view.selected).toEqual(['A'])
+    for (const focus of ['note', 'answer'] as const) {
+      dock.setFocus(focus)
+      expect(app.handleKey(key('?', '?'))).toBe(false)
+      expect(app.handleKey(key('!', '!'))).toBe(false)
+      expect(app.view().bashMode).toBe(false)
+    }
     await app.shutdown()
   })
 
@@ -805,7 +878,7 @@ describe('OpenTuiApplication', () => {
     expect(app.view().questionDock).toMatchObject({ optionIndex: 1, focus: 'options' })
     app.activateQuestionOption(1)
     expect(app.view().questionDock).toMatchObject({ selected: ['Second'], focus: 'options' })
-    expect(app.handleKey(key('tab', '\t'))).toBe(true)
+    expect(app.handleKey(key('n', 'n'))).toBe(true)
     expect(app.view().questionDock).toMatchObject({
       focus: 'note',
       options: [
@@ -815,10 +888,10 @@ describe('OpenTuiApplication', () => {
     })
     app.setQuestionNote('Second', 'Context for this choice')
     expect(app.view().questionDock?.options[1]?.note).toBe('Context for this choice')
+    expect(app.handleKey(key('tab', '\t'))).toBe(true)
+    expect(app.view().questionDock?.focus).toBe('answer')
     app.focusQuestionAnswer()
     expect(app.view().questionDock?.focus).toBe('answer')
-    app.focusQuestionComposer()
-    expect(app.view().questionDock?.focus).toBe('composer')
 
     await app.shutdown()
   })
@@ -908,7 +981,7 @@ describe('OpenTuiApplication', () => {
     await app.shutdown()
   })
 
-  it('sends a character the question dock does not use to the composer instead of dropping it', async () => {
+  it('routes unused question keys to free text without creating a chat draft or collapsing the dock', async () => {
     const runtime = {
       pending: vi.fn(async () => [question('q1', { options: [{ label: 'First', recommended: true }, { label: 'Second' }] })]),
       answer: vi.fn(async () => {}),
@@ -917,7 +990,7 @@ describe('OpenTuiApplication', () => {
       snapshot: vi.fn(() => undefined)
     }
     const app = new OpenTuiApplication([])
-    const internals = app as unknown as { runtime?: TerminalRuntime; decisions(): Promise<void>; syncDraft(text: string): void }
+    const internals = app as unknown as { runtime?: TerminalRuntime; decisions(): Promise<void>; syncDraft(text: string): void; questionDock?: QuestionDockState }
     internals.runtime = runtime as unknown as TerminalRuntime
     internals.syncDraft = () => {}
 
@@ -926,8 +999,13 @@ describe('OpenTuiApplication', () => {
     expect(app.view().questionDock?.focus).toBe('options')
 
     expect(app.handleKey(key('h', 'h'))).toBe(true)
-    expect(app.view().questionDock?.focus).toBe('composer')
-    expect(app.view().draft).toBe('h')
+    expect(app.view().questionDock).toMatchObject({ focus: 'answer', text: 'h' })
+    expect(app.view().draft).toBe('')
+
+    internals.questionDock!.focusOption(0)
+    expect(app.handleKey(key('x', 'x'))).toBe(true)
+    expect(app.view().questionDock).toMatchObject({ focus: 'answer', text: 'hx' })
+    expect(app.view().questionDock).not.toBeNull()
     expect(runtime.answer).not.toHaveBeenCalled()
 
     internals.runtime = undefined

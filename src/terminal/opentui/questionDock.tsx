@@ -1,5 +1,9 @@
-import { For, Show, createEffect } from 'solid-js'
-import { TextAttributes, type KeyBinding, type TextareaRenderable } from '@opentui/core'
+import { For, Show, createEffect, createMemo, createSignal, on, onCleanup } from 'solid-js'
+import { RGBA, TextAttributes, type OptimizedBuffer, type BoxRenderable, type KeyBinding, type MouseEvent, type ScrollBoxRenderable, type TextareaRenderable } from '@opentui/core'
+import { useKeyboard, useTerminalDimensions } from '@opentui/solid'
+
+import { questionDockColumns, sketchBorder, sketchViewportHeight } from './questionDockLayout'
+import { layoutSketchPanel } from './sketchPanel'
 
 import type { OpenTuiApplication } from './app'
 import { opentuiTheme } from './theme'
@@ -13,23 +17,114 @@ const answerKeyBindings: KeyBinding[] = [
   { name: 'linefeed', action: 'submit' }
 ]
 
-export function QuestionDock(props: { app: OpenTuiApplication; view: QuestionDockView }) {
-  let answer: TextareaRenderable | undefined
-  const noteFields = new Map<string, TextareaRenderable>()
-  const primaryAction = () => props.view.actionLabel.startsWith('Continue')
+function WrappedQuestionInput(props: {
+  value: string
+  placeholder: string
+  focused: boolean
+  width?: number
+  onMouseDown?: (event: MouseEvent) => void
+  onChange(value: string): void
+  onSubmit(): void
+}) {
+  const [rows, setRows] = createSignal(1)
+  let area: TextareaRenderable | undefined
+  const measure = () => setRows(Math.min(4, Math.max(1, area?.lineInfo.lineWidthCols.length ?? 1)))
 
   createEffect(() => {
-    const view = props.view
-    view.activeIndex
-    if (view.allowText && answer && answer.plainText !== view.text) answer.setText(view.text)
-    for (const option of view.options) {
-      const field = noteFields.get(option.label)
-      if (option.noteOpen && field && field.plainText !== option.note) field.setText(option.note)
+    const value = props.value
+    if (area && area.plainText !== value) area.setText(value)
+    measure()
+  })
+
+  return (
+    <textarea
+      ref={value => {
+        area = value
+        if (value && value.plainText !== props.value) value.setText(props.value)
+        measure()
+      }}
+      width={props.width}
+      flexGrow={props.width === undefined ? 1 : 0}
+      minWidth={0}
+      height={rows()}
+      minHeight={1}
+      maxHeight={4}
+      wrapMode='word'
+      backgroundColor='transparent'
+      focusedBackgroundColor='transparent'
+      textColor={theme.text}
+      focusedTextColor={theme.text}
+      placeholder={props.placeholder}
+      placeholderColor={theme.dim}
+      focused={props.focused}
+      onMouseDown={props.onMouseDown}
+      keyBindings={answerKeyBindings}
+      onContentChange={() => { measure(); props.onChange(area?.plainText ?? '') }}
+      onSizeChange={measure}
+      onSubmit={() => { props.onChange(area?.plainText ?? ''); props.onSubmit() }}
+    />
+  )
+}
+
+export function QuestionDock(props: { app: OpenTuiApplication; view: QuestionDockView }) {
+  const primaryAction = () => props.view.actionLabel.startsWith('Continue')
+  const dimensions = useTerminalDimensions()
+  const [contentWidth, setContentWidth] = createSignal(Math.max(0, dimensions().width - 4))
+  let dock: BoxRenderable | undefined
+  let body: ScrollBoxRenderable | undefined
+  let preview: ScrollBoxRenderable | undefined
+  let previewFrame: BoxRenderable | undefined
+  const measure = () => { if (dock) setContentWidth(Math.max(0, dock.width - 2)) }
+  const columns = () => questionDockColumns(Math.max(0, contentWidth() - 2))
+  const sketchLines = () => (props.view.sketchPreview?.sketch ?? '').split('\n')
+  const sketchPanel = createMemo(() => layoutSketchPanel(props.view.sketchPreview?.sketch ?? '', Math.max(1, contentWidth() - 2)))
+  // Both content bounds must be explicit: a Solid-created scrollbox retains a 100% max-width.
+  const sketchWidth = () => sketchPanel().width
+  const previewHeight = () => sketchViewportHeight(props.view.sketchPreview?.sketch ?? '', dimensions().height)
+
+  const drawDividerJunctions = (buffer: OptimizedBuffer) => {
+    if (!preview || !previewFrame) return
+    const color = RGBA.fromHex(theme.dim)
+    const transparent = RGBA.fromValues(0, 0, 0, 0)
+    for (const row of sketchPanel().dividers) {
+      const visibleRow = row - preview.scrollTop
+      if (visibleRow < 0 || visibleRow >= preview.viewport.height) continue
+      const y = Math.round(preview.viewport.y + visibleRow)
+      buffer.drawText('├', Math.round(previewFrame.x), y, color, transparent)
+      buffer.drawText('┤', Math.round(previewFrame.x + previewFrame.width - 1), y, color, transparent)
     }
+  }
+
+  createEffect(on([() => props.view.optionIndex, () => props.view.activeIndex, () => props.view.focus], ([index, question, focus]) => {
+    // Wait for Yoga to lay out wrapped rows before bringing the focused cell into view.
+    const timer = setTimeout(() => {
+      if (focus === 'options' || focus === 'note') body?.scrollChildIntoView(`question-${question}-option-${index}`)
+    }, 0)
+    onCleanup(() => clearTimeout(timer))
+  }))
+  createEffect(on(() => props.view.sketchPreview?.sketch, () => {
+    preview?.scrollTo({ x: 0, y: 0 })
+  }))
+
+  useKeyboard(key => {
+    if (key.eventType !== 'press') return
+    let handled = true
+    if (key.shift && ['up', 'down', 'left', 'right'].includes(key.name) && props.view.sketchPreview && preview) {
+      preview.scrollBy({ x: key.name === 'left' ? -4 : key.name === 'right' ? 4 : 0, y: key.name === 'up' ? -1 : key.name === 'down' ? 1 : 0 })
+    } else if (key.name === 'pageup' || key.name === 'pagedown') {
+      body?.scrollBy({ x: 0, y: (key.name === 'pageup' ? -1 : 1) * Math.max(1, (body?.viewport.height ?? 2) - 1) })
+    } else if (key.ctrl && (key.name === 'home' || key.name === 'end')) {
+      body?.scrollTo({ x: 0, y: key.name === 'home' ? 0 : body.scrollHeight })
+    } else handled = false
+    if (handled) { key.preventDefault(); key.stopPropagation() }
   })
 
   return (
     <box
+      ref={value => { dock = value; measure() }}
+      onSizeChange={measure}
+      maxHeight={Math.max(1, dimensions().height - 2)}
+      width='100%'
       flexDirection='column'
       border={['top']}
       borderStyle='single'
@@ -39,174 +134,176 @@ export function QuestionDock(props: { app: OpenTuiApplication; view: QuestionDoc
       marginTop={0}
       flexShrink={0}
     >
-      <Show
-        when={!props.view.collapsed}
-        fallback={(
-          <box flexDirection='row' justifyContent='space-between' flexShrink={0}>
-            <text fg={theme.text} wrapMode='none' truncate={true} flexGrow={1}>
-              {props.view.summary} · {props.view.activeIndex + 1} of {props.view.count}
-            </text>
-            <text fg={theme.dim} wrapMode='none'>Tab reopen · Esc stop</text>
-          </box>
-        )}
+      <box flexDirection='row' flexWrap='wrap' width='100%' flexShrink={0}>
+        <For each={props.view.tabs}>
+          {tab => (
+            <box
+              paddingX={1}
+              backgroundColor={tab.active ? theme.selectionBg : undefined}
+              flexShrink={0}
+              onMouseUp={event => {
+                if (event.button !== 0) return
+                event.stopPropagation()
+                props.app.selectQuestionTab(tab.index)
+              }}
+            >
+              <text
+                fg={tab.active ? theme.selectionText : theme.muted}
+                attributes={tab.active ? TextAttributes.BOLD : 0}
+                wrapMode='word'
+              >
+                {tab.label}
+              </text>
+            </box>
+          )}
+        </For>
+      </box>
+      <scrollbox
+        ref={value => { body = value }}
+        minHeight={1}
+        flexShrink={1}
+        scrollY={true}
+        scrollX={false}
+        verticalScrollbarOptions={{ visible: false }}
+        contentOptions={{ flexDirection: 'column', flexShrink: 0 }}
       >
-        <box flexDirection='row' alignItems='center' flexShrink={0}>
-          <text fg={theme.text} wrapMode='word' flexGrow={1} minWidth={0}>{props.view.question}</text>
-          <text fg={theme.dim} wrapMode='none' flexShrink={0}>
-            {' '}
-            <Show when={props.view.activeIndex > 0} fallback={<span style={{ fg: theme.dim }}>‹</span>}>
-              <span style={{ fg: theme.muted }}>‹</span>
-            </Show>
-            {' '}{props.view.activeIndex + 1} of {props.view.count}{' '}
-            <Show when={props.view.activeIndex + 1 < props.view.count} fallback={<span style={{ fg: theme.dim }}>›</span>}>
-              <span style={{ fg: theme.muted }}>›</span>
-            </Show>
-            {' '}×
-          </text>
-        </box>
-        <Show when={props.view.options.length > 0}>
-          <box flexDirection='column' marginTop={1} flexShrink={0}>
-            <For each={props.view.options}>
-              {(option, index) => (
-                <box flexDirection='column' flexShrink={0}>
-                  <box
-                    flexDirection='row'
-                    width='100%'
-                    paddingX={1}
-                    backgroundColor={option.selected ? theme.questionSelectedBg : option.focused ? theme.selectionBg : undefined}
-                    flexShrink={0}
-                    onMouseOver={() => props.app.focusQuestionOption(index())}
-                    onMouseUp={event => {
-                      if (event.button !== 0) return
-                      event.stopPropagation()
-                      props.app.activateQuestionOption(index())
-                    }}
-                  >
-                    <text
-                      fg={option.selected ? theme.success : option.focused ? theme.selectionText : theme.muted}
-                      attributes={option.focused || option.selected ? TextAttributes.BOLD : 0}
-                      wrapMode='none'
-                    >
-                      {props.view.multiSelect
-                        ? option.selected ? '☑ ' : '☐ '
-                        : `${index() + 1} `}
-                    </text>
-                    <box flexDirection='column' flexGrow={1} minWidth={0}>
-                      <text fg={option.focused ? theme.selectionText : theme.text} wrapMode='word'>
-                        <span style={{ bold: option.focused || option.selected }}>{option.label}</span>
-                        <Show when={option.recommended}>
-                          <span style={{ fg: theme.warning }}> (Recommended)</span>
-                        </Show>
-                      </text>
-                      <Show when={option.description}>
-                        <text fg={option.focused ? theme.selectionMuted : theme.muted} wrapMode='word'>{option.description}</text>
+      <box marginTop={1} flexShrink={0}>
+        <text fg={theme.text} wrapMode='word'>{props.view.question}</text>
+      </box>
+      <box flexDirection='column' marginTop={1} flexShrink={0}>
+        <For each={props.view.options}>
+          {(option, index) => (
+            <box id={`question-${props.view.activeIndex}-option-${index()}`} flexDirection='column' flexShrink={0}>
+              <box
+                flexDirection='row'
+                width='100%'
+                paddingX={1}
+                backgroundColor={option.selected ? theme.questionSelectedBg : option.focused ? theme.selectionBg : undefined}
+                flexShrink={0}
+                onMouseOver={() => props.app.focusQuestionOption(index())}
+                onMouseUp={event => {
+                  if (event.button !== 0) return
+                  event.stopPropagation()
+                  props.app.activateQuestionOption(index())
+                }}
+              >
+                <text
+                  fg={option.selected ? theme.success : option.focused ? theme.selectionText : theme.muted}
+                  attributes={option.focused || option.selected ? TextAttributes.BOLD : 0}
+                  width={columns().marker}
+                  minWidth={columns().marker}
+                  flexShrink={0}
+                  wrapMode='none'
+                >
+                  {props.view.multiSelect
+                    ? option.selected ? '☑ ' : '☐ '
+                    : `${index() + 1} `}
+                </text>
+                <box flexDirection='row' minWidth={0} flexShrink={0}>
+                  <box width={columns().label} minWidth={columns().label} flexDirection='column' flexShrink={0}>
+                    <text width='100%' fg={option.focused ? theme.selectionText : theme.text} wrapMode='word'>
+                      <span style={{ bold: option.focused || option.selected }}>{option.label}</span>
+                      <Show when={option.recommended}>
+                        <span style={{ fg: theme.warning }}>{columns().label < 14 ? ' (Rec.)' : ' (Recommended)'}</span>
                       </Show>
-                    </box>
+                    </text>
                   </box>
-                  <Show when={option.noteOpen}>
-                    <box flexDirection='row' paddingLeft={4} flexShrink={0}>
-                      <textarea
-                        ref={value => {
-                          if (value) noteFields.set(option.label, value)
-                          else noteFields.delete(option.label)
-                        }}
-                        flexGrow={1}
-                        minWidth={0}
-                        height={1}
-                        minHeight={1}
-                        maxHeight={1}
-                        wrapMode='none'
-                        backgroundColor='transparent'
-                        focusedBackgroundColor='transparent'
-                        textColor={theme.text}
-                        focusedTextColor={theme.text}
+                  <box width={columns().gap} flexShrink={0} />
+                  <box width={columns().description} minWidth={columns().description} flexDirection='column' flexShrink={0}>
+                    <text width='100%' fg={option.focused ? theme.selectionMuted : theme.muted} wrapMode='word'>{option.description || ' '}</text>
+                  </box>
+                </box>
+              </box>
+              <Show when={option.noteOpen}>
+                <box flexDirection='row' width='100%' paddingX={1} flexShrink={0}>
+                  <box width={columns().marker} flexShrink={0} />
+                  <box flexDirection='row' minWidth={0} flexShrink={0}>
+                    <box width={columns().label + columns().gap} flexShrink={0} />
+                    <box width={columns().description} minWidth={columns().description} flexDirection='row' flexShrink={0}>
+                      <text fg={theme.accent} attributes={TextAttributes.BOLD} wrapMode='none' flexShrink={0}>Note:</text>
+                      <box width={1} flexShrink={0} />
+                      <WrappedQuestionInput
+                        value={option.note}
                         placeholder='Write a note…'
-                        placeholderColor={theme.dim}
                         focused={option.noteFocused}
-                        onMouseDown={event => {
-                          if (event.button === 0) props.app.focusQuestionNote(option.label)
-                        }}
-                        keyBindings={answerKeyBindings}
-                        onContentChange={() => props.app.setQuestionNote(option.label, noteFields.get(option.label)?.plainText ?? '')}
-                        onSubmit={() => {
-                          props.app.setQuestionNote(option.label, noteFields.get(option.label)?.plainText ?? '')
-                          props.app.activateQuestionAction()
-                        }}
+                        width={Math.max(1, columns().description - 6)}
+                        onMouseDown={event => { if (event.button === 0) props.app.focusQuestionNote(option.label) }}
+                        onChange={value => props.app.setQuestionNote(option.label, value)}
+                        onSubmit={() => props.app.activateQuestionAction()}
                       />
                     </box>
-                  </Show>
+                  </box>
                 </box>
-              )}
-            </For>
-          </box>
-        </Show>
-        <box flexDirection='row' alignItems='center' paddingX={1} marginTop={1} flexShrink={0}>
-          <Show when={props.view.allowText}>
-            <text
-              fg={props.view.focus === 'answer' ? theme.selectionText : theme.muted}
-              attributes={props.view.focus === 'answer' ? TextAttributes.BOLD : 0}
-              wrapMode='none'
-            >{`${props.view.options.length + 1} `}</text>
-            <textarea
-              ref={value => { answer = value }}
-              flexGrow={1}
-              minWidth={0}
-              height={1}
-              minHeight={1}
-              maxHeight={1}
-              wrapMode='none'
-              backgroundColor='transparent'
-              focusedBackgroundColor='transparent'
-              textColor={theme.text}
-              focusedTextColor={theme.text}
-              placeholder='Something else…'
-              placeholderColor={theme.dim}
-              focused={props.view.focus === 'answer'}
-              onMouseDown={event => {
-                if (event.button === 0) props.app.focusQuestionAnswer()
-              }}
-              keyBindings={answerKeyBindings}
-              onContentChange={() => props.app.setQuestionText(answer?.plainText ?? '')}
-              onSubmit={() => {
-                props.app.setQuestionText(answer?.plainText ?? '')
-                props.app.activateQuestionAction()
-              }}
-            />
-          </Show>
-          <box
-            paddingX={1}
-            backgroundColor={primaryAction() ? theme.questionActionBg : props.view.focus === 'action' ? theme.selectionBg : undefined}
+              </Show>
+            </box>
+          )}
+        </For>
+      </box>
+      {props.view.sketchPreview ? (
+        <box ref={value => { previewFrame = value }} renderAfter={drawDividerJunctions} flexDirection='column' marginTop={1} height={previewHeight() + 2} border={true} customBorderChars={sketchBorder} borderColor={theme.dim} flexShrink={0}>
+          <scrollbox
+            ref={value => { preview = value }}
+            height={previewHeight()}
             flexShrink={0}
-            onMouseOver={() => props.app.focusQuestionAction()}
-            onMouseUp={event => {
-              if (event.button !== 0) return
-              event.stopPropagation()
-              props.app.activateQuestionAction()
-            }}
+            scrollX={true} scrollY={true}
+            verticalScrollbarOptions={{ visible: false }} horizontalScrollbarOptions={{ visible: false }}
+            contentOptions={{ flexShrink: 0, minWidth: sketchWidth(), maxWidth: sketchWidth(), height: sketchLines().length }}
           >
-            <text
-              fg={primaryAction() ? theme.questionActionText : props.view.focus === 'action' ? theme.selectionText : theme.text}
-              attributes={primaryAction() || props.view.focus === 'action' ? TextAttributes.BOLD : 0}
-              wrapMode='none'
-            >
-              {props.view.actionLabel}
-            </text>
-          </box>
+            <text width={sketchWidth()} flexShrink={0} fg={theme.text} wrapMode='none'>{sketchPanel().text}</text>
+          </scrollbox>
         </box>
-        <box marginTop={1} flexShrink={0}>
-          <text fg={theme.dim} wrapMode='word'>
-            {props.view.focus === 'options'
-              ? '↑↓ choose · Enter select/continue · Tab add note · ←→ question · x collapse · Esc stop'
-              : props.view.focus === 'note'
-                ? 'Tab next note/answer · Shift+Tab choice · Enter continue or submit · Esc stop'
-                : props.view.focus === 'answer'
-                  ? 'Tab next · Enter continue or submit · Esc stop'
-                  : props.view.focus === 'action'
-                    ? 'Enter continue or submit · x collapse · Tab composer · Shift+Tab back'
-                    : 'Shift+Tab previous · Esc stop'}
+      ) : null}
+      </scrollbox>
+      <box flexDirection='row' alignItems='flex-start' paddingX={1} marginTop={1} flexShrink={0}>
+        <Show when={props.view.allowText}>
+          <text
+            fg={props.view.focus === 'answer' ? theme.selectionText : theme.muted}
+            attributes={props.view.focus === 'answer' ? TextAttributes.BOLD : 0}
+            wrapMode='none'
+          >{`${props.view.options.length + 1} `}</text>
+          <WrappedQuestionInput
+            value={props.view.text}
+            placeholder='Something else…'
+            focused={props.view.focus === 'answer'}
+            onMouseDown={event => { if (event.button === 0) props.app.focusQuestionAnswer() }}
+            onChange={value => props.app.setQuestionText(value)}
+            onSubmit={() => props.app.activateQuestionAction()}
+          />
+        </Show>
+        <box
+          paddingX={1}
+          backgroundColor={primaryAction() ? theme.questionActionBg : props.view.focus === 'action' ? theme.selectionBg : undefined}
+          flexShrink={0}
+          onMouseOver={() => props.app.focusQuestionAction()}
+          onMouseUp={event => {
+            if (event.button !== 0) return
+            event.stopPropagation()
+            props.app.activateQuestionAction()
+          }}
+        >
+          <text
+            fg={primaryAction() ? theme.questionActionText : props.view.focus === 'action' ? theme.selectionText : theme.text}
+            attributes={primaryAction() || props.view.focus === 'action' ? TextAttributes.BOLD : 0}
+            wrapMode='none'
+          >
+            {props.view.actionLabel}
           </text>
         </box>
-      </Show>
+      </box>
+      <box marginTop={1} flexShrink={0}>
+        <text fg={theme.dim} wrapMode='word'>
+          {contentWidth() < 60 ? (props.view.sketchPreview ? '↑↓ · Enter · Tab · Esc · ⇧arrows pan' : '↑↓ choose · Enter · Tab · Esc stop') : <>
+          {props.view.sketchPreview ? 'Shift+arrows sketch · PgUp/PgDn scroll · ' : ''}
+          {props.view.focus === 'options'
+            ? '↑↓ choose · Enter select/continue · n add note · ←→ question · Tab next · Esc stop'
+            : props.view.focus === 'note'
+              ? 'Tab next field · Shift+Tab choice · Enter continue or submit · Esc stop'
+              : props.view.focus === 'answer'
+                ? 'Tab action · Enter continue or submit · Esc stop'
+                : 'Enter continue or submit · Shift+Tab back · ←→ question · Esc stop'}
+          </>}
+        </text>
+      </box>
     </box>
   )
 }

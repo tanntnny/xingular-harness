@@ -4,8 +4,8 @@
 // A pack is an ordered list of sections, each with its own character budget. The harness writes
 // the sections that come from the session's variant (instructions, guardrails, memory, tool
 // guidance, and the indexes of its subagents and scripts), the selected references, the Wiki
-// pointer, and the tools; the embedding application supplies the others (who the model is, its
-// role, what it is working on). Each run's pack is recorded in `runs/<id>/context.json`.
+// pointer, and the tools. The foundation supplies its identity; the embedding application supplies
+// any additional identity, role, and current work. Each run's pack is recorded in `runs/<id>/context.json`.
 import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 
@@ -16,8 +16,10 @@ import { charCount, compareText, lines, takeChars } from '../core/text'
 import type { Materialised } from '../variant/materialise'
 import * as notes from '../wiki/notes'
 import { isWorldTool, WORLD_GUIDANCE } from '../world/untrusted'
+import { CHECKLIST_WRITE } from '../tools/checklist'
 import { SESSION_NAME } from '../tools/sessionName'
 
+const IDENTITY_BUDGET = 1000
 const WIKI_BUDGET = 2500
 const TOOLS_BUDGET = 8000
 const REPORTING_BUDGET = 2000
@@ -27,7 +29,7 @@ const VARIANT_BUDGET = 30_000
 const NOTES_LISTED = 25
 
 /** Where the harness's own sections sit; an application's sections are placed among them by `order`. */
-export const SECTION_ORDER = { system: 25, guardrails: 40, memory: 45, references: 50, subagents: 64, scripts: 66, wiki: 80, tools: 90, reporting: 95 } as const
+export const SECTION_ORDER = { harnessIdentity: 5, system: 25, guardrails: 40, memory: 45, references: 50, subagents: 64, scripts: 66, wiki: 80, tools: 90, reporting: 95 } as const
 
 /** Where a section's text came from. */
 export interface Source {
@@ -37,7 +39,7 @@ export interface Source {
 }
 
 export interface Section {
-  /** `identity`, `role`, `system`, `guardrails`, `memory`, `references`, `subagents`, `scripts`, `wiki`, `tools`, or an application's own. */
+  /** `harness-identity`, `identity`, `role`, `system`, `guardrails`, `memory`, `references`, `subagents`, `scripts`, `wiki`, `tools`, or an application's own. */
   id: string
   title: string
   body: string
@@ -113,6 +115,8 @@ export interface Launch {
   toolGroups?: HostToolGroup[]
   /** Appended to the tools section when it is cut. */
   toolsPointer?: string
+  /** Suppresses tool guidance for a run that deliberately has no callable tools. */
+  hideToolGuidance?: boolean
   /** Recorded with the pack: the application's name for who it is for. Defaults to `agent` or `session`. */
   profile?: string
 }
@@ -196,12 +200,13 @@ export interface OrderedGroup extends ToolGroup {
  * The caller's tools by group, in a fixed order. History and the Wiki are always there; the rest
  * follows the switches in `launch.tools` and what the application provides.
  */
-export function toolGroups(context: CallerContext, launch: Launch): OrderedGroup[] {
+export function toolGroups(context: CallerContext, launch: Launch, dataRoot?: string): OrderedGroup[] {
   const enabled = launch.tools ?? []
   const session = isSession(context)
   const cli = usesCli(context)
   const native = NATIVE_GROUP.filter((name) => enabled.includes(name))
   const wikiTools = WIKI_GROUP.filter((name) => name !== 'wiki_write' || enabled.includes(name))
+  const readGuidance = `Read-only file tools accept absolute paths and paths beginning with ~ anywhere this process has operating-system read access. The working folder is a default location, not a repository boundary.${dataRoot ? ` The Harness data root is ${dataRoot}.` : ''}`
   const groups: OrderedGroup[] = [
     {
       group: 'History',
@@ -223,12 +228,20 @@ export function toolGroups(context: CallerContext, launch: Launch): OrderedGroup
       group: 'Native',
       tools: native,
       order: GROUP_ORDER.Native,
-      guidance: session ? "Files and shell: your harness's own tools, within this session's working folder and access level." : `Files (${native.join(', ')}): work in your own folder; edits and commands ask the user first unless already allowed.`
+      guidance: session
+        ? `Files and shell: ${readGuidance} Edits and commands still pass through the Harness gate.`
+        : `Files (${native.join(', ')}): ${readGuidance} Edits and commands still pass through the current gate.`
     },
     // Web, browser and computer tools: the harness's own, and their results are untrusted (world/untrusted.ts).
     { group: 'World', tools: enabled.filter((name) => isWorldTool(name) && !(launch.toolGroups ?? []).some((group) => group.tools.includes(name))), order: GROUP_ORDER.World, guidance: `Web, browser and screen: ${WORLD_GUIDANCE}` },
     ...(launch.toolGroups ?? []).map((group) => ({ group: group.group, tools: group.tools, order: group.order, guidance: group.guidance }))
   ]
+  if (enabled.includes(CHECKLIST_WRITE)) {
+    groups.push({
+      group: 'Progress', tools: [CHECKLIST_WRITE], order: 87,
+      guidance: 'Progress: for work with several steps, write a checklist early with checklist_write and keep it current. The user follows your work from it, and a subagent\'s checklist shows as its progress in the user\'s list of subagents.'
+    })
+  }
   if (enabled.includes(SESSION_NAME)) {
     groups.push({
       group: 'Session', tools: [SESSION_NAME], order: 88,
@@ -241,8 +254,9 @@ export function toolGroups(context: CallerContext, launch: Launch): OrderedGroup
   const present = groups.filter((group) => group.tools.length)
   // A session's file and shell tools are Pi's own, whatever the switches say.
   if (session && !present.some((group) => group.group === 'Native')) {
-    present.push({ group: 'Native', tools: ['harness file and shell tools'], order: GROUP_ORDER.placeholder, guidance: "Files and shell: your harness's own tools, within this session's working folder and access level." })
+    present.push({ group: 'Native', tools: ['harness file and shell tools'], order: GROUP_ORDER.placeholder, guidance: `Files and shell: ${readGuidance} Edits and commands still pass through the Harness gate.` })
   }
+  if (launch.hideToolGuidance) return []
   return present.map((group, index) => ({ group, index })).sort((left, right) => left.group.order - right.group.order || left.index - right.index).map(({ group }) => group)
 }
 
@@ -300,13 +314,17 @@ function hostSection(host: HostSection): Section | null {
 /** Compiles the pack for a caller. It only reads the data root. */
 export function compile(env: HarnessEnv, context: CallerContext, launch: Launch = {}, variant: Materialised | null = null): ContextPack {
   const { root } = env
-  const groups = toolGroups(context, launch)
+  const groups = toolGroups(context, launch, root)
   const variantSource = variant ? [{ id: variant.scope ?? variant.dir, kind: 'variant', revision: variant.fingerprint }] : []
   const built: { order: number; index: number; section: Section | null }[] = [
+    {
+      order: SECTION_ORDER.harnessIdentity,
+      section: section('harness-identity', 'Harness identity', `You are an AI agent running in ${env.productName}.`, IDENTITY_BUDGET, '', [])
+    },
     ...(variant?.sections ?? []).map((entry) => ({ order: entry.order, section: section(entry.id, entry.title, entry.body, VARIANT_BUDGET, '', variantSource) })),
     { order: SECTION_ORDER.references, section: selectedReferences(root, launch) },
     { order: SECTION_ORDER.wiki, section: wiki(root, context) },
-    { order: SECTION_ORDER.tools, section: tools(groups, variant?.toolGuidance ?? '', launch.toolsPointer ?? '') },
+    { order: SECTION_ORDER.tools, section: launch.hideToolGuidance ? null : tools(groups, variant?.toolGuidance ?? '', launch.toolsPointer ?? '') },
     { order: SECTION_ORDER.reporting, section: section('reporting', 'Reporting your work', REPORTING_GUIDANCE, REPORTING_BUDGET, '', []) },
     ...(launch.sections ?? []).map((host) => ({ order: host.order, section: hostSection(host) }))
   ].map((entry, index) => ({ ...entry, index }))

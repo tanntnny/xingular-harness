@@ -1,11 +1,11 @@
-// `xharness worktree`: managed worktrees of the repository you are in, from a shell.
+// `xagent worktree`: managed worktrees of the repository you are in, from a shell.
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 import { Worktrees } from './service'
 import type { WorktreeRecord } from './types'
 
-export const WORKTREE_USAGE = `Usage: xharness worktree <command> [--state <dir>]
+export const WORKTREE_USAGE = `Usage: xagent worktree <command> [--state <dir>]
 
   list                       Worktrees of the repository you are in
   new [name] [--branch <b>] [--permanent] [--from <ref>] [--no-carry]
@@ -21,9 +21,9 @@ export const WORKTREE_USAGE = `Usage: xharness worktree <command> [--state <dir>
   prune [--keep <n>]         Keep the most recent managed worktrees (default 15)
   adopt <path>               Manage an existing linked worktree
   trust-setup                Trust this repository's .xharness/worktree-setup as it is now
-  path <name|id>             Print its folder (cd "$(xharness worktree path name)")
+  path <name|id>             Print its folder (cd "$(xagent worktree path name)")
 
-Start the terminal in a new managed worktree with: xharness --worktree [name]
+Start the terminal in a new managed worktree with: xagent --worktree [name]
 `
 
 interface Dependencies {
@@ -82,7 +82,7 @@ export async function runWorktreeCli(argv: string[], dependencies: Dependencies 
       write(`${describe(result.worktree)}\n`)
       if (result.carried.copied.length || result.carried.patched) write(`Carried your uncommitted changes${result.carried.copied.length ? ` and ${result.carried.copied.length} untracked file(s)` : ''}.\n`)
       if (result.included.copied.length) write(`Copied ${result.included.copied.length} file(s) named in .worktreeinclude.\n`)
-      if (result.setup.state === 'untrusted') write('The repository has a setup script you have not trusted. Read .xharness/worktree-setup, then run: xharness worktree trust-setup\n')
+      if (result.setup.state === 'untrusted') write('The repository has a setup script you have not trusted. Read .xharness/worktree-setup, then run: xagent worktree trust-setup\n')
       if (result.setup.state === 'failed') write(`The setup script failed; see ${result.setup.log}.\n`)
       return 0
     }
@@ -105,7 +105,7 @@ export async function runWorktreeCli(argv: string[], dependencies: Dependencies 
     }
     case 'rm': {
       const { worktree, snapshot } = await worktrees.remove((await findWorktree(worktrees, cwd, positional[0] ?? '')).id, { force: flag('--force') })
-      write(`Removed ${worktree.name}.${snapshot ? ` Its unsaved work is kept; xharness worktree restore ${worktree.name} brings it back.` : ''}\n`)
+      write(`Removed ${worktree.name}.${snapshot ? ` Its unsaved work is kept; xagent worktree restore ${worktree.name} brings it back.` : ''}\n`)
       return 0
     }
     case 'restore': {

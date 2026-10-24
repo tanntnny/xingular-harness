@@ -12,7 +12,7 @@ keeps provider caching effective across turns.
 
 | Type / function | Role |
 |---|---|
-| `compile(env, caller, launch, variant)` → `ContextPack` | Builds the ordered, budgeted sections. |
+| `compile(env, caller, launch, variant)` → `ContextPack` | Builds the ordered, budgeted sections, including the configured data-root path in native file guidance. |
 | `render(env, pack)` → `string` | One string for a session that takes a single prompt. |
 | `sessionLaunch(env, caller, launch, historyFile, variant)` → `{ system, update, pack }` | SDK sessions: stable prefix plus an update with only the dynamic sections that changed since the last delivered snapshot. |
 | `deliveredSnapshot(sessionFile)` | Reads the last delivered snapshot on the active history branch; a compaction forces a fresh one. |
@@ -26,9 +26,17 @@ All in `prompt/compile.ts`. A `ContextPack` holds `sections: Section[]` (each wi
 
 ## Section order
 
-`SECTION_ORDER`: `system` 25, `guardrails` 40, `memory` 45, `references` 50, `subagents` 64,
-`scripts` 66, `wiki` 80, `tools` 90, `reporting` 95. Application sections sit among them by their `order`; plan
-mode uses `plan` at 25. Ties keep insertion order.
+`SECTION_ORDER`: `harnessIdentity` 5, `system` 25, `guardrails` 40, `memory` 45, `references`
+50, `subagents` 64, `scripts` 66, `wiki` 80, `tools` 90, `reporting` 95. Application sections
+sit among them by their `order`; plan mode uses `plan` at 25. Ties keep insertion order.
+When a run may spawn, `subagents` lists every agent profile it can start (built-in, global,
+project and the variant's c5 names) and replaces the variant's own list (PROP-0029). The `tools`
+section has a Progress paragraph whenever `checklist_write` is available: it asks for a checklist
+early and kept current, because the person follows work from it (PROP-0006).
+
+The fixed `harness-identity` section says `You are an AI agent running in <productName>.` and uses
+`env.productName` (default `Xingular Agent`). Host-provided identity and role sections remain
+separate, so an embedding application can still describe its agent and task.
 
 Budgets (characters): variant sections 30,000 each (already capped at save, so never cut here);
 references 12,000; Wiki pointer 2,500; tools 8,000; reporting 2,000; application sections their
@@ -65,6 +73,12 @@ compile ──► pack ──► stable sections ──► system prompt (+ "Con
   message details (`xingularContext`); recording a pack does not mark it delivered.
 - Terminal sessions use `compile` + `render` once, pass it as `--append-system-prompt`, and keep
   that pack for the life of the session.
+- Read-only native file guidance states that absolute and `~` paths work when the operating system
+  permits access, names the configured data root, and describes the working folder as a default
+  location. Edits and commands remain subject to the gate.
+- A side-question launch attributes its fixed no-tool instruction to the `side-questions` plugin.
+  Its launch suppresses tool guidance entirely. The main run's effective prompt and current context
+  update are included in the separately bounded, redacted context message (PROP-0019).
 
 ## Invariants
 
@@ -77,11 +91,17 @@ compile ──► pack ──► stable sections ──► system prompt (+ "Con
 - **INV-PRM-4** An update carries only changed dynamic sections, so an unchanged turn appends
   nothing. A compaction on the active branch forces the full snapshot again.
 - **INV-PRM-5** The pack only describes tools the caller can call (the frozen capability set).
+  `ask_user` is not part of the compiler's tool-group manifest; its mode-specific availability is
+  resolved with the run's callable tools (page 02).
 - **INV-PRM-6** Each run's pack is recorded beside the run. Failing to record it never fails the
   session.
 - **INV-PRM-7** The compiler is synchronous (`INV-BND-4`).
-- **INV-PRM-8** Whether a prompt change keeps the provider's cache is measured with real requests
-  from the application, only with the account owner's permission. Tests do not stand in for it.
+- **INV-PRM-8** Whether a prompt or callable tool-list change keeps the provider's cache is measured
+  with real requests from the application, only with the account owner's permission. Tests do not
+  stand in for it.
+- **INV-PRM-9** Native file guidance describes the existing OS-permission boundary accurately:
+  absolute and `~` paths are valid for read-only file tools; the working folder is not a sandbox.
+  Side-question runs with no callable tools omit tool guidance.
 
 ## Relation to DESIGN-0001
 

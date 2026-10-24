@@ -55,6 +55,42 @@ describe('a native SDK runtime on the actual Harness terminal socket', () => {
     expect(await runtime.permissions()).toEqual({ full: false, globalTools: [] })
   })
 
+  it('hides question tools in normal mode and activates them only during plan requests', async () => {
+    const { runtime } = await setup()
+    const session = runtime.session
+    expect(session.getActiveToolNames()).not.toContain('ask_user')
+    expect(session.getActiveToolNames()).not.toContain('ask_user_question')
+    let planTools: string[] = []
+    let failPlan = false
+    const prompt = vi.spyOn(session, 'prompt').mockImplementation(async () => {
+      planTools = session.getActiveToolNames()
+      if (failPlan) throw new Error('Plan failed')
+    })
+
+    await runtime.submitPlan('Decide which option to choose')
+
+    expect(planTools).toContain('ask_user')
+    expect(planTools).toContain('ask_user_question')
+    expect(session.getActiveToolNames()).not.toContain('ask_user')
+    expect(session.getActiveToolNames()).not.toContain('ask_user_question')
+
+    failPlan = true
+    await expect(runtime.submitPlan('Try again and fail')).rejects.toThrow('Plan failed')
+    expect(session.getActiveToolNames()).not.toContain('ask_user')
+    expect(session.getActiveToolNames()).not.toContain('ask_user_question')
+
+    let rejectPlan!: (error: Error) => void
+    prompt.mockImplementation(() => new Promise((_, reject) => { rejectPlan = reject }))
+    const interrupted = runtime.submitPlan('Interrupt this plan')
+    const settled = expect(interrupted).rejects.toThrow('Interrupted')
+    await vi.waitFor(() => expect(session.getActiveToolNames()).toContain('ask_user'))
+    await runtime.interrupt()
+    rejectPlan(new Error('Interrupted'))
+    await settled
+    expect(session.getActiveToolNames()).not.toContain('ask_user')
+    expect(session.getActiveToolNames()).not.toContain('ask_user_question')
+  })
+
   it('runs asynchronous children through the protected bridge and joins their results before settling', async () => {
     const { harness, runtime } = await setup()
     const ai = await import('@earendil-works/pi-ai')
@@ -66,7 +102,7 @@ describe('a native SDK runtime on the actual Harness terminal socket', () => {
       const users = context.messages.filter(message => message.role === 'user').map(message => typeof message.content === 'string' ? message.content : (message.content as Array<{ text?: string }>).map(part => part.text ?? '').join(''))
       if (users.includes('terminal-native-child')) return ai.fauxAssistantMessage('TERMINAL_CHILD_EVIDENCE')
       if (JSON.stringify(context.messages).includes('TERMINAL_CHILD_EVIDENCE')) return ai.fauxAssistantMessage('Final with TERMINAL_CHILD_EVIDENCE')
-      if (!context.messages.some(message => message.role === 'toolResult')) return ai.fauxAssistantMessage([ai.fauxToolCall('spawn_subagent', { brief: 'terminal-native-child' })], { stopReason: 'toolUse' })
+      if (!context.messages.some(message => message.role === 'toolResult')) return ai.fauxAssistantMessage([ai.fauxToolCall('spawn_subagent', { title: 'Run terminal child', brief: 'terminal-native-child' })], { stopReason: 'toolUse' })
       return ai.fauxAssistantMessage('Draft before joining')
     }
     faux.setResponses(Array(8).fill(route) as never)
@@ -158,18 +194,14 @@ describe('a native SDK runtime on the actual Harness terminal socket', () => {
     await runtime.interrupt()
   })
 
-  it('keeps the same account, command control and readiness after new/reload with no provider request', async () => {
-    const { harness, runtime, ui } = await setup()
+  it('keeps the same account and readiness after new/reload without duplicate page commands', async () => {
+    const { harness, runtime } = await setup()
     expect(harness.terminals.state('offline-sdk')).toEqual({ ready: true, dirty: false, active: false })
     expect(runtime.session.extensionRunner.getExtensionPaths()).toEqual(['<inline:harness-terminal-bridge>', '<inline:harness-mode-choices>'])
     expect(runtime.services.agentDir).toContain(harness.accounts.dir)
-    for (const command of ['accounts', 'plugins', 'hub']) expect(runtime.session.extensionRunner.getCommand(command)).toBeDefined()
-    await runtime.session.prompt('/accounts')
-    expect(ui.select).toHaveBeenCalled()
+    for (const command of ['accounts', 'plugins', 'hub']) expect(runtime.session.extensionRunner.getCommand(command)).toBeUndefined()
     await runtime.newSession()
     await runtime.reload()
-    await runtime.session.prompt('/accounts')
-    expect(ui.select).toHaveBeenCalledTimes(2)
     expect(harness.terminals.state('offline-sdk')).toEqual({ ready: true, dirty: false, active: false })
     await expect(controlCall('terminal.resources')).resolves.toEqual({})
     await expect(socketCall(connectionFromEnv(), 'control.claim')).rejects.toThrow('already claimed')
@@ -214,6 +246,9 @@ describe('a native SDK runtime on the actual Harness terminal socket', () => {
         .rejects.toThrow('Every question needs at least one choice.')
       await expect(tool.execute('invalid-question', { question: 'Choose?', options: [{ label: 'A' }] }, undefined, undefined, context))
         .rejects.toThrow('Every question needs at least one recommended choice.')
+      await expect(tool.execute('invalid-question', {
+        summary: 'Too many words', question: 'Choose?', options: [{ label: 'A', recommended: true }]
+      }, undefined, undefined, context)).rejects.toThrow('1–2 word label')
     } finally {
       await runtime.dispose()
     }
@@ -223,12 +258,21 @@ describe('a native SDK runtime on the actual Harness terminal socket', () => {
     const { harness, runtime } = await setup()
     await terminalCall('begin', { text: 'Offline question bridge fixture' })
     let questionReached!: () => void
+    let requestPayload: unknown
     const reached = new Promise<void>((resolve) => { questionReached = resolve })
-    harness.runs.listen((event) => { if (event.type === 'question.requested') questionReached() })
+    harness.runs.listen((event) => {
+      if (event.type !== 'question.requested') return
+      requestPayload = event.payload
+      questionReached()
+    })
     const tool = runtime.session.getToolDefinition('ask_user_question')!
-    const answer = tool.execute('offline-question', { question: 'Continue?', options: [{ label: 'Continue', recommended: true }] }, undefined, undefined, runtime.session.extensionRunner.createToolContext('offline-question', undefined))
+    const answer = tool.execute('offline-question', {
+      summary: 'Continue', question: 'Continue?', uiSketch: true,
+      options: [{ label: 'Continue', recommended: true, sketch: '+--+\n| Y|\n+--+' }]
+    }, undefined, undefined, runtime.session.extensionRunner.createToolContext('offline-question', undefined))
     await reached
-    await expect(controlCall<{ requests: unknown[] }>('terminal.pending')).resolves.toMatchObject({ requests: [expect.anything()] })
+    expect(requestPayload).toMatchObject({ uiSketch: true, options: [{ sketch: '+--+\n| Y|\n+--+' }] })
+    await expect(controlCall<{ requests: unknown[] }>('terminal.pending')).resolves.toMatchObject({ requests: [{ summary: 'Continue', uiSketch: true, options: [{ sketch: '+--+\n| Y|\n+--+' }] }] })
     await runtime.dispose()
     await expect(answer).resolves.toMatchObject({ content: [{ type: 'text', text: '{"selected":[]}' }] })
     expect(harness.terminals.state('offline-sdk')).toEqual({ ready: false, dirty: false, active: false })

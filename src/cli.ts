@@ -1,16 +1,16 @@
 #!/usr/bin/env node
-// The `xharness` command.
+// The `xagent` command.
 //
-//   xharness serve --state <dir> [--data <dir>] [--name <product>] [--builtins <dir>]…
-//                  [--host-secrets] [--host-policy] [--host-tools] [--host-directory]
+//   xagent serve --state <dir> [--data <dir>] [--name <product>] [--builtins <dir>]…
+//                [--host-secrets] [--host-policy] [--host-tools] [--host-directory]
 //       Serves the harness to a host process over stdin/stdout (newline-delimited JSON).
-//   xharness wiki <command>     Project notes, skills and history, from inside a terminal session.
-//   xharness refine <command>   Refine a variant from evidence (refine demo needs no model).
-//   xharness mcp <command>      Connected apps, from inside a terminal session.
-//   xharness plugins <command>  List, install, switch and trust plugins.
-//   xharness web <command>      Search keys for web_search.
-//   xharness browser <command>  How the agent's browser runs.
-//   xharness worktree <command> Managed git worktrees of the repository you are in.
+//   xagent wiki <command>     Project notes, skills and history, from inside a terminal session.
+//   xagent refine <command>   Refine a variant from evidence (refine demo needs no model).
+//   xagent mcp <command>      Connected apps, from inside a terminal session.
+//   xagent plugins <command>  List, install, switch and trust plugins.
+//   xagent web <command>      Search keys for web_search.
+//   xagent browser <command>  How the agent's browser runs.
+//   xagent worktree <command> Managed git worktrees of the repository you are in.
 import { resolve } from 'node:path'
 import manifest from '../package.json' with { type: 'json' }
 
@@ -27,8 +27,8 @@ import { runAppsCli, runWikiCli } from './terminal/cli'
 import { runStandaloneTerminal, standaloneArguments } from './terminal/standalone'
 import { runWorktreeCli } from './worktrees/cli'
 
-const USAGE = `Usage: xharness [--data <dir>] [--state <dir>]
-       xharness <terminal | serve | wiki | mcp | plugins | hub | refine | web | browser | worktree> [arguments]
+const USAGE = `Usage: xagent [--data <dir>] [--state <dir>]
+       xagent <terminal | serve | wiki | mcp | plugins | hub | refine | web | browser | worktree> [arguments]
 
   --version          Print the package version
   (no command)       Start the interactive Harness terminal

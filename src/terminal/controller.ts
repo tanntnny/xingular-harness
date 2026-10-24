@@ -6,8 +6,9 @@ import { createHash, randomUUID } from 'node:crypto'
 
 import { HarnessError } from '../core/errors'
 import { runStatusSchema, type RunEvent, type RunRecord } from '../sessions/contracts'
+import { briefTitle } from '../sessions/subagents'
 import type { ActiveRun, ApprovalDecision, QuestionAnswer, QuestionInput } from '../sessions/registry'
-import { SubagentMonitor, type TerminalSubagentActivity } from './subagentMonitor'
+import { SubagentMonitor, type TerminalSubagentActivity, type TerminalSubagentProfile } from './subagentMonitor'
 
 export interface PolicyReply {
   allowed: boolean
@@ -173,16 +174,18 @@ export class TerminalController {
   }
 
   /** A child event that belongs to the active terminal parent run. */
-  observeSubagent(parentRunId: string, run: RunRecord, event: RunEvent): void {
+  observeSubagent(parentRunId: string, run: RunRecord, event: RunEvent, profile: TerminalSubagentProfile | null = null): void {
     if (this.disposed || this.activeRun?.runId !== parentRunId || run.relation !== 'subagent') return
     this.subagents.observe(parentRunId, {
       id: run.id,
       parentRunId: run.parentRunId,
       relation: 'subagent',
+      title: run.title ?? briefTitle(run.goal),
       goal: run.goal,
       status: runStatusSchema.parse(run.status),
       startedAt: run.startedAt,
-      endedAt: run.endedAt
+      endedAt: run.endedAt,
+      profile
     }, event)
   }
 
@@ -333,8 +336,10 @@ export class TerminalController {
       const existing = this.seen.get(key)
       if (existing) return event === 'approval' ? { decision: await existing } : existing
       if (event === 'question') {
-        const response: Promise<QuestionAnswer> = run.requestAnswer({ requestId: key, question: String(data.question ?? ''), options: data.options ?? [], multiSelect: !!data.multiSelect, allowText: true })
-        this.pending.set(key, { type: 'question', requestId: key, question: String(data.question ?? ''), options: data.options ?? [], multiSelect: !!data.multiSelect })
+        const summary = typeof data.summary === 'string' && data.summary.trim() ? data.summary.trim() : undefined
+        const sketchMode = data.uiSketch === undefined ? {} : { uiSketch: data.uiSketch }
+        const response: Promise<QuestionAnswer> = run.requestAnswer({ requestId: key, ...(summary ? { summary } : {}), ...sketchMode, question: String(data.question ?? ''), options: data.options ?? [], multiSelect: !!data.multiSelect, allowText: true })
+        this.pending.set(key, { type: 'question', requestId: key, ...(summary ? { summary } : {}), ...sketchMode, question: String(data.question ?? ''), options: data.options ?? [], multiSelect: !!data.multiSelect })
         this.seen.set(key, response)
         return response.finally(() => this.pending.delete(key))
       }
@@ -354,6 +359,7 @@ export class TerminalController {
       }
     }
     if (event === 'usage') run.emit('usage.updated', data)
+    else if (event === 'checklist') run.emit('checklist.updated', { items: data.items })
     else if (event === 'file') run.emit('file.changed', data)
     else if (event === 'message') run.emit('message.completed', { messageId: data.id ?? randomUUID(), role: data.role ?? 'assistant', text: String(data.text) })
     else if (event === 'tool') {

@@ -29,6 +29,16 @@ function extension() {
 afterEach(() => vi.useRealTimers())
 
 describe('terminal bridge lifecycle', () => {
+  it('gives single-question sketches explicit fixed-column border guidance', async () => {
+    const { api } = extension()
+    await terminalExtension(api)
+    const question = vi.mocked(api.registerTool).mock.calls.map(([tool]) => tool).find(tool => tool.name === 'ask_user_question')!
+    expect(question.description).toContain('outer `+` corners in fixed columns')
+    expect(question.description).toContain('same columns on every content row')
+    const sketch = (question.parameters as any).properties.options.items.properties.sketch
+    expect(sketch.description).toContain('fixed, matching outer-edge columns')
+  })
+
   it('registers the shared naming tool against Pi metadata', async () => {
     const { api } = extension()
     let name: string | undefined
@@ -41,6 +51,19 @@ describe('terminal bridge lifecycle', () => {
     expect(name).toBe('Add web browser integrations')
     expect(api.setSessionName).toHaveBeenCalledOnce()
     await expect(naming.execute('name-3', { name: 'Add web browser integrations for all agents' }, undefined, undefined, {} as ExtensionToolContext)).rejects.toThrow('six words')
+  })
+
+  it('registers the shared checklist tool and records each list on the harness run', async () => {
+    const { api } = extension()
+    await terminalExtension(api)
+    const checklist = vi.mocked(api.registerTool).mock.calls.map(([tool]) => tool).find(tool => tool.name === 'checklist_write')!
+    expect(checklist.description).toContain('The user watches this list')
+    const result = await checklist.execute('c-1', { items: [{ text: 'Fix it', status: 'in_progress' }] }, undefined, undefined, {} as ExtensionToolContext)
+    expect(result.content).toEqual([{ type: 'text', text: '[~] Fix it' }])
+    expect(transport.telemetry).toHaveBeenCalledWith('checklist', { items: [{ text: 'Fix it', status: 'in_progress' }] })
+    transport.telemetry.mockClear()
+    await checklist.execute('c-2', { items: [{ text: '', status: 'pending' }] }, undefined, undefined, {} as ExtensionToolContext)
+    expect(transport.telemetry).not.toHaveBeenCalledWith('checklist', expect.anything())
   })
 
   it('adds plan instructions as a one-run context section and withdraws them on the next user request', async () => {
@@ -104,7 +127,7 @@ describe('terminal bridge lifecycle', () => {
     expect(transport.socket.mock.calls.filter(([, call]) => call === 'control.claim')).toHaveLength(1)
     expect(transport.telemetry.mock.calls.filter(([event]) => event === 'ready')).toHaveLength(2)
     expect(transport.telemetry.mock.calls.filter(([event]) => event === 'poll')).toHaveLength(polls + 1)
-    expect([...next.commands.keys()]).toEqual(['hub', 'plugins', 'accounts'])
+    expect([...next.commands.keys()]).toEqual([])
     await next.handlers.get('session_shutdown')!({ type: 'session_shutdown', reason: 'quit' }, next.ctx)
     expect(transport.telemetry.mock.calls.filter(([event]) => event === 'shutdown')).toHaveLength(2)
     expect(vi.getTimerCount()).toBe(0)

@@ -13,9 +13,9 @@ per-call gate that asks the application's policy, then standing approvals, then 
 | `HarnessToolDefinition`, `RECALL_TOOLS`, `TRAJECTORY_TOOLS`, `WIKI_READ_TOOLS`, `WIKI_WRITE_TOOLS`, `SKILL_TOOLS`, `DEFAULT_TOOL_NAMES` | `tools/definitions.ts` | The harness's own tools, defined once. |
 | `dispatch` | `tools/dispatch.ts` | One entry point for every History, Wiki and skill call, from a Pi tool, the server or a terminal. |
 | `harnessTools` | `tools/harnessTools.ts` | The definitions as `ToolSpec`s for one session. |
-| `askUserTool` (`ask_user`) | `tools/askUser.ts` | Stops the run and asks a question with choices. |
-| `checklistTool` (`checklist_write`) | `tools/checklist.ts` | Writes the run's whole checklist as a `checklist.updated` event (PROP-0006). Read-only for the gate, so plan mode allows it. |
-| `subagentTools` | `tools/spawnSubagent.ts` | `spawn_subagent`, `wait_subagents`. |
+| `askUserTool` (`ask_user`) | `tools/askUser.ts` | Stops an attended plan run and asks up to five related questions with choices and concise 1–2 word labels; absent from newly resolved normal runs. |
+| `checklistTool` (`checklist_write`) | `tools/checklist.ts` | Writes the run's whole checklist as a `checklist.updated` event (PROP-0006). Read-only for the gate, so plan mode allows it. Terminal sessions register the same tool; it reaches the run through the `checklist` telemetry call. The prompt's Progress group asks the model to keep it current because the user follows work from it. |
+| `subagentTools` | `tools/spawnSubagent.ts` | `spawn_subagent` (requires a short `title`, PROP-0030), `wait_subagents`. |
 | `annotationsPart` (`page_notes_list`, `page_notes_read`, `page_notes_mark_fixed`) | `annotations/part.ts` | World tools over the page notes a person shared with the session or agent (PROP-0017). `page_notes_mark_fixed` records the agent's claim that it fixed a note it was sent; it never resolves a note or changes grants (PROP-0018). |
 | `webTools` | `web/tools.ts` | `web_search` (Brave, key from the secret store), `web_fetch` (checked public reads). An application provides them as a provider. |
 | gate | `sessions/sessions.ts::gate`, `sessions/runner.ts` | `ToolGate { ask, check }`, loaded as the last extension (`xagent-approvals`). |
@@ -23,8 +23,17 @@ per-call gate that asks the application's policy, then standing approvals, then 
 
 Harness tools: `history_search`, `history_read`, `trajectory_search`, `trajectory_read`,
 `wiki_search`, `wiki_read`, `wiki_list`, `wiki_write` (not in the default set), `skill_load`,
-`ask_user`, `checklist_write`. Broker: `mcp_list_tools`, `mcp_call_tool`. Native Pi tools: `read`, `grep`, `find`,
+`ask_user` (attended plan runs and pinned continuations only), `checklist_write`. Broker:
+`mcp_list_tools`, `mcp_call_tool`. Native Pi tools: `read`, `grep`, `find`,
 `ls`, `edit`, `write`, `bash`.
+
+## Native file paths
+
+The read-only `read`, `grep`, `find` and `ls` tools accept paths relative to the working folder,
+absolute paths, and `~` paths. The working folder is a default location, not a repository boundary;
+the operating system's access for the Harness process decides what can be read. The compiled file
+guidance names the configured data root. `edit`, `write` and `bash` continue through the existing
+gate and policy. A side-question run has an empty capability set and no tools (PROP-0019).
 
 ## The gate, per call
 
@@ -57,12 +66,17 @@ the switch and global tools.
   authorize, then standing approvals, then the person, then authorize again.
 - **INV-GATE-4** Refinement runs (`probe`, `improver`) never ask a person; what would need one is
   refused, never queued (`INV-REF-4`).
-- **INV-GATE-5** A tool is registered only if its name is in the run's frozen capability set, in
-  that order (`INV-CAP-1`).
+- **INV-GATE-5** SDK tools are registered only if their names are in the run's frozen capability
+  set (`INV-CAP-1`). The terminal may retain question-tool definitions in its private Pi inventory,
+  but normal mode deactivates them; a plan request activates only registered questions under its
+  plan-mode gate.
 - **INV-GATE-6** Tool attachment bytes never enter the run-event stream; only references are
   recorded.
 - **INV-GATE-7** Tool descriptions name the product with `{product}` (filled by `describeTool`),
   never an application's name (`INV-BND-2`).
+- **INV-GATE-8** Native read-only file access is bounded by process and operating-system
+  permissions, not by the repository root. Absolute and `~` paths are valid inputs. This does not
+  change the gate or permissions for writes and commands.
 
 ## Data
 
@@ -83,7 +97,7 @@ persistence. It is a foundation tool, not mutable variant data.
 
 ## Diagnostic probes
 
-`/plugin:doctor` is a user command, never a model tool. Live diagnostics create separate real runs,
+`/doctor` is a user command, never a model tool. Live diagnostics create separate real runs,
 intersect current capabilities, and execute tool calls through the existing gate. Calls that
 require an additional per-call approval report blocked; batch diagnostic consent does not grant
 standing permission. No raw tool inputs, results, or screenshots enter diagnostic findings.

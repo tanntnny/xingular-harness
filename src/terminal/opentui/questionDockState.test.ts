@@ -46,21 +46,42 @@ describe('QuestionDockState', () => {
     expect(state.activateOption(2)).toBe(false)
   })
 
-  it('opens a note for each selected choice in Tab order and submits notes by label', async () => {
+  it('previews the hovered or focused choice sketch as literal multiline text', () => {
+    const state = new QuestionDockState([question('q1', {
+      uiSketch: true,
+      options: [
+        { label: 'Plan A', sketch: '+--+\n| A| \n+--+', recommended: true },
+        { label: 'Plan B', sketch: '+--+\n| B|\n+--+' }
+      ]
+    })])
+
+    expect(state.view.sketchPreview).toEqual({ label: 'Plan A', sketch: '+--+\n| A| \n+--+' })
+    expect(state.focusOption(1)).toBe(true)
+    expect(state.view.sketchPreview).toEqual({ label: 'Plan B', sketch: '+--+\n| B|\n+--+' })
+    expect(state.view.options.some(option => option.selected)).toBe(false)
+  })
+
+  it('opens notes explicitly and submits them by selected choice label', async () => {
     const state = new QuestionDockState([question('q1', {
       options: [{ label: 'A', recommended: true }, { label: 'B' }], multiSelect: true
     })])
 
-    state.focusOption(0)
     state.activateOption(0)
-    state.focusOption(1)
     state.activateOption(1)
     state.focusOption(0)
     state.focusNext()
-    expect(state.view.focus).toBe('note')
+    expect(state.view.focus).toBe('answer')
+    expect(state.view.options.every(option => !option.noteOpen)).toBe(true)
+
+    state.focusOption(0)
+    expect(state.openFocusedNote()).toBe(true)
     expect(state.view.options[0]).toMatchObject({ label: 'A', noteOpen: true, noteFocused: true })
     state.setNote('A', '  details for A  ')
     state.focusNext()
+    expect(state.view.focus).toBe('answer')
+
+    state.focusOption(1)
+    expect(state.openFocusedNote()).toBe(true)
     expect(state.view.options[1]).toMatchObject({ label: 'B', noteOpen: true, noteFocused: true })
     state.setNote('B', 'details for B')
     state.activateAction()
@@ -135,7 +156,7 @@ describe('QuestionDockState', () => {
     expect(state.view.focus).toBe('options')
   })
 
-  it('cycles focus through the answer form and composer, and supports collapse/reopen', () => {
+  it('cycles focus through the question without a chat-composer or collapse state', () => {
     const state = new QuestionDockState([question('q1', { options: [{ label: 'A', recommended: true }] })])
 
     expect(state.view.focus).toBe('options')
@@ -144,12 +165,30 @@ describe('QuestionDockState', () => {
     state.focusNext()
     expect(state.view.focus).toBe('action')
     state.focusNext()
-    expect(state.view.focus).toBe('composer')
-    state.collapse()
-    expect(state.view.collapsed).toBe(true)
-    state.focusNext()
-    expect(state.view.collapsed).toBe(false)
     expect(state.view.focus).toBe('options')
+    expect(state.view).not.toHaveProperty('collapsed')
+  })
+
+  it('shows short labels as tabs and keeps drafts when directly switching tabs', () => {
+    const fallback = question('q2', {
+      question: 'Which rollout method should we use?', batchId: 'batch', batchIndex: 2, batchCount: 2
+    })
+    delete fallback.summary
+    const state = new QuestionDockState([
+      question('q1', { summary: 'Workspace deployment review', batchId: 'batch', batchIndex: 1, batchCount: 2 }),
+      fallback
+    ])
+
+    expect(state.view.tabs).toEqual([
+      { label: 'Workspace deployment', index: 0, active: true },
+      { label: 'Which rollout', index: 1, active: false }
+    ])
+    state.toggleOption(0)
+    expect(state.selectQuestion(1)).toBe(true)
+    expect(state.view).toMatchObject({ activeIndex: 1, summary: 'Which rollout', tabs: [{ active: false }, { active: true }] })
+    expect(state.selectQuestion(2)).toBe(false)
+    expect(state.selectQuestion(0)).toBe(true)
+    expect(state.view.selected).toEqual(['Default choice'])
   })
 
   it('requires every question to have a choice and a recommended choice', () => {

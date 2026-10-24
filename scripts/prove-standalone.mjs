@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Shows that the harness runs with no application around it: starts `xharness serve`
+// Shows that the harness runs with no application around it: starts `xagent serve`
 // on a throwaway data root and drives it over newline-delimited JSON, the way a host written
 // in any language would. No model request is made: the scripted session has no credentials,
 // so the proof is that it is recorded and fails cleanly.

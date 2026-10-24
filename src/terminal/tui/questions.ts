@@ -6,7 +6,8 @@ export interface TerminalQuestion {
   requestId: string
   question?: string
   summary?: string
-  options: { label: string; description?: string; recommended?: boolean }[]
+  uiSketch?: true
+  options: { label: string; description?: string; recommended?: boolean; sketch?: string }[]
   multiSelect?: boolean
   allowText?: boolean
   batchId?: string

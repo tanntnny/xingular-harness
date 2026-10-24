@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto'
 import { log } from '../core/bus'
 import { HarnessError } from '../core/errors'
 import type { AutomaticReason } from './approvals'
-import { isActiveStatus, runEventSchema, type QuestionOption, type RunEvent, type RunEventType, type RunRecord } from './contracts'
+import { isActiveStatus, questionSketchError, runEventSchema, type QuestionOption, type RunEvent, type RunEventType, type RunRecord } from './contracts'
 import { findRun, persistEvent, readEvents, runFamily } from './runStore'
 
 export type ApprovalDecision = 'approved' | 'denied' | 'native'
@@ -29,6 +29,7 @@ export interface QuestionInput {
   userOnly?: boolean
   summary?: string
   question: string
+  uiSketch?: true
   options: QuestionOption[]
   multiSelect: boolean
   allowText: boolean
@@ -45,6 +46,8 @@ function validateQuestionRecommendations(input: QuestionInput): void {
   if (!Array.isArray(input.options) || input.options.length === 0) {
     throw new HarnessError('invalid_request', 'Every question needs at least one choice.')
   }
+  const sketchError = questionSketchError(input.uiSketch, input.options)
+  if (sketchError) throw new HarnessError('invalid_request', sketchError)
   const recommendations = input.options.filter((option) => option.recommended).length
   if (recommendations === 0) {
     throw new HarnessError('invalid_request', 'Every question needs at least one recommended choice.')

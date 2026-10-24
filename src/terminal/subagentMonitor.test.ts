@@ -5,7 +5,7 @@ import { SubagentMonitor, type TerminalSubagentRun } from './subagentMonitor'
 
 function run(id: string, parentRunId: string, startedAt: string, extra: Partial<TerminalSubagentRun> = {}): TerminalSubagentRun {
   return {
-    id, parentRunId, relation: 'subagent', goal: `Task ${id}`, status: 'running', startedAt, endedAt: null, ...extra
+    id, parentRunId, relation: 'subagent', title: `Title ${id}`, goal: `Task ${id}`, status: 'running', startedAt, endedAt: null, ...extra
   }
 }
 
@@ -30,6 +30,22 @@ describe('SubagentMonitor', () => {
     const output = JSON.stringify(monitor.snapshot('parent'))
     expect(output).not.toContain('PRIVATE_SUMMARY')
     expect(output).not.toContain('PRIVATE_ARGUMENTS')
+  })
+
+  it('keeps the parent title when the child names its own session, and counts the checklist', () => {
+    const monitor = new SubagentMonitor()
+    monitor.begin('parent')
+    const child = run('child', 'parent', '2026-10-23T00:00:00.000Z', { title: 'Map the auth flow', profile: { name: 'worker', color: 'green' } })
+    monitor.observe('parent', child, event('tool.started', 1, { toolCallId: 'n1', name: 'session_name', input: '{"name":"Fix   the login"}' }))
+    expect(monitor.snapshot('parent')[0]).toMatchObject({ title: 'Map the auth flow', profile: { name: 'worker', color: 'green' }, checklist: null })
+    monitor.observe('parent', child, event('tool.completed', 2, { toolCallId: 'n1', name: 'session_name', ok: true }))
+    monitor.observe('parent', child, event('checklist.updated', 5, { items: [{ text: 'PRIVATE_STEP', status: 'completed' }, { text: 'b', status: 'in_progress' }, { text: 'c', status: 'pending' }] }))
+    const row = monitor.snapshot('parent')[0]!
+    expect(row).toMatchObject({ title: 'Map the auth flow', checklist: { done: 1, total: 3 } })
+    expect(JSON.stringify(row)).not.toContain('Fix the login')
+    expect(JSON.stringify(row)).not.toContain('PRIVATE_STEP')
+    monitor.observe('parent', child, event('checklist.updated', 6, { items: [] }))
+    expect(monitor.snapshot('parent')[0]?.checklist).toBeNull()
   })
 
   it('retains the latest completed tool name across status updates between polls', () => {

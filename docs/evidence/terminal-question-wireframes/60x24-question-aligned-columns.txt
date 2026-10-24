@@ -1,0 +1,24 @@
+   · Starting session…
+  · Perusing (0s, 75 tok/s)
+ ──────────────────────────────────────────────────────────
+   UI layout
+
+  Compare contextual layouts
+
+   1 Short (           DESC_A contextual masthead choice.
+     Recommended)
+   2 LongMastheadLabe  DESC_B retains neighboring panels.
+     lWithoutSpaces
+
+  +------------------------------------------------------+
+  |A_FOCUS: Masthead                                    N|
+  |+----------------------+----------------------+       |
+  || Product name         | Session history      |       |
+  |+----------------------+----------------------+       |
+  || /resume              | Recent conversation  |       |
+  || /model               | Neighboring panel    |       |
+  |+----------------------+----------------------+       |
+
+   3 Something else…                     Skip and Submit
+
+  ↑↓ · Enter · Tab · Esc · ⇧arrows pan

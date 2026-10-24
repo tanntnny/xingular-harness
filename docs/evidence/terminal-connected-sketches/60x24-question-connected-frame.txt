@@ -1,0 +1,24 @@
+   · Starting session…
+  ✽ Slithering (1s, 76 tok/s)
+ ──────────────────────────────────────────────────────────
+   UI layout
+
+   1 Short (           DESC_A contextual masthead choice.
+     Recommended)
+   2 LongMastheadLabe  DESC_B retains neighboring panels.
+     lWithoutSpaces
+
+  ┌──────────────────────────────────────────────────────┐
+  │A_FOCUS: Masthead                                    N│
+  ├──────────────────────────────────────────────────────┤
+  │┌──────────────────────┬──────────────────────┐       │
+  ││ Product name         │ Session history      │       │
+  │├──────────────────────┼──────────────────────┤       │
+  ││ /resume              │ Recent conversation  │       │
+  ││ /model               │ Neighboring panel    │       │
+  │├──────────────────────┴──────────────────────┘       │
+  └──────────────────────────────────────────────────────┘
+
+   3 Something else…                     Skip and Submit
+
+  ↑↓ · Enter · Tab · Esc · ⇧arrows pan

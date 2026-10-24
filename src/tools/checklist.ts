@@ -29,8 +29,8 @@ export function checklistTool(run: Pick<ActiveRun, 'emit'>): ToolSpec {
     name: CHECKLIST_WRITE,
     label: 'Write the checklist',
     description:
-      'Keep a checklist of the steps of the current work, so you and the user can see progress. Send the whole list every time; it replaces the previous one. ' +
-      'Use it when the work has three or more distinct steps, or when the user gives several things to do. Do not use it for a single, simple step or for conversation. ' +
+      'Keep a checklist of the steps of the current work. The user watches this list to follow your progress, so write it early and keep it current. Send the whole list every time; it replaces the previous one. ' +
+      'Use it whenever the work has several distinct steps or will take several tool calls, when the user gives several things to do, and when a subagent brief asks for more than one thing. Do not use it for a single, simple step or for conversation. ' +
       'Statuses: pending, in_progress, completed. Keep exactly one step in_progress while you work, mark a step completed as soon as it is done (not in batches), and add steps you discover. ' +
       'Only mark a step completed when it is fully done; if something blocks it, keep it in_progress and add a step for the blocker.',
     parameters: (Type) =>

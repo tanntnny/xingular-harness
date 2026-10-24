@@ -1,0 +1,198 @@
+{
+  "passed": true,
+  "implementation": "production standalone CLI + real Pi SDK + loopback OpenAI SSE transport",
+  "cli": "/Users/tanny/Documents/Projects/Xingular/Xingular Agent/Harness/dist/cli.js",
+  "cliSha256": "fa26efa3d5d9b6ed363343be027cde253e061b174aae430c3de5dad346064711",
+  "terminalBundleSha256": "1d93f30044a034c4e995a8cf6957da7dd88755c230c9db1e6a98940ae5bfac37",
+  "verifierSha256": "4955dcdb940e083f1f55b19febefd708db76b0366e074c578a885d3173cb55b8",
+  "provider": "controlled loopback OpenAI-compatible streaming transport; no external model requests or user credentials",
+  "requestCount": 16,
+  "profiles": [
+    {
+      "size": "40x20",
+      "checks": [
+        "welcome and real configured model",
+        "choice sketch preview follows keyboard focus at the compact terminal size; question answers persist",
+        "screen-coordinate aligned columns, normalized contextual frame, two-axis panning, pinned controls and resize-preserved answer"
+      ],
+      "exitCode": 0,
+      "termiosRestored": true,
+      "bracketedPasteDisabled": true,
+      "cursorShown": true
+    },
+    {
+      "size": "60x24",
+      "checks": [
+        "welcome and real configured model",
+        "choice sketch preview follows keyboard focus at the compact terminal size; question answers persist",
+        "screen-coordinate aligned columns, normalized contextual frame, two-axis panning, pinned controls and resize-preserved answer"
+      ],
+      "exitCode": 0,
+      "termiosRestored": true,
+      "bracketedPasteDisabled": true,
+      "cursorShown": true
+    },
+    {
+      "size": "80x24",
+      "checks": [
+        "welcome and real configured model",
+        "choice sketch preview follows keyboard focus; labeled tabs replace pager controls; composer/status bar are hidden; n opens wrapped choice notes; wrapped Something else text and batch answers persist",
+        "screen-coordinate aligned columns, normalized contextual frame, two-axis panning, pinned controls and resize-preserved answer"
+      ],
+      "exitCode": 0,
+      "termiosRestored": true,
+      "bracketedPasteDisabled": true,
+      "cursorShown": true
+    },
+    {
+      "size": "120x40",
+      "checks": [
+        "welcome and real configured model",
+        "choice sketch preview follows keyboard focus; labeled tabs replace pager controls; composer/status bar are hidden; n opens wrapped choice notes; wrapped Something else text and batch answers persist",
+        "screen-coordinate aligned columns, normalized contextual frame, two-axis panning, pinned controls and resize-preserved answer"
+      ],
+      "exitCode": 0,
+      "termiosRestored": true,
+      "bracketedPasteDisabled": true,
+      "cursorShown": true
+    }
+  ],
+  "captures": [
+    {
+      "file": "40x20-welcome.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 40,
+      "rows": 20,
+      "rawBytes": 5090,
+      "rawSha256": "f7995b05372a6616674a6a877ffdbbcee8f85fe6a02bbba91ccef075eefb4e35",
+      "archiveBytes": 993,
+      "archiveSha256": "f4e0fa87529dbde75dff2c4b5b1cced91119a4cb2899730baae43f51c6d79e3e"
+    },
+    {
+      "file": "40x20-question-aligned-columns.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 40,
+      "rows": 20,
+      "rawBytes": 68308,
+      "rawSha256": "4ae9397e8d0770fcaebc240c49268e329578fd10dd03f867d272e707418d8944",
+      "archiveBytes": 7187,
+      "archiveSha256": "f72c034b90babb1c3c1786439eea93a731a68658751cfd18df438910bdf77348"
+    },
+    {
+      "file": "40x20-question-connected-frame.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 40,
+      "rows": 20,
+      "rawBytes": 71778,
+      "rawSha256": "e5d17a2e29a3c508e6169d37b349a22ea980c98b58263fc23091e9c926a9dfcc",
+      "archiveBytes": 7507,
+      "archiveSha256": "a8dc375fa6852ceed1986a4f96d02f5897fa15b8cd046df0d6a0574d2a20ae6f"
+    },
+    {
+      "file": "40x20-question-panned-sketch.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 40,
+      "rows": 20,
+      "rawBytes": 110902,
+      "rawSha256": "1320472034cb933d5f17597467e08ba9c438c60aa01fa6357ffa7e984237b38f",
+      "archiveBytes": 10652,
+      "archiveSha256": "d996d7d2d8a523142230dded3face88289e05b2de6a8f890ffccc488e1ad2525"
+    },
+    {
+      "file": "60x24-question-aligned-columns.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 60,
+      "rows": 24,
+      "rawBytes": 83223,
+      "rawSha256": "427ea45d356a53fff6811efc3be4017f165c30b39ffee9de0ca6f5a88727b286",
+      "archiveBytes": 8147,
+      "archiveSha256": "e219c837365b3cae13dbf0c635a45e43559bddce5e2df66561df4cafebe38e1e"
+    },
+    {
+      "file": "60x24-question-connected-frame.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 60,
+      "rows": 24,
+      "rawBytes": 87621,
+      "rawSha256": "f3ca1149f311be2fb570598918c595e8e6032b12d56101db94ca1d8eac9326cb",
+      "archiveBytes": 8483,
+      "archiveSha256": "65c71c44ff84ed6498c243d311be1d6a3c1fd7000c761d93e3969ab2f956c2f2"
+    },
+    {
+      "file": "60x24-question-panned-sketch.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 60,
+      "rows": 24,
+      "rawBytes": 131097,
+      "rawSha256": "bb154f49f824648b4bba21b537e44c0b3e8b1975248ed99179cc7fd71472bcd9",
+      "archiveBytes": 11655,
+      "archiveSha256": "15dd4065c23c4a9ef57833d3b86f22c34cd4a3c78099ca2d3469287bfe813fa2"
+    },
+    {
+      "file": "80x24-question-aligned-columns.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 80,
+      "rows": 24,
+      "rawBytes": 93872,
+      "rawSha256": "7635973ea4c716bca1c8bf97cc3a19f9fee51edfb134919307d6c30ec8ae81bd",
+      "archiveBytes": 8965,
+      "archiveSha256": "9f4beba64fa9fcbfc6c38ee93e58224986e5525899e330ed1bb6f2c5b31385a6"
+    },
+    {
+      "file": "80x24-question-connected-frame.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 80,
+      "rows": 24,
+      "rawBytes": 106751,
+      "rawSha256": "0005f270fdb4f3de59fb770a1629ef0b10df3dc746ecd42f2f1926824add0c10",
+      "archiveBytes": 9914,
+      "archiveSha256": "2a07f64e9d7e7c1579ed776b1ac414b2d814883174a3059790ca1ecbc6388f5f"
+    },
+    {
+      "file": "80x24-question-panned-sketch.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 80,
+      "rows": 24,
+      "rawBytes": 124935,
+      "rawSha256": "45380111e77efe69d8e3c8dac6b56bc6820ad2f81600e9332b3d90d9823057b8",
+      "archiveBytes": 11247,
+      "archiveSha256": "590a5357507a4c7727ae4f0ce1075f32f12cb0ec2f4154476153bc818967d314"
+    },
+    {
+      "file": "120x40-question-aligned-columns.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 120,
+      "rows": 40,
+      "rawBytes": 124174,
+      "rawSha256": "25d5cadf5ecf22901d3ee372928460c6a21b6d10298fcee9c1a7d11675dc48c8",
+      "archiveBytes": 10397,
+      "archiveSha256": "da814f6154aee21e02e53524c018c98a5cf18f7fa287fa9cfab07b701d333d25"
+    },
+    {
+      "file": "120x40-question-connected-frame.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 120,
+      "rows": 40,
+      "rawBytes": 125447,
+      "rawSha256": "bb295c51d3862a40ea7bc8bd4adec35a750e68f21abaa53fe98eebbcdd1ad6b3",
+      "archiveBytes": 10530,
+      "archiveSha256": "5c04031a33a91352145914bbe1cd11b7ef9af5251123d9696e5352217f13b3c7"
+    },
+    {
+      "file": "120x40-question-panned-sketch.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 120,
+      "rows": 40,
+      "rawBytes": 142490,
+      "rawSha256": "95e6a194a3660d2017e9557f2c5ab6a7ea6de398b426de55c903ef5ba36bf033",
+      "archiveBytes": 11813,
+      "archiveSha256": "963863f5c219f4a8d89df98e776d23cb925d84726558f481cd9fce188480acea"
+    }
+  ],
+  "limits": [
+    "The AgentSession, frontend, native tools, authorization and run writer are production code.",
+    "The controlled local transport supplies deterministic model responses and usage fixtures.",
+    "These functional checks do not establish external provider OAuth/service availability or visual equivalence to OMP.",
+    "Each compressed capture is a cumulative actual ANSI stream from PTY startup through the named interaction. Replay at its recorded dimensions."
+  ]
+}

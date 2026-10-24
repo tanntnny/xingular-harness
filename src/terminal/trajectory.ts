@@ -24,7 +24,7 @@ function summary(run: RunRecord): TerminalTrajectoryRun {
 export function listTerminalTrajectoryRuns(root: string, sessionId: string, nativeSessionId: string | null): TerminalTrajectoryRun[] {
   if (!nativeSessionId) return []
   return listRuns(root, { sessionId })
-    .filter(run => run.nativeSessionId === nativeSessionId)
+    .filter(run => run.nativeSessionId === nativeSessionId || run.trigger === 'side-question' && run.sessionId === sessionId)
     .map(summary)
 }
 
@@ -38,7 +38,7 @@ export function readTerminalTrajectory(
 ): TerminalTrajectorySnapshot {
   if (!nativeSessionId || !Number.isSafeInteger(afterSequence ?? 0) || (afterSequence ?? 0) < 0) throw notFound('Run')
   const run = findRun(root, runId)
-  if (!run || run.sessionId !== sessionId || run.nativeSessionId !== nativeSessionId) throw notFound('Run')
+  if (!run || run.sessionId !== sessionId || (run.nativeSessionId !== nativeSessionId && run.trigger !== 'side-question')) throw notFound('Run')
   const events = readEvents(root, runId).filter(event => afterSequence === undefined || event.sequence > afterSequence)
   return { run: summary(run), events }
 }

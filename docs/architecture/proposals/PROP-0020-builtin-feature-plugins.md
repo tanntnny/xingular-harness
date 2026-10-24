@@ -9,6 +9,11 @@ affects: [INV-PLG-5, INV-PLG-6, INV-TUI-2, INV-TUI-7, INV-SRV-1, 06-plugins-and-
 
 # PROP-0020: Built-in feature modules and namespaced plugin commands
 
+**Command namespace note:** The initial decision to prefix every built-in command was superseded by
+[PROP-0021](PROP-0021-command-namespaces-and-duplicates.md) and
+[ADR-0021](../../decisions/ADR-0021-required-command-namespaces.md). Required built-in commands now
+use their bare names; this proposal remains the record of the feature-module architecture.
+
 ## Problem
 
 `PluginDescriptor` already describes first-party tools, but runtime ownership is split across the

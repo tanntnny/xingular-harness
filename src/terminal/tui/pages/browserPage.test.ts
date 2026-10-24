@@ -97,6 +97,16 @@ describe('unified Harness browser', () => {
     expect(call.mock.calls.every(([method]) => method === 'terminal.browser.snapshot')).toBe(true)
   })
 
+  it('groups inspector actions by task and keeps removal actions separate', async () => {
+    const { page } = await ready()
+    page.handleInput('\x1b[B')
+    const rows = plain(page, 116, 36).split('\n')
+    const inspect = rows.findIndex(row => row.includes('Inspect'))
+    const manage = rows.findIndex(row => row.includes('Manage'))
+    expect(inspect).toBeGreaterThanOrEqual(0)
+    expect(manage).toBeGreaterThan(inspect)
+  })
+
   it('keeps inventory beside inspection and content on wide terminals and survives resizing', async () => {
     const { page } = await ready()
     expect(plain(page, 116, 36)).toContain('Read content')

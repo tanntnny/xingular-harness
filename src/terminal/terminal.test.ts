@@ -10,7 +10,8 @@ import { read as readPageNote } from '../annotations/store'
 import { createHarness, type Harness } from '../harness'
 import type { RunEvent } from '../sessions/contracts'
 import type { ToolPolicy } from '../sessions/policy'
-import { loadRun } from '../sessions/runStore'
+import { loadRun, readEvents } from '../sessions/runStore'
+import { checklistOf } from '../tools/checklist'
 import type { Found } from '../plugins/discover'
 import { rootWithProject, writeFile } from '../../tests/helpers'
 import { parseCli } from './cli'
@@ -70,7 +71,7 @@ describe('a pi terminal session', () => {
     expect(launch.accountId).toBe(account.id)
     expect(launch.args.slice(0, 2)).toEqual(['--conditions=browser', '/opt/harness/terminal-opentui.js'])
     expect(launch.args[2]).toBe('--append-system-prompt')
-    expect(launch.args[3]).toContain('# Xingular Harness context')
+    expect(launch.args[3]).toContain('# Xingular Agent context')
     expect(launch.args[3]).toContain('xagent-wiki')
     // Pi's own discovery is off; its command's built-in extensions are named, and the harness's comes last.
     expect(launch.args.slice(4)).toEqual([
@@ -185,8 +186,11 @@ describe('a pi terminal session', () => {
     await tell('tool', { phase: 'end', id: 't1', name: 'read', ok: true, durationMs: 4, resultChars: 12 })
     await tell('message', { text: 'Done.' })
     await tell('usage', { inputTokens: 5, outputTokens: 2, cacheReadTokens: 0, cacheWriteTokens: 0, requests: 1 })
+    await tell('checklist', { items: [{ text: 'Fix the build', status: 'completed' }] })
+    await tell('checklist', { items: [{ text: 'x', status: 'unknown' }] })
     await tell('settled', {})
-    expect(events.map((event) => event.type)).toEqual(['started', 'status.changed', 'message.completed', 'tool.started', 'tool.completed', 'message.completed', 'usage.updated', 'completed'])
+    expect(events.map((event) => event.type)).toEqual(['started', 'status.changed', 'message.completed', 'tool.started', 'tool.completed', 'message.completed', 'usage.updated', 'checklist.updated', 'completed'])
+    expect(checklistOf(readEvents(root, runId))).toEqual([{ text: 'Fix the build', status: 'completed' }])
     expect(loadRun(root, runId).status).toBe('completed')
     expect(harness.terminals.state('term-1')).toEqual({ ready: true, dirty: false, active: false })
     // The run has the pack its session started with.
@@ -262,6 +266,7 @@ describe('a pi terminal session', () => {
     await tell('begin', { text: 'Edit' })
     expect(await tell('policy', { tool: 'read', args: { path: 'a' } })).toEqual({ allowed: true })
     expect(await tell('policy', { tool: 'session_name', args: { name: 'Inspect browser tools' } })).toEqual({ allowed: true })
+    expect(await tell('policy', { tool: 'checklist_write', args: { items: [] } })).toEqual({ allowed: true })
     expect(await tell('policy', { tool: 'bash', args: { command: 'rm -rf x' } })).toMatchObject({ allowed: false, requiresApproval: true })
     const decision = tell('approval', { requestId: 'call-1', target: 'bash', action: '{"command":"rm -rf x"}', tool: 'bash', args: { command: 'rm -rf x' } })
     await vi.waitFor(() => expect(events.some((event) => event.type === 'approval.requested')).toBe(true))

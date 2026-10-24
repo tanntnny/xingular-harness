@@ -31,7 +31,7 @@ function setup() {
     run: { id, sessionId: 'opaque-parent' }, caller: { agentId: 'caller', actor: 'Chat' }, cwd: root,
     sessionDir: join(root, 'history'), text: 'Parent', tools: { allow: ['read'] }, ...extra
   })
-  return { harness, finish, start, systems }
+  return { harness, finish, start, systems, root }
 }
 const empty = () => ({ owners: [], receipts: [] })
 
@@ -50,7 +50,7 @@ describe('subagents a harness defines (c5)', () => {
     const copy = await harness.subagents.spawn({ parentRunId: 'parent', brief: 'Check the tests' })
     expect(systems.get(copy.runId)).toContain('You coordinate releases.')
     expect(loadRun(harness.env.root, copy.runId).variantVersion).toBe(loadRun(harness.env.root, 'parent').variantVersion)
-    await expect(harness.subagents.spawn({ parentRunId: 'parent', brief: 'x', agent: 'writer' })).rejects.toThrow('There is no subagent named writer.')
+    await expect(harness.subagents.spawn({ parentRunId: 'parent', brief: 'x', agent: 'writer' })).rejects.toThrow('There is no agent profile named writer.')
   })
 })
 
@@ -176,5 +176,58 @@ describe('native subagent ownership and delivery', () => {
     }
     expect(delivered).toEqual(children.map(child => child.runId))
     expect(await harness.subagents.delivery('parent', { owners: [], receipts }, true)).toBeNull()
+  })
+})
+
+describe('agent profiles (PROP-0029)', () => {
+  it('lists the profiles, narrows a child to its profile and records which one it started from', async () => {
+    const { harness, start, systems } = setup()
+    await start('parent', { tools: { allow: ['read', 'grep', 'edit', 'bash', 'spawn_subagent', 'wait_subagents'] } })
+    expect(systems.get('parent')).toContain('- explorer — Finds and explains code')
+    expect(systems.get('parent')).toContain('- worker — Carries out a well-defined change')
+    const child = await harness.subagents.spawn({ parentRunId: 'parent', brief: 'Find the login route', agent: 'explorer' })
+    expect(child.agent).toBe('explorer')
+    expect(child.unavailableTools).toEqual(expect.arrayContaining(['find', 'ls']))
+    expect(systems.get(child.runId)).toContain('Your role: explorer')
+    const { loadRun: frozen } = await import('../capabilities/runSnapshot')
+    const tools = frozen(harness.env.root, child.runId)!.tools
+    expect(tools).toEqual(expect.arrayContaining(['read', 'grep', 'checklist_write']))
+    expect(tools).not.toContain('edit')
+    expect(tools).not.toContain('bash')
+    expect(loadRun(harness.env.root, child.runId).profile).toBe('explorer')
+    const copy = await harness.subagents.spawn({ parentRunId: 'parent', brief: 'Check the tests' })
+    expect(loadRun(harness.env.root, copy.runId).profile ?? null).toBeNull()
+    expect(frozen(harness.env.root, copy.runId)!.tools).toContain('edit')
+  })
+
+  it('lets a project profile replace a built-in and choose its own variant', async () => {
+    const { harness, start, systems, root } = setup()
+    const { commit } = await import('../variant/store')
+    const files = (prompt: string) => ({ 'systemprompt.md': prompt, 'guardrails.md': '', 'memory.md': '', 'tool_guidance.md': '' })
+    commit(harness.env.root, 'caller', files('You coordinate releases.\n'), { kind: 'seed' })
+    commit(harness.env.root, 'tester', files('You only run tests.\n'), { kind: 'seed' })
+    const { createProfile } = await import('../agents/profiles')
+    const { writeFileSync } = await import('node:fs')
+    const made = createProfile(harness.env.root, root, { name: 'worker', scope: 'project' })
+    writeFileSync(made.path!, '---\nname: worker\ndescription: Runs the tests only.\ncolor: yellow\nvariant: tester\neffort: low\n---\nRun the test suite and report failures.\n')
+    await start('parent', { variant: { scope: 'caller' }, tools: { allow: ['read', 'bash', 'spawn_subagent', 'wait_subagents'] } })
+    expect(systems.get('parent')).toContain('- worker — Runs the tests only.')
+    const child = await harness.subagents.spawn({ parentRunId: 'parent', brief: 'Run the tests', agent: 'worker' })
+    expect(systems.get(child.runId)).toContain('Run the test suite and report failures.')
+    expect(systems.get(child.runId)).toContain('You only run tests.')
+    expect(systems.get(child.runId)).not.toContain('You coordinate releases.')
+    expect(loadRun(harness.env.root, child.runId).variantScope).toBe('tester')
+  })
+})
+
+describe('subagent titles (PROP-0030)', () => {
+  it('stores the title the parent gave, or the first line of the brief when it gave none', async () => {
+    const { harness, start } = setup()
+    await start('parent', { tools: { allow: ['read', 'spawn_subagent', 'wait_subagents'] } })
+    const named = await harness.subagents.spawn({ parentRunId: 'parent', title: '  Map   the auth flow ', brief: 'Find the login route' })
+    expect(loadRun(harness.env.root, named.runId).title).toBe('Map the auth flow')
+    const unnamed = await harness.subagents.spawn({ parentRunId: 'parent', brief: 'First line of a long brief\nsecond line with more detail' })
+    expect(loadRun(harness.env.root, unnamed.runId).title).toBe('First line of a long brief')
+    await expect(harness.subagents.spawn({ parentRunId: 'parent', title: 'one two three four five six seven', brief: 'x' })).rejects.toMatchObject({ code: 'invalid_request' })
   })
 })

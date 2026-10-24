@@ -1,39 +1,57 @@
-import type { Theme } from '@earendil-works/pi-coding-agent'
 import { describe, expect, it } from 'vitest'
-import { createHarnessTheme } from '../tui/theme'
-import { subagentsWidget } from './subagentsWidget'
 
-const theme = createHarnessTheme({ getColorMode: () => 'truecolor' } as Theme)
+import type { TerminalSubagentActivity } from '../subagentMonitor'
+import { subagentRoster, subagentRowText } from './subagentsWidget'
 
-function plain(lines: ReturnType<typeof subagentsWidget>): string[] {
-  return lines.map(line => line.spans.map(span => span.text).join(''))
+function child(index: number, extra: Partial<TerminalSubagentActivity> = {}): TerminalSubagentActivity {
+  return {
+    id: `run-${index}`, parentRunId: 'parent', relation: 'subagent', goal: `Task ${index}`, status: 'completed',
+    startedAt: `2026-10-23T00:00:0${index}.000Z`, endedAt: '2026-10-23T00:00:09.000Z', activity: 'Completed',
+    title: `Task ${index}`, checklist: null, ...extra
+  }
 }
 
-describe('subagentsWidget', () => {
-  it('shows active tasks first, with readable status, activity and overflow', () => {
-    const items = Array.from({ length: 5 }, (_, index) => ({
-      id: `run-${index}`, parentRunId: 'parent', relation: 'subagent' as const,
-      goal: `Task ${index}`, status: index === 4 ? 'running' as const : 'completed' as const,
-      startedAt: `2026-10-23T00:00:0${index}.000Z`, endedAt: index === 4 ? null : '2026-10-23T00:00:05.000Z',
-      activity: index === 4 ? 'read' : 'Completed'
-    }))
-
-    const lines = plain(subagentsWidget(items, 100, theme, Date.parse('2026-10-23T00:00:10.000Z')))
-    expect(lines).toHaveLength(5)
-    expect(lines[0]).toContain('1 active · 4 finished · /plugin:subagents')
-    expect(lines[1]).toContain('Task 4 · running · read · 6s')
-    expect(lines.at(-1)).toContain('+2 more · /plugin:subagents')
+describe('subagentRoster', () => {
+  it('has no heading; each row is mark, profile, title, then tasks', () => {
+    const roster = subagentRoster([
+      child(0),
+      child(1, { status: 'running', profile: { name: 'worker', color: 'green' }, title: 'Fix login redirect', checklist: { done: 2, total: 5 } }),
+      child(2, { status: 'waiting_for_approval', profile: { name: 'explorer', color: 'cyan' } }),
+      child(3, { status: 'failed' }),
+      child(4, { status: 'queued' })
+    ], 100)!
+    expect(roster.rows.map(subagentRowText)).toEqual([
+      '· worker  Fix login redirect  2 of 5 tasks',
+      '● explorer  Task 2',
+      '○ subagent  Task 4'
+    ])
+    expect(roster.rows[0]).toMatchObject({ tone: 'warning', color: 'green' })
+    expect(roster.rows[1]).toMatchObject({ tone: 'accent', color: 'cyan' })
+    expect(roster.rows[2]).toMatchObject({ tone: 'muted', color: null })
+    expect(roster.overflow).toBe('+2 more · /subagents')
+    expect(JSON.stringify(roster)).not.toContain('Subagents ·')
   })
 
-  it('sanitizes task and activity strings and fits rows to the terminal width', () => {
-    const lines = plain(subagentsWidget([{
-      id: 'run', parentRunId: 'parent', relation: 'subagent', goal: '\u001b[31mSensitive task\u001b[0m',
-      status: 'waiting_for_approval', startedAt: '2026-10-23T00:00:00.000Z', endedAt: null,
-      activity: 'Waiting\nfor approval'
-    }], 32, theme, Date.parse('2026-10-23T00:00:04.000Z')))
+  it('shows the running frame it is given, and only running rows take it', () => {
+    const roster = subagentRoster([child(0, { status: 'running' }), child(1, { status: 'queued' })], 100, '●')!
+    expect(roster.rows.map(row => row.mark)).toEqual(['●', '○'])
+  })
 
-    expect(lines.join('\n')).not.toContain('\u001b')
-    expect(lines.join('\n')).toContain('approval')
-    expect(lines.every(line => line.length <= 32)).toBe(true)
+  it('marks finished rows and leaves out tasks when there is no checklist', () => {
+    const roster = subagentRoster([child(0, { checklist: { done: 3, total: 3 } }), child(1, { status: 'failed' }), child(2, { status: 'interrupted' })], 100)!
+    expect(roster.rows.map(row => [row.mark, row.tone, row.tasks])).toEqual([['✓', 'success', '3 of 3 tasks'], ['✕', 'error', null], ['!', 'muted', null]])
+    expect(roster.overflow).toBeNull()
+    expect(subagentRoster([], 100)).toBeNull()
+  })
+
+  it('cleans titles and cuts the title first on a narrow terminal', () => {
+    const roster = subagentRoster([child(0, {
+      status: 'running', profile: { name: 'worker', color: 'green' }, title: '\u001b[31mA very long title\nhere\u001b[0m', checklist: { done: 1, total: 4 }
+    })], 34)!
+    const text = subagentRowText(roster.rows[0]!)
+    expect(text).not.toContain('\u001b')
+    expect(text.startsWith('✓ worker  A very')).toBe(false)
+    expect(text).toMatch(/^· worker {2}A very.*… {2}1 of 4 tasks$/u)
+    expect(text.length).toBeLessThanOrEqual(34)
   })
 })

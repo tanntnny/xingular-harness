@@ -26,7 +26,7 @@ The surface is `PI_SURFACE` (`variant/surface.ts`), the one surface this harness
 | c2 | Guardrails | `guardrails.md` | always (`guardrails`, 40) | context |
 | c3 | Memory | `memory.md` | always (`memory`, 45) | context |
 | c4 | Tool guidance | `tool_guidance.md` | always (appended to the `tools` section) | tool interface |
-| c5 | Subagents | `sub_agents/<name>/AGENT.md` | own context, listed in `subagents` (64) | orchestration |
+| c5 | Subagents | `sub_agents/<name>/AGENT.md` | own context; instruction-only agent profiles, listed with the other profiles in `subagents` (64, PROP-0029) | orchestration |
 | c6 | Skills | `skills/<name>/SKILL.md` (+ `scripts/`) | on demand, loaded by Pi as skills | context |
 | c7 | Scripts | `scripts/<name>.py` or `.mjs` | on demand, listed in `scripts` (66) | tool interface |
 | c8 | Plugins | `plugins/<name>.ts` | inside the tool loop, as Pi extensions | middleware |
@@ -68,7 +68,8 @@ The surface is `PI_SURFACE` (`variant/surface.ts`), the one surface this harness
 - **INV-VAR-3** A version is never edited. A change is a new version; `restore` moves the head
   and appends to `restores.jsonl`.
 - **INV-VAR-4** A run resolves its variant once and pins it; a child run or later turn uses the same
-  files even if the head moves.
+  files even if the head moves. A child whose agent profile names another variant resolves and
+  pins that one when it starts (PROP-0029).
 - **INV-VAR-5** c8 plugin code loads only when its exact text is trusted (SHA-256 in
   `variant-plugin-trust.json`). A changed file asks again. The one exception: a refinement probe may
   run improver-written code for a scope whose person allowed it (`probeCode`), and adopting that

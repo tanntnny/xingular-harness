@@ -1,15 +1,16 @@
-// `xharness plugins …`: plugin control for a person using the harness without an
+// `xagent plugins …`: plugin control for a person using the harness without an
 // application. It runs outside any session, as the person who typed it, and acts directly.
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { createInterface } from 'node:readline/promises'
 
+import { DEFAULT_PRODUCT_NAME } from '../core/env'
 import { Harness, type HarnessOptions } from '../harness'
 import * as api from './api'
 import * as install from './install'
 import type { Plugin } from './types'
 
-export const PLUGINS_USAGE = `Usage: xharness plugins <command> [options]
+export const PLUGINS_USAGE = `Usage: xagent plugins <command> [options]
 
   list                         Every plugin and whether it is on
   show <plugin id>             One plugin: what it brings, where it is on, its code
@@ -86,7 +87,7 @@ export async function runPluginsCli(argv: string[], dependencies: PluginsCliDepe
   }
   const base = dependencies.cwd ?? process.cwd()
   const root = join(dependencies.home ?? homedir(), '.xingular-harness')
-  const options: HarnessOptions = { dataRoot: parsed.values.data ? resolve(base, parsed.values.data) : join(root, 'data'), stateDir: parsed.values.state ? resolve(base, parsed.values.state) : join(root, 'state'), productName: 'Xingular Harness' }
+  const options: HarnessOptions = { dataRoot: parsed.values.data ? resolve(base, parsed.values.data) : join(root, 'data'), stateDir: parsed.values.state ? resolve(base, parsed.values.state) : join(root, 'state'), productName: DEFAULT_PRODUCT_NAME }
   // Built without opening the data root: a plugin command must not settle runs or migrate a Wiki
   // that another process may be using.
   const harness = dependencies.createHarness ? dependencies.createHarness(options) : new Harness(options)

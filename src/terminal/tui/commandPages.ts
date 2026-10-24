@@ -11,9 +11,10 @@ import { WorktreesPage } from './pages/worktreesPage'
 import { NotesPage } from './pages/notesPage'
 import { AnnotatePage, type AnnotateStart } from './pages/annotatePage'
 import { SubagentsPage } from './pages/subagentsPage'
+import { AgentsPage } from './pages/agentsPage'
 import { createSettingsModel } from './settingsModel'
 
-export type CommandPageId = 'doctor' | 'accounts' | 'permissions' | 'plugins' | 'hub' | 'components' | 'settings' | 'trajectory' | 'log' | 'harness' | 'skills' | 'connections' | 'tools' | 'worktree' | 'notes' | 'annotate' | 'subagents'
+export type CommandPageId = 'doctor' | 'accounts' | 'permissions' | 'plugins' | 'hub' | 'components' | 'settings' | 'trajectory' | 'log' | 'harness' | 'skills' | 'connections' | 'tools' | 'worktree' | 'notes' | 'annotate' | 'subagents' | 'agents'
 
 /** Construct one independent full-screen page for a slash command. */
 export function createCommandPage(host: TerminalCommandHost, id: CommandPageId, options: { runId?: string; url?: string; annotate?: AnnotateStart; close?(): void } = {}): TerminalPage {
@@ -93,6 +94,11 @@ export function createCommandPage(host: TerminalCommandHost, id: CommandPageId, 
       })
     case 'subagents':
       return new SubagentsPage({ theme, snapshot: host.subagents, changed: host.changed })
+    case 'agents':
+      return new AgentsPage({
+        theme, call: host.control, changed: host.changed, ...(host.editFile ? { edit: host.editFile.bind(host) } : {}),
+        ui: { select: host.ui.select.bind(host.ui), confirm: host.ui.confirm.bind(host.ui), notify: host.ui.notify.bind(host.ui), input: host.ui.input.bind(host.ui) }
+      })
     case 'log':
       return new LogPage({
         theme, changed: host.changed,

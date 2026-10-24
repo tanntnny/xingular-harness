@@ -8,7 +8,7 @@ import { closeSync, existsSync, openSync, readSync, realpathSync } from 'node:fs
 import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 
 import terminalExtension, { type TerminalPlanRunState } from '../piExtension'
-import { planModeTools } from './planMode'
+import { normalModeTools, planModeTools, QUESTION_TOOL_NAMES } from './planMode'
 import { claimTerminalControl, controlCall } from '../control'
 import { loadPiAdapter } from './piAdapter'
 import { loadPi } from '../../pi/runtime'
@@ -282,6 +282,7 @@ export async function createTerminalRuntime(args: string[], host: TerminalRuntim
       ...(selected?.model ? { model: selected.model } : {}),
       ...(thinkingLevel ? { thinkingLevel } : {})
     })
+    created.session.setActiveToolsByName(normalModeTools(created.session.getActiveToolNames()))
     const services: AgentSessionServices = { cwd, agentDir, modelRuntime, settingsManager, resourceLoader, diagnostics: [] }
     host.resources?.(services)
     return { ...created, services, diagnostics: services.diagnostics }
@@ -367,7 +368,8 @@ export async function createTerminalRuntime(args: string[], host: TerminalRuntim
       const session = native.session
       if (!session.isIdle) throw new Error('A plan request must wait until the current response settles.')
       const originalTools = session.getActiveToolNames()
-      const allowedTools = planModeTools(originalTools)
+      const registeredQuestions = session.getAllTools().map(tool => tool.name).filter(name => QUESTION_TOOL_NAMES.has(name))
+      const allowedTools = planModeTools(originalTools, [], registeredQuestions)
       // The session's own model and effort come back once the plan is done.
       const previous = { model: session.model, effort: session.thinkingLevel }
       planRun.allowedTools = new Set(allowedTools)

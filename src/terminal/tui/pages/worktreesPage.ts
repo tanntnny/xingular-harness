@@ -1,5 +1,5 @@
 /**
- * The Worktrees page (`/plugin:worktree`): the managed worktrees of the repository this session works in.
+ * The Worktrees page (`/worktree`): the managed worktrees of the repository this session works in.
  * A person makes, switches to, branches, hands off, removes, restores and prunes them; switching
  * restarts the terminal in the chosen folder as a new conversation (PROP-0016).
  */

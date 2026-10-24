@@ -22,10 +22,31 @@ export function subagentDepth(options: SubagentOptions | undefined): number {
 export interface SubagentInput {
   parentRunId: string
   brief: string
+  /** The short name the roster shows for the child (PROP-0030); the spawn tool requires it. */
+  title?: string
   tools?: string[]
   wait?: boolean
-  /** One of the parent harness's subagents (c5) by name; its instructions frame the child. */
+  /** An agent profile by name (PROP-0029), or one of the parent variant's subagents (c5). */
   agent?: string
+}
+
+/** A subagent title is one short imperative, at most this many words (PROP-0030). */
+export const MAX_SUBAGENT_TITLE_WORDS = 6
+const BRIEF_TITLE_LENGTH = 60
+
+/** The title a subagent title input means after cleaning, or undefined when it is not one. */
+export function subagentTitle(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined
+  if (/[\x00-\x08\x0e-\x1f\x7f-\x9f]/u.test(value)) return undefined
+  const title = value.replace(/\s+/gu, ' ').trim()
+  if (!title || title.split(' ').length > MAX_SUBAGENT_TITLE_WORDS) return undefined
+  return title
+}
+
+/** A title read from a brief when the caller gave none: its first line, cut to a short length. */
+export function briefTitle(brief: string | null): string {
+  const line = (brief ?? '').split('\n').map((part) => part.replace(/\s+/gu, ' ').trim()).find(Boolean) ?? ''
+  return line.length > BRIEF_TITLE_LENGTH ? `${line.slice(0, BRIEF_TITLE_LENGTH - 1)}…` : line
 }
 
 export interface SubagentSelection {

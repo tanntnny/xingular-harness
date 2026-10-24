@@ -1,0 +1,46 @@
+{
+  "interval": 0.035,
+  "length": 60,
+  "rounds": 4,
+  "size": "160x45",
+  "real": false,
+  "results": [
+    {
+      "target": "xingular",
+      "command": "node",
+      "scenarios": {
+        "idle": {
+          "keys": 208,
+          "missed": 0,
+          "p50": 4.87,
+          "p95": 10.0,
+          "p99": 10.53,
+          "max": 54.95,
+          "cpuPercent": 6.4,
+          "bytesPerKey": 80
+        },
+        "history": {
+          "keys": 208,
+          "missed": 0,
+          "p50": 5.01,
+          "p95": 10.06,
+          "p99": 10.34,
+          "max": 16.55,
+          "cpuPercent": 8.7,
+          "bytesPerKey": 80,
+          "historySetupSeconds": 14.9
+        },
+        "stream": {
+          "keys": 156,
+          "missed": 0,
+          "p50": 5.94,
+          "p95": 22.02,
+          "p99": 26.96,
+          "max": 30.98,
+          "cpuPercent": 15.8,
+          "bytesPerKey": 12882
+        }
+      }
+    }
+  ]
+}

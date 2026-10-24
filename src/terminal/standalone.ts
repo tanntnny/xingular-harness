@@ -6,6 +6,7 @@ import { homedir } from 'node:os'
 import { isAbsolute, join, resolve } from 'node:path'
 
 import { setLogSink } from '../core/bus'
+import { DEFAULT_PRODUCT_NAME } from '../core/env'
 import { createHarness, type Harness, type HarnessOptions } from '../harness'
 import type { TerminalLaunch } from './terminals'
 
@@ -136,7 +137,7 @@ async function enterWorktree(harness: Harness, cwd: string, wanted: string | tru
   if (existing) return existing
   const created = await harness.worktrees.create({ repo: cwd, ...(name ? { name } : {}) })
   process.stdout.write(`Working in worktree ${created.worktree.name} (${created.worktree.path}).\n`)
-  if (created.setup.state === 'untrusted') process.stdout.write('This repository has a setup script you have not trusted; read .xharness/worktree-setup, then run: xharness worktree trust-setup\n')
+  if (created.setup.state === 'untrusted') process.stdout.write('This repository has a setup script you have not trusted; read .xharness/worktree-setup, then run: xagent worktree trust-setup\n')
   if (created.setup.state === 'failed') process.stdout.write(`The worktree setup script failed; see ${created.setup.log}.\n`)
   await harness.worktrees.prune({ repo: cwd }).catch(() => undefined)
   return created.worktree
@@ -144,13 +145,13 @@ async function enterWorktree(harness: Harness, cwd: string, wanted: string | tru
 
 export async function runStandaloneTerminal(argv: string[], dependencies: StandaloneDependencies = {}): Promise<number> {
   if (!(dependencies.stdinIsTTY ?? process.stdin.isTTY) || !(dependencies.stdoutIsTTY ?? process.stdout.isTTY)) {
-    throw new Error('The interactive Harness terminal needs a TTY. Run it from a terminal, or use `xharness serve` for a host process.')
+    throw new Error('The interactive Harness terminal needs a TTY. Run it from a terminal, or use `xagent serve` for a host process.')
   }
 
   let cwd = resolve(dependencies.cwd ?? process.cwd())
   const paths = parseStandaloneOptions(argv, dependencies.home, cwd)
   const makeHarness = dependencies.createHarness ?? createHarness
-  const harness = makeHarness({ dataRoot: paths.dataRoot, stateDir: paths.stateDir, productName: 'Xingular Harness' })
+  const harness = makeHarness({ dataRoot: paths.dataRoot, stateDir: paths.stateDir, productName: DEFAULT_PRODUCT_NAME })
   const newSessionId = dependencies.createSessionId ?? randomUUID
   let current = { sessionId: newSessionId(), accountId: null as string | null, nativeSessionId: null as string | null }
   // The frontend draws on this terminal, so the host's diagnostics go to a file the person can read instead.
@@ -177,7 +178,7 @@ export async function runStandaloneTerminal(argv: string[], dependencies: Standa
       const sessionFolder = join(paths.dataRoot, 'sessions', 'terminal', createHash('sha256').update(cwd).digest('hex'))
       const launch = await harness.terminals.prepare({ ...current, cwd, sessionFolder, ...(worktreeId ? { run: { worktreeId } } : {}) })
       const code = await spawnFrontend(launch, cwd, dependencies.spawn)
-      // `/accounts` and `/plugin:worktree` ask for a switch and end the frontend. An account switch resumes
+      // `/accounts` and `/worktree` ask for a switch and end the frontend. An account switch resumes
       // the conversation; a folder switch starts a new one there.
       const next = harness.terminals.takeRelaunch(current.sessionId)
       if (!next) return code

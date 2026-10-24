@@ -1,4 +1,4 @@
-// `xharness refine`: refinement from a terminal.
+// `xagent refine`: refinement from a terminal.
 //
 //   refine demo [--k N] [--mode parallel|sequential] [--out <dir>]
 //       Runs the deterministic ledger demo end to end with no model and no credentials.
@@ -26,7 +26,7 @@ import { runRefinement, type RefineSummary } from './runner'
 import { runMatrix, type MatrixSummary } from './suite'
 import type { RecursionMode, RefineTask } from './types'
 
-export const REFINE_USAGE = `Usage: xharness refine <demo | run | matrix> [options]
+export const REFINE_USAGE = `Usage: xagent refine <demo | run | matrix> [options]
 
   demo [--k N] [--mode parallel|sequential] [--out <dir>]
         Run the deterministic demo: no model, no credentials.

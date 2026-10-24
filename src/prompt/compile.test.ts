@@ -59,8 +59,9 @@ test('the variant supplies the instructions, guardrails, memory, subagents, scri
   const env = setup()
   const pack = compile(env, agent(), hosted(), scoped(env))
   const ids = pack.sections.map((entry) => entry.id)
-  expect(ids).toEqual(['identity', 'system', 'guardrails', 'memory', 'subagents', 'scripts', 'work', 'wiki', 'tools', 'reporting'])
+  expect(ids).toEqual(['harness-identity', 'identity', 'system', 'guardrails', 'memory', 'subagents', 'scripts', 'work', 'wiki', 'tools', 'reporting'])
   const text = render(env, pack)
+  expect(text).toContain('## Harness identity\n\nYou are an AI agent running in Xingular Agent.')
   expect(text).toContain('You draft release notes.')
   expect(text).toContain('Never publish without a review.')
   expect(text).toContain('Releases ship on Tuesdays.')
@@ -71,11 +72,41 @@ test('the variant supplies the instructions, guardrails, memory, subagents, scri
   expect(pack.sections.find((entry) => entry.id === 'system')!.sources).toEqual([{ id: 'nora', kind: 'variant', revision: pack.variant!.fingerprint }])
 })
 
-test('without a variant, only the application, the Wiki and the tools speak', () => {
+test('without a variant, the Harness identity and application sections remain', () => {
   const env = setup()
   const pack = compile(env, agent(), hosted())
-  expect(pack.sections.map((entry) => entry.id)).toEqual(['identity', 'work', 'wiki', 'tools', 'reporting'])
+  expect(pack.sections.map((entry) => entry.id)).toEqual(['harness-identity', 'identity', 'work', 'wiki', 'tools', 'reporting'])
   expect(pack.variant).toBeNull()
+})
+
+test('the stable Harness identity uses the configured product name', () => {
+  const env = setup()
+  const identitySection = compile(env, agent(), hosted()).sections[0]
+  expect(identitySection).toMatchObject({
+    id: 'harness-identity',
+    title: 'Harness identity',
+    body: 'You are an AI agent running in Xingular Agent.'
+  })
+
+  const customEnv = createEnv(env.root, { productName: 'Example Harness' })
+  expect(render(customEnv, compile(customEnv, agent(), hosted()))).toContain('You are an AI agent running in Example Harness.')
+})
+
+test('read-only file guidance names absolute and home paths plus the configured data root', () => {
+  const env = setup()
+  const tools = compile(env, agent(), hosted()).sections.find((entry) => entry.id === 'tools')!.body
+  expect(tools).toContain('absolute paths')
+  expect(tools).toContain('paths beginning with ~')
+  expect(tools).toContain('not a repository boundary')
+  expect(tools).toContain(`The Harness data root is ${env.root}`)
+  expect(tools).toContain('Edits and commands still pass through the current gate')
+  expect(tools).not.toContain('within this session\'s working folder')
+})
+
+test('a tool-free side run does not receive main tool guidance', () => {
+  const env = setup()
+  const pack = compile(env, agent(), { ...hosted(), hideToolGuidance: true })
+  expect(pack.sections.map((entry) => entry.id)).not.toContain('tools')
 })
 
 test('the Wiki section lists the current project\'s notes and only describes wiki_write when it is on', () => {
@@ -112,6 +143,7 @@ test('state stays out of the system prompt and only delivered changes are resent
   const env = setup()
   const materialised = scoped(env)
   const first = sessionLaunch(env, agent(), hosted(), null, materialised)
+  expect(first.system).toContain('You are an AI agent running in Xingular Agent.')
   expect(first.system).toContain('You draft release notes.')
   expect(first.system).not.toContain('You have no unresolved work.')
   expect(first.update!.content).toContain('You have no unresolved work.')
@@ -183,4 +215,13 @@ test('describes naming only when available, including for CLI callers', () => {
     expect(enabled.toolGroups).toContainEqual({ group: 'Session', tools: ['session_name'] })
     expect(render(env, enabled)).toContain('at most six words')
   }
+})
+
+test('asks for a checklist the user can follow when checklist_write is available', () => {
+  const env = setup()
+  const without = compile(env, agent(), hosted({ tools: ['read'] }))
+  expect(without.toolGroups.some(group => group.group === 'Progress')).toBe(false)
+  const withChecklist = compile(env, agent(), hosted({ tools: ['read', 'checklist_write'] }))
+  expect(withChecklist.toolGroups).toContainEqual({ group: 'Progress', tools: ['checklist_write'] })
+  expect(render(env, withChecklist)).toContain('The user follows your work from it')
 })

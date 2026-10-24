@@ -21,7 +21,8 @@ import { DialogPanel, SearchableSelect } from '../tui/dialogs'
 import { terminalKeybindings } from '../tui/keybindings'
 import { loadPiAdapter, setPiTheme } from '../tui/piAdapter'
 import { createTerminalRuntime, type TerminalDecision, type TerminalImage, type TerminalRuntime } from '../tui/runtime'
-import { SideQuestion, createSideSession, sideQuestionSnapshot } from '../tui/sideQuestion'
+import { SideQuestion, sideQuestionSnapshot } from '../tui/sideQuestion'
+import type { SideQuestionContext, SideQuestionRead } from '../../sessions/sideQuestions'
 import { createHarnessLightTheme, createHarnessTheme } from '../tui/theme'
 import { createTerminalUi, type TerminalUi } from '../tui/ui'
 import { centeredDialogHost } from '../tui/dialogGeometry'
@@ -41,7 +42,7 @@ import { completeFilePaths, formatPathCompletion, type PathCompletionItem } from
 import { PlanChoice, type PlanChoiceView } from './planChoice'
 import { QuestionDockState, type QuestionDockAnswers, type QuestionDockQuestion, type QuestionDockView } from './questionDockState'
 import { clickableMarkdownUrl, openMarkdownLink } from './markdownLinks'
-import { subagentsWidget } from './subagentsWidget'
+import { subagentRoster, type SubagentRosterView } from './subagentsWidget'
 
 const exec = promisify(execFile)
 const COPY_TOAST_DURATION_MS = 2500
@@ -119,6 +120,7 @@ export interface OpenTuiView {
   subscription: boolean
   items: readonly TranscriptItem[]
   hasUserMessages: boolean
+  slashCommandNames: readonly string[]
   draft: string
   draftEpoch: number
   draftCursorOffset: number | null
@@ -150,6 +152,8 @@ export interface OpenTuiView {
   header?: AnsiLine[]
   footer?: AnsiLine[]
   widgets: { above: AnsiLine[][]; below: AnsiLine[][] }
+  /** Live subagent rows, shown under the status line after one blank line. */
+  subagents: SubagentRosterView | null
   toolsExpanded: boolean
 }
 
@@ -165,6 +169,7 @@ export class OpenTuiApplication {
   private runtime?: TerminalRuntime
   private ui?: TerminalUi
   private commands?: ReturnType<typeof createTerminalCommands>
+  private slashCommandNames?: string[]
   private sideQuestion?: SideQuestion
   private keybindings?: ReturnType<typeof terminalKeybindings>
   private themeValue?: Theme
@@ -193,6 +198,8 @@ export class OpenTuiApplication {
   private subagentsPolling = false
   private subagentGeneration = 0
   private startedAt: number | null = null
+  /** While context compaction runs, it replaces the working verb; set even when no run is active. */
+  private compacting: { since: number; label: string } | null = null
   private requestStartedAt: number | null = null
   private lastResponseTokensPerSecond: number | null = null
   private completedWorkingStatus?: { label: string; elapsedMs: number; tokensPerSecond: number | null }
@@ -255,7 +262,7 @@ export class OpenTuiApplication {
     if (!text.trim()) return
     this.attempt(async () => {
       await copyToClipboard(text)
-      this.showToast('Copied transcript selection')
+      this.showToast('Copied to clipboard')
     })
   }
 
@@ -296,7 +303,7 @@ export class OpenTuiApplication {
       return
     }
     if (this.publishTimer) return
-    const interval = this.startedAt === null ? PUBLISH_INTERVAL_MS : RUNNING_PUBLISH_INTERVAL_MS
+    const interval = this.startedAt === null && !this.compacting ? PUBLISH_INTERVAL_MS : RUNNING_PUBLISH_INTERVAL_MS
     const wait = Math.max(0, interval - (performance.now() - this.lastPublish))
     this.publishTimer = setTimeout(this.publish, wait)
   }
@@ -427,8 +434,22 @@ export class OpenTuiApplication {
       })
       if (this.stopped) return
       this.sideQuestion = new SideQuestion({
-        create: () => createSideSession(this.runtime!.services, this.runtime!.session),
-        snapshot: () => sideQuestionSnapshot(this.runtime!.session.messages, this.runtime!.session.isStreaming),
+        context: () => ({
+          instructions: this.runtime!.session.systemPrompt,
+          transcript: sideQuestionSnapshot(this.runtime!.session.messages, this.runtime!.session.isStreaming)
+        }),
+        start: (question: string, context: SideQuestionContext) => {
+          const model = this.runtime!.session.model
+          return controlCall<{ runId: string; sessionId: string; nativeSessionId: string | null }>('terminal.sideQuestions.start', {
+            question,
+            context,
+            model: model && model.id !== 'unknown' && model.provider ? `${model.provider}/${model.id}` : null,
+            effort: this.runtime!.session.thinkingLevel
+          })
+        },
+        read: (runId, afterSequence) => controlCall<SideQuestionRead>('terminal.sideQuestions.read', { runId, afterSequence }),
+        interrupt: runId => controlCall('terminal.sideQuestions.interrupt', { runId }),
+        copyText: copyToClipboard,
         theme: () => this.theme,
         mount: dock => {
           const previous = this.widgets.get('harness-btw')
@@ -465,6 +486,7 @@ export class OpenTuiApplication {
           read: (runId, afterSequence) => controlCall<TerminalTrajectorySnapshot>('terminal.trajectory.events', { runId, ...(afterSequence === undefined ? {} : { afterSequence }) })
         },
         subagents: () => this.subagents,
+        editFile: path => this.editFile(path),
         suspend: () => this.suspend(),
         hotkeys: () => this.hotkeys()
       })
@@ -479,7 +501,7 @@ export class OpenTuiApplication {
       this.refresh()
       let lastSubagentPoll = 0
       const tick = setInterval(() => {
-        if (this.startedAt !== null || this.sideQuestion?.state === 'thinking') this.change()
+        if (this.startedAt !== null || this.compacting || this.sideQuestion?.state === 'thinking') this.change()
         const now = Date.now()
         if (this.startedAt !== null && now - lastSubagentPoll >= 1000) {
           lastSubagentPoll = now
@@ -612,6 +634,7 @@ export class OpenTuiApplication {
   }
 
   private refresh(): void {
+    this.slashCommandNames = undefined
     if (!this.runtime) return
     this.ui?.setThemes(this.session.resourceLoader.getThemes().themes)
     this.transcript.bind(this.session)
@@ -622,6 +645,7 @@ export class OpenTuiApplication {
   }
 
   private resetPresentation(): void {
+    this.slashCommandNames = undefined
     this.historyIndex = undefined
     this.invalidateFileCompletion()
     void this.sideQuestion?.dismiss()
@@ -651,8 +675,24 @@ export class OpenTuiApplication {
     this.change()
   }
 
+  private currentSlashCommandNames(): string[] {
+    if (this.slashCommandNames) return this.slashCommandNames
+    if (!this.commands) return []
+
+    const names = new Set<string>()
+    try {
+      for (const command of this.commands.completions()) {
+        names.add(command.name)
+        for (const alias of command.aliases ?? []) names.add(alias)
+      }
+      for (const skill of this.commands.skills()) names.add(`skill:${skill.name}`)
+    } catch { /* A resource reload may briefly leave command metadata unavailable. */ }
+    return this.slashCommandNames = [...names]
+  }
+
   private resetActiveWorkingStatus(): void {
     this.startedAt = null
+    this.compacting = null
     this.requestStartedAt = null
     this.lastResponseTokensPerSecond = null
     this.activeVerb = undefined
@@ -703,8 +743,9 @@ export class OpenTuiApplication {
       this.activeTurnId = undefined
       queueMicrotask(() => this.drainDeferred())
     }
-    if (event.type === 'compaction_start') this.notify('Compacting context…')
+    if (event.type === 'compaction_start') this.compacting = { since: Date.now(), label: 'Compacting context' }
     if (event.type === 'compaction_end') {
+      this.compacting = null
       this.transcript.bind(this.session)
       if (event.errorMessage) this.notify(event.errorMessage, 'error')
     }
@@ -716,8 +757,9 @@ export class OpenTuiApplication {
       this.notify(retryNotice(event.attempt, event.maxAttempts, event.delayMs, event.errorMessage), 'warning')
     }
     if (event.type === 'summarization_retry_attempt_start') {
-      const target = event.source === 'branchSummary' ? 'branch summary' : 'context compaction'
-      this.notify(`Retrying ${target}…`)
+      if (event.source === 'branchSummary') this.notify('Retrying branch summary…')
+      else if (this.compacting) this.compacting = { ...this.compacting, label: 'Retrying compaction' }
+      else this.notify('Retrying context compaction…')
     }
     if (event.type === 'summarization_retry_finished') this.notify('Summarization retry finished.')
     this.transcript.invalidate()
@@ -785,6 +827,15 @@ export class OpenTuiApplication {
     }
   }
 
+  selectQuestionTab(index: number): void {
+    this.input(() => {
+      const dock = this.questionDock
+      if (!dock) return
+      const previous = dock.view
+      if (dock.selectQuestion(index) && (previous.activeIndex !== dock.view.activeIndex || previous.focus !== dock.view.focus)) this.change()
+    })
+  }
+
   focusQuestionOption(index: number): void {
     this.input(() => {
       const dock = this.questionDock
@@ -833,14 +884,6 @@ export class OpenTuiApplication {
     })
   }
 
-  focusQuestionComposer(): void {
-    this.input(() => {
-      if (!this.questionDock || this.questionDock.view.focus === 'composer') return
-      this.questionDock.setFocus('composer')
-      this.change()
-    })
-  }
-
   setQuestionText(text: string): void {
     this.input(() => this.onSetQuestionText(text))
   }
@@ -877,9 +920,8 @@ export class OpenTuiApplication {
       this.change()
       return true
     }
-    if (view.collapsed || view.focus === 'note' || view.focus === 'answer' || view.focus === 'composer') return false
-    if (data === 'x') {
-      dock.collapse()
+    if (view.focus === 'note' || view.focus === 'answer') return false
+    if (data === 'n' && view.focus === 'options' && dock.openFocusedNote()) {
       this.change()
       return true
     }
@@ -912,14 +954,12 @@ export class OpenTuiApplication {
     return false
   }
 
-  /**
-   * A character the dock has no use for starts a direct reply: the composer takes focus and the
-   * character, so typing is never swallowed while the dock holds focus.
-   */
+  /** Characters not used by question controls begin a free-text answer instead of a hidden chat draft. */
   private replyDirectly(dock: QuestionDockState, key: KeyInput, data: string): boolean {
-    if (key.ctrl || key.meta || !data || /[\x00-\x1f\x7f]/u.test(data)) return false
-    dock.setFocus('composer')
-    this.setDraftExternal(`${this.draft}${data}`)
+    if (key.ctrl || key.meta || !data || /[\x00-\x1f\x7f]/u.test(data) || !dock.view.allowText) return false
+    dock.setFocus('answer')
+    dock.setText(`${dock.view.text}${data}`)
+    this.change()
     return true
   }
 
@@ -1442,7 +1482,13 @@ export class OpenTuiApplication {
     const routed = this.host.emitInput(key.sequence)
     if (routed?.consume) return true
     const data = routed?.data ?? key.sequence
+    // The dock renderer owns these keys, before global effort/history shortcuts can consume them.
+    if (this.questionDock && (key.name === 'pageup' || key.name === 'pagedown' ||
+      (key.ctrl && (key.name === 'home' || key.name === 'end')) ||
+      (this.questionDock.view.sketchPreview && key.shift && ['up', 'down', 'left', 'right'].includes(key.name)))) return false
     if (this.handleQuestionKey(key, data)) return true
+    // Question editors own their remaining keys; global '?' and '!' shortcuts must not eat input.
+    if (this.questionDock && ['note', 'answer'].includes(this.questionDock.view.focus)) return false
     const palette = this.paletteView()
     if (palette) {
       if (key.name === 'up') { this.paletteIndex = (palette.index - 1 + palette.items.length) % palette.items.length; this.change(); return true }
@@ -1510,6 +1556,10 @@ export class OpenTuiApplication {
       return true
     }
     if (key.name === 'tab' && key.shift) { this.togglePlanMode(); return true }
+    if (this.sideQuestion?.visible && (key.name === 'pageup' || key.name === 'pagedown')) {
+      this.sideQuestion.scroll(key.name === 'pageup' ? 'up' : 'down')
+      return true
+    }
     if (key.name === 'pageup' || key.name === 'pagedown' || (key.ctrl && (key.name === 'home' || key.name === 'end'))) return false
     const is = (action: string): boolean => {
       try { return this.keybindings!.matches(data, action as Parameters<ReturnType<typeof terminalKeybindings>['matches']>[1]) }
@@ -1546,7 +1596,10 @@ export class OpenTuiApplication {
       this.planBarrierOpen = this.planActive || this.activeDeferredKind === 'plan'
       this.setDraftExternal([...pending.steering, ...pending.followUp, ...deferred, this.draft].filter(Boolean).join('\n'))
     } else if (is('app.editor.external')) this.attempt(() => this.externalEditor())
-    else if (is('app.message.copy')) this.attempt(() => this.commands!.execute('/copy'))
+    else if (is('app.message.copy')) {
+      if (this.sideQuestion?.visible) this.attempt(() => this.sideQuestion!.copyAnswer())
+      else this.attempt(() => this.commands!.execute('/copy'))
+    }
     // Cmd+V arrives as a key only in terminals that forward it; most paste on their own.
     else if (is('app.clipboard.pasteImage') || (key.super && key.name === 'v' && !key.ctrl && !key.meta)) this.attempt(() => this.pasteClipboard())
     else if (is('app.suspend')) this.attempt(() => this.suspend())
@@ -1566,27 +1619,35 @@ export class OpenTuiApplication {
     ].join('\n')
   }
 
+  /** The frame of the working spinner, which the working line and the subagent roster share. */
+  private workingSpinnerFrame(since: number): string {
+    const indicator = this.ui?.state?.workingIndicator
+    const frames = indicator?.frames ?? getWorkingSpinnerFrames(process.env.TERM)
+    return spinnerFrameAt(Date.now() - since, frames, indicator?.intervalMs ?? SPINNER_INTERVAL_MS)
+  }
+
   private working(): OpenTuiView['working'] {
-    const active = this.startedAt !== null
+    // A compaction during a run keeps the run's clock; a /compact while idle starts its own.
+    const since = this.startedAt ?? this.compacting?.since ?? null
+    const active = since !== null
     if (!active && this.completedWorkingStatus) {
       return { active: false, frame: '', ...this.completedWorkingStatus }
     }
     const state = this.ui?.state
-    const label = active
-      ? state?.workingVisible === false ? '' : state?.workingMessage ?? this.activeVerb ?? 'Working…'
-      : ''
-    const indicator = state?.workingIndicator
-    const frames = indicator?.frames ?? getWorkingSpinnerFrames(process.env.TERM)
-    const elapsedMs = this.startedAt !== null ? Math.max(0, Date.now() - this.startedAt) : null
-    const frame = active && this.startedAt !== null
-      ? spinnerFrameAt(Date.now() - this.startedAt, frames, indicator?.intervalMs ?? SPINNER_INTERVAL_MS)
-      : ''
+    const label = !active
+      ? ''
+      : this.compacting
+        ? this.compacting.label
+        : state?.workingVisible === false ? '' : state?.workingMessage ?? this.activeVerb ?? 'Working…'
+    const elapsedMs = since !== null ? Math.max(0, Date.now() - since) : null
+    const frame = since !== null ? this.workingSpinnerFrame(since) : ''
     return {
       active,
       frame,
       label,
       elapsedMs,
-      tokensPerSecond: this.lastResponseTokensPerSecond
+      // A /compact while idle has no response rate of its own.
+      tokensPerSecond: this.startedAt !== null ? this.lastResponseTokensPerSecond : null
     }
   }
 
@@ -1619,7 +1680,6 @@ export class OpenTuiApplication {
     const width = Math.max(20, this.host.columns - 4)
     const above: AnsiLine[][] = []
     const below: AnsiLine[][] = []
-    if (this.subagents.length) above.push(subagentsWidget(this.subagents, width, this.theme))
     for (const widget of this.widgets.values()) {
       const lines = this.componentLines(widget.component, width)
       if (lines) (widget.placement === 'belowEditor' ? below : above).push(lines)
@@ -1640,6 +1700,7 @@ export class OpenTuiApplication {
       subscription: snapshot?.subscription ?? false,
       items: transcript.items,
       hasUserMessages: transcript.hasUserMessages,
+      slashCommandNames: this.currentSlashCommandNames(),
       draft: this.paletteOpen ? this.paletteFilter : this.draft,
       draftEpoch: this.draftEpoch,
       draftCursorOffset: this.draftCursorOffset,
@@ -1660,6 +1721,7 @@ export class OpenTuiApplication {
       header: this.componentLines(this.header, width),
       footer: this.componentLines(this.footer, width),
       widgets: { above, below },
+      subagents: subagentRoster(this.subagents, width, this.workingSpinnerFrame(this.startedAt ?? Date.now())),
       toolsExpanded: this.toolsExpanded
     }
   }
@@ -1737,25 +1799,30 @@ export class OpenTuiApplication {
     this.change()
   }
 
-  private async externalEditor(): Promise<void> {
+  /** Opens a file in the person's editor with the renderer suspended, and returns once it closes. */
+  private async editFile(file: string): Promise<void> {
     const editor = process.env.VISUAL || process.env.EDITOR
     if (!editor) throw new Error('Set VISUAL or EDITOR to open an external editor.')
     const renderer = this.renderer
     if (!renderer) throw new Error('The terminal renderer is not ready.')
+    await renderer.suspend()
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const child = spawn(process.env.SHELL || '/bin/sh', ['-c', `${editor} "$1"`, 'harness-editor', file], { stdio: 'inherit' })
+        child.once('error', reject)
+        child.once('exit', code => code === 0 ? resolve() : reject(new Error(`Editor exited with ${code}.`)))
+      })
+    } finally {
+      await renderer.resume()
+    }
+  }
+
+  private async externalEditor(): Promise<void> {
     const directory = await mkdtemp(join(tmpdir(), 'harness-editor-'))
     const file = join(directory, 'prompt.md')
     try {
       await writeFile(file, this.customEditor?.getExpandedText?.() ?? this.draft, { mode: 0o600 })
-      await renderer.suspend()
-      try {
-        await new Promise<void>((resolve, reject) => {
-          const child = spawn(process.env.SHELL || '/bin/sh', ['-c', `${editor} "$1"`, 'harness-editor', file], { stdio: 'inherit' })
-          child.once('error', reject)
-          child.once('exit', code => code === 0 ? resolve() : reject(new Error(`Editor exited with ${code}.`)))
-        })
-      } finally {
-        await renderer.resume()
-      }
+      await this.editFile(file)
       this.setDraftExternal(await readFile(file, 'utf8'))
     } finally {
       await rm(directory, { recursive: true, force: true })

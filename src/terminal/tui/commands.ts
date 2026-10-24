@@ -36,6 +36,8 @@ export interface TerminalCommandHost {
   setEditorText(text: string): void
   copyText(text: string): Promise<void>
   suspend?(): Promise<void>
+  /** Opens a file in the person's editor and resolves once the editor closes. */
+  editFile?(path: string): Promise<void>
   hotkeys?(): string
   logs: { read(): Promise<string> }
   subagents(): readonly TerminalSubagentActivity[]
@@ -107,6 +109,13 @@ export function createTerminalCommands(host: TerminalCommandHost) {
   }
 
   const pluginHandlers = createBuiltinPluginCommandHandlers(host, openPage)
+  const pluginCommands = BUILTIN_PLUGIN_REGISTRY.commands()
+  const coreNames = new Set([...BUILTINS.map(command => command.name), ...COMMAND_ALIASES.keys()])
+  for (const command of pluginCommands) {
+    if (command.namespace === 'unprefixed' && coreNames.has(command.name)) {
+      throw new Error(`Required plugin command collides with a core command: ${command.pluginId}:${command.name}`)
+    }
+  }
   const extensionCommands = () => {
     const byName = new Map<string, ReturnType<AgentSession['extensionRunner']['getRegisteredCommands']>[number][]>()
     for (const command of host.session().extensionRunner.getRegisteredCommands()) {
@@ -120,22 +129,46 @@ export function createTerminalCommands(host: TerminalCommandHost) {
     }
     return { unique, duplicates }
   }
+  const unprefixedCommandNames = (session: AgentSession): Set<string> => new Set([
+    ...BUILTINS.flatMap(command => [command.name, ...(command.aliases ?? [])]),
+    ...pluginCommands.filter(command => command.namespace === 'unprefixed').map(command => command.name),
+    ...session.resourceLoader.getPrompts().prompts.map(prompt => prompt.name)
+  ])
+
+  const runBuiltinPluginCommand = async (name: string, argument: string) => {
+    try {
+      const handler = pluginHandlers.get(name)
+      if (!handler) throw new Error(`No terminal handler for built-in plugin command ${name}.`)
+      await handler(argument)
+      host.refresh()
+    } catch (error) { host.ui.notify(error instanceof Error ? error.message : String(error), 'error') }
+  }
+
   const completions = (): TerminalCommandCompletion[] => {
     const session = host.session()
+    const prompts = session.resourceLoader.getPrompts().prompts
     const commands = new Map(BUILTINS.map(command => [command.name, command]))
-    for (const command of BUILTIN_PLUGIN_REGISTRY.commands()) {
-      const name = `plugin:${command.name}`
-      commands.set(name, { name, description: command.description, group: 'Plugins' })
+    const bareNames = unprefixedCommandNames(session)
+    const namespacedBuiltins = new Set<string>()
+    for (const command of pluginCommands) {
+      if (command.namespace === 'unprefixed') {
+        commands.set(command.name, { name: command.name, description: command.description, group: 'Harness' })
+      } else {
+        namespacedBuiltins.add(command.name)
+        if (!bareNames.has(command.name)) {
+          const invocation = `plugin:${command.name}`
+          commands.set(invocation, { name: invocation, description: command.description, group: 'Plugins' })
+        }
+      }
     }
     const extensions = extensionCommands()
-    const reserved = new Set(BUILTIN_PLUGIN_REGISTRY.commands().map(command => command.name))
     for (const [name, command] of extensions.unique) {
-      if (!reserved.has(name)) {
+      if (!bareNames.has(name) && !namespacedBuiltins.has(name)) {
         const invocation = `plugin:${name}`
         commands.set(invocation, { name: invocation, description: command.description, group: 'Plugins' })
       }
     }
-    for (const prompt of session.resourceLoader.getPrompts().prompts) {
+    for (const prompt of prompts) {
       if (!commands.has(prompt.name) && !COMMAND_ALIASES.has(prompt.name)) commands.set(prompt.name, { name: prompt.name, description: prompt.description, group: 'Prompts' })
     }
     return [...commands.values()]
@@ -148,20 +181,20 @@ export function createTerminalCommands(host: TerminalCommandHost) {
     const argument = match[2]?.trim() ?? ''
     if (typedName.startsWith('plugin:')) {
       const pluginName = typedName.slice('plugin:'.length)
+      const session = host.session()
+      if (unprefixedCommandNames(session).has(pluginName)) {
+        host.ui.notify(`Use /${pluginName}; /plugin:${pluginName} is unavailable because an unprefixed command already uses that name.`, 'error')
+        return true
+      }
       const builtin = BUILTIN_PLUGIN_REGISTRY.command(pluginName)
       const extensions = extensionCommands()
-      if (builtin) {
+      if (builtin?.namespace === 'plugin') {
         const collisions = extensions.unique.get(pluginName) ? [extensions.unique.get(pluginName)!] : extensions.duplicates.get(pluginName) ?? []
         if (collisions.length) {
           const owners = collisions.map(command => command.sourceInfo.path).join(', ')
           host.ui.notify(`Extension command /plugin:${pluginName} from ${owners} is unavailable because the name belongs to the built-in ${builtin.pluginId} plugin.`, 'error')
         }
-        try {
-          const handler = pluginHandlers.get(pluginName)
-          if (!handler) throw new Error(`No terminal handler for built-in plugin command ${pluginName}.`)
-          await handler(argument)
-          host.refresh()
-        } catch (error) { host.ui.notify(error instanceof Error ? error.message : String(error), 'error') }
+        await runBuiltinPluginCommand(pluginName, argument)
         return true
       }
       const duplicate = extensions.duplicates.get(pluginName)
@@ -184,7 +217,13 @@ export function createTerminalCommands(host: TerminalCommandHost) {
       return true
     }
     const name = COMMAND_ALIASES.get(typedName) ?? typedName
-    if (!BUILTINS.some(item => item.name === name)) {
+    const builtin = BUILTINS.find(item => item.name === name)
+    const requiredPluginCommand = BUILTIN_PLUGIN_REGISTRY.command(name)
+    if (!builtin && requiredPluginCommand?.namespace === 'unprefixed') {
+      await runBuiltinPluginCommand(name, argument)
+      return true
+    }
+    if (!builtin) {
       // A skill is offered as $name; the typed /skill:name form still reaches the SDK, which expands it.
       if (skills().some(skill => `skill:${skill.name}` === name)) return false
       if (host.session().resourceLoader.getPrompts().prompts.some(prompt => prompt.name === name)) return false

@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { createConnection } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -21,8 +21,12 @@ function onPlatform<T>(platform: NodeJS.Platform, body: () => T): T {
 }
 
 describe('session socket path', () => {
-  it('keeps the socket file in the state folder on Unix', () => {
-    expect(onPlatform('darwin', () => socketPath('/tmp/state'))).toBe(join('/tmp/state', 'run', 'harness.sock'))
+  it('keeps a socket file of its own, named for the process, in the state folder on Unix', () => {
+    const first = onPlatform('darwin', () => socketPath('/tmp/state'))
+    const second = onPlatform('darwin', () => socketPath('/tmp/state'))
+    expect(first.startsWith(join('/tmp/state', 'run', `harness-${process.pid}-`))).toBe(true)
+    expect(first).toMatch(/harness-\d+-[0-9a-f]{16}\.sock$/)
+    expect(second).not.toBe(first)
   })
 
   it('uses a named pipe on Windows, with a random name each time', () => {
@@ -53,6 +57,48 @@ describe('session socket', () => {
     } finally {
       await first.close()
       await second.close()
+      rmSync(base, { recursive: true, force: true })
+    }
+  })
+
+  it.skipIf(process.platform === 'win32')('keeps a session reachable when another Harness on the same state folder starts and stops', async () => {
+    const base = mkdtempSync(join(tmpdir(), 'sock-owner-'))
+    const live = new SessionSocket(socketPath(base), { memory: () => 'page', apps: async () => null })
+    try {
+      await live.listen()
+      const token = live.issue({ sessionId: 's', caller: () => ({ agentId: 'a' }) as never, broker: null })
+      // One that never listens, then one that listens, both close.
+      await new SessionSocket(socketPath(base), handlers).close()
+      const other = new SessionSocket(socketPath(base), handlers)
+      await other.listen()
+      expect(other.path).not.toBe(live.path)
+      await other.close()
+      expect(existsSync(live.path)).toBe(true)
+      expect(await socketCall({ socket: live.path, token }, 'wiki.read', { name: 'one' })).toBe('page')
+    } finally {
+      await live.close()
+      rmSync(base, { recursive: true, force: true })
+    }
+  })
+
+  it.skipIf(process.platform === 'win32')('removes socket files left by Harness processes that have ended', async () => {
+    // Short enough that the socket stays in this folder rather than falling back to the system temp folder.
+    const base = mkdtempSync('/tmp/xhp-')
+    const run = join(base, 'run')
+    mkdirSync(run)
+    // A pid far above any real one on this machine.
+    const dead = join(run, 'harness-999999999-00ff00ff00ff00ff.sock')
+    const unrelated = join(run, 'notes.txt')
+    writeFileSync(dead, '')
+    writeFileSync(unrelated, '')
+    const socket = new SessionSocket(socketPath(base), handlers)
+    try {
+      await socket.listen()
+      expect(existsSync(dead)).toBe(false)
+      expect(existsSync(unrelated)).toBe(true)
+      expect(existsSync(socket.path)).toBe(true)
+    } finally {
+      await socket.close()
       rmSync(base, { recursive: true, force: true })
     }
   })

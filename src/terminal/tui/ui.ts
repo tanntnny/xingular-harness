@@ -1,7 +1,7 @@
 import { Theme, type AutocompleteProviderFactory, type ExtensionUIContext, type KeybindingsManager, type WorkingIndicatorOptions } from '@earendil-works/pi-coding-agent'
 import { stripTerminalSequences, type AutocompleteProvider, type EditorComponent, type TUI } from '@earendil-works/pi-tui'
 
-import { TerminalDialogs } from './dialogs'
+import { TerminalDialogs, type GroupedSelectOption } from './dialogs'
 
 type EditorFactory = Parameters<ExtensionUIContext['setEditorComponent']>[0]
 type HeaderFactory = Parameters<ExtensionUIContext['setHeader']>[0]
@@ -41,6 +41,7 @@ export interface TerminalUiOptions {
 export interface TerminalUi extends ExtensionUIContext {
   readonly state: TerminalUiState
   secretInput: ExtensionUIContext['input']
+  selectGrouped(title: string, options: readonly GroupedSelectOption[], opts?: Parameters<ExtensionUIContext['select']>[2]): Promise<string | undefined>
   wrapAutocomplete(provider: AutocompleteProvider): AutocompleteProvider
   reset(): void
   setThemes(themes: Theme[]): void
@@ -66,6 +67,7 @@ export function createTerminalUi(options: TerminalUiOptions): TerminalUi {
   return {
     state,
     select: (title, items, opts) => dialogs.select(title, items, opts),
+    selectGrouped: (title, items, opts) => dialogs.selectGrouped(title, items, opts),
     confirm: (title, message, opts) => dialogs.confirm(title, message, opts),
     input: (title, placeholder, opts) => dialogs.input(title, placeholder, opts),
     secretInput: (title, placeholder, opts) => dialogs.input(title, placeholder, opts, true),

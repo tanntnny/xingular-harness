@@ -38,7 +38,8 @@ index](docs/README.md) links the architecture and other project records.
 ### Session options for applications
 
 - Interactive sessions offer `spawn_subagent` and `wait_subagents` by default. `subagents: null` disables them; `{ maxDepth }` configures native nesting (default one, maximum three), independently of the host caller depth. Unattended sessions remain disabled unless the host explicitly supplies subagent options. A frozen capability set can narrow these tools further.
-- `harness.subagents.spawn({ parentRunId, brief, tools?, wait? })` opens a fresh child of the same caller with no wider capabilities. It returns `{ runId, nativeSessionId }` once open; `wait: true` also waits for settlement. `harness.subagents.wait({ parentRunId, runIds? })` joins selected direct children, or the current children when omitted, and returns their outcomes. `results` reads the same bounded outcome records without waiting. RPC exposes `subagents.spawn`, `subagents.wait`, and `subagents.results`; `sessions.spawnSubagent` remains a compatibility alias.
+- `harness.subagents.spawn({ parentRunId, brief, agent?, tools?, wait? })` opens a fresh child of the same caller with no wider capabilities. `agent` names an agent profile (below). It returns `{ runId, nativeSessionId, agent?, unavailableTools? }` once open; `wait: true` also waits for settlement. `harness.subagents.wait({ parentRunId, runIds? })` joins selected direct children, or the current children when omitted, and returns their outcomes. `results` reads the same bounded outcome records without waiting. RPC exposes `subagents.spawn`, `subagents.wait`, and `subagents.results`; `sessions.spawnSubagent` remains a compatibility alias.
+- **Agent profiles** (PROP-0029) are what a subagent starts from: the built-in `worker` (reads, edits, writes, runs commands) and `explorer` (reads only), a person's own `<data root>/agents/<name>.md`, a repository's `<project>/.xingular/agents/<name>.md`, and the variant's c5 subagents, later ones winning. A profile is Markdown with frontmatter (`description`, `color`, `tools`, `plugins`, `variant`, `model`, `effort`) and its body is the role. It only narrows the parent's tools and plugins. `listProfiles`, `resolveProfile`, `createProfile` and `removeProfile` (RPC `agents.list|get|create|remove`) read and write them, and the child's `RunRecord.profile` names the one it used.
 - The model's `spawn_subagent` returns immediately by default; `wait: true` returns an inline result. `wait_subagents` joins selected children. The SDK and standalone terminal share this execution service. Terminal calls use its private control channel, including when connected apps are disabled.
 - Parents receive results at native turn boundaries and join outstanding children before completing. Typed native-history receipts prevent duplicate automatic delivery; explicit waits can reread results. Ownership is recorded before startup so an explicit resume can recover even a lost spawn return. Startup reservations without a run become interrupted outcomes. A restarted Harness never restarts model work automatically. Recovery requires the same recorded account, caller, working folder, and selected history branch. Session IDs are opaque; consumers follow `parentRunId` and `relation`.
 - `providers: false` runs a session with the harness's own tools only.
@@ -66,7 +67,7 @@ import { createHarness } from '@xingular/harness'
 const harness = createHarness({
   dataRoot: '/path/to/data',        // variants/, library/, refine/, wiki/, registry/, runs/, index.sqlite
   stateDir: '/path/to/state',       // device-local: accounts, approvals, connections, sockets
-  productName: 'My App',            // how the harness names itself to a model (default 'Xingular Harness')
+  productName: 'My App',            // how the harness names itself to a model (default 'Xingular Agent')
   secrets,                          // SecretStore; defaults to an owner-only file in stateDir
   policy,                           // ToolPolicy: what a run may do, and what needs a person
   directory,                        // names for the ids the application uses
@@ -194,7 +195,7 @@ working folder brings.
   terminal process claims once (`control.claim`) and shares with its bridge in memory; the socket's
   `plugins.list` is open to the session, and `plugins.attach`, `plugins.detach`, `plugins.trust`
   and `plugins.untrust` refuse without that key. A change applies when the session restarts.
-  Outside a session, `xharness plugins list | show | install | remove | update | attach |
+  Outside a session, `xagent plugins list | show | install | remove | update | attach |
   detach | trust | untrust` acts directly, as the person who typed it; `trust` shows the files
   and wants a typed yes or `--yes`. It does not open the data root, so it settles no run.
 - **Unattended runs load no extension found on disk.** A variant's own trusted plugins still
@@ -263,7 +264,7 @@ After the CLI package is published to npm or your company's npm registry, instal
 
 ```sh
 npm install --global @xingular/harness
-xharness
+xagent
 ```
 
 The machine needs Node 22.19 or newer and Bun 1.3.14 or newer. Harness runs its own OpenTUI
@@ -298,12 +299,12 @@ embedded SDK. See [the terminal guide](docs/terminal-tui.md).
 
 ### Worktrees
 
-Run `xharness --worktree` (or `-w [name]`) inside a git repository to start in a fresh managed
+Run `xagent --worktree` (or `-w [name]`) inside a git repository to start in a fresh managed
 worktree: a detached checkout under `<state dir>/worktrees/` that carries your uncommitted
 changes, copies ignored files named in `.worktreeinclude`, and runs the repository's
-`.xharness/worktree-setup` once you trust it (`xharness worktree trust-setup`). The 15 most recent
+`.xharness/worktree-setup` once you trust it (`xagent worktree trust-setup`). The 15 most recent
 managed worktrees per repository are kept; older ones are pruned, and unsaved work is kept as a
-snapshot you can restore. `/plugin:worktree` in a session, `xharness worktree <command>` in a shell, and
+snapshot you can restore. `/plugin:worktree` in a session, `xagent worktree <command>` in a shell, and
 the `worktrees.*` server methods offer the same actions: new, switch, create branch, hand off to
 or from the main checkout, remove, restore, prune and adopt. An application passes a worktree's id
 as `run.worktreeId` and the session works in it. See
@@ -330,7 +331,7 @@ runs the same page helper (`annotations.pageScript`). See
 
 See [PROP-0018](docs/architecture/proposals/PROP-0018-annotation-queue-and-app-targets.md).
 
-Building a checkout does not update an existing global `xharness` installation.
+Building a checkout does not update an existing global `xagent` installation.
 To replace that command with this checkout, run `npm pack`, then install the exact tarball
 filename it prints with `npm install --global ./<tarball-filename>`. This is a local install;
 it does not publish a release. Close an already-running terminal session and launch the command
@@ -383,7 +384,7 @@ command the model runs in the shell cannot make it.
 A running session stays on the account it started with. To use another account for this
 session, choose **Use for this session**: the terminal child restarts and the same conversation
 resumes on that account. Removing an account that a running terminal is using is refused. Only
-terminals in this process are counted, so an account used by another running `xharness` window can
+terminals in this process are counted, so an account used by another running `xagent` window can
 still be removed; that session then asks for another account the next time it starts.
 
 The installed standalone command defaults to `~/.xingular-harness/data` and
@@ -409,6 +410,7 @@ for integrations such as Xingular Agent/App.
   runs/<id>/        run.json, events.jsonl, context.json, caller.json, subagents.json (reserved child IDs)
   config/           what is switched on for whom (plugin-attachments.json),
                     settings the harness reads
+  agents/<name>.md  a person's agent profiles (a repository keeps its own in .xingular/agents/)
   index.sqlite      a rebuildable index of runs for recall (FTS5)
   projects.json     read only: the application owns it
 
@@ -449,7 +451,7 @@ cannot carry it. See the [terminal guide](docs/terminal-tui.md#bash-command-mode
 
 ## Curated Hub
 
-`xharness hub list [--refresh]`, `xharness hub show publisher/name@version`, and
+`xagent hub list [--refresh]`, `xagent hub show publisher/name@version`, and
 `hub install publisher/name@version` browse and install exact catalog versions. `/hub` offers the
 same review in the interactive terminal, using its private control key for installation. Both the
 terminal and embedding applications use `hub.list`, `hub.get`, `hub.preview`, `hub.install`,
@@ -503,7 +505,7 @@ structured jobs are available through `harness.doctor` and `doctor.*` server met
 The public package is ESM: import from `@xingular/harness` or supported subpaths such as
 `@xingular/harness/variant/seed`. JavaScript and declarations are shipped in `dist/sdk`; a
 TypeScript loader is not required. Node 22.19 or later is required. The interactive terminal
-also requires Bun (release builds use 1.4.2); the CLI reports its version with `xharness --version`.
+also requires Bun (release builds use 1.4.2); the CLI reports its version with `xagent --version`.
 Original project code is Apache-2.0. See LICENSE, NOTICE.md and THIRD_PARTY_LICENSES.md.
 
 A host providing its own browser tools sets `browser: false` on `createHarness` to disable the

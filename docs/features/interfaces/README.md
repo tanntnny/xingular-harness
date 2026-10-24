@@ -17,7 +17,7 @@ for host-provided extension points.
 
 ## Standalone terminal
 
-`xharness` provides the Harness-owned OpenTUI terminal over a persistent Pi session. An embedding
+`xagent` provides the Harness-owned OpenTUI terminal over a persistent Pi session. An embedding
 application may host the terminal in its own PTY; the Harness owns the terminal UI and session
 behavior, while the host owns PTY and process supervision.
 

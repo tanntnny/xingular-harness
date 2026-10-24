@@ -1,0 +1,20 @@
+   · Starting session…
+  · Booping (0s, 75 tok/s)
+ ──────────────────────────────────────
+   UI layout
+
+  Compare contextual layouts
+
+   1 Short (     DESC_A contextual
+     Rec.)       masthead choice.
+   2 LongMasthe  DESC_B retains
+     adLabelWit  neighboring panels.
+     houtSpaces
+
+  +----------------------------------+
+  |A_FOCUS: Masthead                 |
+  |+----------------------+----------|
+
+   3 Something else… Skip and Submit
+
+  ↑↓ · Enter · Tab · Esc · ⇧arrows pan

@@ -3,7 +3,7 @@ id: PROP-0006
 title: A run checklist the model writes, recorded as a run event
 status: Implemented
 created: 2026-10-22
-updated: 2026-10-22
+updated: 2026-10-24
 affects: [02-sessions-and-runs.md, 06-plugins-and-capabilities.md, 07-tools-and-gate.md, 10-server-protocol.md]
 ---
 
@@ -41,7 +41,9 @@ Gap #2 of `docs/study/feature-gap-review.md`.
   where public instruction lives" (study insight 4).
 - New built-in plugin `checklist` declares the tool.
 - `checklistOf(events)` projects the latest list; the server exposes it as `runs.checklist`.
-- Terminal sessions do not get the tool yet.
+- Terminal sessions do not get the tool yet. (Update 2026-10-24: they do now; the terminal
+  extension registers the same tool, records it through `checklist` telemetry and renders each
+  write as a checklist block. See `docs/parity.md` PAR-001.)
 
 ## Alternatives
 

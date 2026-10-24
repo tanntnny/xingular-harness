@@ -41,6 +41,23 @@ describe('the complete terminal extension UI host', () => {
     expect(tui.hasOverlay()).toBe(false)
   })
 
+  it('shows grouped selectors with headings and returns the original selected value', async () => {
+    const { host, tui } = setup()
+    const choice = host.selectGrouped('Account actions', [
+      { label: 'Use for this session', group: 'Session' },
+      { label: 'Rename', group: 'Account' },
+      { label: 'Remove account', group: 'Remove' }
+    ])
+    const panel = tui.getFocusedComponent()!
+    expect(plain(panel).join('\n')).toContain('Session')
+    expect(plain(panel).join('\n')).toContain('Account')
+    expect(plain(panel).join('\n')).toContain('Remove')
+    key(tui, '\x1b[B')
+    key(tui, '\x1b[B')
+    key(tui, '\r')
+    expect(await choice).toBe('Remove account')
+  })
+
   it('resolves confirmation cancellation false, supports input and multiline editor values', async () => {
     const { host, tui } = setup()
     const confirmation = host.confirm('Delete credential?', 'Remove only this account')

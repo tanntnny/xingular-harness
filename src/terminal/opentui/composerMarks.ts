@@ -1,6 +1,7 @@
 import { visibleWidth } from '@earendil-works/pi-tui'
 
 import type { AttachmentLabel } from './attachments'
+import { leadingSlashCommandRange } from './slashCommandHighlight'
 
 /** The parts of an OpenTUI textarea that attachment marks use. */
 export interface MarkTarget {
@@ -30,6 +31,21 @@ export function bufferOffset(text: string, index: number): number {
  * A label that an edit has cut into (word delete, a partial cut) is removed whole, as is its
  * attachment once the draft is reported. Returns true when it changed the text.
  */
+export function syncSlashCommandMark(target: MarkTarget, names: readonly string[], typeId: number, styleId: number): void {
+  const marks = target.extmarks.getAllForTypeId(typeId)
+  const command = leadingSlashCommandRange(target.plainText, names)
+  if (!command) {
+    for (const mark of marks) target.extmarks.delete(mark.id)
+    return
+  }
+
+  const start = bufferOffset(target.plainText, command.start)
+  const end = start + visibleWidth(target.plainText.slice(command.start, command.end))
+  if (marks.length === 1 && marks[0]!.start === start && marks[0]!.end === end) return
+  for (const mark of marks) target.extmarks.delete(mark.id)
+  target.extmarks.create({ start, end, virtual: true, styleId, typeId })
+}
+
 export function syncAttachmentMarks(target: MarkTarget, labels: readonly AttachmentLabel[], typeId: number, styleId: number): boolean {
   const byId = new Map(labels.map(label => [label.id, label]))
   const marks = target.extmarks.getAllForTypeId(typeId)

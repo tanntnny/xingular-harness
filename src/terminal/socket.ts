@@ -5,8 +5,8 @@
 // reply leaves it open for the next request. Each terminal session holds a random token bound to
 // its caller, its connected-apps grant, and its controller; the token stops working when the
 // terminal ends.
-import { createHash, randomBytes } from 'node:crypto'
-import { chmodSync, mkdirSync, rmSync, statSync } from 'node:fs'
+import { randomBytes } from 'node:crypto'
+import { chmodSync, mkdirSync, readdirSync, rmSync, statSync } from 'node:fs'
 import { createServer, type Server, type Socket } from 'node:net'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -47,20 +47,49 @@ const MAX_REQUEST_BYTES = 1024 * 1024
 const MAX_SOCKET_PATH = 100
 
 /**
- * Windows has no socket files for Node's `net`: it listens on a named pipe, which lives in a
- * machine-wide namespace. A random name keeps another local process from guessing it and standing
- * in front of the session; the token still decides what a caller may do.
+ * Each Harness process listens on its own path. Windows has no socket files for Node's `net`: it
+ * listens on a named pipe in a machine-wide namespace, and a random name keeps another local process
+ * from guessing it. On Unix the file is named for this process, because several Harness processes
+ * may share one state folder: closing a server removes its socket file, so a shared name would let
+ * one process delete, and the next one take over, the path another's sessions still call. The token
+ * still decides what a caller may do.
  */
 export function socketPath(stateDir: string): string {
   if (process.platform === 'win32') return `\\\\.\\pipe\\xingular-harness-${randomBytes(12).toString('hex')}`
-  const path = join(stateDir, 'run', 'harness.sock')
+  const path = join(stateDir, 'run', `harness-${process.pid}-${randomBytes(8).toString('hex')}.sock`)
   if (Buffer.byteLength(path) <= MAX_SOCKET_PATH) return path
-  return join(tmpdir(), `xh-${createHash('sha256').update(path).digest('hex').slice(0, 16)}.sock`)
+  return join(tmpdir(), `xh-${process.pid}-${randomBytes(8).toString('hex')}.sock`)
+}
+
+const OWN_SOCKET = /^harness-(\d+)-[0-9a-f]+\.sock$/
+
+/** Removes socket files left in `folder` by Harness processes that are no longer running. */
+function pruneDeadSockets(folder: string): void {
+  let names: string[]
+  try {
+    names = readdirSync(folder)
+  } catch {
+    return
+  }
+  for (const name of names) {
+    const pid = Number(OWN_SOCKET.exec(name)?.[1])
+    if (!pid || pid === process.pid || isRunning(pid)) continue
+    rmSync(join(folder, name), { force: true })
+  }
+}
+
+function isRunning(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'EPERM'
+  }
 }
 
 function alternateSocketPath(path: string): string {
   const candidate = join(dirname(path), `harness-${process.pid}-${randomBytes(8).toString('hex')}.sock`)
-  return Buffer.byteLength(candidate) <= MAX_SOCKET_PATH ? candidate : join(tmpdir(), `xh-${randomBytes(16).toString('hex')}.sock`)
+  return Buffer.byteLength(candidate) <= MAX_SOCKET_PATH ? candidate : join(tmpdir(), `xh-${process.pid}-${randomBytes(8).toString('hex')}.sock`)
 }
 
 /** A named pipe has no folder, file mode, or owner to check or clean up. */
@@ -246,7 +275,10 @@ export class SessionSocket {
 
   /** Binds the usual path, or an instance-specific path if another Harness owns it. */
   private async bindAvailablePath(): Promise<void> {
-    if (!isPipePath(this.path)) mkdirSync(dirname(this.path), { recursive: true, mode: 0o700 })
+    if (!isPipePath(this.path)) {
+      mkdirSync(dirname(this.path), { recursive: true, mode: 0o700 })
+      pruneDeadSockets(dirname(this.path))
+    }
     try {
       await this.bind(this.path)
     } catch (error) {

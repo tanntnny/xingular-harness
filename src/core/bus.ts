@@ -48,7 +48,7 @@ export function logLine(text: string): void {
 export function redactLogText(text: string): string {
   return text
     .replace(/\bBearer\s+\S+/gi, 'Bearer [redacted]')
-    .replace(/(["']?(?:authorization|proxy-authorization|cookie|set-cookie|x-[\w-]*(?:token|key)|[\w-]*(?:api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|token|secret|password|client[_-]?secret))["']?\s*[:=]\s*["']?)[^"'\s,;]+/gi, '$1[redacted]')
+    .replace(/(["']?(?:authorization|proxy-authorization|cookie|set-cookie|x-[\w-]{0,64}(?:token|key)|[\w-]{0,64}(?:api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|token|secret|password|client[_-]?secret))["']?\s*[:=]\s*["']?)[^"'\s,;]+/gi, '$1[redacted]')
     .replace(/\b(?:sk|sess)-[A-Za-z0-9_-]{16,}\b/gi, '[redacted]')
     .replace(/\bhttps?:\/\/[^\s"'<>]+/gi, (raw) => {
       const punctuation = /[),.;!?]+$/.exec(raw)?.[0] ?? ''

@@ -1,15 +1,15 @@
 ---
 id: ADR-0009
 title: Publish the Harness CLI as xharness
-status: accepted
+status: superseded
 created: 2026-10-22
-updated: 2026-10-22
+updated: 2026-10-24
 related: [PROP-0005]
 supersedes: null
-superseded_by: null
+superseded_by: ADR-0024
 ---
 
-# ADR-0009 — Publish the Harness CLI as xharness
+# ADR-0009 — Publish the Harness CLI as xharness (superseded)
 
 ## Context and decision drivers
 
@@ -35,4 +35,5 @@ subcommands, data/state directory names, and `XINGULAR_HARNESS_*` environment va
 
 - The `bin` mapping and CLI help are tested by [`src/cli.test.ts`](../../src/cli.test.ts).
 - CI, the packed-tarball smoke test and the npm publication blocker are recorded in
-  [PROP-0005](../architecture/proposals/PROP-0005-xharness-cli-name.md).
+  [PROP-0005](../architecture/proposals/PROP-0005-xharness-cli-name.md). The executable-name decision
+  is superseded by [ADR-0024](ADR-0024-xagent-command.md).

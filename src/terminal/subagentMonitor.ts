@@ -1,17 +1,28 @@
 import type { RunEvent, RunStatus } from '../sessions/contracts'
 
+/** The agent profile a child started from, as the roster shows it (PROP-0029). */
+export interface TerminalSubagentProfile {
+  name: string
+  color: string
+}
+
 export interface TerminalSubagentRun {
   id: string
   parentRunId: string | null
   relation: 'subagent'
+  /** The short name the parent gave the child (PROP-0030). */
+  title: string
   goal: string | null
   status: RunStatus
   startedAt: string
   endedAt: string | null
+  profile?: TerminalSubagentProfile | null
 }
 
 export interface TerminalSubagentActivity extends TerminalSubagentRun {
   activity: string
+  /** How far the child's own checklist is: counts only, never the items. */
+  checklist: { done: number; total: number } | null
 }
 
 export const ACTIVE_SUBAGENT_STATUSES = new Set<RunStatus>(['queued', 'running', 'waiting_for_approval', 'waiting_for_input'])
@@ -85,15 +96,20 @@ export class SubagentMonitor {
       id: run.id,
       parentRunId: run.parentRunId,
       relation: run.relation,
+      title: run.title,
       goal: run.goal,
       status: run.status,
       startedAt: run.startedAt,
       endedAt: run.endedAt,
       activity: statusActivity(run.status),
+      checklist: null,
+      profile: run.profile ?? null,
       tools: new Map<string, ActiveTool>(),
       lastTool: null
     }
     row.parentRunId = run.parentRunId
+    if (run.profile !== undefined) row.profile = run.profile
+    row.title = run.title
     row.goal = run.goal
     row.status = run.status
     row.startedAt = run.startedAt
@@ -112,6 +128,9 @@ export class SubagentMonitor {
     } else if (event.type === 'message.delta') {
       row.lastTool = null
       row.activity = 'Responding'
+    } else if (event.type === 'checklist.updated') {
+      const items = Array.isArray(payload.items) ? payload.items as { status?: unknown }[] : []
+      row.checklist = items.length ? { done: items.filter(item => item?.status === 'completed').length, total: items.length } : null
     }
 
     if (run.status !== 'running') row.tools.clear()

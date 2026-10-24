@@ -98,7 +98,38 @@ const approvalRequestedPayload = z.object({
   automatic: approvalAutomaticSchema.optional()
 })
 const approvalResolvedPayload = z.object({ approvalId: z.string(), decision: z.enum(['approved', 'denied', 'native']), automatic: approvalAutomaticSchema.optional() })
-export const questionOptionSchema = z.object({ label: z.string().min(1), description: z.string().optional(), recommended: z.boolean().optional() })
+export const QUESTION_SKETCH_MAX_LINES = 24
+export const QUESTION_SKETCH_MAX_COLUMNS = 80
+export const QUESTION_SKETCH_MAX_LENGTH = QUESTION_SKETCH_MAX_LINES * QUESTION_SKETCH_MAX_COLUMNS + QUESTION_SKETCH_MAX_LINES - 1
+export const QUESTION_SKETCH_PATTERN = `^(?:[\\x20-\\x7e]{0,${QUESTION_SKETCH_MAX_COLUMNS}})(?:\\n[\\x20-\\x7e]{0,${QUESTION_SKETCH_MAX_COLUMNS}}){0,${QUESTION_SKETCH_MAX_LINES - 1}}$`
+export const questionSketchSchema = z.string()
+  .min(1)
+  .max(QUESTION_SKETCH_MAX_LENGTH)
+  .regex(new RegExp(QUESTION_SKETCH_PATTERN), 'Sketches use up to 24 LF-separated lines of at most 80 printable ASCII characters.')
+  .refine((sketch) => {
+    const lines = sketch.split('\n')
+    return lines.length <= QUESTION_SKETCH_MAX_LINES &&
+      lines.every((line) => line.length <= QUESTION_SKETCH_MAX_COLUMNS && /^[\x20-\x7e]*$/u.test(line)) &&
+      /[^ \n]/u.test(sketch)
+  }, 'A sketch needs visible content and must use up to 24 LF-separated lines of at most 80 printable ASCII characters.')
+
+export function questionSketchError(uiSketch: unknown, options: readonly { sketch?: unknown }[]): string | undefined {
+  if (uiSketch !== undefined && uiSketch !== true) return 'Set uiSketch to true to enable question sketches.'
+  const sketches = options.map((option) => option.sketch)
+  if (uiSketch === true && sketches.some((sketch) => sketch === undefined)) return 'Sketch mode requires a sketch for every choice.'
+  if (uiSketch !== true && sketches.some((sketch) => sketch !== undefined)) return 'Choice sketches require uiSketch: true.'
+  if (sketches.some((sketch) => sketch !== undefined && !questionSketchSchema.safeParse(sketch).success)) {
+    return 'Each choice sketch must use 1–24 lines of at most 80 printable ASCII characters and contain a visible character.'
+  }
+  return undefined
+}
+
+export const questionOptionSchema = z.object({
+  label: z.string().min(1),
+  description: z.string().optional(),
+  recommended: z.boolean().optional(),
+  sketch: questionSketchSchema.optional()
+})
 export type QuestionOption = z.infer<typeof questionOptionSchema>
 const questionBatchFields = {
   batchId: z.string().min(1).optional(),
@@ -118,12 +149,16 @@ const questionRequestedPayload = z.object({
   questionId: z.string(),
   question: z.string().min(1),
   summary: z.string().min(1).max(100).optional(),
+  uiSketch: z.literal(true).optional(),
   options: z.array(questionOptionSchema),
   multiSelect: z.boolean(),
   allowText: z.boolean(),
   userOnly: z.boolean().optional(),
   ...questionBatchFields
-}).superRefine(questionBatchRefinement)
+}).superRefine(questionBatchRefinement).superRefine((value, context) => {
+  const error = questionSketchError(value.uiSketch, value.options)
+  if (error) context.addIssue({ code: z.ZodIssueCode.custom, path: ['options'], message: error })
+})
 const questionAnsweredPayload = z.object({
   questionId: z.string(),
   selected: z.array(z.string()),
@@ -310,6 +345,10 @@ export interface RunRecord {
   /** The variant the run used: its scope and version fingerprint. */
   variantScope?: string | null
   variantVersion?: string | null
+  /** The agent profile a subagent started from (PROP-0029); null for a copy of its parent. */
+  profile?: string | null
+  /** The short name a parent gave a subagent, shown in the roster (PROP-0030). */
+  title?: string | null
 }
 
 const text = z.string().nullish().transform((value) => value ?? null)
@@ -339,7 +378,9 @@ export const runRecordSchema = z.object({
   agentId: text,
   trigger: text,
   variantScope: text.optional(),
-  variantVersion: text.optional()
+  variantVersion: text.optional(),
+  profile: text.optional(),
+  title: text.optional()
 }) satisfies z.ZodType<RunRecord, unknown>
 
 /** Records written before PROP-0009 name the variant `harnessScope` and `harnessVersion`. */

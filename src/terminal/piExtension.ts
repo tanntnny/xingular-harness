@@ -2,16 +2,15 @@
 // session does to the harness, asks before each tool call, takes instructions the harness
 // queues for it, and gives the session the harness's own tools. It runs in the `pi` process,
 // so everything it knows about the harness comes through the session socket.
-import type { AgentSession, ExtensionAPI, ExtensionContext, ExtensionUIDialogOptions } from '@earendil-works/pi-coding-agent'
+import type { AgentSession, ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent'
 import { Type } from 'typebox'
 
+import { QUESTION_SKETCH_MAX_LENGTH, QUESTION_SKETCH_PATTERN, questionSketchError } from '../sessions/contracts'
 import { connectionFromEnv, socketCall, terminalCall } from './client'
-import { runAccountsMenu, type SessionAccount } from './accountsMenu'
-import { runPluginsMenu } from './pluginMenu'
-import { runHubMenu } from './hubMenu'
-import { claimTerminalControl, controlCall } from './control'
+import { controlCall } from './control'
 import { SUBAGENT_OWNER, SUBAGENT_RECEIPT, SUBAGENT_RESULTS, subagentHistory, type SubagentReceipt } from '../sessions/subagents'
 import { askUserTool } from '../tools/askUser'
+import { checklistTool } from '../tools/checklist'
 import { sessionNameTool } from '../tools/sessionName'
 import type { QuestionAnswer } from '../sessions/registry'
 import { PLAN_INSTRUCTIONS, planRefusal } from '../sessions/planMode'
@@ -43,9 +42,6 @@ async function withParentCancellation<T>(signal: AbortSignal | undefined, work: 
   try { return await work() } finally { signal?.removeEventListener('abort', stop) }
 }
 
-/** /hub, /plugins and /accounts are pages: the owned terminal fills the screen, and Pi's own dialogs ignore the field. */
-const PAGE: ExtensionUIDialogOptions & { page: boolean } = { page: true }
-
 export default async function (pi: ExtensionAPI, planRun?: TerminalPlanRunState, getSession?: () => AgentSession) {
   await terminalCall('startup', { phase: 'Pi extension loaded' })
   let context: ExtensionContext | null = null
@@ -67,51 +63,6 @@ export default async function (pi: ExtensionAPI, planRun?: TerminalPlanRunState,
   try {
     await terminalCall('startup', { phase: stage })
     const connection = connectionFromEnv()
-    // Claimed here, before the model has run anything, and kept in this process's memory: a
-    // command the model runs can read the session token from its environment, never this key.
-    const control = await claimTerminalControl(connection).catch(() => null)
-    pi.registerCommand('hub', {
-      description: 'Browse and install reviewed skills, plugins, and reusable documents',
-      handler: async (_args, ctx) => {
-        if (!control) return ctx.ui.notify('This session cannot install hub items.', 'warning')
-        await runHubMenu(
-          { select: (title, options) => ctx.ui.select(title, options, PAGE), confirm: (title, message) => ctx.ui.confirm(title, message), notify: (message, level) => ctx.ui.notify(message, level) },
-          (method, params) => socketCall(connection, method, params ?? {}, 300_000, control)
-        )
-      }
-    })
-    pi.registerCommand('plugins', {
-      description: 'See what this session loads, and switch a plugin on or off or trust its code',
-      handler: async (_args, ctx) => {
-        if (!control) return ctx.ui.notify('This session cannot change plugins.', 'warning')
-        const { projectId } = await socketCall<{ projectId: string | null }>(connection, 'plugins.session', {}, 15_000, control).catch(() => ({ projectId: null }))
-        await runPluginsMenu(
-          { select: (title, options) => ctx.ui.select(title, options, PAGE), confirm: (title, message) => ctx.ui.confirm(title, message), notify: (message, level) => ctx.ui.notify(message, level) },
-          (method, params) => socketCall(connection, method, params ?? {}, 60_000, control),
-          projectId
-        )
-      }
-    })
-    pi.registerCommand('accounts', {
-      description: 'Add, sign in to, check, switch, or remove the Pi accounts this harness uses',
-      handler: async (_args, ctx) => {
-        if (!control) return ctx.ui.notify('This session cannot manage accounts.', 'warning')
-        const session = await socketCall<SessionAccount>(connection, 'accounts.session', {}, 15_000, control).catch(() => null)
-        if (!session) return ctx.ui.notify('This session has no account to manage.', 'warning')
-        const outcome = await runAccountsMenu(
-          {
-            select: (title, options) => ctx.ui.select(title, options, PAGE),
-            confirm: (title, message) => ctx.ui.confirm(title, message),
-            input: (title, placeholder) => ctx.ui.input(title, placeholder),
-            notify: (message, level) => ctx.ui.notify(message, level)
-          },
-          (method, params) => socketCall(connection, method, params ?? {}, 120_000, control),
-          session
-        )
-        // The session restarts on the account it chose: Pi ends here, and the launcher starts it again.
-        if (outcome === 'relaunch') ctx.shutdown()
-      }
-    })
     const { tools } = await socketCall<{ tools: SocketTool[] }>(connection, 'tools.list', {}, 15_000)
     stage = 'Tool registration'
     for (const tool of tools) {
@@ -347,6 +298,19 @@ export default async function (pi: ExtensionAPI, planRun?: TerminalPlanRunState,
       return { content: [{ type: 'text', text: typeof result === 'string' ? result : result.text }], details: undefined }
     }
   })
+  // The checklist is recorded on the harness run; the shared tool validates and the socket carries the event.
+  let recorded: Promise<unknown> = Promise.resolve()
+  const checklist = checklistTool({ emit: (_type, payload) => { recorded = terminalCall('checklist', payload as Record<string, unknown>) } })
+  pi.registerTool({
+    name: checklist.name, label: checklist.label, description: checklist.description,
+    parameters: Type.Unsafe(checklist.parameters(Type) as Record<string, unknown>),
+    async execute(_id, input) {
+      recorded = Promise.resolve()
+      const result = await checklist.execute(input as Record<string, unknown>)
+      await recorded
+      return { content: [{ type: 'text', text: typeof result === 'string' ? result : result.text }], details: undefined }
+    }
+  })
   const ask = askUserTool({ requestAnswers: questions => terminalCall<QuestionAnswer[]>('questions', { questions }, 1_230_000) })
   pi.registerTool({
     name: ask.name, label: ask.label, description: ask.description,
@@ -359,10 +323,17 @@ export default async function (pi: ExtensionAPI, planRun?: TerminalPlanRunState,
   pi.registerTool({
     name: 'ask_user_question',
     label: 'Ask a question',
-    description: 'Ask the user a question and wait for their answer. Every question must include at least one choice and at least one choice must be recommended. Recommendations are visual only and never preselect answers; submitted choices keep their labels. Mark at most one choice recommended for single-choice questions or several when multiSelect is true.',
+    description: 'Ask the user a question and wait for their answer. Include a concise 1–2 word summary label; if omitted, the terminal derives one from the question. Every question must include at least one choice and at least one choice must be recommended. Recommendations are visual only and never preselect answers; submitted choices keep their labels. Mark at most one choice recommended for single-choice questions or several when multiSelect is true. When a UI diagram helps compare choices, set uiSketch: true and include a detailed, bounded ASCII wireframe for every choice. Use ASCII tables and panel borders to show the affected element alongside relevant neighboring UI, with readable labels and spacing. Keep each panel’s outer `+` corners in fixed columns, include side edges at those same columns on every content row, and run horizontal borders corner to corner; if a title sits in a top border, leave at least two dashes on both sides. Keep framing consistent across alternatives and concentrate detail on what changes, not a symbolic logo or one-line illustration. The preview supplies its outer border; draw internal borders only for actual UI panels.',
     parameters: Type.Object({
+      summary: Type.Optional(Type.String({ description: 'A concise label of one or two words' })),
       question: Type.String(),
-      options: Type.Array(Type.Object({ label: Type.String(), description: Type.Optional(Type.String()), recommended: Type.Optional(Type.Boolean()) }), {
+      uiSketch: Type.Optional(Type.Literal(true, { description: 'Enable an ASCII sketch preview; when true, every choice must include a sketch.' })),
+      options: Type.Array(Type.Object({
+        label: Type.String(),
+        description: Type.Optional(Type.String()),
+        recommended: Type.Optional(Type.Boolean()),
+        sketch: Type.Optional(Type.String({ minLength: 1, maxLength: QUESTION_SKETCH_MAX_LENGTH, pattern: QUESTION_SKETCH_PATTERN, description: 'Literal ASCII UI wireframe: 1–24 LF-separated lines, at most 80 printable ASCII characters per line. Include the affected element and neighboring UI using structured table/panel borders with fixed, matching outer-edge columns on every row. Required for every choice when uiSketch is true.' }))
+      }), {
         minItems: 1,
         contains: Type.Object({ recommended: Type.Literal(true) })
       }),
@@ -373,7 +344,13 @@ export default async function (pi: ExtensionAPI, planRun?: TerminalPlanRunState,
       const recommendedCount = input.options.filter(option => option.recommended).length
       if (recommendedCount === 0) throw new Error('Every question needs at least one recommended choice.')
       if (!input.multiSelect && recommendedCount > 1) throw new Error('A single-choice question may recommend at most one option.')
-      const answer = await terminalCall('question', { requestId: id, ...input })
+      const sketchError = questionSketchError(input.uiSketch, input.options)
+      if (sketchError) throw new Error(sketchError)
+      const summary = typeof input.summary === 'string' ? input.summary.trim() : ''
+      if (summary && (summary.length > 100 || summary.split(/\s+/u).filter(Boolean).length > 2)) {
+        throw new Error('The question summary must be a concise 1–2 word label of no more than 100 characters.')
+      }
+      const answer = await terminalCall('question', { requestId: id, ...input, ...(summary ? { summary } : {}) })
       return { content: [{ type: 'text', text: JSON.stringify(answer) }], details: undefined }
     }
   })

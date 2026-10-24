@@ -9,6 +9,10 @@ import { searchFieldRowsFor } from './search'
 import type { TerminalMouseInput } from './mouse'
 
 type DisposableComponent = Component & { dispose?(): void }
+export interface GroupedSelectOption {
+  label: string
+  group?: string
+}
 /** `page` asks for a full-screen dialog; Pi's own dialogs ignore the field. */
 export type TerminalDialogOptions = ExtensionUIDialogOptions & { page?: boolean }
 export type DialogVariant = 'block' | 'page'
@@ -39,11 +43,11 @@ export class SearchableSelect implements Component, Focusable {
   private readonly list: FilterList<number>
   private readonly labels: string[]
   private focusedValue = false
-  constructor(options: string[], private readonly tui: TUI, theme: () => Theme, private readonly select: (index: number) => void, private readonly cancel: () => void, search: 'always' | 'never' = 'always') {
+  constructor(options: string[], private readonly tui: TUI, theme: () => Theme, private readonly select: (index: number) => void, private readonly cancel: () => void, search: 'always' | 'never' = 'always', groups?: readonly (string | undefined)[]) {
     this.labels = options.map(safe)
     this.list = new FilterList<number>({
       theme, search,
-      rows: this.labels.map((label, index) => ({ id: String(index), label, data: index })),
+      rows: this.labels.map((label, index) => ({ id: String(index), label, ...(groups?.[index] ? { group: groups[index] } : {}), data: index })),
       limit: () => this.windowRows(),
       noun: ['option', 'options'],
       onActivate: row => this.select(row.data ?? 0),
@@ -226,6 +230,14 @@ export class TerminalDialogs {
     return this.show<string>(done => {
       const list = new SearchableSelect(options, this.tui, this.theme, index => done(options[index]), () => done(undefined))
       return new DialogPanel(title, list, this.theme, '↑/↓ select · Enter confirm · Esc cancel', undefined, opts?.page ? 'page' : 'block')
+    }, opts)
+  }
+
+  selectGrouped(title: string, options: readonly GroupedSelectOption[], opts?: ExtensionUIDialogOptions): Promise<string | undefined> {
+    const labels = options.map(option => option.label)
+    return this.show<string>(done => {
+      const list = new SearchableSelect(labels, this.tui, this.theme, index => done(labels[index]), () => done(undefined), 'always', options.map(option => option.group))
+      return new DialogPanel(title, list, this.theme, '↑/↓ select · Enter confirm · Esc cancel')
     }, opts)
   }
 

@@ -44,7 +44,9 @@ function ordered(record: RunRecord): RunRecord {
     agentId: record.agentId,
     trigger: record.trigger,
     ...(record.variantScope ? { variantScope: record.variantScope } : {}),
-    ...(record.variantVersion ? { variantVersion: record.variantVersion } : {})
+    ...(record.variantVersion ? { variantVersion: record.variantVersion } : {}),
+    ...(record.profile ? { profile: record.profile } : {}),
+    ...(record.title ? { title: record.title } : {})
   }
 }
 

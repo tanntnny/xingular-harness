@@ -7,7 +7,7 @@ export type QuestionDockQuestion = Omit<TerminalDecision, 'options'> & {
 }
 type QuestionOption = QuestionDockQuestion['options'][number]
 
-export type QuestionDockFocus = 'options' | 'note' | 'answer' | 'action' | 'composer'
+export type QuestionDockFocus = 'options' | 'note' | 'answer' | 'action'
 
 export interface QuestionDockOptionView extends QuestionOption {
   selected: boolean
@@ -20,16 +20,17 @@ export interface QuestionDockOptionView extends QuestionOption {
 export interface QuestionDockView {
   question: string
   summary: string
+  tabs: { label: string; index: number; active: boolean }[]
   activeIndex: number
   count: number
   options: QuestionDockOptionView[]
+  sketchPreview?: { label: string; sketch: string }
   selected: readonly string[]
   text: string
   multiSelect: boolean
   allowText: boolean
   optionIndex: number
   focus: QuestionDockFocus
-  collapsed: boolean
   actionLabel: string
 }
 
@@ -52,6 +53,12 @@ function orderedOptions(options: readonly QuestionOption[]): QuestionOption[] {
     .map(({ option }) => option)
 }
 
+function questionLabel(question: QuestionDockQuestion): string {
+  const summary = question.summary?.trim()
+  const source = summary || question.question || 'Question'
+  return source.split(/\s+/u).filter(Boolean).slice(0, 2).join(' ') || 'Question'
+}
+
 export class QuestionDockState {
   readonly result: Promise<QuestionDockAnswers | undefined>
   private readonly drafts: AnswerDraft[]
@@ -59,7 +66,6 @@ export class QuestionDockState {
   private optionIndex = 0
   private focus: QuestionDockFocus
   private noteLabel?: string
-  private collapsed = false
   private settled = false
   private resolveResult!: (answers: QuestionDockAnswers | undefined) => void
 
@@ -80,7 +86,8 @@ export class QuestionDockState {
     const action = this.hasAnswer(this.activeIndex, draft) ? 'Continue' : 'Skip'
     return {
       question: question.question ?? 'Question',
-      summary: question.summary ?? 'Question',
+      summary: questionLabel(question),
+      tabs: this.questions.map((item, index) => ({ label: questionLabel(item), index, active: index === this.activeIndex })),
       activeIndex: this.activeIndex,
       count: this.questions.length,
       options: options.map((option, index) => {
@@ -94,25 +101,34 @@ export class QuestionDockState {
           noteFocused: this.focus === 'note' && this.noteLabel === option.label
         }
       }),
+      ...(question.uiSketch === true && options[this.optionIndex]?.sketch !== undefined
+        ? { sketchPreview: { label: options[this.optionIndex]!.label, sketch: options[this.optionIndex]!.sketch! } }
+        : {}),
       selected: draft.selected,
       text: draft.text,
       multiSelect: question.multiSelect === true,
       allowText: question.allowText !== false,
       optionIndex: this.optionIndex,
       focus: this.focus,
-      collapsed: this.collapsed,
       actionLabel: `${action}${allOtherQuestionsAnswered ? ' and Submit' : ''}`
     }
   }
 
   moveQuestion(direction: -1 | 1): void {
-    this.activeIndex = Math.min(this.questions.length - 1, Math.max(0, this.activeIndex + direction))
+    this.selectQuestion(this.activeIndex + direction)
+  }
+
+  selectQuestion(index: number): boolean {
+    if (!Number.isInteger(index) || index < 0 || index >= this.questions.length) return false
+    if (index === this.activeIndex) return true
+    this.activeIndex = index
     this.optionIndex = Math.min(this.optionIndex, Math.max(0, orderedOptions(this.current.options).length - 1))
     if (this.focus === 'note') {
       this.noteLabel = undefined
       this.focus = this.firstFocus()
     }
     if (this.focus === 'answer' && this.current.allowText === false) this.focus = this.firstFocus()
+    return true
   }
 
   moveOption(direction: -1 | 1): void {
@@ -182,6 +198,11 @@ export class QuestionDockState {
     return true
   }
 
+  openFocusedNote(): boolean {
+    const option = orderedOptions(this.current.options)[this.optionIndex]
+    return option ? this.focusNote(option.label) : false
+  }
+
   setNote(label: string, text: string): void {
     if (!this.currentDraft.selected.includes(label) || !this.currentDraft.openNotes.includes(label)) return
     this.currentDraft.notes[label] = text
@@ -196,19 +217,15 @@ export class QuestionDockState {
   }
 
   focusNext(reverse = false): void {
-    if (this.collapsed) {
-      this.reopen()
-      return
-    }
-
     const options = orderedOptions(this.current.options)
     const selectedLabels = options.filter(option => this.currentDraft.selected.includes(option.label)).map(option => option.label)
+    const noteLabels = selectedLabels.filter(label => this.currentDraft.openNotes.includes(label))
     const nextFocus = (): 'answer' | 'action' => this.current.allowText === false ? 'action' : 'answer'
 
     if (!reverse) {
       if (this.focus === 'options') {
         const option = options[this.optionIndex]
-        if (option && this.currentDraft.selected.includes(option.label)) {
+        if (option && this.currentDraft.selected.includes(option.label) && this.currentDraft.openNotes.includes(option.label)) {
           this.focusNote(option.label)
           return
         }
@@ -216,8 +233,8 @@ export class QuestionDockState {
         return
       }
       if (this.focus === 'note') {
-        const currentIndex = selectedLabels.indexOf(this.noteLabel ?? '')
-        const nextLabel = selectedLabels[currentIndex + 1]
+        const currentIndex = noteLabels.indexOf(this.noteLabel ?? '')
+        const nextLabel = noteLabels[currentIndex + 1]
         if (nextLabel) {
           this.focusNote(nextLabel)
           return
@@ -227,7 +244,7 @@ export class QuestionDockState {
         return
       }
       if (this.focus === 'answer') this.focus = 'action'
-      else if (this.focus === 'action') this.focus = 'composer'
+      else if (this.focus === 'action') this.focus = this.firstFocus()
       else this.focus = this.firstFocus()
       return
     }
@@ -237,32 +254,19 @@ export class QuestionDockState {
       this.noteLabel = undefined
       this.focus = 'options'
     } else if (this.focus === 'answer') {
-      const previous = selectedLabels.at(-1)
+      const previous = noteLabels.at(-1)
       if (previous) this.focusNote(previous)
       else this.focus = 'options'
     } else if (this.focus === 'action') {
-      const previous = this.current.allowText !== false ? undefined : selectedLabels.at(-1)
+      const previous = this.current.allowText === false ? noteLabels.at(-1) : undefined
       if (previous) this.focusNote(previous)
       else this.focus = this.current.allowText === false ? 'options' : 'answer'
-    } else if (this.focus === 'composer') this.focus = 'action'
-    else this.focus = 'composer'
+    } else this.focus = 'action'
   }
 
   setFocus(focus: QuestionDockFocus): void {
     this.focus = focus
     if (focus !== 'note') this.noteLabel = undefined
-  }
-
-  collapse(): void {
-    this.collapsed = true
-    this.focus = 'composer'
-    this.noteLabel = undefined
-  }
-
-  reopen(): void {
-    this.collapsed = false
-    this.focus = this.firstFocus()
-    this.noteLabel = undefined
   }
 
   activateAction(): void {

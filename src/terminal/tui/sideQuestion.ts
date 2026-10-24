@@ -1,117 +1,93 @@
-// `/btw <question>`: a side question answered by a separate, tool-free session while the main
-// conversation carries on. It lives in a dock above the composer, never enters the transcript, the
-// queue or the run history, and is gone on dismiss, on a session change, or when a new one replaces it.
-import {
-  createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager,
-  type AgentSession, type AgentSessionServices, type Theme
-} from '@earendil-works/pi-coding-agent'
+// `/btw <question>` asks the Harness side-question service for an independent, tool-free run.
+// Its dock is temporary and never enters the main transcript or input queue.
+import type { Theme } from '@earendil-works/pi-coding-agent'
 import { truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component } from '@earendil-works/pi-tui'
 
+import type { RunEvent } from '../../sessions/contracts'
+import type { SideQuestionContext, SideQuestionRead } from '../../sessions/sideQuestions'
 import { contentWidth, footerRow, neutralRule, padded, safeText } from './chrome'
 import { getWorkingSpinnerFrames, SPINNER_INTERVAL_MS, spinnerFrameAt } from './workingStatus'
 
-export const SIDE_PROMPT = [
-  'You answer one short side question from a person whose main task is still running in another session.',
-  'You have no tools: you cannot read or change files, run commands, browse, or call anything, and you must not say you did.',
-  'Use the conversation excerpt for context and do not invent what it does not show. Answer briefly and plainly.'
-].join(' ')
-
-const TURNS = 6
-const TURN_CHARS = 1_200
-const TOTAL_CHARS = 6_000
 const QUESTION_ROWS = 2
-export const ANSWER_ROWS = 8
+const ANSWER_ROWS = 8
+const MAX_CLIENT_CONTEXT_CHARS = 300_000
+const POLL_INTERVAL_MS = 160
+export type SideState = 'thinking' | 'answered' | 'failed'
 
-type Block = { type?: unknown; text?: unknown; name?: unknown }
+type Block = { type?: unknown; text?: unknown; name?: unknown; arguments?: unknown; data?: unknown }
+type SideQuestionStart = { runId: string; sessionId: string; nativeSessionId: string | null }
 
 function blocks(content: unknown): Block[] {
   if (typeof content === 'string') return [{ type: 'text', text: content }]
   return Array.isArray(content) ? content.filter((block): block is Block => typeof block === 'object' && block !== null) : []
 }
 
-const clip = (text: string, limit: number) => text.length > limit ? `${text.slice(0, limit)}…` : text
+function contentText(content: unknown): string {
+  return blocks(content).filter(block => block.type === 'text' && typeof block.text === 'string').map(block => String(block.text)).join('\n').trim()
+}
 
-/**
- * A bounded plain-text excerpt of the main conversation: the last few user and assistant turns, the
- * tools an assistant turn called by name, and whether the reply is still running. Hidden reasoning,
- * tool inputs and results, and images are left out.
- */
+function serialized(value: unknown): string {
+  if (typeof value === 'string') return value
+  try { return JSON.stringify(value) ?? '' } catch { return '[unavailable]' }
+}
+
+/** Visible native history and tool activity, with hidden reasoning and image bytes omitted. */
 export function sideQuestionSnapshot(messages: readonly unknown[], running: boolean): string {
-  const turns: string[] = []
+  const lines: string[] = []
   for (const message of messages) {
-    const { role, content } = (message ?? {}) as { role?: unknown; content?: unknown }
-    if (role !== 'user' && role !== 'assistant') continue
-    const parts = blocks(content)
-    const text = parts.filter(block => block.type === 'text' && typeof block.text === 'string').map(block => String(block.text)).join('\n').trim()
-    const tools = [...new Set(parts.filter(block => block.type === 'toolCall' && typeof block.name === 'string').map(block => String(block.name)))]
-    if (!text && !tools.length) continue
-    turns.push(`${role === 'user' ? 'User' : 'Assistant'}: ${clip(safeText(text).replace(/\s+/g, ' ').trim(), TURN_CHARS)}${tools.length ? ` [used tools: ${tools.join(', ')}]` : ''}`)
+    if (!message || typeof message !== 'object') continue
+    const item = message as { role?: unknown; content?: unknown; toolName?: unknown; name?: unknown; toolCallId?: unknown }
+    const parts = blocks(item.content)
+    if (item.role === 'user' || item.role === 'assistant') {
+      const text = parts.filter(block => block.type === 'text' && typeof block.text === 'string').map(block => String(block.text)).join('\n').trim()
+      if (text) lines.push(`${item.role === 'user' ? 'User' : 'Assistant'}:\n${safeText(text)}`)
+      for (const call of parts.filter(block => block.type === 'toolCall')) {
+        const name = typeof call.name === 'string' ? call.name : 'unknown tool'
+        lines.push(`Assistant tool call (${name}):\n${safeText(serialized(call.arguments))}`)
+      }
+      if (parts.some(block => block.type === 'image')) lines.push(`${item.role === 'user' ? 'User' : 'Assistant'} attached an image; image bytes are omitted.`)
+    } else if (item.role === 'toolResult') {
+      const name = typeof item.toolName === 'string' ? item.toolName : typeof item.name === 'string' ? item.name : 'unknown tool'
+      const output = contentText(item.content)
+      lines.push(`Tool result (${name}${typeof item.toolCallId === 'string' ? `, ${item.toolCallId}` : ''}):\n${safeText(output || '(no text result)')}`)
+      if (parts.some(block => block.type === 'image')) lines.push('Tool result also contained an image; image bytes are omitted.')
+    }
   }
-  let recent = turns.slice(-TURNS)
-  while (recent.length > 1 && recent.join('\n').length > TOTAL_CHARS) recent = recent.slice(1)
-  const lines = ['Conversation excerpt, oldest first:', ...(recent.length ? recent : ['(nothing yet)'])]
-  if (running) lines.push('', 'The main reply is still running; its latest turn above may be unfinished.')
-  return lines.join('\n')
+  if (!lines.length) lines.push('(No visible conversation messages yet.)')
+  if (running) lines.push('The main reply is still running; its latest message may be unfinished.')
+  const full = lines.join('\n\n')
+  return full.length > MAX_CLIENT_CONTEXT_CHARS
+    ? `[Earlier visible context omitted to fit the side-question request.]\n\n${full.slice(-MAX_CLIENT_CONTEXT_CHARS)}`
+    : full
 }
-
-/** What the controller needs from a session; a Pi `AgentSession` satisfies it through `createSideSession`. */
-export interface SideSession {
-  prompt(text: string): Promise<void>
-  abort(): Promise<void>
-  subscribe(listener: () => void): () => void
-  answer(): string
-  /** Why the provider ended the turn in error, if it did. */
-  failure(): string | undefined
-  dispose(): void
-}
-
-/** A separate in-memory session on the same account and model, with no tools, extensions, skills or project files. */
-export async function createSideSession(services: AgentSessionServices, main: AgentSession): Promise<SideSession> {
-  const model = main.model
-  if (!model || model.id === 'unknown') throw new Error('Choose a model before asking a side question.')
-  const settingsManager = SettingsManager.inMemory({})
-  const resourceLoader = new DefaultResourceLoader({
-    cwd: services.cwd, agentDir: services.agentDir, settingsManager,
-    noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true, systemPrompt: SIDE_PROMPT
-  })
-  await resourceLoader.reload()
-  const { session } = await createAgentSession({
-    cwd: services.cwd, agentDir: services.agentDir, modelRuntime: services.modelRuntime, settingsManager, resourceLoader,
-    sessionManager: SessionManager.inMemory(services.cwd), model, thinkingLevel: 'off', noTools: 'all'
-  })
-  return {
-    prompt: text => session.prompt(text),
-    abort: () => session.abort(),
-    subscribe: listener => session.subscribe(() => listener()),
-    answer: () => session.getLastAssistantText() ?? '',
-    failure: () => {
-      const last = session.messages.at(-1) as { role?: string; stopReason?: string; errorMessage?: string } | undefined
-      return last?.role === 'assistant' && last.stopReason === 'error' ? last.errorMessage ?? 'The provider returned an error.' : undefined
-    },
-    dispose: () => session.dispose()
-  }
-}
-
-export type SideState = 'thinking' | 'answered' | 'failed'
 
 export interface SideQuestionOptions {
-  create(): Promise<SideSession>
-  snapshot(): string
+  context(): SideQuestionContext
+  start(question: string, context: SideQuestionContext): Promise<SideQuestionStart>
+  read(runId: string, afterSequence: number): Promise<SideQuestionRead>
+  interrupt(runId: string): Promise<unknown>
+  copyText(text: string): Promise<void>
   theme(): Theme
   /** Puts the dock above the composer, or takes it away. */
   mount(dock: Component | undefined): void
   changed(): void
 }
 
+function payload(event: RunEvent): Record<string, unknown> {
+  return event.payload && typeof event.payload === 'object' ? event.payload as Record<string, unknown> : {}
+}
+
 export class SideQuestion {
-  private session: SideSession | undefined
-  private unsubscribe: (() => void) | undefined
+  private runId: string | undefined
   private generation = 0
+  private pollTimer: ReturnType<typeof setTimeout> | undefined
   private question = ''
   private answerText = ''
   private error: string | undefined
   private current: SideState | undefined
   private startedAt = 0
+  private afterSequence = -1
+  private answerOffset = 0
   private readonly dock: Component
 
   constructor(private readonly options: SideQuestionOptions) {
@@ -120,62 +96,102 @@ export class SideQuestion {
 
   get visible(): boolean { return this.current !== undefined }
   get state(): SideState | undefined { return this.current }
+  get answer(): string { return this.answerText }
 
   /** Asks one question, replacing any earlier one. Empty text dismisses. */
   async ask(question: string): Promise<void> {
     const text = question.trim()
     if (!text) { await this.dismiss(); return }
-    await this.release()
     const generation = ++this.generation
+    await this.release()
     this.question = text
     this.startedAt = Date.now()
     this.answerText = ''
     this.error = undefined
+    this.answerOffset = 0
+    this.afterSequence = -1
     this.current = 'thinking'
     this.options.mount(this.dock)
     this.options.changed()
     try {
-      const session = await this.options.create()
-      if (generation !== this.generation) { session.dispose(); return }
-      this.session = session
-      this.unsubscribe = session.subscribe(() => {
-        if (generation !== this.generation) return
-        this.answerText = session.answer()
-        this.options.changed()
-      })
-      await session.prompt(`${this.options.snapshot()}\n\nSide question: ${text}`)
-      if (generation !== this.generation) return
-      this.answerText = session.answer()
-      const failure = session.failure()
-      if (failure) { this.current = 'failed'; this.error = failure } else this.current = 'answered'
+      const started = await this.options.start(text, this.options.context())
+      if (generation !== this.generation) {
+        await this.options.interrupt(started.runId).catch(() => undefined)
+        return
+      }
+      this.runId = started.runId
+      void this.poll(generation)
     } catch (error) {
       if (generation !== this.generation) return
       this.current = 'failed'
       this.error = error instanceof Error ? error.message : String(error)
+      this.options.changed()
     }
+  }
+
+  /** Scrolls the answer while it is longer than the dock. */
+  scroll(direction: 'up' | 'down'): void {
+    const step = Math.max(1, ANSWER_ROWS - 2)
+    this.answerOffset = Math.max(0, this.answerOffset + (direction === 'up' ? -step : step))
     this.options.changed()
+  }
+
+  /** Copies the whole side answer, including any lines outside the dock. */
+  async copyAnswer(): Promise<void> {
+    if (this.answerText) await this.options.copyText(this.answerText)
   }
 
   /** Interrupts a running side question and removes the dock. */
   async dismiss(): Promise<void> {
     this.generation++
-    this.current = undefined
     await this.release()
+    this.current = undefined
     this.options.mount(undefined)
     this.options.changed()
   }
 
-  private async release(): Promise<void> {
-    const session = this.session
-    this.session = undefined
-    this.unsubscribe?.()
-    this.unsubscribe = undefined
-    if (!session) return
-    try { await session.abort() } catch { /* A side run that cannot be stopped is still dropped. */ }
-    try { session.dispose() } catch { /* Cleanup cannot keep the dock open. */ }
+  private async poll(generation: number): Promise<void> {
+    const runId = this.runId
+    if (!runId || generation !== this.generation) return
+    try {
+      const result = await this.options.read(runId, this.afterSequence)
+      if (generation !== this.generation) return
+      for (const event of result.events) {
+        this.afterSequence = Math.max(this.afterSequence, event.sequence)
+        const data = payload(event)
+        if (event.type === 'message.delta' && typeof data.text === 'string') this.answerText += data.text
+        if (event.type === 'message.completed' && data.role === 'assistant' && typeof data.text === 'string') this.answerText = data.text
+        if (event.type === 'failed') this.error = typeof data.message === 'string' ? data.message : 'The side question failed.'
+        if (event.type === 'status.changed' && data.status === 'failed') this.error = typeof data.reason === 'string' ? data.reason : 'The side question failed.'
+        if (event.type === 'status.changed' && data.status === 'interrupted') this.error = 'The side question was interrupted.'
+        if (event.type === 'completed') this.current = 'answered'
+        if (event.type === 'failed' || event.type === 'status.changed' && ['failed', 'interrupted'].includes(String(data.status))) this.current = 'failed'
+      }
+      if (result.run.status === 'completed') this.current = 'answered'
+      if (result.run.status === 'failed' || result.run.status === 'interrupted') {
+        this.current = 'failed'
+        this.error ??= result.run.terminalReason ?? 'The side question did not complete.'
+      }
+      this.options.changed()
+      if (this.current === 'thinking') this.pollTimer = setTimeout(() => { void this.poll(generation) }, POLL_INTERVAL_MS)
+    } catch (error) {
+      if (generation !== this.generation) return
+      this.current = 'failed'
+      this.error = error instanceof Error ? error.message : String(error)
+      this.options.changed()
+    }
   }
 
-  /** The dock: a neutral rule, the inline question, its answer, and a hint, separated by blank rows. */
+  private async release(): Promise<void> {
+    if (this.pollTimer) clearTimeout(this.pollTimer)
+    this.pollTimer = undefined
+    const runId = this.runId
+    this.runId = undefined
+    if (!runId || this.current !== 'thinking') return
+    try { await this.options.interrupt(runId) } catch { /* The dock can still be dismissed if a run already stopped. */ }
+  }
+
+  /** The dock: question, a scrollable answer window, and a hint for browsing or copying. */
   private render(width: number): string[] {
     if (width < 1 || !this.current) return []
     const theme = this.options.theme()
@@ -193,14 +209,18 @@ export class SideQuestion {
     if (asked.length > QUESTION_ROWS) question[QUESTION_ROWS - 1] = truncateToWidth(question[QUESTION_ROWS - 1]!, inner - 1, '') + theme.fg('muted', '…')
     const text = this.current === 'failed' ? `${this.answerText ? `${this.answerText}\n` : ''}${this.error ?? 'The side question failed.'}` : this.answerText
     const wrapped = text ? text.split('\n').flatMap(line => line ? wrapTextWithAnsi(safeText(line), inner) : ['']) : []
-    const shown = wrapped.slice(0, ANSWER_ROWS).map(line => this.current === 'failed' ? theme.fg('error', line) : line)
-    const more = wrapped.length - shown.length
+    const maxOffset = Math.max(0, wrapped.length - ANSWER_ROWS)
+    this.answerOffset = Math.min(this.answerOffset, maxOffset)
+    const shown = wrapped.slice(this.answerOffset, this.answerOffset + ANSWER_ROWS).map(line => this.current === 'failed' ? theme.fg('error', line) : line)
+    const before = this.answerOffset
+    const after = Math.max(0, wrapped.length - before - shown.length)
+    const textHint = before || after ? `PgUp/PgDn browse · ${before ? `${before} above` : ''}${before && after ? ' · ' : ''}${after ? `${after} below` : ''} · ` : ''
     return [
       neutralRule(width, theme),
       ...question.map(line => padded(line, width)),
       ...(shown.length ? ['', ...shown.map(line => padded(line, width))] : []),
       '',
-      footerRow(`${more > 0 ? `+${more} more lines · ` : ''}/btw or Esc to dismiss`, width, theme)
+      footerRow(`${textHint}Ctrl+X copy · /btw or Esc dismiss`, width, theme)
     ].map(line => truncateToWidth(line, width, ''))
   }
 }

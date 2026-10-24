@@ -22,6 +22,7 @@ import { refinementServerMethods } from '../refine/serverMethods'
 import { wikiServerMethods } from '../wiki/serverMethods'
 import { historyServerMethods } from '../history/serverMethods'
 import { subagentServerMethods } from '../sessions/subagentServerMethods'
+import { sideQuestionServerMethods } from '../sessions/sideQuestionServerMethods'
 import { connectedAppServerMethods } from '../mcp/serverMethods'
 import { harnessTools } from '../tools/harnessTools'
 import type { PluginDescriptor } from './types'
@@ -52,6 +53,7 @@ export const VARIANT_PLUGIN: PluginDescriptor = {
   description: 'The agent\'s own variant: system prompt, guardrails, memory and tool guidance in every prompt; skills, scripts and subagents on demand; plugins in the tool loop. Versioned, and refined from evidence.',
   required: 'Every agent runs on a variant.',
   sections: [
+    { id: 'harness-identity', name: 'Harness identity', description: 'Fixed foundation identity; not part of the variant.' },
     { id: 'system', name: 'System prompt', description: 'c1: role and procedure.' },
     { id: 'guardrails', name: 'Guardrails', description: 'c2: standing rules.' },
     { id: 'memory', name: 'Memory', description: 'c3: durable facts about this kind of work.' },
@@ -91,6 +93,13 @@ const DOCTOR_PLUGIN: PluginDescriptor = { id: 'doctor', title: 'Doctor', descrip
 const WORKTREES_PLUGIN: PluginDescriptor = { id: 'worktrees', title: 'Worktrees', description: 'Create and manage isolated git worktrees, move changes between them, and restore removed worktrees.', required: 'Managed worktrees are available to every local terminal.' }
 const HUB_PLUGIN: PluginDescriptor = { id: 'hub', title: 'Hub', description: 'Browse and install reviewed skills, plugins and documents from configured registries.', required: 'Reviewed Harness resources are available to every host.' }
 const REFINEMENT_PLUGIN: PluginDescriptor = { id: 'refinement', title: 'Refinement', description: 'Improve variants from recorded evidence through isolated refinement runs and reviewed candidates.', required: 'Variant refinement is available to every host.' }
+const SIDE_QUESTIONS_PLUGIN: PluginDescriptor = {
+  id: 'side-questions',
+  title: 'Side questions',
+  description: 'Separate, tool-free answers that use a redacted projection of the main conversation.',
+  required: 'Every host can ask a side question without steering its main run.',
+  sections: [{ id: 'side-question', name: 'Side-question role', description: 'Fixed instructions for an independent, tool-free side run.' }]
+}
 
 export const BUILTIN_PLUGIN_REGISTRY = createBuiltinPluginRegistry([
   {
@@ -104,7 +113,7 @@ export const BUILTIN_PLUGIN_REGISTRY = createBuiltinPluginRegistry([
     tools: context => context.allowedTools.includes(SPAWN_SUBAGENT)
       ? subagentTools(context.subagents, context.runId).filter(tool => context.allowedTools.includes(tool.name))
       : [],
-    commands: [{ name: 'subagents', description: 'Watch current subagent tasks and activity' }],
+    commands: [{ name: 'subagents', description: 'Watch current subagent tasks and activity' }, { name: 'agents', description: 'Browse and edit agent profiles' }],
     serverMethods: subagentServerMethods
   },
   { descriptor: VARIANT_PLUGIN, ...toolContribution(SKILL_TOOLS, 30) },
@@ -115,7 +124,7 @@ export const BUILTIN_PLUGIN_REGISTRY = createBuiltinPluginRegistry([
     commands: [{ name: 'trajectory', description: 'Inspect the recorded runs of this session' }],
     serverMethods: historyServerMethods
   },
-  { descriptor: ASK_USER_PLUGIN, toolOrder: 40, tools: context => context.harnessTools ? [askUserTool(context.run)] : [] },
+  { descriptor: ASK_USER_PLUGIN, toolOrder: 40, tools: context => context.harnessTools && context.allowedTools.includes(ASK_USER) ? [askUserTool(context.run)] : [] },
   { descriptor: CHECKLIST_PLUGIN, toolOrder: 50, tools: context => context.harnessTools ? [checklistTool(context.run)] : [] },
   {
     descriptor: CONNECTED_APPS_PLUGIN,
@@ -125,6 +134,7 @@ export const BUILTIN_PLUGIN_REGISTRY = createBuiltinPluginRegistry([
   },
   { descriptor: HUB_PLUGIN, serverMethods: hubServerMethods },
   { descriptor: REFINEMENT_PLUGIN, serverMethods: refinementServerMethods },
+  { descriptor: SIDE_QUESTIONS_PLUGIN, serverMethods: sideQuestionServerMethods },
   {
     descriptor: WEB_PLUGIN,
     createWorldPart: ({ options, setting }) => webPart({ secrets: options.secrets, request: options.request, keyless: () => setting(WEB_PLUGIN.id, KEYLESS_SEARCH) === 1 }),

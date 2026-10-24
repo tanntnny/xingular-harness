@@ -70,7 +70,7 @@ try {
   report.checks.push('TypeScript NodeNext consumer')
   const cli = join(candidate, 'dist', 'cli.js')
   const help = execFileSync(process.execPath, [cli, '--help'], { cwd: scratch, encoding: 'utf8' })
-  if (!help.includes('xharness') || !help.includes('serve')) throw new Error('Packaged CLI help is incomplete.')
+  if (!help.includes('xagent') || !help.includes('serve')) throw new Error('Packaged CLI help is incomplete.')
   if (execFileSync(process.execPath, [cli, '--version'], { cwd: scratch, encoding: 'utf8' }).trim() !== pkg.version) throw new Error('Packaged CLI version is wrong.')
   report.checks.push('Packaged CLI executable and version')
   run(process.execPath, [join(root, 'scripts', 'release-server-smoke.mjs'), cli, scratch])

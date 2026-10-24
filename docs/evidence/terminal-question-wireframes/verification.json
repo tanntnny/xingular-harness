@@ -1,0 +1,100 @@
+{
+  "passed": true,
+  "implementation": "production standalone CLI + real Pi SDK + loopback OpenAI SSE transport",
+  "cliSha256": "f45ae0802cd07a6047230a32f919c62fc0839bcb9441da698de6622774228be3",
+  "terminalBundleSha256": "0cdee968be224e9f960082eee2a2ca03471eeb2663aeef99f2a278ac47e528a3",
+  "verifierSha256": "93f36a539a7894e79dcdf3a7901ffcaf6beaa601d7ece7be530e681d828d6512",
+  "profiles": [
+    {
+      "size": "40x20",
+      "checks": [
+        "welcome and real configured model",
+        "choice sketch preview follows keyboard focus at the compact terminal size; question answers persist",
+        "screen-coordinate aligned columns, border-only contextual sketch, two-axis panning, pinned controls and resize-preserved answer"
+      ],
+      "exitCode": 0,
+      "termiosRestored": true,
+      "bracketedPasteDisabled": true,
+      "cursorShown": true
+    },
+    {
+      "size": "60x24",
+      "checks": [
+        "welcome and real configured model",
+        "choice sketch preview follows keyboard focus at the compact terminal size; question answers persist",
+        "screen-coordinate aligned columns, border-only contextual sketch, two-axis panning, pinned controls and resize-preserved answer"
+      ],
+      "exitCode": 0,
+      "termiosRestored": true,
+      "bracketedPasteDisabled": true,
+      "cursorShown": true
+    },
+    {
+      "size": "80x24",
+      "checks": [
+        "welcome and real configured model",
+        "choice sketch preview follows keyboard focus; labeled tabs replace pager controls; composer/status bar are hidden; n opens wrapped choice notes; wrapped Something else text and batch answers persist",
+        "screen-coordinate aligned columns, border-only contextual sketch, two-axis panning, pinned controls and resize-preserved answer"
+      ],
+      "exitCode": 0,
+      "termiosRestored": true,
+      "bracketedPasteDisabled": true,
+      "cursorShown": true
+    },
+    {
+      "size": "120x40",
+      "checks": [
+        "welcome and real configured model",
+        "choice sketch preview follows keyboard focus; labeled tabs replace pager controls; composer/status bar are hidden; n opens wrapped choice notes; wrapped Something else text and batch answers persist",
+        "screen-coordinate aligned columns, border-only contextual sketch, two-axis panning, pinned controls and resize-preserved answer"
+      ],
+      "exitCode": 0,
+      "termiosRestored": true,
+      "bracketedPasteDisabled": true,
+      "cursorShown": true
+    }
+  ],
+  "provider": "loopback fixture; no external model requests or user credentials",
+  "captures": [
+    {
+      "file": "40x20-question-aligned-columns.ansi.gz",
+      "screen": "40x20-question-aligned-columns.txt",
+      "rawSha256": "26c15a1fa127f63a2a10aaa18ed13bfca4954dc15aee24fb945b546a998d2483"
+    },
+    {
+      "file": "40x20-question-panned-sketch.ansi.gz",
+      "screen": "40x20-question-panned-sketch.txt",
+      "rawSha256": "81d283354b9be282b62ffd1551420e10adaf483a40c9b1d139e93bb2cd19428c"
+    },
+    {
+      "file": "60x24-question-aligned-columns.ansi.gz",
+      "screen": "60x24-question-aligned-columns.txt",
+      "rawSha256": "9f5321a12d712fca67ae8ad5553b19169d8aacfd773a622ae82b6e3aa84e43a6"
+    },
+    {
+      "file": "60x24-question-panned-sketch.ansi.gz",
+      "screen": "60x24-question-panned-sketch.txt",
+      "rawSha256": "7dd2a13f6e70e4982df9d6d07dec4c3448f38a6c9a4054bdec2f28b4fc2c784d"
+    },
+    {
+      "file": "80x24-question-aligned-columns.ansi.gz",
+      "screen": "80x24-question-aligned-columns.txt",
+      "rawSha256": "2e252040d9b70972c492371277b1f3c0653ecc6fefd034f127efaccdfbe3fda4"
+    },
+    {
+      "file": "80x24-question-panned-sketch.ansi.gz",
+      "screen": "80x24-question-panned-sketch.txt",
+      "rawSha256": "f47336664fa74a106655d3fddaa7f0210e71089d5b08d9c25769dfda3f37a747"
+    },
+    {
+      "file": "120x40-question-aligned-columns.ansi.gz",
+      "screen": "120x40-question-aligned-columns.txt",
+      "rawSha256": "e54d9915a5513525c50dc8cd789a5fbe8c0403491b7970f6482c8cdacc66cf7e"
+    },
+    {
+      "file": "120x40-question-panned-sketch.ansi.gz",
+      "screen": "120x40-question-panned-sketch.txt",
+      "rawSha256": "d01b7f137b4b2f5a0b1348e2e8bffb785bd4b3d8c09fefd88197218c6b95f26b"
+    }
+  ]
+}

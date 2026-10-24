@@ -105,6 +105,41 @@ test('legacy single questions remain valid alongside batch event metadata', () =
   return expect(answer).resolves.toEqual({ selected: ['Yes'] })
 })
 
+test('question sketches are validated, persisted literally, and excluded from answer payloads', async () => {
+  const { root, registry, run } = fixture()
+  const sketch = Array.from({ length: 24 }, (_, row) => `| Context row ${row} |`.padEnd(80, ' ')).join('\n')
+  const result = run.requestAnswer({
+    question: 'Which layout?',
+    uiSketch: true,
+    options: [{ label: 'Plan A', recommended: true, sketch }],
+    multiSelect: false,
+    allowText: true
+  })
+  const requested = readEvents(root, 'run-1').find((event) => event.type === 'question.requested')!
+  const payload = requested.payload as { questionId: string; uiSketch: true; options: { label: string; sketch: string }[] }
+  expect(payload).toMatchObject({ uiSketch: true, options: [{ label: 'Plan A', sketch }] })
+  expect(runEventPayloadSchemas['question.requested'].safeParse(payload).success).toBe(true)
+  expect(runEventPayloadSchemas['question.requested'].safeParse({ ...payload, uiSketch: undefined }).success).toBe(false)
+  expect(runEventPayloadSchemas['question.requested'].safeParse({ ...payload, options: [{ ...payload.options[0], sketch: 'x'.repeat(81) }] }).success).toBe(false)
+
+  registry.answerQuestion('run-1', payload.questionId, { selected: ['Plan A'] })
+  await expect(result).resolves.toEqual({ selected: ['Plan A'] })
+  const answered = readEvents(root, 'run-1').find((event) => event.type === 'question.answered')!
+  expect(answered.payload).toMatchObject({ selected: ['Plan A'] })
+  expect(answered.payload).not.toHaveProperty('uiSketch')
+  expect(answered.payload).not.toHaveProperty('options')
+})
+
+test('invalid sketch mode, missing choice sketches, and unsupported text fail before emitting', () => {
+  const { root, run } = fixture()
+  const base = { question: 'Which?', options: [{ label: 'Plan A', recommended: true }], multiSelect: false, allowText: true }
+  expect(() => run.requestAnswer({ ...base, uiSketch: true })).toThrow(/sketch for every choice/)
+  expect(() => run.requestAnswer({ ...base, options: [{ ...base.options[0]!, sketch: 'diagram' }] })).toThrow(/uiSketch: true/)
+  expect(() => run.requestAnswer({ ...base, uiSketch: true, options: [{ ...base.options[0]!, sketch: 'café' }] })).toThrow(/printable ASCII/)
+  expect(() => run.requestAnswer({ ...base, uiSketch: true, options: [{ ...base.options[0]!, sketch: 'x'.repeat(81) }] })).toThrow(/80 printable ASCII/)
+  expect(readEvents(root, 'run-1').filter((event) => event.type === 'question.requested')).toHaveLength(0)
+})
+
 test('answer batch method rejects duplicate and foreign question ids without settling the batch', async () => {
   const { root, registry, run } = fixture()
   const result = run.requestAnswers([

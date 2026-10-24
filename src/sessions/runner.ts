@@ -13,7 +13,7 @@ import type { Loading, Registered } from '../plugins/plugins'
 import { CONTEXT_MESSAGE_TYPE, CONTEXT_SNAPSHOT_KEY, type ContextUpdate } from '../prompt/compile'
 import type { ToolSpec } from '../tools/types'
 import { toolAttachmentRefsSchema, type UsageRequest } from './contracts'
-import { completedReasoningSummary, REASONING_SUMMARY_APIS, requestConciseReasoningSummary } from './reasoningSummaries'
+import { completedReasoningSummary, REASONING_SUMMARY_APIS, requestDetailedReasoningSummary } from './reasoningSummaries'
 import { extensionUi, type ExtensionHost } from './extensionUi'
 import { observeResources, registrationHash } from '../plugins/runtime'
 import type { ActiveRun } from './registry'
@@ -693,7 +693,7 @@ export const piSessionFactory: SessionFactory = async ({ params, allow, gate, to
       ...options,
       onPayload: async (payload, requestModel) => {
         const overridden = await options?.onPayload?.(payload, requestModel)
-        const requested = requestConciseReasoningSummary(overridden ?? payload)
+        const requested = requestDetailedReasoningSummary(overridden ?? payload)
         return requested.requested || overridden !== undefined ? requested.payload : undefined
       }
     })

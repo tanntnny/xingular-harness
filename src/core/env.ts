@@ -10,7 +10,7 @@ export interface Directory {
 }
 
 /** The name used when an application gives none. */
-export const DEFAULT_PRODUCT_NAME = 'Xingular Harness'
+export const DEFAULT_PRODUCT_NAME = 'Xingular Agent'
 
 export const EMPTY_DIRECTORY: Directory = { agentName: () => null, sessionAgent: () => null }
 

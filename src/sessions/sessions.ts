@@ -39,9 +39,10 @@ import { loadRun, runDir, saveRun, updateRun } from './runStore'
 import { planRefusal, planSection } from './planMode'
 import { CONTINUATION_SECTION_ID, continuationOf, continuationSection, type Continuation } from './continuation'
 import { deliveredSnapshot } from '../prompt/compile'
+import { profileSection } from '../agents/profiles'
 
 /** The fields of a run record the caller decides; the harness fills in the rest. */
-export type RunFields = Pick<RunRecord, 'id' | 'sessionId'> & Partial<Pick<RunRecord, 'mode' | 'harness' | 'sessionType' | 'projectId' | 'agentId' | 'trigger' | 'goal' | 'attachmentCount' | 'resumedFromRunId' | 'parentRunId' | 'relation' | 'worktreeId' | 'handoffId'>>
+export type RunFields = Pick<RunRecord, 'id' | 'sessionId'> & Partial<Pick<RunRecord, 'mode' | 'harness' | 'sessionType' | 'projectId' | 'agentId' | 'trigger' | 'goal' | 'attachmentCount' | 'resumedFromRunId' | 'parentRunId' | 'relation' | 'worktreeId' | 'handoffId' | 'profile' | 'title'>>
 
 export interface SessionRunInput {
   run: RunFields
@@ -92,11 +93,11 @@ export interface SessionRunInput {
   subagents?: SubagentOptions | null
   /** Ask the application's tool providers for tools (the default). False runs with the harness's own tools only. */
   providers?: boolean
-  /** Give the session the harness's own tools: History, the Wiki, skills, and asking the user (the default). */
+  /** Give the session the harness's own tools: History, the Wiki, skills, and other defaults. */
   harnessTools?: boolean
   /**
-   * Plan mode: the run may only read, search, recall and ask, and is told to end with a
-   * `<proposed_plan>` block. Other calls are refused at the gate; the tool list is unchanged.
+   * Plan mode: an attended run may read, search, recall and ask, and is told to end with a
+   * `<proposed_plan>` block. Other calls are refused at the gate; the system prompt stays stable.
    */
   plan?: boolean
   /**
@@ -114,6 +115,10 @@ function continueInput(root: string, input: SessionRunInput): Continuation {
   const continuation = continuationOf(root, input.continueFrom!, input.sessionDir)
   if (!continuation.resumable || !continuation.resume) throw new HarnessError('continuation_unavailable', `Run ${input.continueFrom} cannot be continued (${continuation.reason ?? 'history_missing'}).`)
   const mismatch = (what: string): HarnessError => new HarnessError('continuation_mismatch', `A continuation keeps the earlier run's ${what}.`)
+  if (continuation.capabilities?.tools.includes(ASK_USER)
+    && (input.automatic || ['probe', 'improver', 'reflection'].includes(input.run.trigger ?? ''))) {
+    throw mismatch('attended question capability')
+  }
   if (continuation.sessionId !== input.run.sessionId) throw mismatch('session')
   if (input.resume?.nativeSessionId && input.resume.nativeSessionId !== continuation.resume.nativeSessionId) throw mismatch('history')
   if (input.accountId && input.accountId !== continuation.accountId) throw mismatch('account')
@@ -324,9 +329,15 @@ export class Sessions {
     const broker = input.connections ? this.options.broker : null
     const depth = input.depth ?? 0
     const canSpawn = input.subagents !== null && (!input.automatic || input.subagents !== undefined) && subagentNesting(root, input.run) < subagentDepth(input.subagents ?? undefined)
+    const pinnedAskUser = continuation?.capabilities?.tools.includes(ASK_USER) ?? false
+    const interactivePlan = input.plan === true
+      && !input.automatic
+      && (input.run.trigger === undefined || input.run.trigger === null || input.run.trigger === 'user')
+    const harnessToolsEnabled = input.harnessTools !== false || pinnedAskUser
+    const canAskUser = pinnedAskUser || (interactivePlan && harnessToolsEnabled)
     const requestedTools = [...new Set([
-      ...input.tools.allow.filter((name) => name !== SPAWN_SUBAGENT && name !== WAIT_SUBAGENTS),
-      ...(input.harnessTools === false ? [] : [ASK_USER, CHECKLIST_WRITE, SESSION_NAME, ...DEFAULT_TOOL_NAMES]),
+      ...input.tools.allow.filter((name) => name !== SPAWN_SUBAGENT && name !== WAIT_SUBAGENTS && (name !== ASK_USER || canAskUser)),
+      ...(harnessToolsEnabled ? [...(canAskUser ? [ASK_USER] : []), CHECKLIST_WRITE, SESSION_NAME, ...DEFAULT_TOOL_NAMES] : []),
       ...(broker?.toolNames ?? []),
       ...(canSpawn ? [SPAWN_SUBAGENT, WAIT_SUBAGENTS] : [])
     ])]
@@ -377,7 +388,9 @@ export class Sessions {
       agentId: input.run.agentId ?? caller.agentId ?? null,
       trigger: input.run.trigger ?? null,
       variantScope: variant?.scope ?? null,
-      variantVersion: variant?.fingerprint ?? null
+      variantVersion: variant?.fingerprint ?? null,
+      ...(input.run.profile ? { profile: input.run.profile } : {}),
+      ...(input.run.title ? { title: input.run.title } : {})
     })
 
     // What the session is, kept with the run so later consolidation knows which memory it had.
@@ -401,7 +414,10 @@ export class Sessions {
       const plan = planSection(input.plan === true, historyFile)
       const delivered = historyFile ? deliveredSnapshot(historyFile) : null
       const resumed = continuationSection(continuation, delivered?.some((entry) => entry.id === CONTINUATION_SECTION_ID) ?? false)
-      const own = [plan, resumed].filter((section): section is NonNullable<typeof section> => section !== null)
+      // The profiles replace the variant's own subagent list, which they include.
+      const profiles = capabilities.tools.includes(SPAWN_SUBAGENT) ? profileSection(root, input.cwd, variant?.dir ?? null) : null
+      if (profiles && variant) variant = { ...variant, sections: variant.sections.filter((section) => section.id !== profiles.id) }
+      const own = [plan, resumed, profiles].filter((section): section is NonNullable<typeof section> => section !== null)
       const effectiveLaunch = {
         ...launch,
         sections: own.length ? [...(launch.sections ?? []).filter((section) => !own.some((entry) => entry.id === section.id)), ...own] : launch.sections,
@@ -443,7 +459,7 @@ export class Sessions {
           run,
           runId,
           allowedTools: allow,
-          harnessTools: input.harnessTools !== false,
+          harnessTools: harnessToolsEnabled,
           subagents: this.options.subagents,
           sessionName: naming,
           ...(broker ? { connectionTools: () => broker.tools(session, { readOnly: typeof input.connections === 'object' && input.connections.readOnly === true }) } : {})

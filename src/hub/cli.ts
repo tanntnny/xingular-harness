@@ -2,7 +2,7 @@ import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { Harness, type HarnessOptions } from '../harness'
 
-export const HUB_USAGE = `Usage: xharness hub <list | show | install> [id@version] [options]
+export const HUB_USAGE = `Usage: xagent hub <list | show | install> [id@version] [options]
 
   list [--refresh]             Browse the curated catalog and locally installed versions
   show <id@version>            Show publisher, license, source, and delivery details

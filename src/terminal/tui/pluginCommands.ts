@@ -15,6 +15,7 @@ export function createBuiltinPluginCommandHandlers(host: TerminalCommandHost, op
     ['worktree', async () => openPage('worktree')],
     ['trajectory', async argument => openPage('trajectory', { runId: argument })],
     ['subagents', async () => openPage('subagents')],
+    ['agents', async () => openPage('agents')],
     ['notes', async () => openPage('notes')],
     ['annotate', async argument => {
       const start = parseAnnotate(argument)

@@ -27,9 +27,13 @@ harness → host   { v: 1, id, call, params }          host → harness   { v: 1
 ```
 
 - stdout carries only protocol lines; diagnostics go to stderr.
+- Run events use the validated, persisted payload schemas in page 02. `question.requested` may carry
+  the optional bounded ASCII sketch metadata described there; the server relays it without changing
+  answer payloads or the protocol framing (PROP-0024).
 - `harness.methods` lists every method. Groups in the table: `accounts`, `harnesses`, `runs`,
   `connections`, `plugins`, `wiki`, `refine`, `capabilities`, `hub`, `terminal`, `approvals`,
-  `harness`, `subagents`, `sessions`, `library`, `recall`, `context`, `worktrees`, `annotations`.
+  `harness`, `subagents`, `agents`, `sessions`, `sideQuestions`, `library`, `recall`, `context`,
+  `worktrees`, `annotations`.
 - Host calls (only with the matching `--host-*` flag): `secrets.get|set|delete`,
   `policy.scope|authorize|approval|connections`, `tools.call`. The host registers tools with
   `tools.register` and names with `directory.set`, and describes its parts with
@@ -37,6 +41,12 @@ harness → host   { v: 1, id, call, params }          host → harness   { v: 1
 - `refine.start` takes `{ task, k?, mode?, improver?, executor?, baseVersion?, retainWorkspaces?, id? }`;
   `refine.candidates` returns each execution with `workspace: string | null` (page 05, PROP-0002, PROP-0003).
 - `runs.checklist { runId }` returns the run's latest checklist, `[]` when it wrote none (PROP-0006).
+- `agents.list { cwd? }` returns `{ profiles, problems }`; `agents.get { cwd?, name }` one profile;
+  `agents.create { cwd?, name, scope: 'global' | 'project', from? }` writes the template or a copy
+  and refuses an existing file; `agents.remove { cwd?, name, scope }` deletes a person's own file.
+  `subagents.spawn` takes `agent` as a profile name and returns `agent` and `unavailableTools`
+  (PROP-0029). It takes an optional `title` (at most six words); without one the child's title is
+  the first line of its brief (PROP-0030).
 - `runs.continuation { runId, sessionDir? }` returns a `Continuation`, and `sessions.run` accepts
   `continueFrom` (page 02, PROP-0007). `harness.status` reports `recovery.interruptedRunIds`.
 - Errors carry a stable `code`, a message and an optional hint (`core/errors.ts`).
@@ -81,6 +91,20 @@ Reports carry job state (`running`, `completed`, `cancelled`), progress, timesta
 account/model, findings, and available live-check notices. Findings distinguish `local` from
 `live` and statuses `pass`, `warning`, `fail`, `disabled`, `blocked`, `unverified`. Schemas and
 Node types are exported. Jobs are in-memory until shutdown; real live-run records remain.
+
+## Side questions (PROP-0019)
+
+| Method | Input | Reply |
+|---|---|---|
+| `sideQuestions.start` | `{ question, cwd, caller, context?: { instructions?, transcript?, references? }, parentRunId?, parentSessionId?, accountId?, model?, effort?, runId?, sessionId? }` | `{ runId, sessionId, nativeSessionId }` |
+| `sideQuestions.read` | `{ runId, sessionId, afterSequence? }` | `{ run: RunRecord, events: RunEvent[] }` |
+| `sideQuestions.interrupt` | `{ runId, sessionId }` | `{ runId }` |
+
+The Harness builds bounded context from the parent's persisted effective prompt and public events
+plus the surface's visible transcript. Read and interrupt require the side run's session id. The
+standalone terminal exposes the same operations through control-key-protected
+`terminal.sideQuestions.*` calls; its caller identity, account and working folder come from terminal
+preparation, not client-supplied values.
 
 Remote `tools.register` may include `diagnostics: [{ id, category, title, tools, probe?: { notice,
 tool, input, contains } }]`. The host answers `tools.diagnose({ id, context })` with `{ status,

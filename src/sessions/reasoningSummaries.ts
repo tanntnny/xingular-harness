@@ -21,13 +21,13 @@ function cleanSummary(value: string): string | undefined {
   return text.trim() || undefined
 }
 
-/** Add the Responses API summary request while preserving the provider-selected effort. */
-export function requestConciseReasoningSummary(payload: unknown): { payload: unknown; requested: boolean } {
+/** Request a detailed Responses API summary while preserving the provider-selected effort. */
+export function requestDetailedReasoningSummary(payload: unknown): { payload: unknown; requested: boolean } {
   if (!isRecord(payload) || !isRecord(payload.reasoning)) return { payload, requested: false }
   const effort = payload.reasoning.effort
   if (typeof effort !== 'string' || ['none', 'off'].includes(effort.toLowerCase())) return { payload, requested: false }
   return {
-    payload: { ...payload, reasoning: { ...payload.reasoning, summary: 'concise' } },
+    payload: { ...payload, reasoning: { ...payload.reasoning, summary: 'detailed' } },
     requested: true
   }
 }

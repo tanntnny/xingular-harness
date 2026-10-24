@@ -1,5 +1,5 @@
 import {
-  For, Show, createEffect, createMemo, createSignal, on, onCleanup
+  ErrorBoundary, For, Show, createEffect, createMemo, createSignal, on, onCleanup
 } from 'solid-js'
 import { createStore, reconcile } from 'solid-js/store'
 import {
@@ -7,6 +7,7 @@ import {
 } from '@opentui/core'
 import { useKeyboard, useRenderer, useSelectionHandler, useTerminalDimensions, type SpanProps } from '@opentui/solid'
 
+import { DEFAULT_PRODUCT_NAME } from '../../core/env'
 import { centeredRect } from '../tui/dialogGeometry'
 import { formatTerminalCommandLabel } from '../commandHelp'
 import type { FileCompletionView, OpenTuiApplication, OpenTuiView, PaletteView } from './app'
@@ -15,14 +16,18 @@ import { QuestionDock } from './questionDock'
 import type { QuestionDockView } from './questionDockState'
 import { type AnsiLine, type AnsiStyle } from './ansi'
 import { addHeadingOneSpacing, markdownSyntaxStyles } from './markdown'
-import type { CommandHelpItem, CompactionItem, ToolItem, TranscriptItem } from './model'
+import type { ChecklistEntry, CommandHelpItem, CompactionItem, ToolItem, TranscriptItem } from './model'
 import { commandHelpColumnWidth } from './commandHelpLayout'
-import { transcriptSelectionText } from './transcriptSelection'
+import { terminalSelectionText } from './terminalSelection'
 import { paletteCommandColumnWidth } from './palette'
-import { syncAttachmentMarks } from './composerMarks'
-import { blendHexColor, composerRuleColor, opentuiTheme, noticeColor, toolColor, type OpenTuiTheme } from './theme'
+import { syncAttachmentMarks, syncSlashCommandMark } from './composerMarks'
+import { splitUserMessageText } from './slashCommandHighlight'
+import { blendHexColor, composerRuleColor, opentuiTheme, noticeColor, profileColor, toolColor, type OpenTuiTheme } from './theme'
+import type { SubagentRosterView, SubagentRowView } from './subagentsWidget'
 import { statusBarText } from './statusBar'
 import { workingLineParts, workingLineText, workingVerbShimmerProfile } from './workingLine'
+import { toastLayout, type ToastLayout } from './toastLayout'
+import { homeBrand } from './homeBrand'
 
 const theme = opentuiTheme
 const scrollbarColor = RGBA.fromHex(theme.dim)
@@ -47,9 +52,9 @@ function drawTranscriptScrollbar(buffer: OptimizedBuffer, scroll: ScrollBoxRende
 const productName = () => (process.env.XINGULAR_HARNESS_NAME ?? '')
   .replace(/[\x00-\x1f\x7f-\x9f]/g, ' ')
   .replace(/\s+/g, ' ')
-  .trim() || 'Xingular Harness'
-const productMark = () => (productName().split(/\s+/u)[0] || 'HARNESS').slice(0, 12).toUpperCase()
-const productSubline = () => productName().split(/\s+/u).slice(1).join(' ').toUpperCase().split('').join(' ')
+  .trim() || DEFAULT_PRODUCT_NAME
+const productMark = () => homeBrand(productName()).mark
+const productSubline = () => homeBrand(productName()).subline
 
 const promptKeyBindings: KeyBinding[] = [
   { name: 'return', action: 'submit' },
@@ -136,41 +141,58 @@ function toolStatusIcon(status: ToolItem['status']): string {
   return '✓'
 }
 
-function CompactionTranscriptItem(props: { item: CompactionItem; expanded: boolean; syntax: SyntaxStyle }) {
-  const [expandedOverride, setExpandedOverride] = createSignal<boolean | undefined>()
-  createEffect(on(() => props.expanded, () => setExpandedOverride(undefined)))
-  const expanded = () => expandedOverride() ?? props.expanded
+export function checklistMark(status: ChecklistEntry['status']): string {
+  if (status === 'completed') return '✓'
+  if (status === 'in_progress') return '●'
+  return '○'
+}
+
+function checklistMarkColor(t: OpenTuiTheme, status: ChecklistEntry['status']): string {
+  if (status === 'completed') return t.success
+  if (status === 'in_progress') return t.warning
+  return t.dim
+}
+
+export function checklistProgress(done: number, total: number): string {
+  return total ? `${done} of ${total} done` : 'empty'
+}
+
+/** A full-width rule with a centred label: `──── label ────`. */
+export function labelledRule(label: string, width: number): string {
+  const text = ` ${label} `
+  const room = Math.max(0, Math.floor(width) - Array.from(text).length)
+  const left = Math.floor(room / 2)
+  return `${'─'.repeat(left)}${text}${'─'.repeat(room - left)}`
+}
+
+function CompactionTranscriptItem(props: { item: CompactionItem; expanded: boolean; syntax: SyntaxStyle; width: number }) {
+  // Shown by default; a click hides or shows this card, and Ctrl+O shows every card again.
+  const [hidden, setHidden] = createSignal(false)
+  createEffect(on(() => props.expanded, () => setHidden(false), { defer: true }))
+  // The click still reaches the chat, which gives the composer its focus back.
   const toggle = (event: MouseEvent) => {
-    if (event.button !== 0) return
-    event.stopPropagation()
-    if (event.isDragging) return
-    setExpandedOverride(!expanded())
+    if (event.button !== 0 || event.isDragging) return
+    setHidden(!hidden())
   }
-  const title = () => typeof props.item.tokensBefore === 'number'
-    ? `Compacted from ${props.item.tokensBefore.toLocaleString()} tokens`
-    : 'Conversation compacted'
+  const ruleWidth = () => Math.max(10, props.width - 2)
+  // The longest label that fits: hint and token count go first on a narrow screen.
+  const title = () => {
+    const tokens = typeof props.item.tokensBefore === 'number' ? ` · ${props.item.tokensBefore.toLocaleString('en-US')} tokens` : ''
+    const choices = [`Context compacted${tokens} · ${hidden() ? 'click to show' : 'click to hide'}`, `Context compacted${tokens}`, 'Context compacted']
+    return choices.find(choice => Array.from(choice).length + 6 <= ruleWidth()) ?? choices.at(-1)!
+  }
 
   return (
-    <box
-      width='100%'
-      border={['left']}
-      borderColor={theme.accent}
-      backgroundColor={theme.panel}
-      flexDirection='column'
-      paddingLeft={1}
-      paddingRight={1}
-      paddingTop={1}
-      paddingBottom={1}
-      flexShrink={0}
-      onMouseUp={toggle}
-    >
-      <text fg={theme.accent} attributes={TextAttributes.BOLD} wrapMode='word'>
-        [compaction] {title()}
-        <Span fg={theme.dim} attributes={0}> · {expanded() ? 'click to collapse' : 'click to expand · Ctrl+O expands all details'}</Span>
-      </text>
-      <Show when={expanded()}>
-        <box paddingTop={1} flexShrink={0}>
+    <box width='100%' flexDirection='column' rowGap={1} flexShrink={0}>
+      <box flexShrink={0} onMouseUp={toggle}>
+        <text fg={theme.accent} wrapMode='none' truncate={true} selectable={false}>{labelledRule(title(), ruleWidth())}</text>
+      </box>
+      <Show when={!hidden()}>
+        <box flexDirection='column' paddingLeft={1} flexShrink={0}>
           <markdown content={addHeadingOneSpacing(props.item.summary)} syntaxStyle={props.syntax} fg={theme.text} bg='transparent' conceal={true} tableOptions={{ borderColor: theme.dim, cellPaddingX: 1 }} />
+        </box>
+        <box flexShrink={0} onMouseUp={toggle}>
+          <text fg={theme.accent} wrapMode='none' truncate={true} selectable={false}>{labelledRule('End of summary', ruleWidth())}</text>
         </box>
       </Show>
     </box>
@@ -207,19 +229,21 @@ function CommandHelpTranscriptItem(props: { item: CommandHelpItem; width: number
   )
 }
 
-function TranscriptItemView(props: { item: TranscriptItem; expanded: boolean; syntax: SyntaxStyle; width: number }) {
+function TranscriptItemView(props: { item: TranscriptItem; expanded: boolean; syntax: SyntaxStyle; width: number; commandNames: readonly string[] }) {
   const item = props.item
   const t: OpenTuiTheme = theme
   if (item.kind === 'user') {
     return (
       <box border={['left']} borderColor={t.primary} backgroundColor={t.panel} paddingLeft={1} paddingRight={1} paddingTop={1} paddingBottom={1} flexShrink={0}>
         <text wrapMode='word'>
-          <For each={item.text.split(/(\[Image #\d+\])/u).filter(Boolean)}>
-            {part => /^\[Image #\d+\]$/u.test(part)
-              ? <Span fg={t.attachment} attributes={TextAttributes.BOLD}>{part}</Span>
-              : <Span fg={t.text}>{part}</Span>}
+          <For each={splitUserMessageText(item.text ?? '', props.commandNames)}>
+            {part => part.kind === 'attachment'
+              ? <Span fg={t.attachment} attributes={TextAttributes.BOLD}>{part.text}</Span>
+              : part.kind === 'command'
+                ? <Span fg={t.accent}>{part.text}</Span>
+                : <Span fg={t.text}>{part.text}</Span>}
           </For>
-          <Show when={item.images > 0 && !/\[Image #\d+\]/u.test(item.text)}>
+          <Show when={item.images > 0 && !/\[Image #\d+\]/u.test(item.text ?? '')}>
             <Span fg={t.muted}>  [{item.images} image{item.images === 1 ? '' : 's'}]</Span>
           </Show>
         </text>
@@ -234,7 +258,7 @@ function TranscriptItemView(props: { item: TranscriptItem; expanded: boolean; sy
     )
   }
   if (item.kind === 'compaction') {
-    return <CompactionTranscriptItem item={item} expanded={props.expanded} syntax={props.syntax} />
+    return <CompactionTranscriptItem item={item} expanded={props.expanded} syntax={props.syntax} width={props.width} />
   }
   if (item.kind === 'command-help') {
     return <CommandHelpTranscriptItem item={item} width={props.width} />
@@ -247,6 +271,29 @@ function TranscriptItemView(props: { item: TranscriptItem; expanded: boolean; sy
           <Show when={item.streaming}><Span fg={t.dim} attributes={0}> · streaming…</Span></Show>
         </text>
         <markdown content={addHeadingOneSpacing(item.body)} streaming={item.streaming} syntaxStyle={props.syntax} fg={t.text} bg='transparent' conceal={true} tableOptions={{ borderColor: t.dim, cellPaddingX: 1 }} />
+      </box>
+    )
+  }
+  if (item.kind === 'checklist') {
+    // A store record updated in place: read its fields inside functions.
+    const done = () => item.items.filter(entry => entry.status === 'completed').length
+    return (
+      <box flexDirection='column' paddingLeft={1} flexShrink={0}>
+        <text wrapMode='none'>
+          <Span fg={toolColor(t, item.status)}>{toolStatusIcon(item.status)}</Span>
+          <Span fg={t.text} attributes={TextAttributes.BOLD}> Checklist</Span>
+          <Span fg={t.muted}> · {checklistProgress(done(), item.items.length)}</Span>
+        </text>
+        <box flexDirection='column' paddingLeft={2} flexShrink={0}>
+          <For each={item.items}>
+            {entry => (
+              <text wrapMode='word'>
+                <Span fg={checklistMarkColor(t, entry.status)}>{checklistMark(entry.status)}</Span>
+                <Span fg={entry.status === 'in_progress' ? t.text : t.muted} attributes={entry.status === 'in_progress' ? TextAttributes.BOLD : 0}> {entry.text}</Span>
+              </text>
+            )}
+          </For>
+        </box>
       </box>
     )
   }
@@ -343,11 +390,22 @@ function TranscriptItemView(props: { item: TranscriptItem; expanded: boolean; sy
   )
 }
 
-function TranscriptItems(props: { items: readonly TranscriptItem[]; expanded: boolean; syntax: SyntaxStyle; width: number }) {
+function TranscriptItems(props: { items: readonly TranscriptItem[]; expanded: boolean; syntax: SyntaxStyle; width: number; commandNames: readonly string[] }) {
   return (
     <box flexDirection='column' flexShrink={0} paddingX={1} rowGap={1}>
       <For each={props.items}>
-        {item => <TranscriptItemView item={item} expanded={props.expanded} syntax={props.syntax} width={props.width} />}
+        {item => (
+          // Item ids are positions in Pi's message list, so after compaction (or any rebuilt list)
+          // one record can change kind. TranscriptItemView picks its layout once, so a new kind
+          // needs a new component; the boundary keeps one bad item from stopping every update.
+          <Show when={item.kind} keyed>
+            {() => (
+              <ErrorBoundary fallback={<text fg={theme.muted}>· This item could not be drawn.</text>}>
+                <TranscriptItemView item={item} expanded={props.expanded} syntax={props.syntax} width={props.width} commandNames={props.commandNames} />
+              </ErrorBoundary>
+            )}
+          </Show>
+        )}
       </For>
     </box>
   )
@@ -518,6 +576,7 @@ function WorkingLine(props: { view: OpenTuiView; width: number }) {
 }
 
 const ATTACHMENT_MARK = 'attachment'
+const SLASH_COMMAND_MARK = 'slash-command'
 
 /** Strips terminal escapes and normalises newlines in a bracketed paste. */
 function pastedText(bytes: Uint8Array): string {
@@ -529,10 +588,49 @@ function pastedText(bytes: Uint8Array): string {
 /** Colours and protects the draft's attachment labels; returns true when it edited the text. */
 function syncMarks(area: TextareaRenderable | undefined, view: OpenTuiView, syntax: SyntaxStyle): boolean {
   if (!area || area.isDestroyed) return false
-  const styleId = syntax.getStyleId(ATTACHMENT_MARK)
-  if (styleId === null) return false
-  const typeId = area.extmarks.getTypeId(ATTACHMENT_MARK) ?? area.extmarks.registerType(ATTACHMENT_MARK)
-  return syncAttachmentMarks(area, view.attachments, typeId, styleId)
+  let changed = false
+  const attachmentStyleId = syntax.getStyleId(ATTACHMENT_MARK)
+  if (attachmentStyleId !== null) {
+    const typeId = area.extmarks.getTypeId(ATTACHMENT_MARK) ?? area.extmarks.registerType(ATTACHMENT_MARK)
+    changed = syncAttachmentMarks(area, view.attachments, typeId, attachmentStyleId)
+  }
+  const commandStyleId = syntax.getStyleId(SLASH_COMMAND_MARK)
+  if (commandStyleId !== null) {
+    const typeId = area.extmarks.getTypeId(SLASH_COMMAND_MARK) ?? area.extmarks.registerType(SLASH_COMMAND_MARK)
+    syncSlashCommandMark(area, view.bashMode ? [] : view.slashCommandNames, typeId, commandStyleId)
+  }
+  return changed
+}
+
+function subagentToneColor(t: OpenTuiTheme, tone: SubagentRowView['tone']): string {
+  if (tone === 'success') return t.success
+  if (tone === 'warning') return t.warning
+  if (tone === 'error') return t.error
+  if (tone === 'accent') return t.accent
+  return t.muted
+}
+
+/** Live subagents under the status line, one blank line below it (PROP-0029). */
+function SubagentRoster(props: { roster: SubagentRosterView }) {
+  const t: OpenTuiTheme = theme
+  return (
+    <box flexDirection='column' marginTop={1} paddingX={1} flexShrink={0}>
+      <For each={props.roster.rows}>
+        {row => (
+          <text wrapMode='none' truncate={true}>
+            {/* A running child's frame takes its profile colour; a copy of the parent has none and keeps the warning colour. */}
+            <Span fg={row.tone === 'warning' && row.color ? profileColor(t, row.color) : subagentToneColor(t, row.tone)}>{row.mark}</Span>
+            <Span fg={row.color ? profileColor(t, row.color) : t.muted} attributes={row.color ? TextAttributes.BOLD : 0}>{` ${row.profile}`}</Span>
+            <Span fg={t.text}>{`  ${row.title}`}</Span>
+            <Show when={row.tasks}><Span fg={t.muted}>{`  ${row.tasks}`}</Span></Show>
+          </text>
+        )}
+      </For>
+      <Show when={props.roster.overflow}>
+        <text fg={t.muted} wrapMode='none' truncate={true}>{props.roster.overflow}</text>
+      </Show>
+    </box>
+  )
 }
 
 function Prompt(props: { app: OpenTuiApplication; view: OpenTuiView; syntax: SyntaxStyle; promptRef: (value: TextareaRenderable | undefined) => void }) {
@@ -549,6 +647,8 @@ function Prompt(props: { app: OpenTuiApplication; view: OpenTuiView; syntax: Syn
   }
   createEffect(() => {
     view().attachments
+    view().slashCommandNames
+    view().bashMode
     if (syncing) return
     syncing = true
     try { if (syncMarks(area, view(), props.syntax) && area) props.app.setDraft(area.plainText) }
@@ -576,7 +676,7 @@ function Prompt(props: { app: OpenTuiApplication; view: OpenTuiView; syntax: Syn
   const plan = () => view().planMode
   const composerFocused = () => {
     const current = view()
-    return !current.overlay && !current.customEditor && (!current.questionDock || current.questionDock.focus === 'composer')
+    return !current.overlay && !current.customEditor
   }
   const composerColor = () => composerRuleColor(theme, { bash: bash(), plan: plan(), overlay: Boolean(view().overlay) })
   return (
@@ -623,9 +723,6 @@ function Prompt(props: { app: OpenTuiApplication; view: OpenTuiView; syntax: Syn
                 placeholder={bash() ? 'Run a shell command…' : view().questionDock ? 'Or reply directly to this question…' : plan() ? 'Describe a plan…' : view().home ? 'Ask anything…' : 'Reply…'}
                 placeholderColor={theme.dim}
                 focused={composerFocused()}
-                onMouseDown={event => {
-                  if (event.button === 0 && view().questionDock) props.app.focusQuestionComposer()
-                }}
                 keyBindings={promptKeyBindings}
                 onPaste={event => {
                   event.preventDefault()
@@ -707,20 +804,21 @@ function JumpToLatestBadge(props: { activate(): void }) {
 }
 
 function Toast(props: { message: string | null; width: number }) {
+  const layout = () => props.message ? toastLayout(props.message, props.width) : undefined
   return (
-    <Show when={props.message && props.width > 4}>
-      {(message: () => string) => (
+    <Show when={layout()}>
+      {(value: () => ToastLayout) => (
         <box
           position='absolute'
-          top={0}
-          right={1}
-          width={Math.min(message().length + 2, Math.max(1, props.width - 2))}
+          top={value().top}
+          right={value().right}
+          width={value().width}
           height={1}
           zIndex={200}
-          backgroundColor={theme.panel}
+          backgroundColor={theme.selectionBg}
           paddingX={1}
         >
-          <text fg={theme.text} wrapMode='none' truncate={true}>{message()}</text>
+          <text fg={theme.selectionText} wrapMode='none' truncate={true}>{value().message}</text>
         </box>
       )}
     </Show>
@@ -730,15 +828,19 @@ function Toast(props: { message: string | null; width: number }) {
 function Home(props: { view: OpenTuiView }) {
   return (
     <box flexGrow={1} flexDirection='column' alignItems='center' justifyContent='center' minHeight={0}>
-      <ascii_font text={productMark()} font='block' color={theme.primary} backgroundColor='transparent' selectable={false} />
+      {/* Leave a row after the six-row font so its bottom strokes cannot overlap the label. */}
+      <box height={7} minHeight={7} flexShrink={0}>
+        <ascii_font text={productMark()} font='block' color={theme.primary} backgroundColor='transparent' selectable={false} />
+      </box>
       <Show when={productSubline()} fallback={<box height={0} flexShrink={0} />}>
-        <text fg={theme.muted} wrapMode='none'>{productSubline()}</text>
+        <text fg={theme.accent} attributes={TextAttributes.BOLD} wrapMode='none' truncate={true}>{productSubline()}</text>
       </Show>
       <box height={1} />
-      <text fg={theme.dim} wrapMode='none'>One run, done well.</text>
-      <text fg={theme.dim} wrapMode='none'>Type a message, or /help for commands</text>
+      <text fg={theme.text} attributes={TextAttributes.BOLD} wrapMode='none' truncate={true}>Welcome.</text>
+      <text fg={theme.muted} wrapMode='none' truncate={true}>One run, done well.</text>
+      <text fg={theme.muted} wrapMode='none' truncate={true}>Ask anything, or{' '}<Span fg={theme.accent}>/help</Span> for commands</text>
       <Show when={props.view.model} fallback={<box height={0} flexShrink={0} />}>
-        <text fg={theme.dim} wrapMode='none'>{props.view.model!.name} · {props.view.thinking === 'off' ? 'thinking off' : `thinking ${props.view.thinking}`}</text>
+        <text fg={theme.dim} wrapMode='none' truncate={true}>{props.view.model!.name} · {props.view.thinking === 'off' ? 'thinking off' : `thinking ${props.view.thinking}`}</text>
       </Show>
     </box>
   )
@@ -861,7 +963,10 @@ export function OpenTuiRoot(props: { app: OpenTuiApplication }) {
   let suppressComposerFocus = false
   let suppressComposerFocusTimer: ReturnType<typeof setTimeout> | undefined
   const syntax = SyntaxStyle.fromStyles(markdownSyntaxStyles(theme), renderer.nativeScene)
-  const composerSyntax = SyntaxStyle.fromStyles({ [ATTACHMENT_MARK]: { fg: theme.attachment, bold: true } }, renderer.nativeScene)
+  const composerSyntax = SyntaxStyle.fromStyles({
+    [ATTACHMENT_MARK]: { fg: theme.attachment, bold: true },
+    [SLASH_COMMAND_MARK]: { fg: theme.accent }
+  }, renderer.nativeScene)
   onCleanup(() => { syntax.destroy(); composerSyntax.destroy() })
 
   // The view lives in a store and each change is reconciled into it, keyed by item id. Only the
@@ -872,7 +977,7 @@ export function OpenTuiRoot(props: { app: OpenTuiApplication }) {
   onCleanup(off)
 
   useSelectionHandler(selection => {
-    const selectedText = transcriptSelectionText(selection, scroll)
+    const selectedText = terminalSelectionText(selection)
     if (selectedText !== undefined) props.app.copySelection(selectedText)
   })
 
@@ -944,11 +1049,11 @@ export function OpenTuiRoot(props: { app: OpenTuiApplication }) {
       return
     }
     const current = view()
-    if (current.overlay || current.customEditor || (current.questionDock && current.questionDock.focus !== 'composer')) return
+    if (current.overlay || current.customEditor || current.questionDock) return
     // Let transcript selection finish before changing focus.
     queueMicrotask(() => {
       const latest = view()
-      if (latest.overlay || latest.customEditor || (latest.questionDock && latest.questionDock.focus !== 'composer')) return
+      if (latest.overlay || latest.customEditor || latest.questionDock) return
       prompt?.focus()
     })
   }
@@ -976,7 +1081,7 @@ export function OpenTuiRoot(props: { app: OpenTuiApplication }) {
 
   const composerBlocked = createMemo(() => {
     const current = view()
-    return Boolean(current.overlay || current.customEditor || (current.questionDock && current.questionDock.focus !== 'composer'))
+    return Boolean(current.overlay || current.customEditor || current.questionDock)
   })
   createEffect(on(composerBlocked, blocked => {
     if (!prompt) return
@@ -1003,7 +1108,7 @@ export function OpenTuiRoot(props: { app: OpenTuiApplication }) {
     if (prompt?.focused) props.app.setDraft(prompt.plainText)
     const current = view()
     const page = Math.max(1, Math.floor((dimensions().height - 8) / 2))
-    if (!current.overlay && (key.name === 'pageup' || key.name === 'pagedown' || (key.ctrl && (key.name === 'home' || key.name === 'end')))) {
+    if (!current.overlay && !current.questionDock && (key.name === 'pageup' || key.name === 'pagedown' || (key.ctrl && (key.name === 'home' || key.name === 'end')))) {
       if (key.name === 'pageup') scroll?.scrollBy({ x: 0, y: -page })
       else if (key.name === 'pagedown') scroll?.scrollBy({ x: 0, y: page })
       else if (key.name === 'home') scroll?.scrollTo({ x: 0, y: 0 })
@@ -1021,6 +1126,7 @@ export function OpenTuiRoot(props: { app: OpenTuiApplication }) {
 
   return (
     <box
+      position='relative'
       flexDirection='column'
       width='100%'
       height='100%'
@@ -1037,7 +1143,7 @@ export function OpenTuiRoot(props: { app: OpenTuiApplication }) {
           fallback={(
             <box flexGrow={1} minHeight={0} flexDirection='column'>
               <Home view={view()} />
-              <TranscriptItems items={view().items} expanded={view().toolsExpanded} syntax={syntax} width={Math.max(1, dimensions().width - 4)} />
+              <TranscriptItems items={view().items} expanded={view().toolsExpanded} syntax={syntax} width={Math.max(1, dimensions().width - 4)} commandNames={view().slashCommandNames} />
             </box>
           )}
         >
@@ -1057,7 +1163,7 @@ export function OpenTuiRoot(props: { app: OpenTuiApplication }) {
               onMouseDrag={scheduleTranscriptScrollState}
               onMouseUp={scheduleTranscriptScrollState}
             >
-              <TranscriptItems items={view().items} expanded={view().toolsExpanded} syntax={syntax} width={Math.max(1, dimensions().width - 4)} />
+              <TranscriptItems items={view().items} expanded={view().toolsExpanded} syntax={syntax} width={Math.max(1, dimensions().width - 4)} commandNames={view().slashCommandNames} />
             </scrollbox>
             <Show when={showJumpToLatest()}>
               <JumpToLatestBadge activate={activateJumpToLatest} />
@@ -1081,7 +1187,12 @@ export function OpenTuiRoot(props: { app: OpenTuiApplication }) {
         <Show when={view().questionDock} fallback={<box height={0} flexShrink={0} />}>
           {(question: () => QuestionDockView) => <QuestionDock app={props.app} view={question()} />}
         </Show>
-        <Prompt app={props.app} view={view()} syntax={composerSyntax} promptRef={value => { prompt = value }} />
+        <Show when={!view().questionDock} fallback={<box height={0} flexShrink={0} />}>
+          <Prompt app={props.app} view={view()} syntax={composerSyntax} promptRef={value => { prompt = value }} />
+        </Show>
+        <Show when={view().subagents} fallback={<box height={0} flexShrink={0} />}>
+          {(roster: () => SubagentRosterView) => <SubagentRoster roster={roster()} />}
+        </Show>
         <For each={view().widgets.below}>
           {lines => <AnsiView lines={lines} fg={theme.text} />}
         </For>

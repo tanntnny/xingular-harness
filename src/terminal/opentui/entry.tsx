@@ -1,6 +1,7 @@
 import { createCliRenderer } from '@opentui/core'
 import { render, RendererContext } from '@opentui/solid'
 
+import { DEFAULT_PRODUCT_NAME } from '../../core/env'
 import { OpenTuiApplication } from './app'
 import { OpenTuiRoot } from './root'
 
@@ -8,7 +9,7 @@ const app = new OpenTuiApplication(process.argv.slice(2))
 const productName = (process.env.XINGULAR_HARNESS_NAME ?? '')
   .replace(/[\x00-\x1f\x7f-\x9f]/g, ' ')
   .replace(/\s+/g, ' ')
-  .trim() || 'Xingular Harness'
+  .trim() || DEFAULT_PRODUCT_NAME
 const renderer = await createCliRenderer({
   screenMode: 'alternate-screen',
   exitOnCtrlC: false,

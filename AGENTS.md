@@ -25,7 +25,7 @@ When unsure whether a change alters the architecture, write the proposal.
 
 ## One capability surface
 
-Every capability a person uses is built here, and the standalone terminal (`xharness`) surfaces
+Every capability a person uses is built here, and the standalone terminal (`xagent`) surfaces
 it. A host such as the App is a richer presentation of the same capabilities. A request that names
 the App ("add X to the App") is still Harness work first when X is something a person or a model
 can do: build the capability, its server methods, any model tools, and its terminal surface here,
@@ -47,7 +47,7 @@ two words in code, docs, data and the protocol; do not write "harness tree". See
 
 | Area | Spec page |
 |---|---|
-| What belongs in the harness, layers, no application names | [00 Overview](docs/architecture/00-overview.md) |
+| What belongs in the harness, layers, product identity | [00 Overview](docs/architecture/00-overview.md) |
 | The seven extension points | [01 Extension points](docs/architecture/01-extension-points.md) |
 | Sessions, runs, events, subagents, plan mode, token accounting, the run writer | [02 Sessions and runs](docs/architecture/02-sessions-and-runs.md) |
 | Variants c1–c8, versions, plugin-code trust | [03 Variants](docs/architecture/03-variants.md) |
@@ -65,8 +65,8 @@ two words in code, docs, data and the protocol; do not write "harness tree". See
 
 The rules agents break most often, in brief (the pages are authoritative):
 
-- No application's name or concept in the harness; names come from `env.productName` and
-  `Directory` (`INV-BND-2`).
+- No application's name or concept in the harness, except the canonical `Xingular Agent` product
+  default; other names come from `env.productName` and `Directory` (`INV-BND-2`).
 - The prompt is assembled only in `src/prompt/compile.ts`; changing state never enters the system
   prompt (`INV-PRM-1`, `INV-PRM-2`).
 - Variants, the prompt and the Wiki stay synchronous (`INV-BND-4`).

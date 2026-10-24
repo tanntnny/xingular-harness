@@ -16,7 +16,7 @@ async function overlayOf(ui: ExtensionUIContext): Promise<PageOverlay> {
 function setup(extensionCommands = [{
   name: 'deploy', invocationName: 'deploy', description: 'Deploy the project',
   sourceInfo: { path: '/project/extensions/deploy.ts' }, handler: vi.fn(async () => {})
-}]) {
+}], prompts = [{ name: 'review', description: 'Review code' }]) {
   const ui = {
     notify: vi.fn(), select: vi.fn(), confirm: vi.fn(), input: vi.fn(), custom: vi.fn(async () => undefined),
     theme: { name: 'harness-titanium' }
@@ -30,7 +30,7 @@ function setup(extensionCommands = [{
       createCommandContext: () => ({ commandContext: true })
     },
     resourceLoader: {
-      getPrompts: () => ({ prompts: [{ name: 'review', description: 'Review code' }] }),
+      getPrompts: () => ({ prompts }),
       getSkills: () => ({ skills: [{ name: 'diagnose', description: 'Diagnose a problem' }] })
     },
     settingsManager: {
@@ -129,13 +129,36 @@ describe('owned terminal commands', () => {
     expect(ui.notify).toHaveBeenCalledWith(expect.stringContaining('/project/extensions/annotate.ts'), 'error')
   })
 
-  it('rejects retired unprefixed plugin commands locally', async () => {
+  it('routes required plugin commands without a prefix and rejects their retired prefixed forms', async () => {
     const { commands, ui } = setup()
-    for (const name of ['doctor', 'worktree', 'trajectory', 'subagents', 'notes', 'annotate']) {
-      expect(await commands.execute(`/${name}`)).toBe(true)
-    }
+    expect(await commands.execute('/plugin:doctor')).toBe(true)
     expect(ui.custom).not.toHaveBeenCalled()
-    expect(ui.notify).toHaveBeenLastCalledWith(expect.stringContaining('Unknown command: /annotate'), 'error')
+    expect(ui.notify).toHaveBeenLastCalledWith(expect.stringContaining('Use /doctor'), 'error')
+
+    await commands.execute('/doctor')
+    expect(ui.custom).toHaveBeenCalledOnce()
+    const names = commands.completions().map(item => item.name)
+    for (const name of ['doctor', 'worktree', 'trajectory', 'subagents']) expect(names).toContain(name)
+    for (const name of ['plugin:doctor', 'plugin:worktree', 'plugin:trajectory', 'plugin:subagents']) expect(names).not.toContain(name)
+  })
+
+  it('suppresses prefixed extensions that collide with unprefixed commands or prompts', async () => {
+    const handler = vi.fn(async () => {})
+    const collisions = ['mcp', 'llama', 'plugins', 'accounts', 'hub'].map(name => ({
+      name, invocationName: name, description: `Duplicate ${name}`,
+      sourceInfo: { path: `/project/extensions/${name}.ts` }, handler
+    }))
+    const { commands, ui } = setup(collisions, [
+      { name: 'review', description: 'Review code' }, { name: 'llama', description: 'Run the Llama prompt' }
+    ])
+    const names = commands.completions().map(item => item.name)
+    for (const name of ['mcp', 'llama', 'plugins', 'accounts', 'hub']) expect(names).toContain(name)
+    for (const name of ['plugin:mcp', 'plugin:llama', 'plugin:plugins', 'plugin:accounts', 'plugin:hub']) expect(names).not.toContain(name)
+
+    for (const name of ['mcp', 'llama', 'plugins', 'accounts', 'hub']) await commands.execute(`/plugin:${name}`)
+    expect(handler).not.toHaveBeenCalled()
+    expect(ui.notify).toHaveBeenCalledTimes(5)
+    expect(ui.notify).toHaveBeenLastCalledWith(expect.stringContaining('Use /hub'), 'error')
   })
 
   it('consumes unknown slash commands without sending them to the model', async () => {
@@ -147,14 +170,15 @@ describe('owned terminal commands', () => {
   it('populates completion from builtins and loaded resources', () => {
     const { commands } = setup()
     const names = commands.completions().map(item => item.name)
-    expect(names).toEqual(expect.arrayContaining(['model', 'session', 'history', 'accounts', 'review', 'effort', 'thinking', 'plugin:doctor', 'plugin:trajectory', 'plugin:subagents', 'log', 'permissions', 'components', 'plugin:notes', 'plugin:annotate', 'plugin:worktree']))
+    expect(names).toEqual(expect.arrayContaining(['model', 'session', 'history', 'accounts', 'review', 'effort', 'thinking', 'doctor', 'trajectory', 'subagents', 'worktree', 'log', 'permissions', 'components', 'plugin:notes', 'plugin:annotate']))
     expect(names).not.toContain('resume')
     expect(names).not.toContain('tree')
     expect(names).not.toContain('side')
     expect(commands.completions().find(item => item.name === 'btw')?.aliases).toEqual(['side'])
     expect(names).not.toContain('skill:diagnose')
     expect(new Set(names).size).toBe(names.length)
-    expect(names).not.toEqual(expect.arrayContaining(['doctor', 'trajectory', 'subagents', 'notes', 'annotate', 'worktree']))
+    for (const name of ['plugin:doctor', 'plugin:trajectory', 'plugin:subagents', 'plugin:worktree']) expect(names).not.toContain(name)
+    expect(names).toEqual(expect.arrayContaining(['plugin:notes', 'plugin:annotate', 'plugin:deploy']))
   })
 
   it('shows help as ordered groups, including loaded extension and prompt commands', async () => {
@@ -173,7 +197,8 @@ describe('owned terminal commands', () => {
     expect(runCommands).toContainEqual({ name: 'btw', aliases: ['side'], description: 'Ask a side question without interrupting: /btw <question>' })
     expect(runCommands.map(command => command.name)).not.toContain('side')
     expect(groups.find(group => group.name === 'Inspect')?.commands.map(command => command.name)).toEqual(['copy', 'export', 'log'])
-    expect(groups.find(group => group.name === 'Plugins')?.commands.map(command => command.name)).toEqual(['plugin:subagents', 'plugin:trajectory', 'plugin:notes', 'plugin:annotate', 'plugin:doctor', 'plugin:worktree', 'plugin:deploy'])
+    expect(groups.find(group => group.name === 'Harness')?.commands.map(command => command.name)).toEqual(expect.arrayContaining(['doctor', 'worktree', 'trajectory', 'subagents']))
+    expect(groups.find(group => group.name === 'Plugins')?.commands.map(command => command.name)).toEqual(['plugin:notes', 'plugin:annotate', 'plugin:deploy'])
     expect(groups.find(group => group.name === 'Prompts')?.commands).toEqual([{ name: 'review', description: 'Review code' }])
     expect(ui.notify).not.toHaveBeenCalled()
   })
@@ -320,7 +345,7 @@ describe('owned terminal commands', () => {
 
   it('opens Trajectory as a standalone full-screen page on the requested run', async () => {
     const { commands, host, ui } = setup()
-    await commands.execute('/plugin:trajectory run-1')
+    await commands.execute('/trajectory run-1')
     expect(ui.custom).toHaveBeenCalledOnce()
     expect(ui.custom).toHaveBeenCalledWith(expect.any(Function), { overlay: true, overlayOptions: { width: '100%', maxHeight: '100%', anchor: 'top-left' } })
     const shown = await overlayOf(ui)
@@ -350,11 +375,25 @@ describe('owned terminal commands', () => {
     shown.dispose()
   })
 
+  it('opens Accounts as a full-screen page with persistent Accounts and Pools tabs', async () => {
+    const { commands, ui } = setup()
+    await commands.execute('/accounts')
+    expect(ui.custom).toHaveBeenCalledWith(expect.any(Function), { overlay: true, overlayOptions: { anchor: 'top-left', width: '100%', maxHeight: '100%' } })
+    const shown = await overlayOf(ui)
+    expect(shown.page.presentation).toBe('fullscreen')
+    expect(shown.page.tabs().map(tab => tab.title)).toEqual(['Accounts', 'Pools'])
+    const rows = shown.render(100).map(stripTerminalSequences)
+    expect(rows).toHaveLength(24)
+    expect(rows[0]).toContain('Accounts')
+    expect(rows[0]).toContain('Pools')
+    shown.dispose()
+  })
+
   it.each([
     ['/accounts', ['Accounts', 'Pools']], ['/permissions', ['Overview', 'Tools']],
     ['/plugins', ['Overview', 'Foundation', 'Variant', 'Skills', 'Plugins', 'Connections', 'Tools', 'Library']], ['/hub', ['Overview', 'Foundation', 'Variant', 'Skills', 'Plugins', 'Connections', 'Tools', 'Library']],
     ['/components', ['Overview', 'Foundation', 'Variant', 'Skills', 'Plugins', 'Connections', 'Tools', 'Library']], ['/harness', ['Overview', 'Foundation', 'Variant', 'Skills', 'Plugins', 'Connections', 'Tools', 'Library']], ['/skills', ['Overview', 'Foundation', 'Variant', 'Skills', 'Plugins', 'Connections', 'Tools', 'Library']], ['/mcp', ['Overview', 'Foundation', 'Variant', 'Skills', 'Plugins', 'Connections', 'Tools', 'Library']], ['/connections', ['Overview', 'Foundation', 'Variant', 'Skills', 'Plugins', 'Connections', 'Tools', 'Library']], ['/tools', ['Overview', 'Foundation', 'Variant', 'Skills', 'Plugins', 'Connections', 'Tools', 'Library']], ['/settings', expect.any(Array)],
-    ['/plugin:trajectory', ['Runs', 'Events']], ['/plugin:subagents', ['Subagents']], ['/log', ['Diagnostics', 'Run Events']]
+    ['/trajectory', ['Runs', 'Events']], ['/subagents', ['Subagents']], ['/worktree', ['Worktrees']], ['/log', ['Diagnostics', 'Run Events']]
   ])('opens %s as its own page with local tabs', async (command, tabs) => {
     const { commands, ui } = setup()
     await commands.execute(command)
@@ -376,14 +415,14 @@ describe('owned terminal commands', () => {
   it('shows empty history and refuses run IDs outside the current native session on the page itself', async () => {
     const { commands, host, ui } = setup()
     vi.mocked(host.trajectory.list).mockResolvedValue([])
-    await commands.execute('/plugin:trajectory')
+    await commands.execute('/trajectory')
     const empty = await overlayOf(ui)
     await vi.waitFor(() => expect(empty.render(100).map(stripTerminalSequences).join('\n')).toContain('No runs recorded for this native session yet'))
     empty.dispose()
 
     vi.mocked(ui.custom).mockClear()
     vi.mocked(host.trajectory.list).mockResolvedValue([{ id: 'run-1', mode: 'code', goal: null, startedAt: '2026-10-18T00:00:00.000Z', endedAt: null, status: 'running' }])
-    await commands.execute('/plugin:trajectory other-run')
+    await commands.execute('/trajectory other-run')
     const missing = await overlayOf(ui)
     await vi.waitFor(() => expect(missing.render(100).map(stripTerminalSequences).join('\n')).toContain('Run not found in this native session'))
     expect(host.trajectory.read).not.toHaveBeenCalled()
@@ -430,9 +469,10 @@ describe('owned terminal commands', () => {
 
 })
 
-it('offers /plugin:doctor and consumes it as a local plugin command', async () => {
+it('offers /doctor and consumes it as a local required-plugin command', async () => {
   const { commands, ui } = setup()
-  expect(commands.completions().some(command => command.name === 'plugin:doctor')).toBe(true)
-  expect(await commands.execute('/plugin:doctor')).toBe(true)
+  expect(commands.completions().some(command => command.name === 'doctor')).toBe(true)
+  expect(commands.completions().some(command => command.name === 'plugin:doctor')).toBe(false)
+  expect(await commands.execute('/doctor')).toBe(true)
   expect(ui.custom).toHaveBeenCalledOnce()
 })

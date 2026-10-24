@@ -1,6 +1,6 @@
 import { HarnessError, invalid } from '../core/errors'
 import type { Subagents } from '../sessions/subagentService'
-import { SPAWN_SUBAGENT, WAIT_SUBAGENTS, SUBAGENT_RECEIPT, type SubagentReceipt, type SubagentResult } from '../sessions/subagents'
+import { SPAWN_SUBAGENT, WAIT_SUBAGENTS, SUBAGENT_RECEIPT, MAX_SUBAGENT_TITLE_WORDS, subagentTitle, type SubagentReceipt, type SubagentResult } from '../sessions/subagents'
 import type { ToolResult, ToolSpec } from './types'
 
 export { SPAWN_SUBAGENT, SUBAGENT_RELATION, DEFAULT_SUBAGENT_DEPTH, MAX_SUBAGENT_DEPTH, subagentDepth, subagentReport, type SubagentOptions } from '../sessions/subagents'
@@ -27,10 +27,18 @@ export function subagentTools(service: Subagents, parentRunId: string): ToolSpec
   return [{
     name: SPAWN_SUBAGENT,
     label: 'Start a subagent',
-    description: 'Start a fresh child run for independent work: yourself, or one of your subagents when you name it in agent. Give a complete brief: the child has no conversation history and no more capabilities than you. Returns its run ID immediately by default so you can continue working. Results arrive automatically before you finish. Use wait_subagents to join selected children, or wait: true for an inline result. Stopping you stops your children.',
-    parameters: (Type) => Type.Object({ brief: Type.String(), agent: Type.Optional(Type.String({ description: 'The name of one of your subagents; omit for a copy of yourself' })), tools: Type.Optional(Type.Array(Type.String())), wait: Type.Optional(Type.Boolean({ description: 'Wait for the child and return its result; default false' })) }),
+    description: 'Start a fresh child run for independent work: a copy of yourself, or an agent profile from your Subagents list when you name it in agent (for example worker to make changes, explorer to find and explain). Give a short title, which the user sees in the roster, and a complete brief: the child has no conversation history and no more capabilities than you. Returns its run ID immediately by default so you can continue working. Results arrive automatically before you finish. Use wait_subagents to join selected children, or wait: true for an inline result. Stopping you stops your children.',
+    parameters: (Type) => Type.Object({
+      title: Type.String({ description: `A short imperative title for the roster, at most ${MAX_SUBAGENT_TITLE_WORDS} words, such as "Map the auth flow"` }),
+      brief: Type.String(),
+      agent: Type.Optional(Type.String({ description: 'The name of an agent profile from your Subagents list; omit for a copy of yourself' })),
+      tools: Type.Optional(Type.Array(Type.String())),
+      wait: Type.Optional(Type.Boolean({ description: 'Wait for the child and return its result; default false' }))
+    }),
     execute: execute(async (input) => {
-      const child = await service.spawn({ parentRunId, brief: input.brief as string, agent: input.agent as string | undefined, tools: input.tools as string[] | undefined, wait: input.wait as boolean | undefined })
+      const title = subagentTitle(input.title)
+      if (!title) throw invalid(`Give the subagent a title of at most ${MAX_SUBAGENT_TITLE_WORDS} words, with no control characters.`)
+      const child = await service.spawn({ parentRunId, brief: input.brief as string, title, agent: input.agent as string | undefined, tools: input.tools as string[] | undefined, wait: input.wait as boolean | undefined })
       if (input.wait === true) return reported(parentRunId, service.results({ parentRunId, runIds: [child.runId] }), [child.runId])
       return { text: JSON.stringify(child), details: { [SUBAGENT_RECEIPT]: { version: 1, ownerRunId: parentRunId, spawned: [child.runId] } satisfies SubagentReceipt } }
     })

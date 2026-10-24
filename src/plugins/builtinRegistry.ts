@@ -13,6 +13,7 @@ export interface BuiltinPluginCommand {
   pluginId: string
   name: string
   description: string
+  namespace: 'unprefixed' | 'plugin'
 }
 
 export interface BuiltinWorldContext {
@@ -39,7 +40,7 @@ export interface BuiltinPluginModule {
   /** Stable order for model tools, independent of descriptor display order. */
   toolOrder?: number
   tools?: (context: BuiltinToolContext) => ToolSpec[]
-  commands?: readonly Omit<BuiltinPluginCommand, 'pluginId'>[]
+  commands?: readonly Omit<BuiltinPluginCommand, 'pluginId' | 'namespace'>[]
   createWorldPart?: (context: BuiltinWorldContext) => WorldPart | null
   serverMethods?: (harness: Harness) => Record<string, Handler>
 }
@@ -69,7 +70,11 @@ export function createBuiltinPluginRegistry(modules: readonly BuiltinPluginModul
     }
   }
 
-  const commands = modules.flatMap(module => (module.commands ?? []).map(command => ({ pluginId: module.descriptor.id, ...command })))
+  const commands = modules.flatMap(module => (module.commands ?? []).map(command => ({
+    pluginId: module.descriptor.id,
+    ...command,
+    namespace: module.descriptor.required ? 'unprefixed' as const : 'plugin' as const
+  })))
   const byCommand = new Map(commands.map(command => [command.name, command]))
   const toolModules = modules.map((module, index) => ({ module, index })).filter(({ module }) => module.tools)
     .sort((left, right) => (left.module.toolOrder ?? left.index) - (right.module.toolOrder ?? right.index))

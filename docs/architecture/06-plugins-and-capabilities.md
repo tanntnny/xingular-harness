@@ -43,7 +43,12 @@ callable result for one run.
   for everyone, and only a tool marked to run without asking.
 - **Capability set** (`CapabilitySet`): `{ version: 1, tools, connectors, contributions }`.
   `capabilities.resolve` returns the set available to a caller; `capabilities.intersect` /
-  `toolIntersection` narrows it for a child.
+  `toolIntersection` narrows it for a child. The required `ask-user` plugin remains attached, but its
+  `ask_user` tool is included only for an attended plan run or a continuation pinned with that
+  capability. Automatic or refinement-triggered continuations with it are rejected rather than
+  weakening the frozen set. The `side-questions` descriptor owns the fixed instruction for the
+  restricted side-question run; it has no tools, providers, connectors, subagents or variant code
+  (PROP-0019).
 
 ## Invariants
 
@@ -71,6 +76,7 @@ callable result for one run.
   each delivery. A working folder's package cannot bring a hook.
 - **INV-PLG-9** Unattended runs load no extension found on disk (`INV-RUN-5`). The harness's own
   parts are required and refuse to be switched off; switching something on grants no permission.
+  A side-question run also has no variant plugin code or tool guidance (PROP-0019).
 - **INV-PLG-10** Every Harness-managed built-in feature is registered by `BuiltinPluginRegistry`.
   Its descriptor, world tools, server handlers and terminal command metadata share one owner. A
   module's world part releases resources through the existing session and Harness lifecycle. This
@@ -78,7 +84,9 @@ callable result for one run.
 - **INV-PLG-11** Built-in plugin categories are a documentation ownership taxonomy. They are not a
   `PluginDescriptor` field, a public response field or a second attachment scope.
 - **INV-CAP-1** A capability set only narrows. `intersect` never adds access; a run's set is
-  frozen when it starts (`INV-RUN-2`).
+  frozen when it starts (`INV-RUN-2`). An agent profile's `plugins` list keeps only the parent's
+  contributions of those plugins (required plugins always stay) and drops the tools they own; it
+  never adds one (PROP-0029).
 - **INV-CAP-2** The capability contract is generic. It names no application task, role or UI
   concept.
 - **INV-CAP-3** A capability set says what may be called, not whether a call may run. The gate

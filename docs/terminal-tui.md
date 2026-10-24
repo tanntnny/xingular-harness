@@ -1,9 +1,14 @@
 # Harness terminal frontend
 
-Status: release candidate `@xingular/harness` 4.0.0; npm publication blocked by registry authorization. Last updated: 2026-10-22.
+Status: release candidate `@xingular/harness` 4.0.0; npm publication blocked by registry authorization. Last updated: 2026-10-24.
 Decision: [ADR-0001](decisions/ADR-0001-owned-terminal.md),
 [ADR-0006](decisions/ADR-0006-opentui-only-terminal.md),
-[ADR-0009](decisions/ADR-0009-xharness-command.md).
+[ADR-0009](decisions/ADR-0009-xharness-command.md),
+[ADR-0021](decisions/ADR-0021-required-command-namespaces.md),
+[ADR-0024](decisions/ADR-0024-xagent-command.md),
+[ADR-0026](decisions/ADR-0026-contextual-question-wireframes.md),
+[ADR-0027](decisions/ADR-0027-connected-sketch-display.md),
+[ADR-0028](decisions/ADR-0028-xingular-agent-product-identity.md).
 
 ## OpenTUI terminal
 
@@ -36,7 +41,7 @@ dialogs and the scrim stay opaque. The composer has no panel background: it is b
 a bottom rule, with the working status and spinner above it and a wrapping status bar below it. Its
 fixed-width left gutter shows `❯` on the first input row and leaves continuation rows blank, including
 explicit newlines and soft wraps; Bash mode shows `!` on the first row instead. In plan mode,
-`plan mode` is right-aligned within the top rule, followed by exactly one divider character. The status bar shows the working folder's name, the Git branch, the account, model and effort separated by spaces, and input (`↑`) and output (`↓`) token counts with each glyph adjacent to its count; `|` separates the groups. Token counts
+`plan mode` is right-aligned within the top rule, followed by exactly one divider character. The status bar shows the working folder's name and Git branch together as `<repo>:<branch>`, followed by the account, model and effort separated by spaces, and input (`↑`) and output (`↓`) token counts with each glyph adjacent to its count; `|` separates the groups. Token counts
 below 1,000 show as whole numbers and larger counts use K/M/B suffixes. A leading `!`
 enters Bash mode: the chevron becomes `!`, and the marker and both rules use the `bashMode` colour.
 In plan mode, the marker and rules use the plan blue and `plan mode` is right-aligned within the
@@ -50,8 +55,8 @@ never receive an OpenTUI renderable or a second account. A theme an extension se
 its own components, while the OpenTUI chrome keeps the fixed OpenCode-inspired palette. Component
 UI is supported; an extension that draws only by writing raw ANSI through the TUI terminal is not.
 
-Most pages become centered dialogs. The page commands `/accounts`, `/permissions`,
-`/log`, the `/model` and `/history` pickers, and
+Most pages become centered dialogs. The page commands `/permissions`, `/log`, the `/model` and
+`/history` pickers, and
 the `select`, `confirm`, `input` and `editor` dialogs (such as `/effort` and the Thinking setting),
 take 80% of the terminal, capped at 100 columns by 30 rows, on a flat panel in the console's panel
 colour. A full-screen scrim dims the console behind the panel so the transcript stays faintly
@@ -62,19 +67,36 @@ omit divider rules and footer hints. Shortcut behavior remains available. Search
 the same glyph, placeholder, spacing, and muted result note, with search context included on that
 row. A terminal too small for a 30-column by
 12-row dialog falls back to the full-screen page chrome. A plugin's full-screen surface stays full
-screen. `/settings` instead fills the terminal with its category tabs, search, settings list and
-full-screen page chrome. The Harness resource browser and all its shortcuts use a full-screen page
-with persistent resource-section tabs.
+screen. `/settings` fills the terminal with its category tabs, search, settings list and full-screen
+page chrome. `/accounts` also fills the terminal with Accounts/Pools tabs and search. Wide terminals
+show selected-account details beside the list; opening an account reveals grouped actions in that
+inspector. On compact terminals, opening an account replaces the list with a full-page detail view
+and its grouped actions. `Enter` opens the selected account; `Esc` returns to the list. Tab and
+Shift+Tab move focus between tabs, the list and (when open) actions; Left/Right changes a focused
+tab and Up/Down moves the focused list or action list. Search, section and account selection survive
+returning and resizing.
+Account actions are grouped by Session, Account, Sign-in and Remove; pool
+actions are grouped by Manage and Remove. Existing confirmations and account-service calls remain
+unchanged. The Harness resource browser and all its shortcuts use a full-screen page with persistent
+resource-section tabs.
 
 The frontend is verified with a real isolated PTY and a loopback provider. Run
-`python3 scripts/verify-terminal.py --composer-only` for explicit-newline and soft-wrap checks of
-both prompt gutters plus normal/plan/Bash mode exclusivity, `--file-completion-only` for filesystem
-completion and insertion,
+`python3 scripts/verify-terminal.py --welcome-only --sizes 40x20,80x24,120x40` to check the empty
+welcome, product label, accent colors and `/help` transition. Run
+`python3 scripts/verify-terminal.py --composer-only` for recognized slash-command colors in the composer
+and a user bubble, unknown-command and argument colors, explicit-newline and soft-wrap checks of both
+prompt gutters, and normal/plan/Bash mode exclusivity. Run it with `--sizes 40x20,80x24,120x40` for
+compact through wide layouts. Use `--file-completion-only` for filesystem completion and insertion,
 `--history-only` for active-session history across `/new` and `/session`, `--help-only` for `/help` replacing the welcome screen with grouped two-column output that wraps without per-command gaps, `--questions-only` for recommended choices,
 selected-row and Continue/Submit colors, `--jump-latest-only` for scroll-away badge visibility and click-to-latest (screen-level click assertions use optional `pyte`), and choice-backed “Something else” answers, or `--thinking-only` for `/thinking` visibility toggles. The full suite covers a complete turn, `read`, `bash` approval, `ask_user_question` approval and picker, plugin overlay/widget/status
 disposal, a completed run record with usage and decision events, `/help`, `/permissions`,
-`/settings`, `/model`, palette selection, confirm cancel, and Ctrl+D exit. Live-provider behavior,
-exact OpenCode parity and concurrent session tabs are not established.
+`/settings`, `/model`, palette selection, confirm cancel, and Ctrl+D exit. `--questions-only` checks
+recommended choices, bounded literal ASCII sketch previews, focus-driven preview changes and answer
+colors; run it with `--sizes 40x20,80x24,120x40` for compact through wide layouts. At 80 columns and
+above it also checks wrapped notes and free-text; the narrowest run keeps the sketch and answer
+interaction compact. The normal turn omits question tools; plan-mode flows exercise `ask_user` batches
+and `ask_user_question` cancellation. Live-provider behavior, exact OpenCode parity and concurrent
+session tabs are not established.
 
 ## Native subagents (2026-10-18)
 
@@ -87,11 +109,21 @@ The terminal joins outstanding children before its final reply, projects child a
 with their original run IDs, and stops descendants when interrupted or disposed. Connected apps
 need not be enabled. `TerminalPrepareInput.subagents: null` disables the capability.
 
-The terminal also projects the active parent's subagent descendants into a compact roster above
-the composer and a searchable `/plugin:subagents` page. The roster polls a private monitor route once per
-second during a turn and shows task, status, elapsed time and the latest recorded tool summary.
-The projection is read-only, flat across nested descendants, and scoped to the current parent run;
-it keeps finished child rows until that parent settles. It never includes tool arguments or output.
+The terminal also projects the active parent's subagent descendants into live rows under the
+status line and a searchable `/subagents` page. The rows poll a private monitor route once per
+second during a turn. They sit one blank row below the status line, with no heading, and each
+reads: the status mark, the agent profile name in its colour (`subagent` for a copy of the
+parent), the title the parent gave the child (PROP-0030), and `n of m tasks` from the child's own
+checklist. At most three show, active first, then `+N more · /subagents`. The `/subagents` page
+adds status, elapsed time and the latest tool name. The projection is read-only, flat across nested
+descendants, and scoped to the current parent run; it keeps finished child rows until that parent
+settles. It never includes tool arguments (beyond the title), output or
+checklist item text.
+
+`/agents` opens the Agents page (PROP-0029): built-in, global, project and variant profiles with
+their tools, plugins, variant, model and instructions. Enter on a row edits a person's own profile
+in `$VISUAL`/`$EDITOR`, copies one, or deletes one after confirmation; New profile writes a template
+in the project or global folder and opens it.
 
 Real scripted Pi execution over the actual terminal socket verifies result delivery, decision
 routing, and the monitor's parent scoping and summary redaction. It does not establish live-provider
@@ -141,26 +173,40 @@ unattended execution path.
 ## Screen layout
 
 [`root.tsx`](../src/terminal/opentui/root.tsx) draws the terminal on OpenTUI's alternate screen.
-An empty conversation shows the centered product mark and a short hint; once a message exists, a
-scrollable transcript fills the space above the composer. Single-line notices can appear with the
-welcome, while multiline notices such as `/help` switch to the transcript layout so their output
-cannot overlap it. The composer is a single top and bottom rule, with the right-aligned `plan mode` label followed by one divider character in the top rule,
+An empty conversation shows a centered welcome. The default `Xingular Agent` identity appears as
+an orange block `X` and blue letter-spaced `A G E N T`, followed by `Welcome.`, the tagline
+`One run, done well.`, and a blue `/help` hint. Explicit host product names use the same generic mark and
+subline formatting. The current model and thinking level remain available in dim text. Once a message
+exists, a scrollable transcript fills the space above the composer. Single-line notices can appear
+with the welcome, while multiline notices such as `/help` switch to the transcript layout so their
+output cannot overlap it. The composer is a single top and bottom rule, with the right-aligned `plan mode` label followed by one divider character in the top rule,
 and the textarea in the middle.
 The working status row shows the active verb with a soft, warm glint that feathers across it and
 fades past its edges, followed by run duration and the latest completed assistant response's output
 rate, formatted as `(time, tok/s)`; the spinner and metrics stay steady, and duration updates during a run.
 Until response usage is available, the rate shows `— tok/s`. On settlement, the completion verb and
 final run statistics stay in that row until the next run replaces them; they do not become a transcript
-entry. Notifications, queue announcements, compaction-start and retry updates—including retries
-while summarizing context or branches—are one-line transcript entries at the point they occur, so
-subsequent chat moves them up rather than keeping them pinned at the bottom. Each entry stays after
-the message it followed when compaction shortens the history; an entry whose message was summarized
-sits right after the compaction card. A completed context
-compaction adds a first-class card from Pi's persisted session history, showing the token count and
-an expandable Markdown summary; click the card or use Ctrl+O to toggle its details.
-A successful transcript-selection copy instead shows a temporary, opaque toast at the top-right of the
-terminal. Interactive blocks and widgets remain docked above the composer. A wrapping status bar
-below the composer shows the working folder, branch, account, model, effort and token totals. After
+entry. Notifications, queue announcements and retry updates—including retries while summarizing
+context or branches—are one-line transcript entries at the point they occur, so subsequent chat
+moves them up rather than keeping them pinned at the bottom.
+
+While context compaction runs, the working line shows `Compacting context` (or `Retrying
+compaction`) with the same spinner, in place of the working verb. During a run it keeps the run's
+clock; a `/compact` while idle shows the spinner with its own clock. Compaction does not start a new
+session or hide earlier chat. After it, the transcript shows, in order: the whole conversation from
+before the compaction (rebuilt from Pi's session history, kept messages included); a rule labelled
+`Context compacted · <tokens> tokens`; the summary printed as a normal reply; an `End of summary`
+rule; then the work that followed. The summary is shown by default. Clicking either rule hides or
+shows it, and Ctrl+O shows every summary again. On a narrow screen the rule drops the click hint, then
+the token count. Earlier compactions in the same session keep their own rules and summary in place.
+Notices stay after the message they followed. The model still sees only the summary and the recent
+messages; this is presentation only.
+Transcript entry ids follow positions in the displayed message list, so when a rebuilt list moves a
+different kind of entry onto an id, the renderer builds a new component for it instead of reusing the
+old layout, and each entry draws inside its own error boundary. A run therefore keeps updating live
+through a compaction; it does not need `/resume` to show its later output.
+A successful copy shows a temporary, opaque toast anchored at the terminal's top-right. Interactive blocks and widgets remain docked above the composer. A wrapping status bar
+below the composer shows `<repo>:<branch>`, account, model, effort and token totals, with `|` between groups. After
 the input token count it shows cache hit rate as `R<percentage>%`, calculated from cache reads divided
 by total input tokens. The footer shows status messages without a shortcut-hint row. Press `?` with an empty
 composer to open the shortcut reference. Transcript entries include
@@ -176,15 +222,17 @@ their content; other entries have no internal vertical padding. Bubble padding i
 inter-entry gap. Internal lines within an entry stay together. The transcript stays pinned to the
 latest message until you scroll away. While scrolled away, a `↓ Jump to latest` badge overlays the
 transcript's lower-right corner; clicking it returns to the newest message and hides the badge.
-`Ctrl+End` remains an alternate way to jump to the end. A primary click in the transcript or empty welcome area focuses the composer. Dragging to select
-transcript text copies the selected plain text when the selection is released; a simple click does
-not copy. `/copy` and `Ctrl+X` continue to copy the latest assistant reply.
+`Ctrl+End` remains an alternate way to jump to the end. A primary click in the transcript or empty
+welcome area focuses the composer. Dragging to select text anywhere in the TUI—including the
+composer, transcript, widgets, dialogs and pages—copies the selected plain text when selection ends;
+a simple click does not copy. `/copy` and `Ctrl+X` continue to copy the latest assistant reply.
 
 Mouse movement highlights the row under the pointer in the command palette, plan choices, question
 dock, searchable dialogs and Harness page lists; the highlight uses the same selection style as
 keyboard navigation. A primary click activates the row, and clicks on page tabs switch that page's
-section. Question choices still stage their answer until the question's action is clicked. Dialogs
-preserve their existing confirmation safeguards. OpenTUI enables terminal mouse-motion reporting for
+section. In `/accounts`, clicking an account opens its inspector or compact detail view, and clicking
+an action runs the existing account flow. Question choices still stage their answer until the
+question's action is clicked. Dialogs preserve their existing confirmation safeguards. OpenTUI enables terminal mouse-motion reporting for
 hover; terminals or multiplexers that do not report motion retain keyboard navigation. ANSI-only
 custom UI without a mouse handler remains keyboard-driven.
 
@@ -203,6 +251,14 @@ OSC 8 support. Inline and fenced code use a subtle panel fill with syntax colors
 list markers, tables, dividers and task-list markers use the existing titanium palette. Images
 display their alt text and are not fetched or rendered as image files.
 
+## Checklist block
+
+`checklist_write` is registered in terminal sessions (PAR-001). Each call renders in the
+transcript as a checklist block: a status mark, `Checklist · n of m done`, then one line per item
+with `✓` (done, success colour), `●` (in progress, warning yellow, bold) or `○` (pending, dim). A call whose
+arguments are not a checklist, or that failed, stays an ordinary tool row. The prompt's Progress
+group asks the model to keep the list current because the user follows work from it.
+
 ## Blocks and pages
 
 In Pi's own terminal UI, [`chrome.ts`](../src/terminal/tui/chrome.ts) gives terminal surfaces one
@@ -216,7 +272,7 @@ of two rule-based shapes, using the 2-cell composer gutter on each side and a di
 - A **page** is a header row (title left, position or status right), a neutral rule, the body,
   a neutral rule, and the hint row. `/settings`, `/log`, `/permissions`, and the `/accounts`,
   `/plugins` and `/hub` menus are pages. Section labels inside a page are plain bold headings, never
-  text set into a rule. `/plugin:trajectory` is a full-screen page with searchable Runs and Events
+  text set into a rule. `/trajectory` is a full-screen page with searchable Runs and Events
   tabs; its Events view keeps the event list beside the selected event's JSON on wide terminals.
 
 `DialogPanel` takes a `variant` (`block` by default). `ui.select` accepts a harness-owned `page`
@@ -245,15 +301,16 @@ The browser fills the terminal (PROP-0014), with Overview, Foundation, Variant, 
 Connections, Tools and Library as persistent top tabs. The section dropdown and sidebar are removed.
 When the strip cannot fit, it shows the active tab and its position with previous/next navigation.
 At 88 content columns, inventory sits beside an inspector containing metadata, actions and readable
-content. Enter focuses the inspector. Compact terminals show details/content within the active tab;
-resizing preserves the selected resource and content position, clamped to the available height.
+content. Enter focuses the inspector. Its action rows group related tasks under Use, Inspect, Manage,
+Access and Remove. Compact terminals show details/content within the active tab; resizing preserves
+the selected resource and content position, clamped to the available height.
 
 Tab/Shift+Tab focuses tabs, source, filter, toolbar actions, list and (when available) inspector.
 Left/Right changes the focused tab or control; Enter on the tab strip returns to the inventory.
 Ctrl+F focuses search. Escape returns from content to actions, returns to the list, clears search,
 then closes. Mouse clicks select tabs directly, activate resource actions and focus filters;
 wheel scrolling targets the list or inspector under the pointer. Other command pages keep their
-centered presentation; `/settings` uses the full-screen page layout. Closing the browser preserves
+centered presentation; `/settings` and `/accounts` use full-screen page layouts. Closing the browser preserves
 the composer draft and attachments.
 
 Foundation explains fixed runtime ownership; it is read-only. Variant shows c1–c8 with the
@@ -308,7 +365,9 @@ Use `/plan <brief>` for one read-only planning request. A plan waits outside Pi'
 queue until the active response settles, then runs by itself. Later messages remain behind it, even
 when Pi's follow-up mode is `all`. During that run the session narrows to read-only inspection
 (`read`, `grep`, `find`, `ls`), web search/page reading, questions (`ask_user`, `ask_user_question`)
-and recall (history and Wiki reads, `memory_facts`). Providers may mark individual calls as safe for
+and recall (history and Wiki reads, `memory_facts`). Normal mode omits both question tools from the
+active set; the plan request enables registered questions temporarily and restores the normal set
+when it settles, including on failure or interruption. Providers may mark individual calls as safe for
 research; every other call is blocked before approval. Edits, writes, shell commands, memory writes,
 subagents and connected-app tools remain unavailable. The plan instructions arrive as a
 request-scoped prompt section, which the next ordinary request withdraws.
@@ -337,9 +396,11 @@ Implement leaves plan mode, so the normal tools and the mode's own model and eff
 mode and focuses the composer, so the next message revises the plan and offers a new choice. A plan run
 that was interrupted, failed, or had work queued behind it is not offered.
 
-While typing, a recognized leading slash command uses the selected theme's link color. This
-includes built-in commands, loaded extension and prompt commands, and enabled skill invocations
-written as `/skill:name`. Unknown slash tokens keep the normal text color.
+A recognized leading slash command uses the selected theme's link color while typing and in its
+user-message bubble. Only the command token is accented; arguments and unknown slash tokens keep the
+normal text color. Recognition follows the active command registry, including built-in commands and
+aliases, loaded extension and prompt commands, and enabled skill invocations written as
+`/skill:name`.
 
 SDK session runs receive plan instructions as a dynamic context update, leaving the stable system
 prompt unchanged; their session gate refuses calls outside the read-only set. The standalone
@@ -380,8 +441,8 @@ not an arbitrary checkout of upstream main. The source repository is
 In the extracted `pi-tui` package, `src/theme/defaults/titanium.json` establishes the titanium
 palette and its indexed-color fallbacks. Harness adapts these into
 [`theme.ts`](../src/terminal/tui/theme.ts) and
-[`opentui/theme.ts`](../src/terminal/opentui/theme.ts). The OpenTUI status bar shows the project name,
-branch, account, model, context use and current-session input/output totals. Input totals add cache
+[`opentui/theme.ts`](../src/terminal/opentui/theme.ts). The OpenTUI status bar shows the project name and
+branch together as `<repo>:<branch>`, followed by account, model, context use and current-session input/output totals. Input totals add cache
 reads and exclude cache writes; its `R<percentage>%` hit rate is cache reads divided by total input.
 Token counts below 1,000 show as whole numbers; larger counts use floor-rounded K/M/B suffixes
 without decimals.
@@ -519,22 +580,69 @@ a tool waiting forever on a question after the screen has closed. Native `sessio
 clears controller readiness and stops that session's poller; the replacement's `session_start`
 restores readiness while retaining the same process control claim.
 
-The bridge exposes the shared `ask_user` batch tool alongside the existing single-question
-`ask_user_question` contract. Every question must include at least one choice and at least one
-recommended choice; recommendations remain visual and never preselect. Choice-based questions also
-retain a free-text “Something else” answer. A pending question appears in a flat block immediately above the
-composer, not in a modal. It has only a muted top divider and separates its hint from the content by
-one blank line. The block shows one batch question at a time with previous/next navigation and batch
-progress, choices and descriptions, a numbered free-text answer row after the choices, and a Continue
-or Skip action. Selected choices fill the whole row with subtle dark green; Continue and Submit uses
-a green-filled button, while Skip remains neutral. The regular composer remains below it for a direct message to the waiting session.
-Tab and Shift+Tab move focus through the available controls; Tab from a focused selected choice opens
-its inline note field. In multi-select questions, Tab can open a note for each selected choice; notes
-are submitted by choice label and cleared when that choice is deselected. While the block is active,
-Tab takes precedence over the normal thinking and plan-mode shortcuts. Up and Down navigate choices;
-Left and Right navigate the batch while choices or the action are focused. Enter selects a choice,
-activates the focused action, or submits the answer or note field. Escape interrupts the pending
-question. Press `x` from the choices or action to collapse the block; Tab reopens it.
+The bridge registers the shared `ask_user` batch tool alongside the single-question
+`ask_user_question` contract; only plan requests activate them. Each question has a concise 1–2 word
+label, at least one choice, and at least one recommended choice; recommendations remain visual and
+never preselect. Choice-based questions also retain a free-text “Something else” answer. A pending
+question appears in a flat block immediately above the composer, not in a modal. It has only a muted
+top divider and separates its hint from the content by one blank line; below 60 terminal columns,
+it uses a compact hint. The body is height-bounded and vertically scrollable, with tabs and
+answer/action controls outside that region. While the dock is active, PageUp/PageDown scroll its
+body and Ctrl+Home/End jump to its beginning/end instead of the transcript. Focused choices and
+note fields are brought into view. A tab strip shows each
+question label above the active question title, with one blank row below the tabs and below the title;
+clicking a tab or using Left/Right changes questions without discarding staged answers. The header has
+no pager controls, and the block cannot be collapsed. Choices and descriptions appear above the numbered free-text answer and Continue or Skip
+action. Selected choices fill the whole row with subtle dark green; Continue and Submit uses a
+green-filled button, while Skip remains neutral. While the block is active, the chat composer and
+its lower status bar are hidden. Tab and Shift+Tab move through the available controls; `n` opens a
+note for the focused selected choice. Its editor appears below that choice, aligned with the description
+column, and begins with an accent-colored `Note:` label. Tab only visits note fields that are already
+open. Notes are submitted by choice label and cleared when that choice is deselected. Notes and
+free-text answers wrap across lines. Tab takes precedence over normal thinking and plan-mode shortcuts. Up
+and Down navigate choices. Enter selects a choice, activates the focused action, or submits the
+answer or note field. Escape cancels the pending question and interrupts the run.
+
+Questions may set `uiSketch: true` to enable a choice sketch preview. Every choice must then include
+an ASCII sketch of 1–24 LF-separated lines, no more than 80 printable ASCII characters per line
+(1,943 bytes maximum), and at least one visible character. Tabs, CR, controls, escape sequences and
+non-ASCII text are rejected. Without the flag, choice sketches are rejected. Tool guidance asks for
+contextual UI wireframes with actual panel/table structure and neighboring elements, consistent
+across alternatives, rather than isolated decorative diagrams; quality is not a schema guarantee.
+
+The dock uses one shared measured layout for all choices: marker gutter, one-third label cell,
+two-cell gap, and remaining description cell. Boundaries align across rows at every width, including
+compact terminals; both cells wrap independently, missing descriptions keep their cell, and columns
+never stack. Recommendation text becomes `(Rec.)` when the label column is fewer than 14 cells.
+
+One shared border-only monospace preview below the choices follows the hovered choice, falling
+back to keyboard focus. It has no visible caption or extra left rule. Under the approved
+[PROP-0026](architecture/proposals/PROP-0026-connected-sketch-display.md) /
+[ADR-0027](decisions/ADR-0027-connected-sketch-display.md) and
+[PROP-0028](architecture/proposals/PROP-0028-normalize-question-wireframes.md) /
+[ADR-0029](decisions/ADR-0029-normalized-question-wireframe-borders.md) amendments,
+the terminal display uses a bounded structural projection in
+`src/terminal/opentui/sketchPanel.ts`: recognized ASCII table-border rows—including title-bearing
+top rules—and enclosed vertical table edges become connected box-drawing glyphs. Internal framed
+tables keep their original widths and positions. Within a high-confidence frame, a missing side
+edge may be filled or a displaced edge moved only through whitespace to matched corner columns;
+interior text and ambiguous rows remain literal. Bare standalone hyphen divider rows expand to
+`max(panel viewport width, original sketch widest line)` and attach to the outer single-line frame
+with `├` and `┤`. Prose, content operators, ordinary pipes and unrecognized rows remain literal;
+there is no global `+|-` substitution. The original validated ASCII source, including whitespace,
+is persisted untouched; normalization and projected glyphs are display-only.
+
+A bounded two-axis viewport exposes all overflow without wrapping, reflow, truncation or
+Markdown/ANSI interpretation. Shift+arrows pan the sketch; ordinary arrows retain question/choice
+navigation. Hosts may keep literal previews of that same source. The preview does not change the
+selected answer, and sketch metadata is not included in the answer event. The 80×24 source bounds
+and dock layout remain as specified by
+[PROP-0025](architecture/proposals/PROP-0025-contextual-question-wireframes.md) and
+[ADR-0026](decisions/ADR-0026-contextual-question-wireframes.md). Isolated production PTY evidence
+for [PROP-0026](architecture/proposals/PROP-0026-connected-sketch-display.md) and
+[PROP-0028](architecture/proposals/PROP-0028-normalize-question-wireframes.md) is retained under
+`docs/evidence/terminal-wireframe-normalization/`; it does not claim every-emulator rendering or
+live-model sketch quality.
 
 Recommended choices appear first with a warning-colored marker, without changing their labels or
 preselecting them; every question requires at least one recommendation. A single-choice question
@@ -561,11 +669,17 @@ blank rows between choices. `/plugins` opens the browser with protected code tru
 `plugins.configure`; on/off settings and bounded whole-number settings keep their existing ranges.
 Saved settings are read when the plugin next uses them and do not require a restart. The standalone
 terminal no longer has separate `/login`, `/trust`, `/bug`, `/changelog`, `/share`, `/scoped-mode` or
-`/import` commands. `/btw <question>` (or `/side <question>`) asks a short side question in a separate tool-free session. Its block puts the question after `/btw`, shows the normal animated spinner while answering, and separates the answer and hint by one blank row; it has no status labels. Escape closes the block without interrupting the main reply, and either command with no question dismisses it. `/stop` interrupts the current reply. The `/accounts` page handles sign-in
+`/import` commands. `/btw <question>` (or `/side <question>`) starts a separate Harness run with the
+main run's effective instructions, visible conversation and redacted public tool inputs/results.
+Hidden reasoning and image bytes are excluded; the side run has no tools. Its block puts the
+question after `/btw`, shows the normal animated spinner while answering, and separates the answer
+and hint by one blank row; it has no status labels. PageUp/PageDown browse a long answer and Ctrl+X
+copies the full answer. Escape or either command with no question dismisses the dock and interrupts
+only that side run; the main reply continues. `/stop` interrupts the current main reply. The `/accounts` page handles sign-in
 and sign-out. `/components` browses reusable skills, prompts and rules; a confirmed skill or rule addition
 creates a variant version for future sessions while the current terminal keeps its pinned version. `/reload` applies trusted resource and keybinding changes.
 
-`/plugin:trajectory` opens the newest recorded run for the current native conversation; `/plugin:trajectory <run-id>`
+`/trajectory` opens the newest recorded run for the current native conversation; `/trajectory <run-id>`
 opens a selected run from that conversation. The full-screen page keeps searchable Runs and Events
 tabs. In Events, the list sits beside the selected event's JSON on wide terminals and stacks above it
 on compact terminals. Type to search run IDs, goals, event types, timestamps, summaries and payload
@@ -582,11 +696,14 @@ and URL queries and omits response bodies, prompts and message contents. Embedde
 
 ## Slash command ownership
 
-Core terminal commands stay unprefixed. Built-in plugin commands and Pi extension commands use
-`/plugin:<command>`, appear with that prefix in `/help` and the command palette, and dispatch to the
-registered owner. Duplicate extension names are rejected with the extension paths shown as the
-diagnostic. Former unprefixed plugin commands such as `/annotate` and `/doctor` are no longer
-aliases. Prompt templates and `/skill:<name>` keep their existing forms.
+Core commands and commands owned by required built-in plugins stay unprefixed. The required
+plugin commands are `/subagents`, `/agents`, `/trajectory`, `/doctor`, and `/worktree`. Optional built-in
+plugin commands (currently `/plugin:notes` and `/plugin:annotate`) and Pi extension commands use
+`/plugin:<command>`. A bare core command, alias, required built-in command, or loaded prompt owns its
+name; a colliding prefixed command is omitted and rejected with a hint to use the bare command.
+Duplicate extension names are rejected with the extension paths shown in the diagnostic. Old
+`/plugin:` forms of required built-in commands are not aliases. Prompt templates and
+`/skill:<name>` keep their existing forms.
 
 ## Input performance profile
 
@@ -613,8 +730,8 @@ How the frontend keeps typing fast:
   results change; session statistics refresh at most every 250 ms during a run.
 - **Kept connections.** Session-socket requests ask to `keep` their connection, so the two 100 ms
   polls and per-key draft updates reuse a connection instead of opening one each.
-- **No swallowed keys.** A character the question dock does not use moves focus to the composer and
-  is typed there.
+- **No swallowed keys.** While a question is active, an unused printable character moves focus to
+  “Something else” and is typed there when free text is allowed; it never creates a hidden chat draft.
 
 ## Verification and remaining limits
 
@@ -746,7 +863,7 @@ The working line shows `Working (2m, 50 tok/s) – Add web browser integrations`
 also stays on the completion line. Unnamed sessions have no separator, and narrow terminals
 truncate trailing text. Renaming refreshes the line through Pi's existing metadata event.
 
-## `/plugin:doctor`
+## `/doctor`
 
 Checks accounts/models, tools, MCP, plugins/skills, variant/prompt validity, runtime assets, storage
 and startup recovery. The summary keeps mode, progress, account/model and status counts visible above

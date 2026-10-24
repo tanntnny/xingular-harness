@@ -1,0 +1,20 @@
+   · Starting session…
+  ✳ Booping (7s, 75 tok/s)
+ ──────────────────────────────────────
+   UI layout
+   2 LongMasthe  DESC_B retains
+     adLabelWit  neighboring panels.
+     houtSpaces
+
+  +----------------------------------+
+  || Context row 03                  |
+  || Context row 04                  |
+  || Context row 05                  |
+  || Context row 06                  |
+  || Context row 07                  |
+  |A_BOTTOM                          |
+  +----------------------------------+
+
+   3 Something else… Skip and Submit
+
+  ↑↓ · Enter · Tab · Esc · ⇧arrows pan

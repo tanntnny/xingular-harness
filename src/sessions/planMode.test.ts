@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 import { CONTEXT_MESSAGE_TYPE, CONTEXT_SNAPSHOT_KEY } from '../prompt/compile'
-import { PLAN_INSTRUCTIONS, PLAN_SECTION_ID, parseProposedPlan, planModeTools, planRefusal, planSection } from './planMode'
+import { normalModeTools, PLAN_INSTRUCTIONS, PLAN_SECTION_ID, parseProposedPlan, planModeTools, planRefusal, planSection, QUESTION_TOOL_NAMES } from './planMode'
 
 function history(sectionIds: string[]): string {
   const file = join(mkdtempSync(join(tmpdir(), 'plan-history-')), 'session.jsonl')
@@ -17,7 +17,15 @@ function history(sectionIds: string[]): string {
 }
 
 describe('plan mode', () => {
-  it('keeps read-only inspection, questions and recall, plus provider tools marked read-only', () => {
+  it('keeps question tools out of normal mode and available to an eligible plan', () => {
+    const registered = ['read', 'bash', 'ask_user', 'ask_user_question']
+    const normal = normalModeTools(registered)
+    expect(normal).toEqual(['read', 'bash'])
+    expect(QUESTION_TOOL_NAMES).toEqual(new Set(['ask_user', 'ask_user_question']))
+    expect(planModeTools(normal, [], registered)).toEqual(['read', 'ask_user', 'ask_user_question'])
+  })
+
+  it('keeps read-only inspection and recall plus provider tools marked read-only', () => {
     const normal = ['read', 'bash', 'edit', 'write', 'grep', 'ask_user', 'wiki_search', 'memory_append', 'spawn_subagent', 'files_read', 'files_write', 'skill_load']
     expect(planModeTools(normal, ['files_read'])).toEqual(['read', 'grep', 'ask_user', 'wiki_search', 'files_read', 'skill_load'])
   })
@@ -40,6 +48,8 @@ describe('plan mode', () => {
   it('adds its instructions while on, withdraws them once after, and is absent otherwise', () => {
     expect(planSection(true, null)).toMatchObject({ id: PLAN_SECTION_ID, body: PLAN_INSTRUCTIONS, dynamic: true })
     expect(PLAN_INSTRUCTIONS).toContain('<proposed_plan>')
+    expect(PLAN_INSTRUCTIONS).toContain('genuinely distinct, useful design directions')
+    expect(PLAN_INSTRUCTIONS).toContain('contextual `uiSketch` wireframes')
     expect(planSection(false, null)).toBeNull()
     expect(planSection(false, history(['blocks']))).toBeNull()
     expect(planSection(false, history(['blocks', PLAN_SECTION_ID]))).toMatchObject({ id: PLAN_SECTION_ID, body: null, dynamic: true })

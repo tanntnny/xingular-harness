@@ -148,12 +148,13 @@ the App's architecture pages. Page 14 states how the terminal and a host share c
 
 - **INV-BND-1** The harness imports nothing from an application. Application data reaches it only
   through the extension points (page 01) or the server protocol (page 10).
-- **INV-BND-2** The harness names no application and no application concept (agent role, group,
-  task, pane, handoff, App browser workspace, computer use) in code paths it reads or text a model or
-  person sees. Text names the product through `env.productName` (default `Xingular Harness`;
-  `{product}` in a tool description). Ids such as `agentId`, `projectId` and a variant `scope` are
-  opaque; names come from `Directory` or `CallerContext.agentName`. A managed git worktree is a
-  Harness object since PROP-0016.
+- **INV-BND-2** The harness names no application or application concept (agent role, group, task,
+  pane, handoff, App browser workspace, computer use) in code paths it reads or text a model or
+  person sees, except for its canonical product name `Xingular Agent`. Text names the product through
+  `env.productName` (default `Xingular Agent`; `{product}` in a tool description); an embedding host
+  may supply another product name. Ids such as `agentId`, `projectId` and a variant `scope` are opaque;
+  names come from `Directory` or `CallerContext.agentName`. A managed git worktree is a Harness
+  object since PROP-0016.
 - **INV-BND-3** A new need of one application is met by a generic extension point or option,
   never by a branch on an application's name or concept.
 - **INV-BND-4** Variants, the prompt compiler and Wiki notes are synchronous (`variant/`, `prompt/`,

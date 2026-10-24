@@ -189,6 +189,19 @@ export class BrowserPage implements TerminalPage {
     this.options.changed()
   }
 
+  private actionGroup(id: string): string {
+    if (id === 'use') return 'Use'
+    if (['preview', 'read', 'details', 'latest', 'related', 'owner', 'contributions', 'tools'].includes(id)) return 'Inspect'
+    if (['test', 'auth', 'enable', 'permission'].includes(id)) return 'Access'
+    if (id === 'remove' || id === 'remove-connection') return 'Remove'
+    return 'Manage'
+  }
+
+  private groupedActions(row: Row): Action[] {
+    const order = ['Use', 'Inspect', 'Manage', 'Access', 'Remove']
+    return this.actions(row).sort((left, right) => order.indexOf(this.actionGroup(left.id)) - order.indexOf(this.actionGroup(right.id)))
+  }
+
   private actions(row: Row): Action[] {
     const actions: Action[] = []
     const item = row.item
@@ -556,8 +569,8 @@ export class BrowserPage implements TerminalPage {
     }
     const description = this.description(row).flatMap(line => wrapTextWithAnsi(safeText(line), width))
       .slice(0, Math.max(1, Math.min(6, Math.floor(rows / 2))))
-    const actions = row ? this.actions(row) : []
-    this.actionList.setRows(actions.map(action => ({ id: action.id, label: action.label, data: action })))
+    const actions = row ? this.groupedActions(row) : []
+    this.actionList.setRows(actions.map(action => ({ id: action.id, label: action.label, group: this.actionGroup(action.id), data: action })))
     this.actionList.focused = this.focus === 'inspector'
     this.inspectorActionRow = bodyStart + description.length + 1
     return [...description, '', ...this.actionList.render(width, Math.max(0, rows - description.length - 1))].slice(0, rows)

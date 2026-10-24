@@ -9,9 +9,9 @@ const state = {
 }
 
 describe('the composer status bar', () => {
-  it('joins status groups with | and separates account/model/effort with spaces', () => {
-    expect(statusBarText(state)).toBe('project | main | Tanny Sonnet 4.6 high | ↑1K R50% ↓50')
-    expect(statusBarGroups(state)).toHaveLength(4)
+  it('joins project and branch with : and separates the remaining groups with |', () => {
+    expect(statusBarText(state)).toBe('project:main | Tanny Sonnet 4.6 high | ↑1K R50% ↓50')
+    expect(statusBarGroups(state)).toHaveLength(3)
   })
 
   it('shows the rounded cache hit rate after input tokens and uses zero when there is no input', () => {
@@ -26,7 +26,7 @@ describe('the composer status bar', () => {
 
   it('keeps readable fallbacks when the branch, account or model is unavailable', () => {
     expect(statusBarText({ ...state, branch: null, account: undefined, model: undefined }))
-      .toBe('project | — | account unknown no model high | ↑1K R50% ↓50')
+      .toBe('project:— | account unknown no model high | ↑1K R50% ↓50')
   })
 
   it('keeps metadata on one sanitized line', () => {

@@ -46,8 +46,19 @@ proposal is `Accepted`.
 | [PROP-0017](PROP-0017-page-annotations.md) | Page annotations captured in the headed browser or a host's web view | Harness/terminal in 4.0.0 candidate; App source pending native-gesture acceptance | INV-STO-3, INV-SRV-1, 07, 10, 11, 12, 13, 14 | 2026-10-23 |
 
 | [PROP-0018](PROP-0018-annotation-queue-and-app-targets.md) | Inspector-style page notes, a fix queue to the agent, and app windows as capture targets | Harness/terminal in 4.0.0 candidate; App source present, native WKWebView acceptance pending | INV-STO-3, INV-SRV-1, 07, 10, 11, 12, 13, 14 | 2026-10-23 |
-| [PROP-0019](PROP-0019-contextual-side-questions.md) | Harness-owned contextual side questions across surfaces | Proposed | INV-RUN-1/3, INV-GATE-1, INV-SRV-1/2, INV-PAR-1/2, 02, 07, 10, 11, 12, 14 | 2026-10-24 |
+| [PROP-0019](PROP-0019-contextual-side-questions.md) | Harness-owned contextual side questions across surfaces | Implemented; working tree verified | INV-RUN-1/3/5, INV-GATE-1, INV-PLG-1/5, INV-CAP-1, INV-SRV-1/2, INV-PAR-1/2, 02, 04, 06, 07, 10, 11, 12, 14, ADR-0023 | 2026-10-24 |
 | [PROP-0020](PROP-0020-builtin-feature-plugins.md) | Built-in feature modules and namespaced plugin commands | Implemented; included in 4.0.0 candidate | INV-PLG-5/6, INV-TUI-2/7, INV-SRV-1, 06, 11, 13, 14 | 2026-10-24 |
+| [PROP-0021](PROP-0021-command-namespaces-and-duplicates.md) | Required built-in commands and duplicate command suppression | Implemented | INV-TUI-7, INV-PAR-1, 11, 14, ADR-0021 | 2026-10-24 |
+| [PROP-0022](PROP-0022-plan-only-questions.md) | Keep question tools available only in interactive plan mode | Implemented | INV-RUN-8, 02, 04, 06, 07, 11, 14, parity, ADR-0022 | 2026-10-24 |
+| [PROP-0023](PROP-0023-xagent-cli-name.md) | Rename the published CLI command to xagent | Implemented | 11-terminal.md, package.json#bin, CLI documentation, ADR-0024 | 2026-10-24 |
+| [PROP-0024](PROP-0024-question-sketch-previews.md) | Add bounded ASCII sketch previews to question choices | Implemented; working tree verified | INV-RUN-3, INV-PAR-1/2, 02, 10, 11, 14, parity, App question contract and plan-mode docs, ADR-0025 | 2026-10-24 |
+| [PROP-0025](PROP-0025-contextual-question-wireframes.md) | Strict question columns and contextual ASCII wireframes | Implemented; working tree and isolated fixtures verified | INV-RUN-3, INV-PAR-1/2, 02, 11, 14, terminal-tui.md, parity, ADR-0026 | 2026-10-24 |
+
+| [PROP-0026](PROP-0026-connected-sketch-display.md) | Connect structural sketch lines in the terminal display | Implemented; working tree and isolated fixtures verified | 11, 14, terminal-tui.md, parity, ADR-0027 | 2026-10-24 |
+| [PROP-0027](PROP-0027-xingular-agent-product-identity.md) | Use Xingular Agent as the default Harness product identity | Accepted; implemented and verified | INV-BND-2, 00-overview.md, 04-prompt.md, 11-terminal.md, terminal-tui.md, ADR-0028 | 2026-10-24 |
+| [PROP-0028](PROP-0028-normalize-question-wireframes.md) | Normalize high-confidence question wireframe borders in the terminal preview | Implemented; production PTY verification passed | INV-PAR-1/2, 11-terminal.md, 14-surfaces-and-parity.md, terminal-tui.md, parity, ADR-0029 | 2026-10-24 |
+| [PROP-0029](PROP-0029-agent-profiles.md) | Agent profiles that subagents start from | Accepted; implemented | INV-RUN-2, INV-VAR-4, INV-STO-3, INV-SRV-1, 02, 03, 04, 06, 10, 11, 12, 14, parity, ADR-0030 | 2026-10-24 |
+| [PROP-0030](PROP-0030-subagent-title.md) | A parent-set title for each subagent, shown in the roster | Accepted; implemented | 02, 07, 10, 11, terminal-tui.md, 14, parity | 2026-10-24 |
 
 Numbers are four digits, start at `0001`, and are never reused.
 

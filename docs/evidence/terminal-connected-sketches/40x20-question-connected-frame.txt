@@ -1,0 +1,20 @@
+   · Starting session…
+  ✽ Galloping (1s, 75 tok/s)
+ ──────────────────────────────────────
+   UI layout
+   2 LongMasthe  DESC_B retains
+     adLabelWit  neighboring panels.
+     houtSpaces
+
+  ┌──────────────────────────────────┐
+  │A_FOCUS: Masthead                 │
+  ├──────────────────────────────────┤
+  │┌──────────────────────┬──────────│
+  ││ Product name         │ Session h│
+  │├──────────────────────┼──────────│
+  ││ /resume              │ Recent co│
+  └──────────────────────────────────┘
+
+   3 Something else… Skip and Submit
+
+  ↑↓ · Enter · Tab · Esc · ⇧arrows pan

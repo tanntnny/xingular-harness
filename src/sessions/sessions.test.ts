@@ -4,9 +4,11 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { memorySecretStore } from '../accounts/secrets'
+import { ASK_USER } from '../tools/askUser'
 import { createHarness, type Harness } from '../harness'
 import type { RunEvent } from './contracts'
 import { grant, type ApprovalFacts } from './approvals'
+import { loadRun as loadCapabilitySnapshot } from '../capabilities/runSnapshot'
 import { continuationOf, continuationSection } from './continuation'
 import { selectHistory } from './history'
 import type { ToolPolicy } from './policy'
@@ -164,7 +166,7 @@ describe('session turns on Pi', () => {
     const { run, events, harness } = setup(async ({ gate, params }) => ({
       ...fakeSession(async () => undefined, gate),
       sendCustomMessage: async (message, options) => void delivered.push({ type: message.customType, display: message.display, options, snapshot: Object.keys(message.details as object) }),
-      prompt: async (text) => void delivered.push({ text, system: params.system.startsWith('# Xingular Harness context\n') })
+      prompt: async (text) => void delivered.push({ text, system: params.system.startsWith('# Xingular Agent context\n') })
     }))
     const started = await run('context-run', { preamble: '[Group context]', text: 'The user request' })
     await tick()
@@ -525,21 +527,49 @@ describe('session turns on Pi', () => {
     expect(loadRun(harness.env.root, 'run-3').status).toBe('interrupted')
   })
 
-  it('gives every session the history, Wiki and skill tools, a question tool, and the application\'s tools in order', async () => {
+  it('gives normal sessions the history, Wiki and skill tools and the application\'s tools, but no question tool', async () => {
     let received: Parameters<SessionFactory>[0] | null = null
     const { run, harness } = setup(async (input) => {
       received = input
       return fakeSession(async () => undefined, input.gate)
     })
     harness.sessions.provide(() => [{ name: 'react', label: 'React', description: 'React', parameters: (Type) => Type.Object({}), execute: async () => 'ok' }])
-    await run('run-5', { tools: { allow: ['react'] } })
+    await run('run-5', { tools: { allow: ['react', ASK_USER] } })
     await tick()
-    expect(received!.allow.slice(0, 2)).toEqual(['react', 'ask_user'])
+    expect(received!.allow[0]).toBe('react')
+    expect(received!.allow).not.toContain(ASK_USER)
     expect(received!.allow).toEqual(expect.arrayContaining(['history_search', 'wiki_search', 'wiki_read', 'skill_load', 'trajectory_read']))
     expect(received!.allow).not.toContain('wiki_write')
-    expect(received!.tools.map((tool) => tool.name)).toEqual(['history_search', 'history_read', 'trajectory_search', 'trajectory_read', 'wiki_search', 'wiki_read', 'wiki_list', 'wiki_write', 'skill_load', 'ask_user', 'checklist_write', 'session_name', 'spawn_subagent', 'wait_subagents', 'web_search', 'web_fetch', 'browser_navigate', 'browser_snapshot', 'browser_read', 'browser_screenshot', 'browser_click', 'browser_type', 'browser_select', 'browser_press', 'browser_scroll', 'browser_wait', 'browser_tabs', 'page_notes_list', 'page_notes_read', 'page_notes_mark_fixed', 'react'])
+    expect(received!.tools.map((tool) => tool.name)).toEqual(['history_search', 'history_read', 'trajectory_search', 'trajectory_read', 'wiki_search', 'wiki_read', 'wiki_list', 'wiki_write', 'skill_load', 'checklist_write', 'session_name', 'spawn_subagent', 'wait_subagents', 'web_search', 'web_fetch', 'browser_navigate', 'browser_snapshot', 'browser_read', 'browser_screenshot', 'browser_click', 'browser_type', 'browser_select', 'browser_press', 'browser_scroll', 'browser_wait', 'browser_tabs', 'page_notes_list', 'page_notes_read', 'page_notes_mark_fixed', 'react'])
     expect(await received!.tools.find((tool) => tool.name === 'skill_load')!.execute({})).toBe('You have no skills.')
-    expect(received!.params.system).toContain('# Xingular Harness context')
+    expect(received!.params.system).toContain('# Xingular Agent context')
+  })
+
+  it('offers ask_user only to attended plan runs, subject to the caller capability set', async () => {
+    const seen = new Map<string, { allow: string[]; tools: string[] }>()
+    const { run } = setup(async (input) => {
+      seen.set(input.params.runId, { allow: [...input.allow], tools: input.tools.map((tool) => tool.name) })
+      return fakeSession(async () => undefined, input.gate)
+    })
+    await run('plan-questions', { plan: true })
+    await tick()
+    await run('automatic-plan', { plan: true, automatic: true })
+    await tick()
+    await run('probe-plan', { plan: true, run: { id: 'probe-plan', sessionId: 'agent-1', trigger: 'probe' } })
+    await tick()
+    await run('improver-plan', { plan: true, run: { id: 'improver-plan', sessionId: 'agent-1', trigger: 'improver' } })
+    await tick()
+    await run('reflection-plan', { plan: true, run: { id: 'reflection-plan', sessionId: 'agent-1', trigger: 'reflection' } })
+    await tick()
+    await run('narrow-plan', { plan: true, capabilities: { version: 1, tools: ['read'], connectors: [], contributions: [] } })
+    await tick()
+
+    expect(seen.get('plan-questions')!.allow).toContain(ASK_USER)
+    expect(seen.get('plan-questions')!.tools).toContain(ASK_USER)
+    for (const id of ['automatic-plan', 'probe-plan', 'improver-plan', 'reflection-plan', 'narrow-plan']) {
+      expect(seen.get(id)!.allow).not.toContain(ASK_USER)
+      expect(seen.get(id)!.tools).not.toContain(ASK_USER)
+    }
   })
 
   it('records the checklist the model writes, whole, and allows it in plan mode', async () => {
@@ -679,8 +709,10 @@ describe('continuing a run that stopped', () => {
       received = input
       return fakeSession(() => new Promise((resolve) => setTimeout(resolve, 400)), input.gate)
     })
-    await run('first')
+    await run('first', { plan: true })
     await tick()
+    const firstCapabilities = loadCapabilitySnapshot(harness.env.root, 'first')!
+    expect(firstCapabilities.tools).toContain(ASK_USER)
     await received!.tools.find((tool) => tool.name === 'checklist_write')!.execute({ items: [{ text: 'Read', status: 'completed' }, { text: 'Fix', status: 'in_progress' }] })
     await harness.runs.interrupt('first')
     await tick(60)
@@ -695,6 +727,8 @@ describe('continuing a run that stopped', () => {
 
     await expect(run('wrong-account', { continueFrom: 'first', accountId: 'another' })).rejects.toMatchObject({ code: 'continuation_mismatch' })
     await expect(run('wrong-variant', { continueFrom: 'first', variant: { scope: 'other' } })).rejects.toMatchObject({ code: 'continuation_mismatch' })
+    await expect(run('automatic-second', { continueFrom: 'first', automatic: true })).rejects.toMatchObject({ code: 'continuation_mismatch' })
+    await expect(run('probe-second', { continueFrom: 'first', run: { id: 'probe-second', sessionId: 'agent-1', trigger: 'probe' } })).rejects.toMatchObject({ code: 'continuation_mismatch' })
 
     await run('second', { continueFrom: 'first', text: '' })
     await tick()
@@ -703,6 +737,8 @@ describe('continuing a run that stopped', () => {
     expect(received!.params.update?.content).toContain('[~] Fix')
     expect(received!.params.historyFile).toBe(realpathSync(join(sessionDir, 'saved.jsonl')))
     expect(loadRun(root, 'second')).toMatchObject({ resumedFromRunId: 'first', accountId: loadRun(root, 'first').accountId })
+    expect(received!.allow).toContain(ASK_USER)
+    expect(loadCapabilitySnapshot(root, 'second')).toEqual(firstCapabilities)
     await harness.runs.interrupt('second')
   })
 
@@ -758,8 +794,8 @@ describe('subagents', () => {
       return fakeSession(async (emit) => {
         if (params.runId === 'parent') {
           const spawn = tools.find((tool) => tool.name === 'spawn_subagent')!
-          expect(await spawn.execute({ brief: 'Find the bug', tools: ['bash', 'web'] })).toMatch(/cannot have tools you do not have: web/)
-          parentResult = await spawn.execute({ brief: 'Find the bug', tools: ['read'], wait: true })
+          expect(await spawn.execute({ title: 'Find the bug', brief: 'Find the bug', tools: ['bash', 'web'] })).toMatch(/cannot have tools you do not have: web/)
+          parentResult = await spawn.execute({ title: 'Find the bug', brief: 'Find the bug', tools: ['read'], wait: true })
           return
         }
         emit({ type: 'message_start', message: { role: 'assistant' } })

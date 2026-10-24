@@ -1,4 +1,4 @@
-// `xharness web` and `xharness browser`: the settings a person keeps for the world tools on this
+// `xagent web` and `xagent browser`: the settings a person keeps for the world tools on this
 // device. Keys are read from standard input, never from the command line, so they stay out of
 // shell history.
 import { homedir } from 'node:os'
@@ -11,7 +11,7 @@ import { readBrowserConfig, writeBrowserConfig, type BrowserConfig } from '../br
 import { SEARCH_PROVIDERS } from '../web/search'
 import { KEYLESS_SEARCH, WEB_PLUGIN, WEB_SETTINGS } from '../web/tools'
 
-export const WEB_USAGE = `Usage: xharness web <status | key <provider> [--remove] | keyless on|off> [--state <dir>] [--data <dir>]
+export const WEB_USAGE = `Usage: xagent web <status | key <provider> [--remove] | keyless on|off> [--state <dir>] [--data <dir>]
 
   status                 Which search services are ready
   key <provider>         Save a key for brave, tavily or exa, read from standard input
@@ -21,7 +21,7 @@ export const WEB_USAGE = `Usage: xharness web <status | key <provider> [--remove
                          (default off; it often answers automated requests with a bot check)
 `
 
-export const BROWSER_USAGE = `Usage: xharness browser [status | set <options>] [--state <dir>]
+export const BROWSER_USAGE = `Usage: xagent browser [status | set <options>] [--state <dir>]
 
   status                       How the browser runs
   set --headed | --headless    Show the browser window, or not (default: headless)
@@ -76,7 +76,7 @@ export async function runWebCli(argv: string[], dependencies: CliDependencies = 
   if (command === 'status') {
     for (const provider of SEARCH_PROVIDERS) {
       if (!provider.key) {
-        write(`${provider.title.padEnd(22)} ${keylessOn(dataRoot) ? 'on' : 'off (xharness web keyless on)'}\n`)
+        write(`${provider.title.padEnd(22)} ${keylessOn(dataRoot) ? 'on' : 'off (xagent web keyless on)'}\n`)
         continue
       }
       write(`${provider.title.padEnd(22)} ${(await secrets.get(provider.key)) ? 'key saved' : 'no key'}\n`)
@@ -85,7 +85,7 @@ export async function runWebCli(argv: string[], dependencies: CliDependencies = 
   }
   if (command === 'keyless') {
     if (name !== 'on' && name !== 'off') {
-      write('Say on or off: xharness web keyless on\n')
+      write('Say on or off: xagent web keyless on\n')
       return 2
     }
     const choices = attachments.load(dataRoot)
@@ -107,7 +107,7 @@ export async function runWebCli(argv: string[], dependencies: CliDependencies = 
     }
     const key = (await (dependencies.read ?? readStdin)()).trim()
     if (!key || /\s/.test(key)) {
-      write('Give the key on standard input, for example: pbpaste | xharness web key brave\n')
+      write('Give the key on standard input, for example: pbpaste | xagent web key brave\n')
       return 2
     }
     await secrets.set(provider.key, key)

@@ -1,6 +1,6 @@
 # Doctor
 
-Run `/plugin:doctor` in the Harness terminal. It opens a readiness report for the selected account/model,
+Run `/doctor` in the Harness terminal. It opens a readiness report for the selected account/model,
 enabled tools, MCP connections, plugins and skills, pinned variant, runtime and storage.
 
 **Local is the default.** It inspects configuration, saved state and resource readability without

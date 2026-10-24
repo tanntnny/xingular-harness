@@ -1,0 +1,24 @@
+   · Starting session…
+  ✻ Whisking (4s, 69 tok/s)
+ ──────────────────────────────────────────────────────────────────────────────
+   UI layout
+
+   1 Short (Recommended)      DESC_A contextual masthead choice.
+   2 LongMastheadLabelWithou  DESC_B retains neighboring panels.
+     tSpaces
+
+  ┌──────────────────────────────────────────────────────────────────────────┐
+  ││ Context row 01                               │                          │
+  ││ Context row 02                               │                          │
+  ││ Context row 03                               │                          │
+  ││ Context row 04                               │                          │
+  ││ Context row 05                               │                          │
+  ││ Context row 06                               │                          │
+  ││ Context row 07                               │                          │
+  │A_BOTTOM                                                                  │
+  └──────────────────────────────────────────────────────────────────────────┘
+
+   3 Something else…                                         Skip and Submit
+
+  Shift+arrows sketch · PgUp/PgDn scroll · ↑↓ choose · Enter select/continue ·
+  n add note · ←→ question · Tab next · Esc stop

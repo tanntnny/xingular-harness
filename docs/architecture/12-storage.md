@@ -27,6 +27,7 @@ index.
   hub/                 installed documents and provenance   (09)
   runs/<id>/           run.json, events.jsonl, owner.json, subagents.json, context.json, caller.json, capabilities.json, mcp-context.json   (02)
   config/              plugin-attachments.json and settings the harness reads   (06)
+  agents/<name>.md     a person's global agent profiles; agents/profiles.ts owns it   (02, PROP-0029)
   index.sqlite         derived index (FTS5)   (08)
   projects.json        read only: the application owns it
 
@@ -37,7 +38,8 @@ index.
   plugin-trust.json, variant-plugin-trust.json, plugin-registered.json, plugin-hooks.json   (03, 06)
   connections.json     connected apps, no secrets   (09)
   hub/catalog.json     catalog cache   (09)
-  run/                 the session socket and terminal commands   (11)
+  run/                 terminal commands, and one session socket per Harness process,
+                       harness-<pid>-<random>.sock; files of ended processes are pruned   (11)
   worktrees.json       managed worktree registry   (02, PROP-0016)
   worktrees/<repo>/<name>/   managed worktree checkouts; worktrees/logs/ setup output   (PROP-0016)
   worktree-setup-trust.json  trusted setup-script hashes, owner-only   (PROP-0016)
@@ -45,6 +47,10 @@ index.
   notes-bridge.json    the page bridge's port and token, kept so an app's script tag stays valid   (13, PROP-0018)
   harness.log          standalone terminal diagnostics
 ```
+
+Side-question runs use the ordinary `runs/<id>/` records. Their temporary Pi native history is
+created under the operating system temporary directory and removed when the run ends; it is not
+retained in the data root or state directory.
 
 ## Invariants
 
@@ -56,6 +62,8 @@ index.
   through that module's functions. A new top-level folder or a new file in `runs/<id>/` is an
   architecture change.
 - **INV-STO-4** `projects.json` belongs to the application; the harness only reads it.
+  Project agent profiles live in the repository at `<project>/.xingular/agents/<name>.md`; the
+  harness writes them only through `agents.create` and `agents.remove` (PROP-0029).
 - **INV-STO-5** Migrations of stored data are one-way and safe: the old data is backed up or left
   as it was when a migration fails, and the failure is reported in `Recovery.migrationError`.
 - **INV-STO-6** Writes of shared JSON files are atomic (`core/fs.ts::atomicWrite`, `writeJson`).

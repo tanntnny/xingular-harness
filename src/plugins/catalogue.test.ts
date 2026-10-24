@@ -71,7 +71,7 @@ describe('the plugin list', () => {
       ['app-identity', 'application', ['instruction:Identity line:on']],
       ['app-tasks', 'application', ['tool:start_task:on']]
     ])
-    expect(plugins.filter((plugin) => plugin.source === 'builtin').map((plugin) => plugin.id)).toEqual(['ask-user', 'browser', 'budget-guard', 'checklist', 'connected-apps', 'doctor', 'history', 'hub', 'lessons', 'output-trim', 'annotations', 'refinement', 'subagents', 'variant', 'web', 'wiki', 'worktrees'])
+    expect(plugins.filter((plugin) => plugin.source === 'builtin').map((plugin) => plugin.id)).toEqual(['ask-user', 'browser', 'budget-guard', 'checklist', 'connected-apps', 'doctor', 'history', 'hub', 'lessons', 'output-trim', 'annotations', 'refinement', 'side-questions', 'subagents', 'variant', 'web', 'wiki', 'worktrees'])
     // An application that still describes the web tools is ignored: they are the harness's own now.
     expect(plugins.find((plugin) => plugin.id === 'web')?.source).toBe('builtin')
 
@@ -139,7 +139,7 @@ describe('what reaches one caller', () => {
     const of = (plugin: string) => result.items.filter((item) => item.pluginId === plugin).map((item) => `${item.kind}:${item.name}:${item.delivery}`)
     expect(of('app-identity')).toEqual(['instruction:Identity line:system'])
     expect(of('app-tasks')).toEqual(['instruction:Tool guidance: Tasks:system', 'tool:start_task:tool'])
-    expect(of('variant')).toEqual(['instruction:System prompt:system', 'instruction:Guardrails:system', 'instruction:Reporting:system', 'skill:release:on-demand', 'tool:skill_load:tool'])
+    expect(of('variant')).toEqual(['instruction:Harness identity:system', 'instruction:System prompt:system', 'instruction:Guardrails:system', 'instruction:Reporting:system', 'skill:release:on-demand', 'tool:skill_load:tool'])
     expect(of('wiki')).toEqual(['instruction:Wiki:context', 'instruction:Tool guidance: Wiki:system', 'tool:wiki_search:tool', 'tool:wiki_read:tool', 'tool:wiki_list:tool'])
     expect(of('history')).toEqual(['instruction:Tool guidance: History:system', 'tool:history_search:tool', 'tool:history_read:tool', 'tool:trajectory_search:tool', 'tool:trajectory_read:tool'])
     expect(of('pi')).toEqual(['instruction:Tool guidance: Native:system', 'tool:read:tool', 'tool:bash:tool', 'instruction:Base prompt:system'])

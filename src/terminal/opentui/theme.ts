@@ -60,6 +60,21 @@ export const opentuiTheme: OpenTuiTheme = {
   cyan: '#8bd5ca'
 }
 
+/** The colour of an agent profile's name (PROP-0029); an unknown name falls back to the accent. */
+export function profileColor(theme: OpenTuiTheme, name: string): string {
+  switch (name) {
+    case 'blue': return theme.accent
+    case 'green': return theme.success
+    case 'yellow': return theme.warning
+    case 'red': return theme.error
+    case 'magenta': return '#f5bde6'
+    case 'cyan': return theme.cyan
+    case 'orange': return theme.primary
+    case 'purple': return theme.purple
+    default: return theme.accent
+  }
+}
+
 export function blendHexColor(from: string, to: string, amount: number): string {
   const start = /^#([\da-f]{6})$/iu.exec(from)?.[1]
   const end = /^#([\da-f]{6})$/iu.exec(to)?.[1]

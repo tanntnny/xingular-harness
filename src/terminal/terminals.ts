@@ -10,6 +10,7 @@ import { Type } from 'typebox'
 import type { CapabilitySet } from '../capabilities/types'
 import { freezeRun } from '../capabilities/runSnapshot'
 import type { Subagents } from '../sessions/subagentService'
+import type { SideQuestions, SideQuestionContext } from '../sessions/sideQuestions'
 import { SPAWN_SUBAGENT, WAIT_SUBAGENTS, type SubagentOptions } from '../sessions/subagents'
 import { subagentTools } from '../tools/spawnSubagent'
 import type { Effort } from '../sessions/runner'
@@ -41,6 +42,9 @@ import type { ToolPolicy } from '../sessions/policy'
 import type { ActiveRun, RunRegistry } from '../sessions/registry'
 import { findRun, loadRun, saveRun, updateRun } from '../sessions/runStore'
 import type { ToolSpec } from '../tools/types'
+import { CHECKLIST_WRITE } from '../tools/checklist'
+import { createProfile, listProfiles, profileDirs, profileSection, removeProfile, resolveProfile, type ProfileScope } from '../agents/profiles'
+import type { TerminalSubagentProfile } from './subagentMonitor'
 import { SESSION_NAME } from '../tools/sessionName'
 import { contributionId } from '../plugins/identity'
 import type { World } from '../world/world'
@@ -73,7 +77,7 @@ function resourceIdentity(loading: Loading | null): string {
 export interface TerminalAssets {
   /** The Node binary that runs the commands. */
   node: string
-  /** The built `xharness` command (`dist/cli.js`). */
+  /** The built `xagent` command (`dist/cli.js`). */
   cli: string
   /** The built Pi extension (`dist/terminal-pi.js`). */
   piExtension: string
@@ -148,6 +152,8 @@ export interface TerminalsOptions {
   /** Which plugin code in variants a person trusted. */
   trust?: VariantTrust | null
   subagents?: Subagents
+  /** Shared tool-free side-question runs. */
+  sideQuestions?: SideQuestions
   resolveCapabilities?: (caller: CallerContext, tools: readonly string[], cwd: string) => Promise<CapabilitySet>
   env: HarnessEnv
   stateDir: string
@@ -197,10 +203,24 @@ export class Terminals {
   private readonly worldReadOnly = new Set<string>()
   private readonly socket: SessionSocket
   private readonly assets: TerminalAssets
-  /** A session's `/accounts` or `/plugin:worktree` switch, taken once its Pi process has ended. */
+  /** A session's `/accounts` or `/worktree` switch, taken once its Pi process has ended. */
   private readonly relaunches = new Map<string, TerminalRelaunch>()
   /** The managed worktree each live session holds. */
   private readonly worktreeLeases = new Map<string, string>()
+
+  /** Each child's profile name and colour, looked up once per child run. */
+  private readonly childProfiles = new Map<string, TerminalSubagentProfile | null>()
+
+  private subagentProfile(record: RunRecord): TerminalSubagentProfile | null {
+    if (!record.profile) return null
+    if (!this.childProfiles.has(record.id)) {
+      if (this.childProfiles.size > 500) this.childProfiles.clear()
+      let color = 'blue'
+      try { color = resolveProfile(this.options.env.root, record.workingDirectory, record.profile)?.color ?? color } catch {}
+      this.childProfiles.set(record.id, { name: record.profile, color })
+    }
+    return this.childProfiles.get(record.id) ?? null
+  }
 
   constructor(private readonly options: TerminalsOptions) {
     this.assets = options.assets ?? defaultAssets()
@@ -217,7 +237,7 @@ export class Terminals {
         const owner = this.sessions.get(parent.sessionId)
         if (owner?.controller.activeRun?.runId === parent.id) {
           owner.controller.observe(event, true)
-          owner.controller.observeSubagent(parent.id, record, event)
+          owner.controller.observeSubagent(parent.id, record, event, this.subagentProfile(record))
           break
         }
         parentId = parent.parentRunId
@@ -449,7 +469,27 @@ export class Terminals {
     }
   }
 
-  /** `/plugin:worktree`: the managed worktrees of the repository this session works in. */
+  /** `/agents`: the agent profiles this session's folder can use (PROP-0029). */
+  private agentsCall(live: Live, call: string, params: Record<string, unknown>): unknown {
+    const root = this.options.env.root
+    const cwd = live.input.cwd
+    const name = (): string => {
+      if (typeof params.name !== 'string' || !params.name.trim()) throw invalid('A profile name is required.')
+      return params.name.trim()
+    }
+    const scope = (): ProfileScope => {
+      if (params.scope !== 'global' && params.scope !== 'project') throw invalid('scope must be global or project.')
+      return params.scope
+    }
+    switch (call.slice('terminal.agents.'.length)) {
+      case 'list': return { ...listProfiles(root, cwd, this.variantDirs.get(live.input.sessionId) ?? null), dirs: profileDirs(root, cwd) }
+      case 'create': return createProfile(root, cwd, { name: name(), scope: scope(), from: typeof params.from === 'string' && params.from ? params.from : null })
+      case 'remove': removeProfile(root, cwd, { name: name(), scope: scope() }); return {}
+      default: throw invalid('Unknown profile operation.')
+    }
+  }
+
+  /** `/worktree`: the managed worktrees of the repository this session works in. */
   private async worktreesCall(live: Live, call: string, params: Record<string, unknown>): Promise<unknown> {
     const worktrees = this.options.worktrees
     if (!worktrees) throw invalid('Worktrees are unavailable in this host.')
@@ -681,7 +721,7 @@ export class Terminals {
     }
     // With no application policy: reads run, a read-only session refuses the rest, and anything else asks.
     const name = tool.toLowerCase()
-    if (name === SESSION_NAME || name === SPAWN_SUBAGENT || name === WAIT_SUBAGENTS || READ_ONLY_TOOLS.has(name) || this.worldReadOnly.has(name) || this.options.apps.toolNames.includes(name as never)) return { allowed: true }
+    if (name === SESSION_NAME || name === CHECKLIST_WRITE || name === SPAWN_SUBAGENT || name === WAIT_SUBAGENTS || READ_ONLY_TOOLS.has(name) || this.worldReadOnly.has(name) || this.options.apps.toolNames.includes(name as never)) return { allowed: true }
     if (live.input.readOnly) return { allowed: false, reason: 'This session is read-only.' }
     return { allowed: false, requiresApproval: true, rememberable: true, reason: 'This native action requires approval.' }
   }
@@ -699,7 +739,7 @@ export class Terminals {
     if (call === 'terminal.subagents.register') {
       if (!Array.isArray(params.tools) || params.tools.some((name: unknown) => typeof name !== 'string')) throw invalid('Native tool names are required.')
       const readOnly = live.input.readOnly === true
-      const readTools = new Set([...READ_ONLY_TOOLS, SESSION_NAME, SPAWN_SUBAGENT, WAIT_SUBAGENTS, 'ask_user', 'mcp_list_tools', 'mcp_call_tool', 'history_search', 'history_read', 'wiki_search', 'wiki_read', 'wiki_list', 'memory_facts', 'skill_load'])
+      const readTools = new Set([...READ_ONLY_TOOLS, SESSION_NAME, CHECKLIST_WRITE, SPAWN_SUBAGENT, WAIT_SUBAGENTS, 'ask_user', 'mcp_list_tools', 'mcp_call_tool', 'history_search', 'history_read', 'wiki_search', 'wiki_read', 'wiki_list', 'memory_facts', 'skill_load'])
       const tools = params.tools.filter((name: string) => !readOnly || readTools.has(name)) as string[]
       const capabilities = this.options.resolveCapabilities ? await this.options.resolveCapabilities(live.caller, tools, live.input.cwd) : { version: 1 as const, tools, connectors: [], contributions: [] }
       freezeRun(this.options.env.root, run.runId, live.caller, capabilities)
@@ -710,6 +750,7 @@ export class Terminals {
         effort: typeof params.effort === 'string' ? params.effort as Effort : null,
         launch: live.input.launch, tools: { allow: capabilities.tools, gated: capabilities.tools.filter(name => !readTools.has(name)) },
         connections: live.input.connections === false ? false : { readOnly }, subagents: live.input.subagents,
+        variant: this.variantDirs.has(live.input.sessionId) ? { dir: this.variantDirs.get(live.input.sessionId)!, scope: live.input.variant && 'scope' in live.input.variant ? live.input.variant.scope ?? null : null } : null,
         capabilities
       }, live.account.id, capabilities)
       service.restore(run.runId, params.history ?? { owners: [], receipts: [] })
@@ -775,6 +816,39 @@ export class Terminals {
     throw new HarnessError('unknown_method', `Unknown call ${call}.`)
   }
 
+  private async sideQuestionCall(live: Live, call: string, params: Record<string, unknown>): Promise<unknown> {
+    const service = this.options.sideQuestions
+    if (!service) throw new HarnessError('unknown_method', `Unknown call ${call}.`)
+    if (call === 'terminal.sideQuestions.start') {
+      if (typeof params.question !== 'string') throw invalid('A side question is required.')
+      const context = params.context && typeof params.context === 'object' && !Array.isArray(params.context)
+        ? params.context as SideQuestionContext
+        : undefined
+      const latest = listTerminalTrajectoryRuns(this.options.env.root, live.input.sessionId, live.controller.nativeSessionId)
+        .find(run => findRun(this.options.env.root, run.id)?.trigger !== 'side-question')
+      return service.start({
+        sessionId: live.input.sessionId,
+        parentRunId: live.controller.activeRun?.runId ?? latest?.id ?? null,
+        parentSessionId: live.input.sessionId,
+        accountId: live.account.id,
+        model: typeof params.model === 'string' ? params.model : live.input.model ?? null,
+        effort: typeof params.effort === 'string' ? params.effort as Effort : undefined,
+        cwd: live.input.cwd,
+        caller: live.caller,
+        question: params.question,
+        context
+      })
+    }
+    if (typeof params.runId !== 'string') throw invalid('A side-question run id is required.')
+    if (call === 'terminal.sideQuestions.read') {
+      const afterSequence = params.afterSequence === undefined ? -1 : params.afterSequence
+      if (typeof afterSequence !== 'number') throw invalid('A side-question event sequence is required.')
+      return service.read(params.runId, live.input.sessionId, afterSequence)
+    }
+    if (call === 'terminal.sideQuestions.interrupt') return service.interrupt(params.runId, live.input.sessionId)
+    throw new HarnessError('unknown_method', `Unknown call ${call}.`)
+  }
+
   /** The only terminal frontend: the Bun-run OpenTUI application. */
   private frontendCommand(): { program: string; argsPrefix: string[] } {
     return {
@@ -828,8 +902,11 @@ export class Terminals {
         plugins: () => this.options.pluginControl?.list({ cwd: input.cwd, accountId: preparedAccount.id, projectId: input.projectId ?? null }) ?? Promise.resolve([]) })
       if (variant) this.variantDirs.set(sessionId, variant.dir)
       const worldTools = await this.worldToolNames(input, preparedAccount)
-      const launchTools = [...new Set([...(input.launch?.tools ?? []), SESSION_NAME, ...worldTools])]
-      const pack = compile(env, caller, { ...input.launch, tools: launchTools }, variant)
+      const launchTools = [...new Set([...(input.launch?.tools ?? []), CHECKLIST_WRITE, SESSION_NAME, ...worldTools])]
+      // The profiles replace the variant's own subagent list, which they include.
+      const profiles = this.options.subagents && input.subagents !== null ? profileSection(root, input.cwd, variant?.dir ?? null) : null
+      const launchSections = profiles ? [...(input.launch?.sections ?? []).filter((section) => section.id !== profiles.id), profiles] : input.launch?.sections
+      const pack = compile(env, caller, { ...input.launch, sections: launchSections, tools: launchTools }, variant && profiles ? { ...variant, sections: variant.sections.filter((section) => section.id !== profiles.id) } : variant)
       record(root, pack)
       mkdirSync(this.historyDir(input), { recursive: true })
       saveForSession(input.sessionFolder, pack)
@@ -916,7 +993,9 @@ export class Terminals {
             if (call === 'terminal.doctor.cancel') return doctor.cancel(id)
             throw invalid('Unknown diagnostic operation.')
           }
+          if (call.startsWith('terminal.agents.')) return this.agentsCall(live, call, params)
           if (call.startsWith('terminal.subagents.')) return this.subagentsCall(live, call, params)
+          if (call.startsWith('terminal.sideQuestions.')) return this.sideQuestionCall(live, call, params)
           if (call.startsWith('terminal.worktrees.')) return this.worktreesCall(live, call, params)
           if (call.startsWith('terminal.annotations.')) return this.annotationsCall(live, call, params)
           if (call === 'terminal.logs.info') return harnessLogInfo(this.options.stateDir)

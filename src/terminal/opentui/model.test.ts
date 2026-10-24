@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { AgentSession } from '@earendil-works/pi-coding-agent'
+import { SessionManager, type AgentSession } from '@earendil-works/pi-coding-agent'
 
 import { TranscriptModel } from './model'
 
@@ -146,6 +146,28 @@ describe('TranscriptModel', () => {
     expect(items[2]).toMatchObject({ kind: 'assistant', text: 'partial', streaming: true })
   })
 
+  it('shows a checklist call as its list and names the agent and brief of a subagent call', () => {
+    const model = new TranscriptModel()
+    const items = [{ text: 'Read the code', status: 'completed' }, { text: 'Fix the bug', status: 'in_progress' }, { text: 'Run tests', status: 'pending' }]
+    model.bind(session([
+      {
+        role: 'assistant',
+        content: [
+          { type: 'toolCall', id: 'c1', name: 'checklist_write', arguments: { items } },
+          { type: 'toolCall', id: 'c2', name: 'checklist_write', arguments: { items: 'nope' } },
+          { type: 'toolCall', id: 's1', name: 'spawn_subagent', arguments: { agent: 'explorer', title: 'Map the login route', brief: 'Find the login route' } }
+        ]
+      },
+      { role: 'toolResult', toolCallId: 'c1', content: '[x] Read the code', isError: false },
+      { role: 'toolResult', toolCallId: 'c2', content: 'Send items', isError: false }
+    ]))
+    const view = model.view().items
+    expect(view[0]).toMatchObject({ kind: 'checklist', status: 'ok', items })
+    expect(view[1]).toMatchObject({ kind: 'tool', name: 'checklist_write' })
+    expect(view[2]).toMatchObject({ kind: 'tool', summary: 'explorer · Map the login route' })
+    expect(model.view().items[0]).toBe(view[0])
+  })
+
   it('strips paired bold markers from thinking without changing assistant text', () => {
     const model = new TranscriptModel()
     model.bind(session([{
@@ -277,6 +299,46 @@ describe('TranscriptModel', () => {
     model.invalidate()
 
     expect(model.view().items.map(item => item.kind)).toEqual(['compaction', 'notice', 'user'])
+  })
+
+  it('shows the whole conversation, then the summary, then later work after a compaction', () => {
+    const manager = SessionManager.inMemory('/tmp')
+    const ids = Array.from({ length: 6 }, (_, index) => manager.appendMessage({ role: 'user', content: `message ${index}`, timestamp: index }))
+    const target = { sessionManager: manager, messages: manager.buildSessionProjection().messages, state: {} }
+    const model = new TranscriptModel()
+    model.bind(target as unknown as AgentSession)
+    model.notice('before compaction')
+
+    manager.appendCompaction('earlier work', ids[4]!, 9_000)
+    target.messages = manager.buildSessionProjection().messages
+    model.bind(target as unknown as AgentSession)
+    const reply = { role: 'assistant', content: [{ type: 'text', text: 'work after compaction' }], timestamp: 7 }
+    manager.appendMessage(reply as never)
+    target.messages.push(reply as never)
+    model.invalidate()
+
+    const items = model.view().items
+    expect(items.map(item => item.kind)).toEqual(['user', 'user', 'user', 'user', 'user', 'user', 'notice', 'compaction', 'assistant'])
+    expect(items.slice(0, 6).map(item => item.kind === 'user' && item.text)).toEqual(ids.map((_, index) => `message ${index}`))
+    expect(items[7]).toMatchObject({ kind: 'compaction', summary: 'earlier work', tokensBefore: 9_000 })
+    expect(items[8]).toMatchObject({ kind: 'assistant', text: 'work after compaction' })
+  })
+
+  it('keeps each earlier compaction in place', () => {
+    const manager = SessionManager.inMemory('/tmp')
+    const say = (text: string) => manager.appendMessage({ role: 'user', content: text, timestamp: 0 })
+    say('one')
+    const kept = say('two')
+    manager.appendCompaction('first summary', kept, 1_000)
+    say('three')
+    const keptAgain = say('four')
+    manager.appendCompaction('second summary', keptAgain, 2_000)
+    say('five')
+    const model = new TranscriptModel()
+    model.bind({ sessionManager: manager, messages: manager.buildSessionProjection().messages, state: {} } as unknown as AgentSession)
+
+    expect(model.view().items.map(item => item.kind === 'user' ? item.text : item.kind === 'compaction' ? item.summary : item.kind))
+      .toEqual(['one', 'two', 'first summary', 'three', 'four', 'second summary', 'five'])
   })
 
   it('returns to notices when the session is cleared', () => {

@@ -13,11 +13,20 @@ import type { RunRegistry } from './registry'
 import type { Effort } from './runner'
 import type { SessionRunInput } from './sessions'
 import { isActiveStatus } from './contracts'
-import { subagentOf } from '../variant/materialise'
+import { narrowForProfile } from '../agents/narrow'
+import { resolveProfile, type AgentProfile } from '../agents/profiles'
+import type { PluginDescriptor } from '../plugins/types'
 import { findRun, loadRun, readEvents, recordedSubagents, recordSubagent, saveRun } from './runStore'
-import { SPAWN_SUBAGENT, SUBAGENT_RELATION, SUBAGENT_OWNER, SUBAGENT_RECEIPT, SUBAGENT_RESULTS, subagentHistory, type SubagentInput, type SubagentReceipt, type SubagentResult, type SubagentSelection } from './subagents'
+import { SPAWN_SUBAGENT, SUBAGENT_RELATION, SUBAGENT_OWNER, SUBAGENT_RECEIPT, SUBAGENT_RESULTS, briefTitle, subagentHistory, subagentTitle, type SubagentInput, type SubagentReceipt, type SubagentResult, type SubagentSelection } from './subagents'
 
 type Started = { runId: string; nativeSessionId: string | null }
+/** What a spawn returns: the child, the profile it started from, and profile tools missing here. */
+export type SpawnedSubagent = Started & { agent?: string; unavailableTools?: string[] }
+
+export interface SubagentServiceOptions {
+  /** The plugin descriptors, so a profile's plugin list can drop the tools those plugins own. */
+  descriptors?: () => readonly PluginDescriptor[]
+}
 interface Parent {
   input: SessionRunInput
   accountId: string
@@ -49,7 +58,7 @@ function until<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
 export class Subagents {
   private readonly parents = new Map<string, Parent>()
 
-  constructor(private readonly env: HarnessEnv, private readonly runs: RunRegistry, private readonly launch: (input: SessionRunInput) => Promise<Started>) {
+  constructor(private readonly env: HarnessEnv, private readonly runs: RunRegistry, private readonly launch: (input: SessionRunInput) => Promise<Started>, private readonly options: SubagentServiceOptions = {}) {
     runs.listen((event) => {
       if (event.type !== 'completed' && event.type !== 'failed' && !(event.type === 'status.changed' && (event.payload as { status?: string }).status === 'interrupted')) return
       this.parents.get(event.runId)?.stopped.abort()
@@ -93,46 +102,56 @@ export class Subagents {
     return parent
   }
 
-  async spawn(request: SubagentInput): Promise<Started> {
+  async spawn(request: SubagentInput): Promise<SpawnedSubagent> {
     const parent = this.parent(request.parentRunId)
     const { input, accountId, capabilities } = parent
     if (!capabilities.tools.includes(SPAWN_SUBAGENT)) throw invalid('Subagents are not enabled for this run.')
     const brief = typeof request.brief === 'string' ? request.brief.trim() : ''
     if (!brief) throw invalid('Give the subagent a brief.')
+    const title = request.title === undefined ? briefTitle(brief) : subagentTitle(request.title)
+    if (!title) throw invalid('Give the subagent a title of at most six words, with no control characters.')
     if (request.wait !== undefined && typeof request.wait !== 'boolean') throw invalid('wait must be a boolean.')
     if (request.tools !== undefined && (!Array.isArray(request.tools) || request.tools.some((name) => typeof name !== 'string'))) throw invalid('Tools must be an array of tool names.')
     const outside = request.tools?.filter((name) => !capabilities.tools.includes(name)) ?? []
     if (outside.length) throw invalid(`A subagent cannot have tools you do not have: ${outside.join(', ')}.`)
-    const tools = capabilities.tools.filter((name) => !request.tools || request.tools.includes(name))
     await until(parent.ready, parent.stopped.signal)
-    let variant = input.variant ?? null
+    let variant: SessionRunInput['variant'] = input.variant ?? null
     let launch = input.launch
+    let model = input.model
+    let effort = input.effort
+    let profile: AgentProfile | null = null
     if (request.agent !== undefined) {
-      if (typeof request.agent !== 'string' || !request.agent.trim()) throw invalid('agent must be the name of one of your subagents.')
+      if (typeof request.agent !== 'string' || !request.agent.trim()) throw invalid('agent must be the name of an agent profile.')
       const dir = variant && 'dir' in variant ? variant.dir : null
-      const definition = dir ? subagentOf(dir, request.agent.trim()) : null
-      if (!definition) throw invalid(`There is no subagent named ${request.agent.trim()}.`)
-      // A named subagent works from its own definition, not from the parent's instructions.
-      variant = null
-      launch = { ...(input.launch ?? {}), sections: [...(input.launch?.sections ?? []).filter((section) => section.id !== 'subagent'), { id: 'subagent', title: `Your role: ${definition.name}`, body: definition.instructions || definition.description, budget: 16_000, order: 22 }] }
+      profile = resolveProfile(this.env.root, input.cwd, request.agent.trim(), dir)
+      if (!profile) throw invalid(`There is no agent profile named ${request.agent.trim()}.`)
+      // A variant's own subagent works from its definition alone; a profile keeps the parent's
+      // variant unless it names another one, or none.
+      if (profile.source === 'variant' || profile.variant === 'none') variant = null
+      else if (profile.variant) variant = { scope: profile.variant.scope, version: profile.variant.version }
+      if (profile.model) model = profile.model
+      if (profile.effort) effort = profile.effort
+      launch = { ...(input.launch ?? {}), sections: [...(input.launch?.sections ?? []).filter((section) => section.id !== 'subagent'), { id: 'subagent', title: `Your role: ${profile.name}`, body: profile.instructions || profile.description, budget: 16_000, order: 22 }] }
     }
+    const narrowed = narrowForProfile(capabilities, profile, request.tools, this.options.descriptors?.() ?? [])
+    const tools = narrowed.capabilities.tools
     const runId = randomUUID()
     const sessionId = randomUUID()
     recordSubagent(this.env.root, request.parentRunId, runId)
     const child: SessionRunInput = {
       ...input,
-      run: { ...input.run, id: runId, sessionId, parentRunId: request.parentRunId, relation: SUBAGENT_RELATION, goal: takeChars(brief, 4000), attachmentCount: 0, resumedFromRunId: null, handoffId: null },
+      run: { ...input.run, id: runId, sessionId, parentRunId: request.parentRunId, relation: SUBAGENT_RELATION, goal: takeChars(brief, 4000), title, attachmentCount: 0, resumedFromRunId: null, handoffId: null, profile: profile?.name ?? null },
       accountId, poolId: null, sessionDir: join(input.sessionDir, 'subagents', runId), resume: null,
       text: brief, images: undefined, requiresImageInput: false, preamble: null,
       caller: { ...input.caller, runId: undefined, sessionId },
       tools: { allow: tools, gated: (input.tools.gated ?? []).filter((name) => tools.includes(name)) },
-      capabilities: { ...capabilities, tools }, depth: (input.depth ?? 0) + 1,
-      variant, launch
+      capabilities: narrowed.capabilities, depth: (input.depth ?? 0) + 1,
+      variant, launch, model, effort
     }
     const started = this.launch(child).catch((error) => {
       if (!findRun(this.env.root, runId)) {
         const source = loadRun(this.env.root, request.parentRunId)
-        saveRun(this.env.root, { ...source, id: runId, sessionId, parentRunId: request.parentRunId, relation: SUBAGENT_RELATION, nativeSessionId: null, resumedFromRunId: null, handoffId: null, exitCode: null, goal: takeChars(brief, 4000), attachmentCount: 0, status: 'failed', startedAt: now(), endedAt: now(), terminalReason: error instanceof HarnessError ? error.message : 'Subagent startup failed before its session opened.' })
+        saveRun(this.env.root, { ...source, id: runId, sessionId, parentRunId: request.parentRunId, relation: SUBAGENT_RELATION, nativeSessionId: null, resumedFromRunId: null, handoffId: null, exitCode: null, goal: takeChars(brief, 4000), title, attachmentCount: 0, status: 'failed', startedAt: now(), endedAt: now(), terminalReason: error instanceof HarnessError ? error.message : 'Subagent startup failed before its session opened.', profile: profile?.name ?? null })
       }
       return { runId, nativeSessionId: null }
     })
@@ -140,7 +159,7 @@ export class Subagents {
     void started.finally(() => parent.launching.delete(runId))
     const result = await until(started, parent.stopped.signal)
     if (request.wait) await this.wait({ parentRunId: request.parentRunId, runIds: [runId] })
-    return result
+    return { ...result, ...(profile ? { agent: profile.name } : {}), ...(narrowed.unavailable.length ? { unavailableTools: narrowed.unavailable } : {}) }
   }
 
   private selected(selection: SubagentSelection, parent?: Parent): string[] {
