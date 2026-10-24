@@ -79,21 +79,33 @@ describe('the Trajectory page', () => {
     page.dispose()
   })
 
-  it('filters event type, timestamp, summary, and payload text', async () => {
-    const { page } = await opened()
+  it('filters runs and events by goal, type, timestamp, summary, and payload text', async () => {
+    const first = run('run-1')
+    const second = { ...run('run-2'), goal: 'Ship the search feature' }
+    const { page } = await opened({ runs: [first, second] })
+    page.handleInput('search')
+    expect(plain(page)).toContain('run-2')
+    expect(plain(page)).not.toContain('run-1')
+
     page.handleInput('\t')
     page.handleInput('context.snapshot')
     expect(page.selectedEvent?.type).toBe('context.snapshot')
-    const text = plain(page)
-    expect(text).toContain('context.snapshot')
+    let text = plain(page)
     expect(text).toContain('"systemPrompt": "prompt"')
     expect(text).not.toContain('tool.completed')
 
     page.handleInput('\x1b')
+    page.handleInput('00:00:01')
+    expect(page.selectedEvent?.sequence).toBe(1)
+    page.handleInput('\x1b')
+    page.handleInput('README.md')
+    expect(page.selectedEvent?.sequence).toBe(1)
+    page.handleInput('\x1b')
     page.handleInput('Recorded prompt')
     expect(page.selectedEvent?.type).toBe('context.snapshot')
     page.handleInput('\x1b')
-    expect(plain(page)).toContain('tool.completed')
+    text = plain(page)
+    expect(text).toContain('tool.completed')
     page.dispose()
   })
 
