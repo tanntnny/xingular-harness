@@ -17,6 +17,10 @@ export const VIEWPORT = { width: 1280, height: 800 }
 export const ACTION_TIMEOUT_MS = 15_000
 export const NAVIGATION_TIMEOUT_MS = 30_000
 
+function isClosedBrowserError(error: unknown): boolean {
+  return error instanceof Error && /Target page, context or browser has been closed|browser has been closed|context has been closed/i.test(error.message)
+}
+
 export interface Tab {
   id: string
   page: Page
@@ -122,15 +126,18 @@ export class BrowserSession {
       this.context = launched.context
       this.browser = launched.browser
       this.attached = launched.attached
-      this.context.setDefaultTimeout(ACTION_TIMEOUT_MS)
-      this.context.setDefaultNavigationTimeout(NAVIGATION_TIMEOUT_MS)
-      await this.context.route('**/*', async (route) => {
+      const context = launched.context
+      context.on('close', () => this.forget(context))
+      launched.browser?.on('disconnected', () => this.forget(context))
+      context.setDefaultTimeout(ACTION_TIMEOUT_MS)
+      context.setDefaultNavigationTimeout(NAVIGATION_TIMEOUT_MS)
+      await context.route('**/*', async (route) => {
         const refusal = await this.options.network.refusal(route.request().url())
         if (refusal) await route.abort('blockedbyclient')
         else await route.continue()
       })
-      this.context.on('page', (page) => this.adopt(page))
-      for (const page of this.context.pages()) this.adopt(page)
+      context.on('page', (page) => this.adopt(page))
+      for (const page of context.pages()) this.adopt(page)
     })()
     try {
       await this.starting
@@ -161,6 +168,15 @@ export class BrowserSession {
     return tab
   }
 
+  private forget(context: BrowserContext): void {
+    if (this.context !== context) return
+    this.context = null
+    this.browser = null
+    this.attached = false
+    this.tabs.clear()
+    this.current = null
+  }
+
   /** A tab by id, or the current one, starting the browser and opening a first tab when needed. */
   async tab(id?: string | null): Promise<Tab> {
     await this.start()
@@ -174,10 +190,28 @@ export class BrowserSession {
   }
 
   async open(): Promise<Tab> {
-    await this.start()
-    const tab = this.adopt(await this.context!.newPage())
-    this.current = tab.id
-    return tab
+    let lastClosedError: unknown
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await this.start()
+      const context = this.context
+      if (!context) continue
+      try {
+        const page = await context.newPage()
+        if (this.context !== context) {
+          await page.close().catch(() => undefined)
+          continue
+        }
+        const tab = this.adopt(page)
+        this.current = tab.id
+        return tab
+      } catch (error) {
+        if (attempt !== 0 || !isClosedBrowserError(error)) throw error
+        lastClosedError = error
+        this.forget(context)
+        await context.close().catch(() => undefined)
+      }
+    }
+    throw lastClosedError ?? new Error('The browser closed while opening a page.')
   }
 
   select(id: string): Tab {

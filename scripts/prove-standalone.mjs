@@ -86,6 +86,26 @@ try {
   const connections = await request('connections.list')
   check('lists connected apps', Array.isArray(connections), `${connections.length} configured`)
 
+  const repo = join(scratch, 'repo')
+  mkdirSync(repo)
+  const gitEnv = { ...process.env, GIT_AUTHOR_NAME: 'p', GIT_AUTHOR_EMAIL: 'p@p', GIT_COMMITTER_NAME: 'p', GIT_COMMITTER_EMAIL: 'p@p' }
+  for (const args of [['init', '-q'], ['commit', '-q', '--allow-empty', '-m', 'proof']]) spawnSync('git', args, { cwd: repo, env: gitEnv })
+  writeFileSync(join(repo, 'work.txt'), 'unsaved\n')
+  const made = await request('worktrees.create', { repo })
+  const listed = await request('worktrees.list', { repo })
+  const carried = existsSync(join(made.worktree.path, 'work.txt'))
+  const removed = await request('worktrees.remove', { id: made.worktree.id, force: true })
+  const pageNote = await request('annotations.create', { source: { url: 'https://example.com/proof', title: 'Proof' }, target: { kind: 'text', exact: 'proof text', prefix: '', suffix: '', start: 0, end: 10 }, body: 'Remember the proof.' })
+  const sharedNote = await request('annotations.share', { id: pageNote.id, principal: { sessionId: 'proof-agent' } })
+  const helper = await request('annotations.pageScript')
+  // A host's session gets the queued notes as one instruction, starts the run itself, and reports it.
+  const acted = await request('annotations.createAndAct', { note: { source: { url: 'http://localhost:5173/', title: 'Dev' }, target: { kind: 'page' }, body: 'Fix the header.' }, action: 'send', sessionId: 'proof-host', trusted: true })
+  const composed = await request('annotations.compose', { sessionId: 'proof-host' })
+  const delivered = await request('annotations.delivered', { ids: composed.ids, sessionId: 'proof-host', runId: 'proof-host-run' })
+  check('queues a page note for a host session and records the run it was sent in', acted.send?.state === 'host' && composed.text.includes('Fix the header.') && delivered.notes[0]?.delivery?.state === 'sent', `${composed.ids.length} note`)
+  check('keeps a private page note, shares it with one session, and serves the page helper', pageNote.grants.length === 0 && sharedNote.grants[0]?.principal.sessionId === 'proof-agent' && helper.script.includes('__ARGS__'), `version ${sharedNote.version}`)
+  check('makes, lists and removes a managed worktree, keeping unsaved work as a snapshot', listed.length === 1 && carried && Boolean(removed.snapshot) && !existsSync(made.worktree.path), `${made.worktree.name}; snapshot ${removed.snapshot ? 'kept' : 'missing'}`)
+
   await request('sessions.run', { run: { id: 'proof-run', sessionId: 'proof-agent' }, accountId: accounts[0].id, cwd: scratch, sessionDir: join(scratch, 'data', 'sessions', 'proof-agent'), text: 'Say hello.', caller, tools: { allow: ['read'] } })
   const deadline = Date.now() + 20_000
   let run

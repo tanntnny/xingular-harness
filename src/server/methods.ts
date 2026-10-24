@@ -9,40 +9,28 @@ import * as capabilities from '../capabilities/api'
 import { loadRun as loadCapabilitySnapshot } from '../capabilities/runSnapshot'
 import { capabilitySet } from '../capabilities/runSnapshot'
 import type { Harness } from '../harness'
-import { validateScopeIds } from '../mcp/connections'
 import type { CallerContext } from '../core/caller'
-import * as recall from '../history/recall'
 import * as plugins from '../plugins/api'
+import { BUILTIN_PLUGIN_REGISTRY } from '../plugins/builtin'
 import * as install from '../plugins/install'
 import { compile, load, render, type Launch } from '../prompt/compile'
-import { readSummary } from '../refine/runner'
 import { continuationOf } from '../sessions/continuation'
 import { selectHistory } from '../sessions/history'
 import { runsSince } from '../sessions/runIndex'
 import { findRun, listRuns, loadRun, pendingDecisions, readEvents, runFamily, snapshot } from '../sessions/runStore'
-import type { SubagentInput, SubagentSelection } from '../sessions/subagents'
+import type { SubagentInput } from '../sessions/subagents'
 import type { SessionRunInput } from '../sessions/sessions'
 import type { TerminalPrepareInput } from '../terminal/terminals'
 import { checklistOf } from '../tools/checklist'
 import { dispatch } from '../tools/dispatch'
 import * as components from '../variant/components'
-import type { BrowserConfig } from '../browser/config'
 import { materialise, type VariantChoice } from '../variant/materialise'
 import { seedVariant } from '../variant/seed'
 import * as variants from '../variant/store'
 import { PI_SURFACE, type Variant } from '../variant/surface'
 import { applyEdit, autotrigger, VariantError, validate } from '../variant/variant'
-import * as notes from '../wiki/notes'
+import { optional, text, type Params } from './params'
 import type { Handler } from './rpc'
-
-type Params = Record<string, any>
-
-const text = (params: Params, name: string): string => {
-  const value = params[name]
-  if (typeof value !== 'string' || !value) throw invalid(`${name} is required.`)
-  return value
-}
-const optional = (params: Params, name: string): string | null => (typeof params[name] === 'string' && params[name] ? (params[name] as string) : null)
 const questionAnswer = (value: unknown): { selected: string[]; text?: string; notes?: Record<string, string> } => {
   const answer = value && typeof value === 'object' && !Array.isArray(value) ? value as Params : {}
   return {
@@ -74,34 +62,17 @@ function check(variant: Variant): { ok: true; census: ReturnType<typeof validate
   }
 }
 
-/** Only the named fields of a parameter object. */
-function pick<T extends string>(params: Params, keys: readonly T[]): Record<T, unknown> {
-  return Object.fromEntries(keys.filter((key) => key in params).map((key) => [key, params[key]])) as Record<T, unknown>
-}
-
 export function methods(harness: Harness): Record<string, Handler> {
-  const { accounts, approvals, apps, runs, sessions, terminals, env } = harness
+  const { accounts, approvals, runs, sessions, terminals, env } = harness
   const root = (): string => env.root
   const variantsChanged = (scope: string): void => harness.bus.emit({ type: 'variants.changed', scope })
+  const builtins = BUILTIN_PLUGIN_REGISTRY.serverMethods(harness)
 
-  return {
+  const foundation: Record<string, Handler> = {
     // ---- The harness itself --------------------------------------------------------------------
-    'web.status': () => harness.world.searchStatus(),
-    'web.setKey': (params: Params) => harness.world.setSearchKey(text(params, 'provider'), typeof params.key === 'string' ? params.key : null),
-    'browser.config': () => harness.world.browserConfig(),
-    'browser.configure': (params: Params) => harness.world.configureBrowser(pick(params, ['headed', 'cdpUrl', 'executablePath', 'allowPrivate', 'allowedDomains']) as Partial<BrowserConfig>),
     'harness.status': () => ({ dataRoot: harness.dataRoot, productName: env.productName, recovery: harness.recovery, activeRuns: runs.activeRunIds() }),
-    'doctor.start': (params: Params) => harness.doctor.start(params as import('../doctor/types').DoctorInput),
-    'doctor.read': (params: Params) => harness.doctor.read(text(params, 'id')),
-    'doctor.cancel': (params: Params) => harness.doctor.cancel(text(params, 'id')),
     'harness.open': (params: Params) => harness.open(text(params, 'dataRoot'), Array.isArray(params.agentIds) ? params.agentIds : []),
     'harness.rebuildIndex': () => harness.rebuildIndex(),
-    'hub.list': (params: Params) => harness.hub.list(params.refresh === true),
-    'hub.get': (params: Params) => harness.hub.get(text(params, 'id'), text(params, 'version'), params.preview === true),
-    'hub.install': (params: Params) => harness.hub.install(text(params, 'id'), text(params, 'version')),
-    'hub.preview': (params: Params) => harness.hub.preview(text(params, 'id'), text(params, 'version'), typeof params.offset === 'number' ? params.offset : 0),
-    'hub.uninstall': (params: Params) => harness.hub.uninstall(text(params, 'id'), text(params, 'version')),
-    'hub.readDocument': (params: Params) => harness.hub.readDocument(text(params, 'id'), text(params, 'version')),
 
     // ---- Accounts --------------------------------------------------------------------------------
     'accounts.list': () => accounts.overview(),
@@ -143,23 +114,6 @@ export function methods(harness: Harness): Record<string, Handler> {
     'approvals.remember': (params: Params) => approvals.remember(text(params, 'sessionId'), text(params, 'target')),
     'approvals.forget': (params: Params) => approvals.forget(text(params, 'sessionId'), text(params, 'target')),
     'approvals.forgetSession': (params: Params) => approvals.forgetSession(text(params, 'sessionId')),
-
-    // ---- Connected apps --------------------------------------------------------------------------
-    'connections.list': () => apps.connections.list(),
-    'connections.forScope': (params: Params) => apps.connections.forScope({ agentId: optional(params, 'agentId'), projectId: optional(params, 'projectId') }),
-    'connections.save': (params: Params) => apps.save(params.input),
-    'connections.allowTool': (params: Params) => apps.connections.allowTool(text(params, 'connectionId'), text(params, 'tool')),
-    'connections.remove': (params: Params) => apps.remove(text(params, 'connectionId')),
-    'connections.test': (params: Params) => apps.test(text(params, 'connectionId')),
-    'connections.signIn': (params: Params) => apps.signIn(text(params, 'connectionId')),
-    'connections.signOut': (params: Params) => apps.signOut(text(params, 'connectionId')),
-    'connections.runContext': (params: Params) => apps.runContext(text(params, 'runId')),
-    'connections.refreshSource': (params: Params) => apps.refreshSource(text(params, 'runId'), text(params, 'traceId'), text(params, 'sourceUri')),
-    'connections.setAgentScope': (params: Params) => apps.setAgentScope(params.creator ?? {}, text(params, 'agentId'), Array.isArray(params.ids) ? params.ids : []),
-    'connections.removeAgentScope': (params: Params) => apps.removeAgentScope(text(params, 'agentId')),
-    'connections.revision': () => apps.connections.revision(),
-    'connections.appClients': () => apps.appClients(),
-    'connections.validateScope': (params: Params) => validateScopeIds(apps.connections.list(), { agentId: optional(params, 'agentId'), projectId: optional(params, 'projectId') }, Array.isArray(params.ids) ? params.ids : []),
 
     // ---- Variants: the eight components that shape an agent ---------------------------------
     'variants.surface': () => PI_SURFACE,
@@ -241,48 +195,8 @@ export function methods(harness: Harness): Record<string, Handler> {
       return { ...built, files: undefined }
     },
 
-    // ---- Refinement: improving a harness from evidence -------------------------------------------
-    'refine.start': (params: Params) => harness.refine.start({ task: params.task, k: typeof params.k === 'number' ? params.k : 1, mode: params.mode === 'sequential' ? 'sequential' : 'parallel', improver: params.improver ?? {}, executor: params.executor ?? undefined, baseVersion: optional(params, 'baseVersion'), retainWorkspaces: params.retainWorkspaces === true, id: optional(params, 'id') ?? undefined }),
-    'refine.get': (params: Params) => harness.refine.get(text(params, 'id')),
-    'refine.list': (params: Params) => harness.refine.list({ scope: optional(params, 'scope'), limit: typeof params.limit === 'number' ? params.limit : undefined }),
-    'refine.running': () => harness.refine.running(),
-    'refine.cancel': async (params: Params) => {
-      await harness.refine.cancel(text(params, 'id'))
-      return readSummary(root(), text(params, 'id'))
-    },
-    'refine.candidates': (params: Params) => harness.refine.candidates(text(params, 'id')),
-    'refine.adopt': (params: Params) => harness.refine.adopt(text(params, 'id'), { label: optional(params, 'label') }),
-    'library.list': (params: Params) => harness.refine.library(text(params, 'scope')),
-    'library.read': (params: Params) => harness.refine.libraryEntry(text(params, 'scope'), text(params, 'area'), text(params, 'task')),
-    'library.forget': (params: Params) => harness.refine.forget(text(params, 'scope'), text(params, 'area'), Array.isArray(params.tasks) ? params.tasks : []),
-
-    // ---- The Wiki: project notes ------------------------------------------------------------------
-    'wiki.list': (params: Params) => notes.list(root(), params.project === undefined ? {} : { project: optional(params, 'project') }),
-    'wiki.read': (params: Params) => notes.read(root(), text(params, 'path')),
-    'wiki.write': (params: Params) => {
-      const note = notes.write(root(), text(params, 'path'), typeof params.text === 'string' ? params.text : '', { expectedUpdatedAt: optional(params, 'expectedUpdatedAt') })
-      harness.bus.emit({ type: 'wiki.changed' })
-      return note
-    },
-    'wiki.remove': (params: Params) => {
-      notes.remove(root(), text(params, 'path'))
-      harness.bus.emit({ type: 'wiki.changed' })
-    },
-    'wiki.search': (params: Params) => notes.search(root(), typeof params.query === 'string' ? params.query : '', { project: optional(params, 'project'), limit: typeof params.limit === 'number' ? params.limit : undefined }),
-    'wiki.graph': () => notes.graph(root()),
-    'wiki.versions': (params: Params) => notes.versions(root(), text(params, 'path')),
-    'wiki.version': (params: Params) => notes.version(root(), text(params, 'path'), text(params, 'id')),
-    'wiki.ensureProject': () => {
-      notes.ensureLayout(root(), env.productName)
-      harness.bus.emit({ type: 'wiki.changed' })
-    },
-
     // ---- What a session calls, on behalf of a caller the host names -------------------------------
     'harness.call': (params: Params) => dispatch(env, (params.context ?? {}) as CallerContext, text(params, 'call'), params.params ?? {}, { variantDir: optional(params, 'variantDir') }),
-
-    // ---- Recall ------------------------------------------------------------------------------------
-    'recall.search': (params: Params) => recall.searchAll(env, typeof params.query === 'string' ? params.query : '', params.filter ?? {}),
-    'recall.read': (params: Params) => recall.read(root(), text(params, 'runId')),
 
     // ---- The compiled prompt -----------------------------------------------------------------------
     'context.compile': (params: Params) => {
@@ -377,9 +291,6 @@ export function methods(harness: Harness): Record<string, Handler> {
     },
 
     // ---- Sessions ----------------------------------------------------------------------------------
-    'subagents.spawn': (params: Params) => harness.subagents.spawn(params as SubagentInput),
-    'subagents.wait': (params: Params) => harness.subagents.wait(params as SubagentSelection),
-    'subagents.results': (params: Params) => harness.subagents.results(params as SubagentSelection),
     'sessions.spawnSubagent': (params: Params) => sessions.spawnSubagent(params as SubagentInput),
     'sessions.run': (params: Params) => sessions.run(params as SessionRunInput),
     'sessions.history': (params: Params) => ({ sessionFile: selectHistory({ sessionDir: text(params, 'sessionDir'), resume: params.resume ?? null }) }),
@@ -391,4 +302,8 @@ export function methods(harness: Harness): Record<string, Handler> {
     'terminal.state': (params: Params) => terminals.state(text(params, 'sessionId')),
     'terminal.dispose': (params: Params) => terminals.dispose(text(params, 'sessionId'))
   }
+
+  const overlap = Object.keys(foundation).find(name => name in builtins)
+  if (overlap) throw new Error(`Server method ${overlap} is owned by both Foundation and a built-in plugin.`)
+  return { ...builtins, ...foundation }
 }

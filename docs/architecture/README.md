@@ -41,6 +41,7 @@ not one class (a set of functions in one module, say), it says so.
 | [11 Terminal](11-terminal.md) | The Harness-owned terminal frontend and its process boundary | `INV-TUI` |
 | [12 Storage](12-storage.md) | The data root and state directory, and who writes what | `INV-STO` |
 | [13 World tools](13-world-tools.md) | Generic web and isolated browser backends, host boundary and diagnostics | — |
+| [14 Surfaces and parity](14-surfaces-and-parity.md) | Every capability is a Harness capability with a terminal surface; host-backed capabilities; host-only surfaces | `INV-PAR` |
 | [Proposals](proposals/README.md) | Architecture change proposals and their status | — |
 
 Related records, not binding by themselves:
@@ -57,11 +58,14 @@ Related records, not binding by themselves:
 
 ## Glossary
 
-These words are used the same way on every page, in code and in the data layout.
+These words are used the same way across architecture pages and, for implemented concepts, in code
+and the data layout. Terms marked as planned are future vocabulary only; they do not describe
+current behavior.
 
 | Word | Meaning |
 |---|---|
 | **Foundation** | The fixed half of the harness: code and invariants that no edit, improver or adoption can change. Changes by release, and by proposal when a contract moves. |
+| **Agent Mode** | A planned foundation-level work style, with at most one mode active at a time. Plugins remain independently stackable contributions. This is distinct from plan mode and existing `mode` fields; it is not a runtime contract ([FW-0001](../future-work.md#fw-0001-agent-modes-starting-with-router-agent-mode)). |
 | **Variant** | The mutating half: one tree of eight components (c1–c8) for one scope. Formerly "harness tree". |
 | **Component** | One of c1–c8 inside a variant (system prompt, guardrails, memory, tool guidance, subagents, skills, scripts, plugins). |
 | **Surface** | The foundation's definition of what a variant may contain (`PI_SURFACE`): paths, patterns, the always-on cap. |
@@ -107,8 +111,13 @@ proposal, or a correction to the other document).
 | D-2 | `README.md` "Plugins" | Describes a `plugin_propose` tool and an Inbox for proposed plugins. No such tool exists in `src/`. |
 | D-3 | `README.md` "External curation" | Describes `externalMaintenance`, `vaultAccess`, `MAINTENANCE_PLUGIN`, `maintenance.*` methods and tools. None exist in `src/`. |
 | D-4 | `INV-BND-2` | Several names carry an application's name: the context message type `xingular-context`, the approval extension `xagent-approvals`, the MCP client name `xagent`, and the terminal commands `xagent-wiki` / `xagent-mcp`. The default product name `Xingular Harness` is allowed; these are not. |
-| D-5 | `INV-BND-2` | `RunRecord` carries `worktreeId` and `handoffId`, which are application concepts. They are stored and returned, never read, and are documented as the application's fields. |
+| D-5 | `INV-BND-2` | `RunRecord` carries `worktreeId` and `handoffId`, which are application concepts. They are stored and returned, never read, and are documented as the application's fields. Since PROP-0016 (2026-10-23) `worktreeId` has Harness meaning when it names a registered worktree; only `handoffId` remains an application field. |
 | D-6 | `INV-BND-2` | Plan-mode instructions (`sessions/planMode.ts`) name a managed browser and computer controls, which the harness does not provide. |
 | D-7 | `INV-MEM-3` | `wiki/notes.ts::remove` keeps a version but does not call `noteChange`, so hooks hear saves but not removals. |
 | D-8 | old `AGENTS.md` | Listed `work` among the sections delivered as updates. The compiler's built-in dynamic sections are only `references` and `wiki`; `work` is dynamic only when the application marks it so. `INV-PRM-3` states the code's rule. |
 | D-9 | World/browser implementation | Resolved for the 1.0.0 candidate by PROP-0012/ADR-0014 and page 13: the Harness owns a generic isolated browser; App browser UI, tab sharing and computer integration remain with the host. |
+| D-10 | OpenTUI skill completion | At the start of PROP-0013, documentation claimed skill completion, but OpenTUI only rendered slash-command completions. The skill helper had no frontend caller. PROP-0013 explicitly resolves this drift. |
+| D-11 | `INV-RUN-5`, unattended approval and question paths | Source inspection on 2026-10-23 found that `SessionRunInput.automatic` disables resource discovery and extension dialogs (`sessions/runner.ts:574`), but the general gate does not receive that flag. `Sessions.gate` explicitly refuses approvals for `probe`, `improver` and `reflection` triggers, then otherwise calls `requestApproval` (`sessions/sessions.ts:198`). `ask_user` is also constructed independently of `automatic` when harness tools are enabled (`sessions/sessions.ts:397`, `tools/askUser.ts:69`). Thus the flag alone does not establish the invariant that every unattended run refuses human interaction; host policy and capability selection can narrow these paths. This is a static source finding, not a live reproduction. See [proactive autonomy research](../study/proactive-autonomy.md#current-foundation-and-the-missing-loop). |
+| D-12 | 12-storage layout | The isolated browser keeps device-local profiles and settings under `<state dir>/browser/` (`browser/config.ts`, `browser/session.ts`); page 12's layout did not list it. Resolved 2026-10-23: page 12 lists it. |
+| D-13 | `docs/study/feature-gap-review.md` row 8 | Says browser and computer interaction are not built in. Page 13 (PROP-0012) records a generic isolated browser in the foundation; computer interaction needs a host surface. |
+| D-14 | 12-storage layout | Page 12 lists browser settings under `<state dir>/browser/`, while `browser/config.ts` stores configuration in `<state dir>/browser.json`; browser profiles and downloads use the `browser/` directory. The layout needs an owner decision before either side is changed. |

@@ -1,16 +1,39 @@
-// The harness's own parts, described as plugins. Each is a description of code that already
-// exists; none of it is loaded through Pi's extension system.
+// Built-in feature modules register their contributions here; this registry never loads Pi code.
 import { CONNECTION_TOOLS, NATIVE_GROUP } from '../prompt/compile'
-import { ASK_USER } from '../tools/askUser'
-import { CHECKLIST_WRITE } from '../tools/checklist'
+import { ASK_USER, askUserTool } from '../tools/askUser'
+import { CHECKLIST_WRITE, checklistTool } from '../tools/checklist'
 import { SPAWN_SUBAGENT, WAIT_SUBAGENTS } from '../sessions/subagents'
+import { subagentTools } from '../tools/spawnSubagent'
+import { SESSION_NAME } from '../tools/sessionName'
 import { RECALL_TOOLS, SKILL_TOOLS, TRAJECTORY_TOOLS, WIKI_READ_TOOLS, WIKI_WRITE_TOOLS, type HarnessToolDefinition } from '../tools/definitions'
 import { FIRST_PARTY_PLUGINS } from './firstParty'
 import { WEB_PLUGIN } from '../web/tools'
-import { BROWSER_PLUGIN } from '../browser/index'
+import { KEYLESS_SEARCH, webPart } from '../web/part'
+import { BROWSER_PLUGIN, browserPluginPart } from '../browser/index'
+import { ANNOTATIONS_PLUGIN } from '../annotations/part'
+import { annotationsPart } from '../annotations/part'
+import { webServerMethods } from '../web/serverMethods'
+import { browserServerMethods } from '../browser/serverMethods'
+import { annotationServerMethods } from '../annotations/serverMethods'
+import { doctorServerMethods } from '../doctor/serverMethods'
+import { worktreeServerMethods } from '../worktrees/serverMethods'
+import { hubServerMethods } from '../hub/serverMethods'
+import { refinementServerMethods } from '../refine/serverMethods'
+import { wikiServerMethods } from '../wiki/serverMethods'
+import { historyServerMethods } from '../history/serverMethods'
+import { subagentServerMethods } from '../sessions/subagentServerMethods'
+import { connectedAppServerMethods } from '../mcp/serverMethods'
+import { harnessTools } from '../tools/harnessTools'
 import type { PluginDescriptor } from './types'
+import { createBuiltinPluginRegistry } from './builtinRegistry'
 
 const tools = (definitions: readonly HarnessToolDefinition[]): PluginDescriptor['tools'] => definitions.map((tool) => ({ name: tool.name, description: tool.label }))
+const toolContribution = (definitions: readonly HarnessToolDefinition[], toolOrder: number) => ({
+  toolOrder,
+  tools: (context: import('./builtinRegistry').BuiltinToolContext) => context.harnessTools
+    ? harnessTools(context.env, context.caller, { variantDir: context.variantDir, definitions })
+    : []
+})
 
 /** Pi itself. Its command's built-in extensions are added to it as they are found. */
 export const PI_PLUGIN: PluginDescriptor = {
@@ -18,7 +41,7 @@ export const PI_PLUGIN: PluginDescriptor = {
   title: 'Pi',
   description: 'The engine every session runs on: its base prompt, its file and shell tools, and the extensions built into its command.',
   required: 'Pi runs every session.',
-  tools: NATIVE_GROUP.map((name) => ({ name })),
+  tools: [...NATIVE_GROUP.map((name) => ({ name })), { name: SESSION_NAME }],
   toolGroups: ['Native']
 }
 
@@ -39,11 +62,8 @@ export const VARIANT_PLUGIN: PluginDescriptor = {
   tools: tools(SKILL_TOOLS)
 }
 
-export const HARNESS_PLUGINS: readonly PluginDescriptor[] = [
-  PI_PLUGIN,
-  { id: 'subagents', title: 'Subagents', description: 'Isolated child runs of the same caller, bounded by parent capabilities and nesting depth.', required: 'Availability is selected by the session host; child runs retain the parent permission boundary.', tools: [{ name: SPAWN_SUBAGENT, description: 'Start a subagent' }, { name: WAIT_SUBAGENTS, description: 'Wait for subagents' }] },
-  VARIANT_PLUGIN,
-  {
+const SUBAGENTS_PLUGIN: PluginDescriptor = { id: 'subagents', title: 'Subagents', description: 'Isolated child runs of the same caller, bounded by parent capabilities and nesting depth.', required: 'Availability is selected by the session host; child runs retain the parent permission boundary.', tools: [{ name: SPAWN_SUBAGENT, description: 'Start a subagent' }, { name: WAIT_SUBAGENTS, description: 'Wait for subagents' }] }
+const WIKI_PLUGIN: PluginDescriptor = {
     id: 'wiki',
     title: 'Wiki',
     description: 'Notes about projects, linked to each other, that agents search and read.',
@@ -54,11 +74,11 @@ export const HARNESS_PLUGINS: readonly PluginDescriptor[] = [
       { id: 'references', name: 'Selected references', description: 'Notes pinned to one request.' }
     ],
     toolGroups: ['Wiki']
-  },
-  { id: 'history', title: 'History', description: 'Search earlier conversations and inspect recorded run trajectories.', required: 'Earlier runs are how an agent picks up where work stopped.', tools: tools([...RECALL_TOOLS, ...TRAJECTORY_TOOLS]), toolGroups: ['History'] },
-  { id: 'ask-user', title: 'Ask the user', description: 'Lets the agent stop and ask a question with choices.', required: 'An agent must be able to stop and ask you.', tools: [{ name: ASK_USER }] },
-  { id: 'checklist', title: 'Checklist', description: 'Lets the agent keep a checklist of the steps of its work, recorded with the run so progress can be shown and picked up again.', required: 'Progress of longer work is kept through it.', tools: [{ name: CHECKLIST_WRITE, description: 'Write the checklist' }] },
-  {
+  }
+const HISTORY_PLUGIN: PluginDescriptor = { id: 'history', title: 'History', description: 'Search earlier conversations and inspect recorded run trajectories.', required: 'Earlier runs are how an agent picks up where work stopped.', tools: tools([...RECALL_TOOLS, ...TRAJECTORY_TOOLS]), toolGroups: ['History'] }
+const ASK_USER_PLUGIN: PluginDescriptor = { id: 'ask-user', title: 'Ask the user', description: 'Lets the agent stop and ask a question with choices.', required: 'An agent must be able to stop and ask you.', tools: [{ name: ASK_USER }] }
+const CHECKLIST_PLUGIN: PluginDescriptor = { id: 'checklist', title: 'Checklist', description: 'Lets the agent keep a checklist of the steps of its work, recorded with the run so progress can be shown and picked up again.', required: 'Progress of longer work is kept through it.', tools: [{ name: CHECKLIST_WRITE, description: 'Write the checklist' }] }
+const CONNECTED_APPS_PLUGIN: PluginDescriptor = {
     id: 'connected-apps',
     title: 'Connected apps',
     description: 'Outside services reached over MCP, behind two tools that list and call what is connected.',
@@ -66,8 +86,75 @@ export const HARNESS_PLUGINS: readonly PluginDescriptor[] = [
     manage: 'connections',
     tools: CONNECTION_TOOLS.map((name) => ({ name })),
     toolGroups: ['Connections']
+  }
+const DOCTOR_PLUGIN: PluginDescriptor = { id: 'doctor', title: 'Doctor', description: 'Local readiness checks and explicitly confirmed live probes for accounts, models and tools.', required: 'Every local terminal has readiness diagnostics.' }
+const WORKTREES_PLUGIN: PluginDescriptor = { id: 'worktrees', title: 'Worktrees', description: 'Create and manage isolated git worktrees, move changes between them, and restore removed worktrees.', required: 'Managed worktrees are available to every local terminal.' }
+const HUB_PLUGIN: PluginDescriptor = { id: 'hub', title: 'Hub', description: 'Browse and install reviewed skills, plugins and documents from configured registries.', required: 'Reviewed Harness resources are available to every host.' }
+const REFINEMENT_PLUGIN: PluginDescriptor = { id: 'refinement', title: 'Refinement', description: 'Improve variants from recorded evidence through isolated refinement runs and reviewed candidates.', required: 'Variant refinement is available to every host.' }
+
+export const BUILTIN_PLUGIN_REGISTRY = createBuiltinPluginRegistry([
+  {
+    descriptor: PI_PLUGIN,
+    toolOrder: 60,
+    tools: context => context.harnessTools ? [context.sessionName] : []
   },
-  WEB_PLUGIN,
-  BROWSER_PLUGIN,
-  ...FIRST_PARTY_PLUGINS
-]
+  {
+    descriptor: SUBAGENTS_PLUGIN,
+    toolOrder: 70,
+    tools: context => context.allowedTools.includes(SPAWN_SUBAGENT)
+      ? subagentTools(context.subagents, context.runId).filter(tool => context.allowedTools.includes(tool.name))
+      : [],
+    commands: [{ name: 'subagents', description: 'Watch current subagent tasks and activity' }],
+    serverMethods: subagentServerMethods
+  },
+  { descriptor: VARIANT_PLUGIN, ...toolContribution(SKILL_TOOLS, 30) },
+  { descriptor: WIKI_PLUGIN, ...toolContribution([...WIKI_READ_TOOLS, ...WIKI_WRITE_TOOLS], 20), serverMethods: wikiServerMethods },
+  {
+    descriptor: HISTORY_PLUGIN,
+    ...toolContribution([...RECALL_TOOLS, ...TRAJECTORY_TOOLS], 10),
+    commands: [{ name: 'trajectory', description: 'Inspect the recorded runs of this session' }],
+    serverMethods: historyServerMethods
+  },
+  { descriptor: ASK_USER_PLUGIN, toolOrder: 40, tools: context => context.harnessTools ? [askUserTool(context.run)] : [] },
+  { descriptor: CHECKLIST_PLUGIN, toolOrder: 50, tools: context => context.harnessTools ? [checklistTool(context.run)] : [] },
+  {
+    descriptor: CONNECTED_APPS_PLUGIN,
+    toolOrder: 0,
+    tools: context => context.connectionTools?.() ?? [],
+    serverMethods: connectedAppServerMethods
+  },
+  { descriptor: HUB_PLUGIN, serverMethods: hubServerMethods },
+  { descriptor: REFINEMENT_PLUGIN, serverMethods: refinementServerMethods },
+  {
+    descriptor: WEB_PLUGIN,
+    createWorldPart: ({ options, setting }) => webPart({ secrets: options.secrets, request: options.request, keyless: () => setting(WEB_PLUGIN.id, KEYLESS_SEARCH) === 1 }),
+    serverMethods: webServerMethods
+  },
+  {
+    descriptor: BROWSER_PLUGIN,
+    createWorldPart: ({ browserEngine }) => browserEngine ? browserPluginPart(browserEngine) : null,
+    serverMethods: browserServerMethods
+  },
+  {
+    descriptor: ANNOTATIONS_PLUGIN,
+    commands: [
+      { name: 'notes', description: 'Page notes: keep notes on web pages and share them with this session' },
+      { name: 'annotate', description: 'Inspect a page or app, comment on components, send fixes to the agent: /plugin:annotate [url | --app <devtools address> | --bridge]' }
+    ],
+    createWorldPart: ({ options }) => annotationsPart({ root: options.root, changed: options.notesChanged }),
+    serverMethods: annotationServerMethods
+  },
+  {
+    descriptor: DOCTOR_PLUGIN,
+    commands: [{ name: 'doctor', description: 'Check account, model, tools and runtime readiness' }],
+    serverMethods: doctorServerMethods
+  },
+  {
+    descriptor: WORKTREES_PLUGIN,
+    commands: [{ name: 'worktree', description: 'Work in a managed git worktree: new, switch, hand off, remove' }],
+    serverMethods: worktreeServerMethods
+  },
+  ...FIRST_PARTY_PLUGINS.map(descriptor => ({ descriptor }))
+])
+
+export const HARNESS_PLUGINS: readonly PluginDescriptor[] = BUILTIN_PLUGIN_REGISTRY.descriptors()

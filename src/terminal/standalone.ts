@@ -12,6 +12,8 @@ import type { TerminalLaunch } from './terminals'
 export interface StandalonePaths {
   dataRoot: string
   stateDir: string
+  /** `--worktree [name]`: start in a new managed worktree (true) or the named one. */
+  worktree?: string | true | null
 }
 
 export interface StandaloneDependencies {
@@ -26,7 +28,7 @@ export interface StandaloneDependencies {
 
 export function standaloneArguments(argv: string[]): string[] | null {
   const command = argv[0]
-  if (!command || command.startsWith('--') || command === '-h') return argv
+  if (!command || command.startsWith('-')) return argv
   return command === 'terminal' ? argv.slice(1) : null
 }
 
@@ -40,6 +42,14 @@ export function parseStandaloneOptions(argv: string[], home = homedir(), cwd = p
   const given = new Set<string>()
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index]
+    if (argument === '--worktree' || argument === '-w') {
+      const name = argv[index + 1]
+      if (name && !name.startsWith('-')) {
+        paths.worktree = name
+        index += 1
+      } else paths.worktree = true
+      continue
+    }
     if (argument !== '--data' && argument !== '--state') throw new Error(`Unknown standalone option: ${argument}`)
     const value = argv[index + 1]
     if (!value || value.startsWith('--')) throw new Error(`${argument} needs a directory path.`)
@@ -116,12 +126,28 @@ function spawnFrontend(launch: TerminalLaunch, cwd: string, spawn = nodeSpawn): 
   })
 }
 
+/**
+ * `--worktree`: the named worktree of the repository in `cwd`, or a new managed one. Older managed
+ * worktrees beyond the kept number are pruned (unsaved work is kept as a snapshot).
+ */
+async function enterWorktree(harness: Harness, cwd: string, wanted: string | true): Promise<{ id: string; path: string }> {
+  const name = wanted === true ? undefined : wanted
+  const existing = name ? (await harness.worktrees.list(cwd)).find((record) => record.name === name) : undefined
+  if (existing) return existing
+  const created = await harness.worktrees.create({ repo: cwd, ...(name ? { name } : {}) })
+  process.stdout.write(`Working in worktree ${created.worktree.name} (${created.worktree.path}).\n`)
+  if (created.setup.state === 'untrusted') process.stdout.write('This repository has a setup script you have not trusted; read .xharness/worktree-setup, then run: xharness worktree trust-setup\n')
+  if (created.setup.state === 'failed') process.stdout.write(`The worktree setup script failed; see ${created.setup.log}.\n`)
+  await harness.worktrees.prune({ repo: cwd }).catch(() => undefined)
+  return created.worktree
+}
+
 export async function runStandaloneTerminal(argv: string[], dependencies: StandaloneDependencies = {}): Promise<number> {
   if (!(dependencies.stdinIsTTY ?? process.stdin.isTTY) || !(dependencies.stdoutIsTTY ?? process.stdout.isTTY)) {
     throw new Error('The interactive Harness terminal needs a TTY. Run it from a terminal, or use `xharness serve` for a host process.')
   }
 
-  const cwd = resolve(dependencies.cwd ?? process.cwd())
+  let cwd = resolve(dependencies.cwd ?? process.cwd())
   const paths = parseStandaloneOptions(argv, dependencies.home, cwd)
   const makeHarness = dependencies.createHarness ?? createHarness
   const harness = makeHarness({ dataRoot: paths.dataRoot, stateDir: paths.stateDir, productName: 'Xingular Harness' })
@@ -141,16 +167,25 @@ export async function runStandaloneTerminal(argv: string[], dependencies: Standa
     await harness.ready
     if (harness.accounts.overview().accounts.length === 0) harness.accounts.create('Default', 'subscription')
 
-    const cwdHash = createHash('sha256').update(cwd).digest('hex')
-    const sessionFolder = join(paths.dataRoot, 'sessions', 'terminal', cwdHash)
+    let worktreeId: string | null = null
+    if (paths.worktree) {
+      const worktree = await enterWorktree(harness, cwd, paths.worktree)
+      cwd = worktree.path
+      worktreeId = worktree.id
+    }
     for (;;) {
-      const launch = await harness.terminals.prepare({ ...current, cwd, sessionFolder })
+      const sessionFolder = join(paths.dataRoot, 'sessions', 'terminal', createHash('sha256').update(cwd).digest('hex'))
+      const launch = await harness.terminals.prepare({ ...current, cwd, sessionFolder, ...(worktreeId ? { run: { worktreeId } } : {}) })
       const code = await spawnFrontend(launch, cwd, dependencies.spawn)
-      // `/accounts` asks for a switch and ends the frontend. The conversation resumes on the chosen account.
+      // `/accounts` and `/plugin:worktree` ask for a switch and end the frontend. An account switch resumes
+      // the conversation; a folder switch starts a new one there.
       const next = harness.terminals.takeRelaunch(current.sessionId)
       if (!next) return code
-      const label = harness.accounts.find(next.accountId).label
-      process.stdout.write(`Switching this session to account ${label}.\n`)
+      if (next.cwd) {
+        process.stdout.write(`Opening ${next.cwd}.\n`)
+        cwd = next.cwd
+        worktreeId = next.worktreeId ?? null
+      } else process.stdout.write(`Switching this session to account ${harness.accounts.find(next.accountId).label}.\n`)
       await harness.terminals.dispose(current.sessionId)
       current = { sessionId: newSessionId(), accountId: next.accountId, nativeSessionId: next.nativeSessionId }
     }

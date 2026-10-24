@@ -44,6 +44,12 @@ import type { ToolSpec } from '../tools/types'
 import { SESSION_NAME } from '../tools/sessionName'
 import { contributionId } from '../plugins/identity'
 import type { World } from '../world/world'
+import type { Worktrees } from '../worktrees/service'
+import { setupScript } from '../worktrees/setup'
+import type { AnnotationCapture, CaptureTargetSpec } from '../annotations/capture'
+import type { NoteDeliveries } from '../annotations/delivery'
+import { inspectStep } from '../annotations/inspect'
+import * as pageNotes from '../annotations/store'
 import { APPS_COMMAND, WIKI_COMMAND } from './cli'
 import { SOCKET_ENV, TOKEN_ENV } from './client'
 import { TerminalController, type PolicyReply } from './controller'
@@ -51,6 +57,7 @@ import { terminalCommandFiles } from './launch'
 import { SessionSocket, socketPath } from './socket'
 import { harnessLogInfo, readHarnessLogChunk } from './logs'
 import { listTerminalTrajectoryRuns, readTerminalTrajectory } from './trajectory'
+import { BrowserControl } from './browserControl'
 
 /** Identity of the exact resource decision that this terminal was prepared with. */
 function resourceIdentity(loading: Loading | null): string {
@@ -108,6 +115,16 @@ export interface TerminalPrepareInput {
   run?: Partial<Pick<RunRecord, 'mode' | 'worktreeId'>>
 }
 
+/** What a session asked to restart as: another account, or another folder (a worktree or the main checkout). */
+export interface TerminalRelaunch {
+  accountId: string
+  nativeSessionId: string | null
+  /** Restart in this folder, as a new conversation there. */
+  cwd?: string
+  /** The managed worktree the new folder belongs to; null for the main checkout. */
+  worktreeId?: string | null
+}
+
 export interface TerminalLaunch {
   program: string
   args: string[]
@@ -148,6 +165,12 @@ export interface TerminalsOptions {
   assets?: TerminalAssets
   /** Web, browser and computer tools, offered when their plugins are on. */
   world?: World
+  /** Managed worktrees: a session naming one works in it and holds it while it lives. */
+  worktrees?: Worktrees
+  /** The visible browser a person captures page notes in. */
+  noteCapture?: AnnotationCapture
+  /** Page notes on their way to a session (PROP-0018). */
+  pageNotes?: NoteDeliveries
 }
 
 /** What `/plugins` in a terminal can do. Each takes the session's folder, account and project. */
@@ -156,6 +179,10 @@ export interface PluginControl {
   attach(params: AttachParams, on: boolean): Promise<Plugin[]>
   trust(scope: PluginScope & { hash: string }): Promise<Plugin[]>
   untrust(scope: PluginScope & { hash: string }): Promise<Plugin[]>
+  /** Saves numbers a person set on a plugin; each is checked against the plugin's settings. */
+  configure(params: PluginScope & { pluginId: string; settings: Record<string, unknown> }): Promise<Plugin[]>
+  install?(params: PluginScope & { source: string }): Promise<Plugin[]>
+  remove?(params: PluginScope & { pluginId: string }): Promise<Plugin[]>
 }
 
 const READ_ONLY_TOOLS = new Set(['read', 'grep', 'find', 'ls'])
@@ -170,8 +197,10 @@ export class Terminals {
   private readonly worldReadOnly = new Set<string>()
   private readonly socket: SessionSocket
   private readonly assets: TerminalAssets
-  /** A session's `/accounts` switch, taken once its Pi process has ended. */
-  private readonly relaunches = new Map<string, { accountId: string; nativeSessionId: string | null }>()
+  /** A session's `/accounts` or `/plugin:worktree` switch, taken once its Pi process has ended. */
+  private readonly relaunches = new Map<string, TerminalRelaunch>()
+  /** The managed worktree each live session holds. */
+  private readonly worktreeLeases = new Map<string, string>()
 
   constructor(private readonly options: TerminalsOptions) {
     this.assets = options.assets ?? defaultAssets()
@@ -186,7 +215,11 @@ export class Terminals {
         const parent = findRun(options.env.root, parentId)
         if (!parent) break
         const owner = this.sessions.get(parent.sessionId)
-        if (owner?.controller.activeRun?.runId === parent.id) { owner.controller.observe(event, true); break }
+        if (owner?.controller.activeRun?.runId === parent.id) {
+          owner.controller.observe(event, true)
+          owner.controller.observeSubagent(parent.id, record, event)
+          break
+        }
         parentId = parent.parentRunId
       }
     })
@@ -320,6 +353,16 @@ export class Terminals {
         return api.trust({ ...scope, hash: text('hash') })
       case 'plugins.untrust':
         return api.untrust({ ...scope, hash: text('hash') })
+      case 'plugins.configure': {
+        const settings = params.settings && typeof params.settings === 'object' && !Array.isArray(params.settings) ? params.settings as Record<string, unknown> : {}
+        return api.configure({ ...scope, pluginId: text('pluginId'), settings })
+      }
+      case 'plugins.install':
+        if (!api.install) throw invalid('Package installation is unavailable in this host.')
+        return api.install({ ...scope, source: text('source') })
+      case 'plugins.remove':
+        if (!api.remove) throw invalid('Package removal is unavailable in this host.')
+        return api.remove({ ...scope, pluginId: text('pluginId') })
       default:
         throw new HarnessError('unknown_method', `Unknown call ${call}.`)
     }
@@ -406,8 +449,153 @@ export class Terminals {
     }
   }
 
+  /** `/plugin:worktree`: the managed worktrees of the repository this session works in. */
+  private async worktreesCall(live: Live, call: string, params: Record<string, unknown>): Promise<unknown> {
+    const worktrees = this.options.worktrees
+    if (!worktrees) throw invalid('Worktrees are unavailable in this host.')
+    const sessionId = live.input.sessionId
+    const cwd = live.input.cwd
+    const current = this.worktreeLeases.get(sessionId) ?? null
+    const id = (): string => {
+      if (typeof params.id !== 'string' || !params.id) throw invalid('A worktree id is required.')
+      return params.id
+    }
+    const action = call.slice('terminal.worktrees.'.length)
+    switch (action) {
+      case 'list': {
+        let repo: string
+        try {
+          repo = await worktrees.repositoryOf(cwd)
+        } catch (error) {
+          return { repo: null, current, worktrees: [], removed: [], reason: error instanceof Error ? error.message : String(error) }
+        }
+        const statuses = await Promise.all((await worktrees.list(repo)).map((record) => worktrees.status(record.id)))
+        return { repo, current, worktrees: statuses, removed: worktrees.removed(repo), reason: null }
+      }
+      case 'status': return worktrees.status(id())
+      case 'create': return worktrees.create({
+        repo: cwd,
+        ...(typeof params.name === 'string' && params.name ? { name: params.name } : {}),
+        ...(typeof params.branch === 'string' && params.branch ? { branch: params.branch } : {}),
+        kind: params.kind === 'permanent' ? 'permanent' : 'managed'
+      })
+      case 'branch':
+        if (typeof params.name !== 'string' || !params.name) throw invalid('A branch name is required.')
+        return worktrees.branch(id(), params.name)
+      case 'handoff': {
+        const direction = params.direction === 'toSource' || params.direction === 'toWorktree' ? params.direction : null
+        if (!direction) throw invalid('direction is toSource or toWorktree.')
+        return worktrees.handoff(id(), direction, { move: params.move !== false })
+      }
+      case 'remove':
+        if (id() === current) throw new HarnessError('worktree_in_use', 'This session works in that worktree. Switch to another folder first.')
+        return worktrees.remove(id(), { force: params.force === true })
+      case 'restore': return worktrees.restore(id())
+      case 'prune': return worktrees.prune({ repo: cwd, ...(typeof params.keep === 'number' ? { keep: params.keep } : {}) })
+      case 'trustSetup': {
+        const repo = await worktrees.repositoryOf(cwd)
+        const script = setupScript(repo)
+        if (!script) throw invalid('This repository has no .xharness/worktree-setup.')
+        await worktrees.trustSetup(repo, script.hash)
+        return { hash: script.hash }
+      }
+      case 'switch': {
+        // A new conversation in the chosen folder: Pi keeps one history per working folder.
+        const target = params.main === true ? null : id()
+        const folder = target ? worktrees.pathOf(target) : await worktrees.repositoryOf(cwd)
+        if (!folder) throw new HarnessError('worktree_missing', 'That worktree has no folder.')
+        this.relaunches.set(sessionId, { accountId: live.account.id, nativeSessionId: null, cwd: folder, worktreeId: target })
+        return { cwd: folder, worktreeId: target }
+      }
+      default:
+        throw new HarnessError('unknown_method', `Unknown call ${call}.`)
+    }
+  }
+
+  /** `/plugin:notes` and `/plugin:annotate`: the page notes a person keeps, and the visible browser they capture them in. */
+  private async annotationsCall(live: Live, call: string, params: Record<string, unknown>): Promise<unknown> {
+    const root = this.options.env.root
+    const sessionId = live.input.sessionId
+    const capture = this.options.noteCapture
+    const id = (): string => {
+      if (typeof params.id !== 'string' || !params.id) throw invalid('A note id is required.')
+      return params.id
+    }
+    const version = (): number => {
+      if (typeof params.expectedVersion !== 'number') throw invalid('The note version you last read is required.')
+      return params.expectedVersion
+    }
+    const needCapture = (): AnnotationCapture => {
+      if (!capture) throw invalid('This host has no capture browser.')
+      return capture
+    }
+    const needNotes = (): NoteDeliveries => {
+      if (!this.options.pageNotes) throw invalid('This host cannot send page notes.')
+      return this.options.pageNotes
+    }
+    const action = call.slice('terminal.annotations.'.length)
+    switch (action) {
+      case 'list': {
+        const result = pageNotes.list(root, {
+          query: typeof params.query === 'string' ? params.query : null,
+          url: typeof params.url === 'string' ? params.url : null,
+          status: params.status === 'open' || params.status === 'resolved' ? params.status : null,
+          limit: 200
+        })
+        return { ...result, sessionId }
+      }
+      case 'read': return pageNotes.read(root, id())
+      case 'create': {
+        const note = pageNotes.create(root, { source: params.source as pageNotes.NoteSource, target: params.target as pageNotes.NoteTarget, body: params.body as string, tags: params.tags as string[] })
+        return params.share === true ? pageNotes.share(root, note.id, { sessionId }) : note
+      }
+      case 'update': return pageNotes.update(root, id(), version(), (params.patch ?? {}) as pageNotes.NotePatch)
+      case 'delete': pageNotes.remove(root, id(), version()); return {}
+      // A terminal shares with, and withdraws from, its own session only.
+      case 'share': return pageNotes.share(root, id(), { sessionId })
+      case 'unshare': return pageNotes.unshare(root, id(), { sessionId })
+      case 'open': return needCapture().open(sessionId, typeof params.url === 'string' && params.url ? params.url : null)
+      case 'identity': return needCapture().identity(sessionId)
+      case 'begin':
+        if (params.kind !== 'text' && params.kind !== 'element') throw invalid('kind is text or element.')
+        return needCapture().begin(sessionId, params.kind)
+      case 'capture':
+        if (typeof params.captureId !== 'string') throw invalid('A capture id is required.')
+        return needCapture().capture(sessionId, params.captureId)
+      case 'cancel': await needCapture().cancel(sessionId, typeof params.captureId === 'string' ? params.captureId : undefined); return {}
+      case 'reveal': {
+        const note = pageNotes.read(root, id())
+        return needCapture().reveal(sessionId, note.source.url, note.target)
+      }
+      // ---- The inspector and the queue (PROP-0018); a terminal queues and sends to its own session.
+      case 'target': return { ...needCapture().describe(sessionId), windows: await needCapture().windows(sessionId).catch(() => []) }
+      case 'attach': {
+        const kind = params.kind
+        if (kind !== 'web' && kind !== 'cdp' && kind !== 'bridge') throw invalid('kind is web, cdp or bridge.')
+        const spec: CaptureTargetSpec = kind === 'cdp'
+          ? { kind, endpoint: typeof params.endpoint === 'string' ? params.endpoint : '', name: typeof params.name === 'string' ? params.name : null }
+          : kind === 'bridge' ? { kind, name: typeof params.name === 'string' ? params.name : null } : { kind }
+        return needCapture().attach(sessionId, spec)
+      }
+      case 'windows': return needCapture().windows(sessionId)
+      case 'selectWindow':
+        if (typeof params.window !== 'string') throw invalid('A window id is required.')
+        await needCapture().selectWindow(sessionId, params.window)
+        return {}
+      case 'inspect': return needCapture().inspect(sessionId)
+      case 'stopInspect': await needCapture().stopInspect(sessionId); return {}
+      case 'next': return inspectStep(needCapture(), needNotes(), sessionId, sessionId, 'terminal')
+      case 'queue': return needNotes().queue(id(), version(), sessionId)
+      case 'dequeue': return needNotes().dequeue(id(), version())
+      case 'confirm': return needNotes().confirm(id(), version())
+      case 'send': return needNotes().send(sessionId, { ids: Array.isArray(params.ids) ? params.ids.filter((entry): entry is string => typeof entry === 'string') : null })
+      default:
+        throw new HarnessError('unknown_method', `Unknown call ${call}.`)
+    }
+  }
+
   /** The account a session asked to switch to. Taken once, after its Pi process has ended and before `dispose`. */
-  takeRelaunch(sessionId: string): { accountId: string; nativeSessionId: string | null } | null {
+  takeRelaunch(sessionId: string): TerminalRelaunch | null {
     const request = this.relaunches.get(sessionId) ?? null
     this.relaunches.delete(sessionId)
     return request
@@ -499,6 +687,7 @@ export class Terminals {
   }
 
   private async subagentsCall(live: Live, call: string, params: Record<string, any>): Promise<unknown> {
+    if (call === 'terminal.subagents.monitor') return { children: live.controller.subagentSnapshot() }
     const service = this.options.subagents
     if (!service || live.input.subagents === null) {
       if (call === 'terminal.subagents.tools') return { tools: [] }
@@ -605,24 +794,40 @@ export class Terminals {
     const { root } = env
     if (!input?.sessionId || !input.cwd || !input.sessionFolder) throw invalid('A terminal session needs an id, a working folder, and its own folder.')
     await this.dispose(input.sessionId)
-    const command = this.frontendCommand()
-    // A pinned account is used as it is; it is never exchanged for another one.
-    const account = input.accountId ? accounts.find(input.accountId) : accounts.resolve(null, null)
-    const launch = launchEnv(accounts.dir, account)
-    const loading = (await this.options.plugins?.loading({ cwd: input.cwd, agentDir: configDir(accounts.dir, account), install: true, caller: { projectId: input.projectId ?? null } })) ?? null
-    await this.socket.listen()
-    await accounts.terminalBegin(account)
-
     const sessionId = input.sessionId
-    const caller: CallerContext = { sessionId, projectId: input.projectId ?? null, actor: 'Code', surface: 'cli' }
+    let acquiredWorktreeId: string | null = null
+    let account: Account | null = null
+    let accountStarted = false
     let token: string | null = null
     try {
+      const worktreeId = input.run?.worktreeId ?? null
+      const worktreePath = worktreeId ? this.options.worktrees?.pathOf(worktreeId) ?? null : null
+      if (worktreeId && worktreePath) {
+        await this.options.worktrees!.acquire(worktreeId, sessionId)
+        acquiredWorktreeId = worktreeId
+        this.worktreeLeases.set(sessionId, worktreeId)
+        input.cwd = worktreePath
+      }
+      const command = this.frontendCommand()
+      // A pinned account is used as it is; it is never exchanged for another one.
+      const preparedAccount = input.accountId ? accounts.find(input.accountId) : accounts.resolve(null, null)
+      account = preparedAccount
+      const launch = launchEnv(accounts.dir, preparedAccount)
+      const loading = (await this.options.plugins?.loading({ cwd: input.cwd, agentDir: configDir(accounts.dir, preparedAccount), install: true, caller: { projectId: input.projectId ?? null } })) ?? null
+      await this.socket.listen()
+      await accounts.terminalBegin(preparedAccount)
+      accountStarted = true
+
+      const caller: CallerContext = { sessionId, projectId: input.projectId ?? null, actor: 'Code', surface: 'cli' }
       const broker = input.connections === false ? null : apps.grant({ sessionId, runId: null, caller, readOnly: !!input.readOnly, depth: 0 })
       // The session keeps these instructions; each of its runs records a copy, and a memory
       // block that changes later is sent along as a note.
       const variant = input.variant ? materialise(root, input.variant, { trust: this.options.trust ?? null }) : null
+      const browser = new BrowserControl({ root, cwd: input.cwd, pinned: variant,
+        writable: Boolean(input.variant && !('dir' in input.variant)), apps, hub: this.options.hub,
+        plugins: () => this.options.pluginControl?.list({ cwd: input.cwd, accountId: preparedAccount.id, projectId: input.projectId ?? null }) ?? Promise.resolve([]) })
       if (variant) this.variantDirs.set(sessionId, variant.dir)
-      const worldTools = await this.worldToolNames(input, account)
+      const worldTools = await this.worldToolNames(input, preparedAccount)
       const launchTools = [...new Set([...(input.launch?.tools ?? []), SESSION_NAME, ...worldTools])]
       const pack = compile(env, caller, { ...input.launch, tools: launchTools }, variant)
       record(root, pack)
@@ -631,7 +836,7 @@ export class Terminals {
 
       const live: Live = {
         input,
-        account,
+        account: preparedAccount,
         broker,
         caller,
         token: '',
@@ -654,6 +859,37 @@ export class Terminals {
         caller: () => ({ ...caller, runId: live.controller.activeRun?.runId ?? null }),
         broker,
         terminal: { accept: (event, data) => live.controller.accept(event, data), disconnected: () => live.controller.disconnected(), control: async (call, params) => {
+          if (call === 'terminal.browser.config') {
+            const world = this.options.world
+            if (!world) throw invalid('Browser settings are unavailable in this host.')
+            return { allowPrivate: world.browserConfig().allowPrivate }
+          }
+          if (call === 'terminal.browser.configure') {
+            const world = this.options.world
+            if (!world) throw invalid('Browser settings are unavailable in this host.')
+            if (typeof params.allowPrivate !== 'boolean') throw invalid('allowPrivate must be a boolean.')
+            return { allowPrivate: world.configureBrowser({ allowPrivate: params.allowPrivate }).allowPrivate }
+          }
+          if (call === 'terminal.browser.snapshot') return browser.snapshot(params.refresh === true)
+          if (call === 'terminal.browser.read') {
+            if (typeof params.id !== 'string') throw invalid('A resource id is required.')
+            return browser.read(params.id, params.latest === true)
+          }
+          if (call === 'terminal.browser.importSkill') {
+            if (typeof params.path !== 'string' || !params.path.trim()) throw invalid('A skill folder is required.')
+            browser.importSkill(params.path)
+            bus.emit({ type: 'plugins.changed' })
+            return {}
+          }
+          if (call.startsWith('terminal.browser.connections.')) return browser.connection(call.slice('terminal.browser.connections.'.length), params)
+          if (call === 'terminal.browser.hubPreview') {
+            if (!this.options.hub || typeof params.id !== 'string' || typeof params.version !== 'string') throw invalid('A catalog entry and version are required.')
+            return this.options.hub.preview(params.id, params.version, typeof params.offset === 'number' ? params.offset : 0)
+          }
+          if (call === 'terminal.browser.hubDocument') {
+            if (!this.options.hub || typeof params.id !== 'string' || typeof params.version !== 'string') throw invalid('An installed document and version are required.')
+            return this.options.hub.readDocument(params.id, params.version)
+          }
           if (call.startsWith('terminal.doctor.')) {
             const doctor = this.options.doctor
             if (!doctor) throw invalid('Diagnostics are unavailable in this host.')
@@ -681,6 +917,8 @@ export class Terminals {
             throw invalid('Unknown diagnostic operation.')
           }
           if (call.startsWith('terminal.subagents.')) return this.subagentsCall(live, call, params)
+          if (call.startsWith('terminal.worktrees.')) return this.worktreesCall(live, call, params)
+          if (call.startsWith('terminal.annotations.')) return this.annotationsCall(live, call, params)
           if (call === 'terminal.logs.info') return harnessLogInfo(this.options.stateDir)
           if (call === 'terminal.logs.read') {
             const { snapshotSize, offset } = params
@@ -709,7 +947,7 @@ export class Terminals {
             return { globalTools: policy.globalTools.pi ?? [] }
           }
           if (call !== 'terminal.resources') return live.controller.control(call, params)
-          const current = await this.options.plugins?.loading({ cwd: input.cwd, agentDir: configDir(accounts.dir, account), install: false, caller: { projectId: input.projectId ?? null } }) ?? null
+          const current = await this.options.plugins?.loading({ cwd: input.cwd, agentDir: configDir(accounts.dir, preparedAccount), install: false, caller: { projectId: input.projectId ?? null } }) ?? null
           if (resourceIdentity(current) !== resourceIdentity(loading)) throw new HarnessError('terminal_resources_changed', 'Trusted resources changed since this terminal was prepared. Review /plugins and reopen the terminal to load the new selection.')
           return {}
         } }
@@ -741,14 +979,18 @@ export class Terminals {
           [SOCKET_ENV]: this.socket.path,
           [TOKEN_ENV]: token
         },
-        accountId: account.id,
+        accountId: preparedAccount.id,
         nativeSessionId: input.nativeSessionId ?? null
       }
     } catch (error) {
       if (token) this.socket.revoke(token)
       this.sessions.delete(sessionId)
+      this.variantDirs.delete(sessionId)
+      this.worldNames.delete(sessionId)
+      if (this.worktreeLeases.get(sessionId) === acquiredWorktreeId) this.worktreeLeases.delete(sessionId)
       apps.revokeSession(sessionId)
-      await accounts.terminalEnd(account).catch(() => undefined)
+      if (accountStarted && account) await accounts.terminalEnd(account).catch(() => undefined)
+      if (acquiredWorktreeId) await this.options.worktrees?.release(acquiredWorktreeId, sessionId).catch(() => undefined)
       throw error
     }
   }
@@ -800,6 +1042,10 @@ export class Terminals {
     }
     this.sessions.delete(sessionId)
     this.worldNames.delete(sessionId)
+    const worktreeId = this.worktreeLeases.get(sessionId)
+    this.worktreeLeases.delete(sessionId)
+    if (worktreeId) await this.options.worktrees?.release(worktreeId, sessionId).catch(() => undefined)
+    void this.options.noteCapture?.release(sessionId).catch(() => undefined)
     void this.options.world?.release(sessionId).catch(() => undefined)
     live.controller.dispose()
     this.socket.revoke(live.token)

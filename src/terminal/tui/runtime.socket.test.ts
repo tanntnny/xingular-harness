@@ -85,6 +85,49 @@ describe('a native SDK runtime on the actual Harness terminal socket', () => {
     expect(harness.terminals.state('offline-sdk').active).toBe(false)
   })
 
+  it('exposes only the active parent run’s flat child activity through the private monitor call', async () => {
+    const { harness, runtime } = await setup()
+    await terminalCall('begin', { text: 'Observe child work' })
+    const parentId = harness.runs.activeForSession('offline-sdk')!.runId
+    const { loadRun, saveRun } = await import('../../sessions/runStore')
+    const parent = loadRun(harness.env.root, parentId)!
+    saveRun(harness.env.root, {
+      ...parent, id: 'observed-child', sessionId: 'opaque-child', parentRunId: parentId, relation: 'subagent',
+      nativeSessionId: null, status: 'queued', endedAt: null, goal: 'Inspect auth flow'
+    })
+    saveRun(harness.env.root, {
+      ...parent, id: 'observed-nested', sessionId: 'opaque-nested', parentRunId: 'observed-child', relation: 'subagent',
+      nativeSessionId: null, status: 'queued', endedAt: null, goal: 'Check token handling'
+    })
+    saveRun(harness.env.root, {
+      ...parent, id: 'unrelated-child', sessionId: 'other-child', parentRunId: 'other-parent', relation: 'subagent',
+      nativeSessionId: null, status: 'queued', endedAt: null, goal: 'Unrelated task'
+    })
+
+    const child = harness.runs.start('opaque-child', 'observed-child')
+    child.emit('tool.started', { toolCallId: 'read-1', name: 'read', summary: 'src/auth.ts', input: '{"token":"hidden"}' })
+    const nested = harness.runs.start('opaque-nested', 'observed-nested')
+    nested.emit('tool.started', { toolCallId: 'grep-1', name: 'grep', summary: 'token validation' })
+    const unrelated = harness.runs.start('other-child', 'unrelated-child')
+    unrelated.emit('tool.started', { toolCallId: 'write-1', name: 'write', summary: 'outside parent' })
+
+    const { children } = await controlCall<{ children: Array<{ id: string; goal: string; activity: string }> }>('terminal.subagents.monitor')
+    expect(children.map(item => item.id)).toEqual(['observed-child', 'observed-nested'])
+    expect(children).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'observed-child', goal: 'Inspect auth flow', activity: 'read' }),
+      expect.objectContaining({ id: 'observed-nested', goal: 'Check token handling', activity: 'grep' })
+    ]))
+    const activity = JSON.stringify(children)
+    expect(activity).not.toContain('src/auth.ts')
+    expect(activity).not.toContain('token validation')
+    expect(activity).not.toContain('hidden')
+
+    child.finish('completed')
+    nested.finish('completed')
+    unrelated.finish('completed')
+    await runtime.interrupt()
+  })
+
   it('routes a child approval to its original run through the terminal decision controls', async () => {
     const { harness, runtime } = await setup()
     await terminalCall('begin', { text: 'Parent fixture' })

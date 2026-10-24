@@ -1,0 +1,296 @@
+{
+  "passed": true,
+  "implementation": "production standalone CLI + real Pi SDK + loopback OpenAI SSE transport",
+  "cli": "/Users/tanny/Documents/Projects/Xingular/Xingular Agent/Harness/dist/cli.js",
+  "cliSha256": "232ac305ba840c46dd9f09ebab8f3e8c78fef497412f7c26d43394eaceff8ca7",
+  "terminalBundleSha256": "dbb461ae771b03235e97a54620bd36a5584336c347ccd6e3cf62ed3212134358",
+  "verifierSha256": "844cf9365982e448f428b563e8dbcff7dc7afe858303556476e656bee8e096f1",
+  "provider": "controlled loopback OpenAI-compatible streaming transport; no external model requests or user credentials",
+  "requestCount": 0,
+  "profiles": [
+    {
+      "size": "40x20",
+      "checks": [
+        "welcome and real configured model",
+        "Ctrl+K preserves existing draft; mouse opens filters; responsive resize preserves filter state",
+        "full-screen persistent tabs, keyboard and mouse section selection, unified overview/skills/MCP, loaded skill completion and insertion, Discover and Community filter without model requests"
+      ],
+      "exitCode": 0,
+      "termiosRestored": true,
+      "bracketedPasteDisabled": true,
+      "cursorShown": true
+    },
+    {
+      "size": "80x24",
+      "checks": [
+        "welcome and real configured model",
+        "Ctrl+K preserves existing draft; mouse opens filters; responsive resize preserves filter state",
+        "full-screen persistent tabs, keyboard and mouse section selection, unified overview/skills/MCP, loaded skill completion and insertion, Discover and Community filter without model requests"
+      ],
+      "exitCode": 0,
+      "termiosRestored": true,
+      "bracketedPasteDisabled": true,
+      "cursorShown": true
+    },
+    {
+      "size": "120x40",
+      "checks": [
+        "welcome and real configured model",
+        "Ctrl+K preserves existing draft; mouse opens filters; responsive resize preserves filter state",
+        "full-screen persistent tabs, keyboard and mouse section selection, unified overview/skills/MCP, loaded skill completion and insertion, Discover and Community filter without model requests"
+      ],
+      "exitCode": 0,
+      "termiosRestored": true,
+      "bracketedPasteDisabled": true,
+      "cursorShown": true
+    }
+  ],
+  "captures": [
+    {
+      "file": "40x20-welcome.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 40,
+      "rows": 20,
+      "rawBytes": 8802,
+      "rawSha256": "db19461ed267a6f6572c4d0c124542ada8a33f1589a2bd4ac0e15eb1acb7c438",
+      "archiveBytes": 1365,
+      "archiveSha256": "e36ef5236ac605b0413901a38669f4b75a7c8b84a5e880d9f54598e52159a36b"
+    },
+    {
+      "file": "40x20-harness-browser.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 40,
+      "rows": 20,
+      "rawBytes": 22572,
+      "rawSha256": "5975315a9e25747de5bcce2169bad16d9bdae7f35bc9a2140a09dc840d39f5dc",
+      "archiveBytes": 2762,
+      "archiveSha256": "d5e8c490d32d47a8089b3b631244156845366040675d250fc5e7f74388cf286c"
+    },
+    {
+      "file": "40x20-skills-browser.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 40,
+      "rows": 20,
+      "rawBytes": 46689,
+      "rawSha256": "339ebc019fa38675094ad2a43231826f1c98666c8bc4dfb948c5c203978e1d41",
+      "archiveBytes": 4128,
+      "archiveSha256": "2abb9e4b4708762e5736a950d4f0d2fecd03bc33d62560783c40b81814552d4f"
+    },
+    {
+      "file": "40x20-skill-inspector.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 40,
+      "rows": 20,
+      "rawBytes": 76016,
+      "rawSha256": "71b27901b3df9e2d7633d47ec7756d7d9f5667206cafbb4d1467110685fddcc2",
+      "archiveBytes": 5133,
+      "archiveSha256": "9256e33dd98948ec555e3ccedd6a15e839a030d60c6856399a49e898950b462d"
+    },
+    {
+      "file": "40x20-browser-preserved-draft.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 40,
+      "rows": 20,
+      "rawBytes": 103330,
+      "rawSha256": "eba084d633aca63f8b8cf2134bf8f8c83d9c634064dbd97879ba892951257677",
+      "archiveBytes": 6198,
+      "archiveSha256": "f232d5f8e2b68bc8600c510bbf3dcb9ebbc15681a8a6b1a09fecb0bd9f45d8df"
+    },
+    {
+      "file": "40x20-skills-discover.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 40,
+      "rows": 20,
+      "rawBytes": 118998,
+      "rawSha256": "0676b954ac2dde26d7589488092ad32021b02aa5efbecdfbcd07372a376cdcd6",
+      "archiveBytes": 6861,
+      "archiveSha256": "058f5b8f25047652ca4e9b931a83b742e95d604c3a5888dd3ec8aebaa6d6e2b5"
+    },
+    {
+      "file": "40x20-community-filter.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 40,
+      "rows": 20,
+      "rawBytes": 119778,
+      "rawSha256": "e3c543c0741e2464fdca6cdb5957722181d65aee90d0ec2a57e0f0da5d73b4e8",
+      "archiveBytes": 6957,
+      "archiveSha256": "d1884b4d601dd7ad9119f79bf40832d1ee4e70e3e9c77fdef05b56fa82b52d82"
+    },
+    {
+      "file": "40x20-connections-browser.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 40,
+      "rows": 20,
+      "rawBytes": 146448,
+      "rawSha256": "749d7a6ad530537d143b0bc874a71472ce0a269438fd94fd20647c7cf4db3679",
+      "archiveBytes": 8416,
+      "archiveSha256": "df2d1ae099fdce1543efa6480bc76259abc7b5d3f3b91eec4cb6a8f7d8e5daf8"
+    },
+    {
+      "file": "80x24-harness-browser.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 80,
+      "rows": 24,
+      "rawBytes": 34176,
+      "rawSha256": "22062cb01ecbda5a06906e2cb06d31d1a4ef559e0aa533ed734d943dd5a45b46",
+      "archiveBytes": 3597,
+      "archiveSha256": "daaa1c36babf10ccda544d1ee28f4be83daf543c5eea3d87c7449ac34db62abc"
+    },
+    {
+      "file": "80x24-skills-browser.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 80,
+      "rows": 24,
+      "rawBytes": 66812,
+      "rawSha256": "4f12ebdc3b73ed1e89261dedb80eaadfa824cbb2843bac3fbb2d3200bdebbb7a",
+      "archiveBytes": 5296,
+      "archiveSha256": "1840d2eeb4738d71e737f683f83aa78c95bfeeab88631aac2f9b29b5222d4b42"
+    },
+    {
+      "file": "80x24-skill-inspector.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 80,
+      "rows": 24,
+      "rawBytes": 109966,
+      "rawSha256": "aa6dabbe866da378d35d45bf814e46f5d93c375a32b7f76d95b7177df9acefa6",
+      "archiveBytes": 8031,
+      "archiveSha256": "82cd61bea035ea923b84548ab6881d0d7366ddbedbaa2a8f5af018e74c51d86e"
+    },
+    {
+      "file": "80x24-browser-preserved-draft.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 80,
+      "rows": 24,
+      "rawBytes": 154526,
+      "rawSha256": "fea6ab0cf4782541a93346a07638c39c66f18a5dd371bbd43ca2069dc96feb41",
+      "archiveBytes": 11948,
+      "archiveSha256": "4b9f501ec623f642ef3174b0ea2d2b0a76ed4c19dc77d73e88a5f0803dfccbe1"
+    },
+    {
+      "file": "80x24-skills-discover.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 80,
+      "rows": 24,
+      "rawBytes": 177487,
+      "rawSha256": "9d670e84768d21ac37131553d6b32d45cefd9c5fb0ad8c3dfd0795689ac40599",
+      "archiveBytes": 13535,
+      "archiveSha256": "68e37dc020c170a4d6d5ca6d1ad678231fc2fb9d378ac151bc4eee91993ac780"
+    },
+    {
+      "file": "80x24-community-filter.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 80,
+      "rows": 24,
+      "rawBytes": 178416,
+      "rawSha256": "a096401d5ca3495826c3acad9d297d57e208f815696690ec41a24b779a5b9c1d",
+      "archiveBytes": 13632,
+      "archiveSha256": "3cdd1ef9d4c72cd23f9098b134cdcf3bff3f2a564a1db824df17ddc2e49ecd0c"
+    },
+    {
+      "file": "80x24-browser-resized.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 40,
+      "rows": 20,
+      "rawBytes": 195801,
+      "rawSha256": "68499538df918ca7c8c2d40fa7fbc1d597e9c0ca49b33e3e16ffa376f0f7e8e5",
+      "archiveBytes": 14640,
+      "archiveSha256": "669473f16661d7986cba694e631c9ddc585d7ae62dfd5bcfeb5e2ba71cf25827"
+    },
+    {
+      "file": "80x24-connections-browser.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 80,
+      "rows": 24,
+      "rawBytes": 226315,
+      "rawSha256": "d7dfa04a6d7240ef66a7c025b8c8dd7a8e51481bb1a5878bb50227d98c6f24e9",
+      "archiveBytes": 16957,
+      "archiveSha256": "38f28fb7266966380b3827b321e16ba9d63b72e689e3900c98d8175343a54abf"
+    },
+    {
+      "file": "120x40-harness-browser.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 120,
+      "rows": 40,
+      "rawBytes": 47200,
+      "rawSha256": "4a564f4c9df15c92072f5492d0da8d3902532f07a06c562c6f6e3111cb449589",
+      "archiveBytes": 4081,
+      "archiveSha256": "951e23b83a411a866cb35d6f8c3fc5508dfa6fa21b7462c53524d11bbefd6b0c"
+    },
+    {
+      "file": "120x40-skills-browser.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 120,
+      "rows": 40,
+      "rawBytes": 103485,
+      "rawSha256": "d30665b21780c7445b77a7ab8c11e36013e3a97c29462917780e251d447d7bd3",
+      "archiveBytes": 9036,
+      "archiveSha256": "91f07d9f43af16a708370565d84b971f8411f0b135fd9b2022cb1f3c8b6576a4"
+    },
+    {
+      "file": "120x40-skill-inspector.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 120,
+      "rows": 40,
+      "rawBytes": 160890,
+      "rawSha256": "a38c73e45c84055cd853b184cf320566871b9c40a49da78a0fb7135998c2f086",
+      "archiveBytes": 13383,
+      "archiveSha256": "3cc86cf7da7ca2faa38692252f60673aff6a0215a9ca3c6fdfa0bf0158ea158c"
+    },
+    {
+      "file": "120x40-browser-preserved-draft.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 120,
+      "rows": 40,
+      "rawBytes": 223799,
+      "rawSha256": "b4364d8523af5b40c00016eb155a3267d959030241b88ba998747b7c9038cfab",
+      "archiveBytes": 18444,
+      "archiveSha256": "5bcd052fecd556985c2c08979b45a99ecaefea41f1ce49784fd4020d6c5b4308"
+    },
+    {
+      "file": "120x40-skills-discover.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 120,
+      "rows": 40,
+      "rawBytes": 259222,
+      "rawSha256": "a9664d5da5a14b3a26af2ef5199e1954ee36e380cb0b55f34d64e17b27dc43a6",
+      "archiveBytes": 21513,
+      "archiveSha256": "6d91f2c83ff73a20ed9a0811dc27df9c2ff054f06cbfac9978ada214cc891098"
+    },
+    {
+      "file": "120x40-community-filter.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 120,
+      "rows": 40,
+      "rawBytes": 261051,
+      "rawSha256": "f87dce692139bcae07e00e1dbf98ac0190e2fbd17b75b79f5dc9634877c58753",
+      "archiveBytes": 21712,
+      "archiveSha256": "df0473594db6a3ad927a40677fa6929e840d978cb5077a01f61a9b3d73227853"
+    },
+    {
+      "file": "120x40-browser-resized.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 40,
+      "rows": 20,
+      "rawBytes": 287901,
+      "rawSha256": "195284c8977698deac37f371f50817465d3f235e9529311bfa0001a688908a19",
+      "archiveBytes": 23396,
+      "archiveSha256": "2d6c99637e1fdf4edcf60f201062ffcd7d7ce935944f75a65cdfafecef7471a4"
+    },
+    {
+      "file": "120x40-connections-browser.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 120,
+      "rows": 40,
+      "rawBytes": 338457,
+      "rawSha256": "77b36eca3c95cd544ed36ec847d36ae841e8c97225056a14ed8b311a3c0896c9",
+      "archiveBytes": 26551,
+      "archiveSha256": "e749ee3c4b3234e566bb36f9515cd3702aee017d44187fabc1f81467e7de2cb2"
+    }
+  ],
+  "limits": [
+    "The AgentSession, frontend, native tools, authorization and run writer are production code.",
+    "The controlled local transport supplies deterministic model responses and usage fixtures.",
+    "These functional checks do not establish external provider OAuth/service availability or visual equivalence to OMP.",
+    "Each compressed capture is a cumulative actual ANSI stream from PTY startup through the named interaction. Replay at its recorded dimensions."
+  ]
+}

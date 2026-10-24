@@ -92,10 +92,7 @@ export class ModelPicker implements Component, Focusable {
       this.status = ''
       if (result.aborted) this.error = 'Model refresh timed out; showing cached models.'
       else if (result.errors.size) this.error = `Could not refresh ${[...result.errors.keys()].join(', ')}; showing cached models.`
-      else {
-        this.error = this.options.runtime.getError()
-        if (!this.error) this.status = 'Model catalogs refreshed.'
-      }
+      else this.error = this.options.runtime.getError()
       this.load()
     } catch (error) {
       if (this.closed) return
@@ -151,10 +148,8 @@ export class ModelPicker implements Component, Focusable {
     if (width < 1 || rows < 1) return []
     const centered = centeredDialogHost(this.options.tui) && dialogFits(this.options.tui.terminal.columns, this.options.tui.terminal.rows)
     const inner = centered ? centerDialogContentWidth(width) : contentWidth(width)
-    const selected = this.list.selected?.data
     const notes = [
       this.status ? theme.fg('muted', this.status) : '',
-      selected ? theme.fg('muted', `Model name: ${safeText(selected.name ?? selected.id)}`) : '',
       this.error ? theme.fg('error', this.error) : ''
     ].filter(Boolean)
     const chromeRows = centered ? centerDialogChromeRows(rows) : 4

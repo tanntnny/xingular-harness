@@ -11,6 +11,11 @@ written and the claim moves to checked behavior. Cite material as
 
 ## Focused notes
 
+- [Proactive autonomy and three feature directions](proactive-autonomy.md) — scheduled initiative,
+  a human-readable agenda, UI repair, cleanup and product experiments; fresh
+  [proactive-system evidence](autonomy-sources.md) and
+  [autonomous-engineering evidence](autonomous-engineering-sources.md). Research hypotheses,
+  not an accepted architecture change.
 - [`/btw` side-question comparison](btw-comparison.md) — this terminal, the App-owned
   side question, and checked-out external implementations.
 - [Harness feature-gap review](feature-gap-review.md) — task/goal management, long-running work,

@@ -12,12 +12,12 @@ let last
 for (let attempt = 0; attempt < 6; attempt++) {
   try {
     const metadata = await read('https://registry.npmjs.org/@xingular%2fharness')
-    const published = metadata.versions?.['1.0.0']
+    const published = metadata.versions?.[candidate.version]
     assert.ok(published)
-    assert.equal(metadata['dist-tags'].latest, '1.0.0')
+    assert.equal(metadata['dist-tags'].latest, candidate.version)
     assert.equal(published.dist.integrity, candidate.integrity)
     assert.ok(published.dist.attestations?.url, 'Published provenance is missing.')
-    console.log('Verified @xingular/harness@1.0.0, latest, tarball integrity and provenance.')
+    console.log(`Verified @xingular/harness@${candidate.version}, latest, tarball integrity and provenance.`)
     process.exit(0)
   } catch (error) { last = error; if (attempt < 5) await new Promise(resolve => setTimeout(resolve, 5000)) }
 }

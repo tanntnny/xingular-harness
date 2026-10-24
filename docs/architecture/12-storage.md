@@ -16,6 +16,7 @@ index.
   refine/<id>/         summary.json, task.json, variants/, rollouts/, sessions/, context/, selection/, reflection/, improver/, or matrix.json + suite.json for evaluation matrices   (05)
                        rollouts/<label>/workspace/ only when started with retainWorkspaces
   library/<scope>/<area>/   INDEX.md, variants/<task>/{variant/, EXPERIENCE.md}   (05)
+  annotations/<id>.json   page notes   (13, PROP-0017)
   wiki/                home.md, library/ (library/lessons/ from the lessons plugin), projects/<slug>/   (08)
   reflection/improver/lesson-<run id>/   a reflection's native history and reply   (08)
   wiki-history/        earlier versions of notes   (08)
@@ -37,6 +38,11 @@ index.
   connections.json     connected apps, no secrets   (09)
   hub/catalog.json     catalog cache   (09)
   run/                 the session socket and terminal commands   (11)
+  worktrees.json       managed worktree registry   (02, PROP-0016)
+  worktrees/<repo>/<name>/   managed worktree checkouts; worktrees/logs/ setup output   (PROP-0016)
+  worktree-setup-trust.json  trusted setup-script hashes, owner-only   (PROP-0016)
+  browser/             isolated browser settings and profiles   (13)
+  notes-bridge.json    the page bridge's port and token, kept so an app's script tag stays valid   (13, PROP-0018)
   harness.log          standalone terminal diagnostics
 ```
 

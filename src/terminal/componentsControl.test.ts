@@ -64,4 +64,15 @@ describe('person-controlled components in a terminal', () => {
     expect(listed).toEqual(expect.objectContaining({ writable: false, addedIds: [] }))
     await expect(call('terminal.components.add', { id: 'skills/review' })).rejects.toMatchObject({ code: 'invalid_request' })
   })
+
+  it('requires the private control key for browser reads, imports and connection mutations', async () => {
+    const { connection, call } = await setup()
+    for (const method of ['terminal.browser.snapshot', 'terminal.browser.read', 'terminal.browser.importSkill', 'terminal.browser.connections.save']) {
+      await expect(socketCall(connection, method, { id: 'variant:systemprompt.md', path: '/tmp', input: {} })).rejects.toMatchObject({ code: 'unauthorized' })
+    }
+    const snapshot = await call<{ variant: { pinned: string; latest: string }; items: { id: string }[] }>('terminal.browser.snapshot')
+    expect(snapshot.variant.pinned).toBe(snapshot.variant.latest)
+    expect(snapshot.items.some(item => item.id.startsWith('foundation:'))).toBe(true)
+    await expect(call('terminal.browser.read', { id: 'variant:../../secrets.json' })).rejects.toMatchObject({ code: 'invalid_request' })
+  })
 })

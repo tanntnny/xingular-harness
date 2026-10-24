@@ -5,8 +5,9 @@
 import { createHash, randomUUID } from 'node:crypto'
 
 import { HarnessError } from '../core/errors'
-import type { RunEvent } from '../sessions/contracts'
+import { runStatusSchema, type RunEvent, type RunRecord } from '../sessions/contracts'
 import type { ActiveRun, ApprovalDecision, QuestionAnswer, QuestionInput } from '../sessions/registry'
+import { SubagentMonitor, type TerminalSubagentActivity } from './subagentMonitor'
 
 export interface PolicyReply {
   allowed: boolean
@@ -49,6 +50,7 @@ const ACK_TIMEOUT_MS = 25_000
 export class TerminalController {
   private run: ActiveRun | null = null
   private readonly pending = new Map<string, Record<string, unknown>>()
+  private readonly subagents = new SubagentMonitor()
   private ready = false
   private disposed = false
   private dirty = false
@@ -89,6 +91,7 @@ export class TerminalController {
     if (delivery && text && delivery.text !== text) throw new Error('The native prompt did not match the reserved delivery. Inspect the terminal before continuing.')
     const run = this.hooks.begin({ reservedRunId: delivery?.runId ?? null, nativeTurnId, text })
     this.run = run
+    this.subagents.begin(run.runId)
     run.onInterrupt(() => void this.commands.push({ type: 'interrupt' }))
     if (text) run.emit('message.completed', { messageId: nativeTurnId, role: 'user', text })
     delivery?.resolve()
@@ -97,7 +100,9 @@ export class TerminalController {
   }
 
   private finish(outcome: 'completed' | 'failed' | 'interrupted', message?: string): void {
+    const runId = this.run?.runId
     this.run?.finish(outcome, message ? { code: 'terminal_attention', message } : undefined)
+    this.subagents.clear(runId)
     this.run = null
     this.seen.clear()
     this.pending.clear()
@@ -165,6 +170,26 @@ export class TerminalController {
     } else if (event.type === 'question.answered') {
       this.pending.delete(String((event.payload as { questionId: string }).questionId))
     }
+  }
+
+  /** A child event that belongs to the active terminal parent run. */
+  observeSubagent(parentRunId: string, run: RunRecord, event: RunEvent): void {
+    if (this.disposed || this.activeRun?.runId !== parentRunId || run.relation !== 'subagent') return
+    this.subagents.observe(parentRunId, {
+      id: run.id,
+      parentRunId: run.parentRunId,
+      relation: 'subagent',
+      goal: run.goal,
+      status: runStatusSchema.parse(run.status),
+      startedAt: run.startedAt,
+      endedAt: run.endedAt
+    }, event)
+  }
+
+  /** Read-only child activity for the active run. */
+  subagentSnapshot(): TerminalSubagentActivity[] {
+    const run = this.activeRun
+    return run ? this.subagents.snapshot(run.runId) : []
   }
 
   /** The socket grants this interface only to the process that owns terminal input. */

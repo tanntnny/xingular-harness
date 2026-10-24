@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { matchPalette, paletteCommandColumnWidth, type PaletteItem } from './palette'
 
 const commands: PaletteItem[] = [
-  { name: 'resume', description: 'Resume a session in this account and folder' },
+  { name: 'session', aliases: ['resume'], description: 'Choose a saved session in this account and folder' },
   { name: 'accounts', description: 'Sign in, switch, check and remove Pi accounts' },
   { name: 'model', description: 'Choose the model' }
 ]
@@ -12,8 +12,14 @@ const names = (items: PaletteItem[]) => items.map(item => item.name)
 
 describe('the command palette', () => {
   it('offers the command named by the filter before a description that mentions it', () => {
-    expect(names(matchPalette(commands, 'account'))).toEqual(['accounts', 'resume'])
+    expect(names(matchPalette(commands, 'account'))).toEqual(['accounts', 'session'])
     expect(matchPalette(commands, 'account')[1]).toEqual(commands[0])
+  })
+
+  it('matches aliases without adding a duplicate command row', () => {
+    expect(names(matchPalette(commands, 'resume'))).toEqual(['session'])
+    expect(names(matchPalette(commands, 'res'))).toEqual(['session'])
+    expect(matchPalette(commands, 'resume')[0]).toEqual(commands[0])
   })
 
   it('puts an exact name first and keeps commands whose name starts with the filter above later matches', () => {
@@ -27,7 +33,7 @@ describe('the command palette', () => {
   })
 
   it('keeps the declared order without a filter and drops everything when nothing matches', () => {
-    expect(names(matchPalette(commands, ''))).toEqual(['resume', 'accounts', 'model'])
+    expect(names(matchPalette(commands, ''))).toEqual(['session', 'accounts', 'model'])
     expect(matchPalette(commands, 'nothing')).toEqual([])
   })
 
@@ -37,6 +43,10 @@ describe('the command palette', () => {
       { name: 'remodel', description: 'unrelated' }
     ]
     expect(names(matchPalette(items, 'model'))).toEqual(['remodel', 'other'])
+  })
+
+  it('includes the one-row alias label when sizing the command column', () => {
+    expect(paletteCommandColumnWidth([{ name: 'session', aliases: ['resume'] }], 80)).toBe(17)
   })
 
   it('aligns descriptions to the widest visible command while reserving room for both columns', () => {

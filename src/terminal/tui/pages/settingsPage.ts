@@ -21,7 +21,8 @@ export interface TerminalSettingItem {
 
 const CATEGORIES = [
   { id: 'appearance', title: 'Appearance' }, { id: 'model', title: 'Model' },
-  { id: 'interaction', title: 'Interaction' }, { id: 'context', title: 'Context' }
+  { id: 'interaction', title: 'Interaction' }, { id: 'context', title: 'Context' },
+  { id: 'browser', title: 'Browser' }
 ] as const
 
 const tabOf = (item: TerminalSettingItem) => item.tab.toLowerCase()
@@ -29,6 +30,8 @@ const tabOf = (item: TerminalSettingItem) => item.tab.toLowerCase()
 export interface SettingsPageOptions {
   theme: () => Theme
   items(): TerminalSettingItem[]
+  /** Loads device-local settings that need a protected Harness call. */
+  load?(): Promise<void>
   /** Changes the setting; the page reads the items again afterwards. */
   apply(id: string): Promise<void>
   notify(message: string, type?: string): void
@@ -36,8 +39,10 @@ export interface SettingsPageOptions {
 }
 
 export class SettingsPage implements TerminalPage {
+  readonly presentation = 'fullscreen'
   private items: TerminalSettingItem[] = []
   private category = ''
+  private disposed = false
   private readonly list: FilterList<TerminalSettingItem>
 
   constructor(private readonly options: SettingsPageOptions) {
@@ -49,6 +54,17 @@ export class SettingsPage implements TerminalPage {
       }
     })
     this.reload()
+    if (options.load) {
+      void options.load().then(() => {
+        if (!this.disposed) this.reload()
+      }, error => {
+        if (!this.disposed) options.notify(error instanceof Error ? error.message : String(error), 'error')
+      })
+    }
+  }
+
+  dispose(): void {
+    this.disposed = true
   }
 
   set focused(value: boolean) { this.list.focused = value }

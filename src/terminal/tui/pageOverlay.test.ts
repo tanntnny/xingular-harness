@@ -109,6 +109,33 @@ describe('independent terminal page overlays', () => {
     expect(state.active).toBe('tools')
   })
 
+  it('uses full terminal geometry and direct tab selection for pages that own focus', () => {
+    const { overlay, page, state, mouse, plain } = setup({ columns: 120, rows: 40, centered: true })
+    page.presentation = 'fullscreen'
+    page.ownsNavigation = true
+    page.selectTab = id => { state.active = id }
+    expect(plain(120)).toHaveLength(40)
+    expect(plain(120)[2]).toContain('body 116x36')
+    overlay.handleMouse(mouse('click', 16, 0))
+    expect(state.active).toBe('tools')
+    expect(state.inputs).toEqual([])
+    overlay.handleMouse(mouse('click', 4, 2))
+    expect(state.mouse).toEqual([{ type: 'click', x: 2, y: 0 }])
+    expect(plain(120).at(-1)).not.toContain('Tab/Shift+Tab sections')
+  })
+
+  it('selects previous and next tabs from a compact full-screen strip', () => {
+    const { overlay, page, state, mouse } = setup({ columns: 16, rows: 20, centered: true })
+    page.presentation = 'fullscreen'
+    page.selectTab = id => { state.active = id }
+    overlay.render(16)
+    overlay.handleMouse(mouse('click', 12, 0))
+    expect(state.active).toBe('tools')
+    overlay.render(16)
+    overlay.handleMouse(mouse('click', 2, 0))
+    expect(state.active).toBe('overview')
+  })
+
   it('offers Escape to the page first and closes only when the page leaves it', () => {
     const { overlay, close, state } = setup({ consumed: ['\x1b'] })
     overlay.handleInput('\x1b')

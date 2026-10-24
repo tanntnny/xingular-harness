@@ -1,6 +1,6 @@
 import type { Theme, ExtensionUIContext } from '@earendil-works/pi-coding-agent'
-import { matchesKey, stripTerminalSequences, wrapTextWithAnsi } from '@earendil-works/pi-tui'
-import { doctorReportSchema, type DoctorReport } from '../../../doctor/types'
+import { matchesKey, stripTerminalSequences, truncateToWidth, visibleWidth, wrapTextWithAnsi } from '@earendil-works/pi-tui'
+import { doctorReportSchema, type DoctorFinding, type DoctorReport } from '../../../doctor/types'
 import type { TerminalPage } from '../page'
 import type { TabInfo } from '../chrome'
 
@@ -13,6 +13,45 @@ interface DoctorPageOptions {
   changed(): void
 }
 
+type StatusTone = 'success' | 'warning' | 'error' | 'dim' | 'muted' | 'accent'
+
+const STATUSES: DoctorFinding['status'][] = ['pass', 'warning', 'fail', 'disabled', 'blocked', 'unverified']
+const STATUS_TONE: Record<DoctorFinding['status'], StatusTone> = {
+  pass: 'success', warning: 'warning', fail: 'error', disabled: 'dim', blocked: 'warning', unverified: 'muted'
+}
+
+function cleanText(value: string): string {
+  return stripTerminalSequences(value).replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, ' ').replace(/\t/g, ' ')
+}
+
+function oneLine(value: string): string {
+  return cleanText(value).replace(/\s+/g, ' ').trim()
+}
+
+function padCell(value: string, width: number): string {
+  const fitted = truncateToWidth(value, width, '')
+  return fitted + ' '.repeat(Math.max(0, width - visibleWidth(fitted)))
+}
+
+function tableRow(cells: string[], widths: number[], width: number): string[] {
+  const wrapped = cells.map((cell, index) => {
+    const lines = wrapTextWithAnsi(cell, widths[index]!)
+    return lines.length ? lines : ['']
+  })
+  const height = Math.max(...wrapped.map(lines => lines.length))
+  return Array.from({ length: height }, (_, row) => truncateToWidth(
+    wrapped.map((lines, column) => padCell(lines[row] ?? '', widths[column]!)).join('  '), width, ''
+  ))
+}
+
+function appendDetails(lines: string[], label: string, value: string | undefined, width: number, theme: Theme): void {
+  if (!value?.trim()) return
+  for (const paragraph of cleanText(value).split('\n')) {
+    const wrapped = wrapTextWithAnsi(`${label}: ${paragraph}`, Math.max(1, width - 2))
+    lines.push(...(wrapped.length ? wrapped : [`${label}:`]).map(line => theme.fg('muted', `  ${line}`)))
+  }
+}
+
 export class DoctorPage implements TerminalPage {
   focused = false
   private report?: DoctorReport
@@ -21,10 +60,12 @@ export class DoctorPage implements TerminalPage {
   private disposed = false
   private busy = false
   private offset = 0
+  private scrollRows = 1
+  private maxOffset = 0
   constructor(private readonly options: DoctorPageOptions) {}
   tabs(): readonly TabInfo[] { return [{ id: 'doctor', title: 'Doctor' }] }
   activeTab(): string { return 'doctor' }
-  hint(): string { return '↑/↓ scroll · r refresh · t retry finding · l live checks · c cancel · Esc close' }
+  hint(): string { return '↑/↓ scroll · PgUp/PgDn/wheel page · Home/End · r refresh · t retry · l live · c cancel · Esc close' }
   activate(): void { if (!this.report && !this.busy) void this.start() }
   dispose(): void {
     this.disposed = true
@@ -92,8 +133,13 @@ export class DoctorPage implements TerminalPage {
     if (finding && !this.disposed) await this.start('local', finding.id === 'doctor' ? [] : [finding.id])
   }
   handleInput(data: string): boolean {
+    const page = Math.max(1, this.scrollRows - 1)
     if (matchesKey(data, 'up')) this.offset = Math.max(0, this.offset - 1)
-    else if (matchesKey(data, 'down')) this.offset++
+    else if (matchesKey(data, 'down')) this.offset = Math.min(this.maxOffset, this.offset + 1)
+    else if (matchesKey(data, 'pageUp')) this.offset = Math.max(0, this.offset - page)
+    else if (matchesKey(data, 'pageDown')) this.offset = Math.min(this.maxOffset, this.offset + page)
+    else if (matchesKey(data, 'home')) this.offset = 0
+    else if (matchesKey(data, 'end')) this.offset = this.maxOffset
     else if (data === 'r') void this.start()
     else if (data === 'l') void this.chooseLive()
     else if (data === 't') void this.retry()
@@ -106,18 +152,62 @@ export class DoctorPage implements TerminalPage {
   }
   render(width: number, rows: number): string[] {
     if (width < 1 || rows < 1) return []
+    const theme = this.options.theme()
     const report = this.report
-    const counts = report?.findings.reduce<Record<string, number>>((all, finding) => { all[finding.status] = (all[finding.status] ?? 0) + 1; return all }, {}) ?? {}
-    const lines = [
-      this.error ?? (report ? `${report.mode} · ${report.state} · ${report.completed}/${report.total} checks` : 'Preparing diagnostics…'),
-      report ? `Account ${report.context.accountId ?? 'none'} · Model ${report.context.model ?? 'none'}` : '',
-      Object.entries(counts).map(([status, count]) => `${count} ${status}`).join(' · '),
-      ...report?.findings.flatMap(finding => [
-        '', `[${finding.status}] ${finding.category} · ${finding.title} (${finding.verification})`,
-        finding.evidence, ...(finding.remedy ? [`Action: ${finding.remedy}`] : [])
-      ]) ?? []
-    ].flatMap(line => stripTerminalSequences(line).replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, ' ').split('\n').flatMap(part => wrapTextWithAnsi(part, width)))
-    this.offset = Math.max(0, Math.min(this.offset, lines.length - rows))
-    return lines.slice(this.offset, this.offset + rows).map(line => this.options.theme().fg('text', line))
+    const counts = report?.findings.reduce<Record<string, number>>((all, finding) => {
+      all[finding.status] = (all[finding.status] ?? 0) + 1
+      return all
+    }, {}) ?? {}
+    const stateTone: StatusTone = report?.state === 'completed' ? 'success' : report?.state === 'cancelled' ? 'warning' : 'accent'
+    const summary = report ? [
+      ...wrapTextWithAnsi(theme.bold(theme.fg(stateTone, `${report.mode} · ${report.state} · ${report.completed}/${report.total} checks`)), width),
+      ...wrapTextWithAnsi(theme.fg('muted', `Account ${oneLine(report.context.accountId ?? 'none')} · Model ${oneLine(report.context.model ?? 'none')}`), width),
+      ...wrapTextWithAnsi(STATUSES.filter(status => counts[status]).map(status => theme.fg(STATUS_TONE[status], `${counts[status]} ${status}`)).join(theme.fg('dim', ' · ')), width)
+    ] : [theme.fg(this.error ? 'error' : 'dim', this.error ?? 'Preparing diagnostics…')]
+    if (this.error && report) summary.unshift(...wrapTextWithAnsi(theme.fg('error', this.error), width))
+
+    const content: string[] = []
+    if (report?.findings.length) {
+      const statusWidth = 11
+      const categoryWidth = 14
+      const verificationWidth = 12
+      const gapsWidth = 6
+      const checkWidth = width - statusWidth - categoryWidth - verificationWidth - gapsWidth
+      if (checkWidth >= 18) {
+        const widths = [statusWidth, checkWidth, categoryWidth, verificationWidth]
+        content.push(...tableRow([
+          theme.bold(theme.fg('dim', 'STATUS')),
+          theme.bold(theme.fg('dim', 'CHECK')),
+          theme.bold(theme.fg('dim', 'CATEGORY')),
+          theme.bold(theme.fg('dim', 'VERIFY'))
+        ], widths, width))
+        for (const [index, finding] of report.findings.entries()) {
+          content.push(...tableRow([
+            theme.bold(theme.fg(STATUS_TONE[finding.status], finding.status.toUpperCase())),
+            oneLine(finding.title), oneLine(finding.category), oneLine(finding.verification)
+          ], widths, width))
+          appendDetails(content, 'Evidence', finding.evidence, width, theme)
+          appendDetails(content, 'Next step', finding.remedy, width, theme)
+          if (index < report.findings.length - 1) content.push('')
+        }
+      } else {
+        for (const [index, finding] of report.findings.entries()) {
+          const heading = `${theme.bold(theme.fg(STATUS_TONE[finding.status], finding.status.toUpperCase()))} · ${oneLine(finding.title)}`
+          content.push(...wrapTextWithAnsi(heading, width))
+          content.push(...wrapTextWithAnsi(theme.fg('dim', `${oneLine(finding.category)} · ${oneLine(finding.verification)}`), width))
+          appendDetails(content, 'Evidence', finding.evidence, width, theme)
+          appendDetails(content, 'Next step', finding.remedy, width, theme)
+          if (index < report.findings.length - 1) content.push('')
+        }
+      }
+    } else {
+      content.push(theme.fg('dim', report?.state === 'running' ? 'Waiting for findings…' : 'No findings to show.'))
+    }
+
+    const bodyRows = Math.max(0, rows - summary.length)
+    this.scrollRows = Math.max(1, bodyRows)
+    this.maxOffset = Math.max(0, content.length - bodyRows)
+    this.offset = Math.max(0, Math.min(this.offset, this.maxOffset))
+    return [...summary, ...content.slice(this.offset, this.offset + bodyRows)].slice(0, rows).map(line => truncateToWidth(line, width, ''))
   }
 }

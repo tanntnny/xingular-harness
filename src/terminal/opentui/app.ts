@@ -14,6 +14,8 @@ import { matchesKey, type Component, type EditorComponent } from '@earendil-work
 import { controlCall } from '../control'
 import { selectionText } from '../tui/chrome'
 import { createTerminalCommands } from '../tui/commands'
+import { BROWSER_COMMANDS } from '../browser'
+import type { TerminalCommandHelpGroup } from '../commandHelp'
 import { parseProposedPlan } from '../tui/planMode'
 import { DialogPanel, SearchableSelect } from '../tui/dialogs'
 import { terminalKeybindings } from '../tui/keybindings'
@@ -28,6 +30,7 @@ import { stageClipboardFiles } from '../tui/clipboardFiles'
 import { readHarnessLogSnapshot, type HarnessLogChunk, type HarnessLogInfo } from '../logs'
 import type { OpenTuiMouseInput } from './mouse'
 import type { TerminalTrajectoryRun, TerminalTrajectorySnapshot } from '../trajectory'
+import type { TerminalSubagentActivity } from '../subagentMonitor'
 import { parseAnsi, type AnsiLine } from './ansi'
 import { asTui, PiDialogHost, type OverlayView } from './dialogHost'
 import { ComposerAttachments, imageMimeTypeForPath, isLargePaste, parsePastedImagePaths, type AttachmentLabel } from './attachments'
@@ -38,6 +41,7 @@ import { completeFilePaths, formatPathCompletion, type PathCompletionItem } from
 import { PlanChoice, type PlanChoiceView } from './planChoice'
 import { QuestionDockState, type QuestionDockAnswers, type QuestionDockQuestion, type QuestionDockView } from './questionDockState'
 import { clickableMarkdownUrl, openMarkdownLink } from './markdownLinks'
+import { subagentsWidget } from './subagentsWidget'
 
 const exec = promisify(execFile)
 const COPY_TOAST_DURATION_MS = 2500
@@ -185,6 +189,9 @@ export class OpenTuiApplication {
   private paletteFilter = ''
   private paletteIndex = 0
   private branch: string | null = null
+  private subagents: TerminalSubagentActivity[] = []
+  private subagentsPolling = false
+  private subagentGeneration = 0
   private startedAt: number | null = null
   private requestStartedAt: number | null = null
   private lastResponseTokensPerSecond: number | null = null
@@ -322,6 +329,11 @@ export class OpenTuiApplication {
     this.change()
   }
 
+  private showHelp(groups: TerminalCommandHelpGroup[]): void {
+    this.transcript.commandHelp(groups)
+    this.change()
+  }
+
   private showToast(message: string): void {
     if (this.stopped) return
     this.toastMessage = message
@@ -441,6 +453,7 @@ export class OpenTuiApplication {
         copyText: copyToClipboard,
         control: (method, params) => controlCall(method, params ?? {}),
         changed: this.change,
+        showHelp: groups => this.showHelp(groups),
         logs: {
           read: () => readHarnessLogSnapshot(
             () => controlCall<HarnessLogInfo>('terminal.logs.info'),
@@ -451,6 +464,7 @@ export class OpenTuiApplication {
           list: async () => (await controlCall<{ runs: TerminalTrajectoryRun[] }>('terminal.trajectory.list')).runs,
           read: (runId, afterSequence) => controlCall<TerminalTrajectorySnapshot>('terminal.trajectory.events', { runId, ...(afterSequence === undefined ? {} : { afterSequence }) })
         },
+        subagents: () => this.subagents,
         suspend: () => this.suspend(),
         hotkeys: () => this.hotkeys()
       })
@@ -463,8 +477,14 @@ export class OpenTuiApplication {
       }))
       this.initialized = true
       this.refresh()
+      let lastSubagentPoll = 0
       const tick = setInterval(() => {
         if (this.startedAt !== null || this.sideQuestion?.state === 'thinking') this.change()
+        const now = Date.now()
+        if (this.startedAt !== null && now - lastSubagentPoll >= 1000) {
+          lastSubagentPoll = now
+          void this.refreshSubagents()
+        }
         void this.decisions()
       }, 100)
       const git = setInterval(() => { void this.refreshBranch() }, 3000)
@@ -506,6 +526,30 @@ export class OpenTuiApplication {
       this.branch = branch
       for (const listener of this.branchListeners) listener()
       this.change()
+    }
+  }
+
+  private async refreshSubagents(): Promise<void> {
+    if (!this.runtime || this.startedAt === null || this.stopped || this.subagentsPolling) return
+    const generation = this.subagentGeneration
+    this.subagentsPolling = true
+    try {
+      if (!this.session.getActiveToolNames().includes('spawn_subagent')) {
+        if (this.subagents.length) {
+          this.subagents = []
+          this.change()
+        }
+        return
+      }
+      const result = await controlCall<{ children: TerminalSubagentActivity[] }>('terminal.subagents.monitor')
+      if (generation !== this.subagentGeneration || this.startedAt === null || this.stopped) return
+      if (JSON.stringify(result.children) !== JSON.stringify(this.subagents)) {
+        this.subagents = result.children
+        this.change()
+      }
+    } catch { /* Keep the last observed activity through a transient monitor error. */ }
+    finally {
+      this.subagentsPolling = false
     }
   }
 
@@ -591,6 +635,8 @@ export class OpenTuiApplication {
     this.planChoice.clear()
     this.activeDeferredKind = undefined
     this.resetActiveWorkingStatus()
+    this.subagentGeneration += 1
+    this.subagents = []
     this.transcript.clear()
     this.ui?.reset()
     this.release(this.header)
@@ -631,7 +677,9 @@ export class OpenTuiApplication {
       this.requestStartedAt = null
     }
     if (event.type === 'agent_start') {
+      this.subagentGeneration += 1
       this.startedAt = Date.now()
+      this.subagents = []
       this.requestStartedAt = null
       this.lastResponseTokensPerSecond = null
       this.completedWorkingStatus = undefined
@@ -639,6 +687,7 @@ export class OpenTuiApplication {
       this.activeTurnId = randomUUID()
     }
     if (event.type === 'agent_settled') {
+      this.subagentGeneration += 1
       this.transcript.finishBash()
       if (this.startedAt !== null) {
         this.completedWorkingStatus = {
@@ -648,6 +697,7 @@ export class OpenTuiApplication {
         }
       }
       this.startedAt = null
+      this.subagents = []
       this.requestStartedAt = null
       this.activeVerb = undefined
       this.activeTurnId = undefined
@@ -972,12 +1022,19 @@ export class OpenTuiApplication {
   private paletteView(): PaletteView | null {
     if (this.paletteSuppressed) return null
     const slash = /^\/([^\s]*)$/u.exec(this.draft)
-    if (!this.paletteOpen && (this.bashMode || !slash)) return null
+    const skill = /^\$([^\s]*)$/u.exec(this.draft)
+    if (!this.paletteOpen && (this.bashMode || (!slash && !skill))) return null
     let items: PaletteItem[] = []
     try {
-      items = this.commands?.completions().map(item => ({ name: item.name, description: item.description })) ?? []
+      items = skill && !this.paletteOpen
+        ? this.commands?.skills().map(item => ({ name: item.name, description: item.description, prefix: '$' as const })) ?? []
+        : this.commands?.completions().map(item => ({
+            name: item.name,
+            ...(item.aliases?.length ? { aliases: item.aliases } : {}),
+            description: item.description
+          })) ?? []
     } catch { return null }
-    const filter = this.paletteOpen ? this.paletteFilter : slash?.[1] ?? ''
+    const filter = this.paletteOpen ? this.paletteFilter : skill?.[1] ?? slash?.[1] ?? ''
     const matched = matchPalette(items, filter)
     if (!matched.length) return null
     const visible = matched.slice(0, 8)
@@ -1007,9 +1064,21 @@ export class OpenTuiApplication {
     const palette = this.paletteView()
     const item = palette?.items[palette.index]
     if (!item) return false
+    if (item.prefix === '$') return this.insertPalette()
+    const preserveDraft = this.paletteOpen && BROWSER_COMMANDS.has(item.name)
     this.paletteOpen = false
     this.paletteSuppressed = true
     this.paletteIndex = 0
+    this.draftEpoch += 1
+    if (preserveDraft) {
+      if (this.commandBusy) { this.notify('Finish or cancel the active command first.', 'error'); return true }
+      this.commandBusy = true
+      this.attempt(async () => {
+        try { await this.commands!.execute(`/${item.name}`) }
+        finally { this.commandBusy = false }
+      })
+      return true
+    }
     this.submit(`/${item.name}`)
     return true
   }
@@ -1021,19 +1090,28 @@ export class OpenTuiApplication {
     this.paletteOpen = false
     this.paletteSuppressed = true
     this.paletteIndex = 0
-    this.setDraftExternal(`/${item.name} `)
+    this.setDraftExternal(`${item.prefix ?? '/'}${item.name} `)
     return true
   }
 
   private openPalette(): void {
+    this.invalidateFileCompletion()
     this.paletteOpen = true
     this.paletteSuppressed = false
     this.paletteFilter = this.draft.startsWith('/') && !/\s/u.test(this.draft) ? this.draft.slice(1) : ''
     this.paletteIndex = 0
+    this.draftEpoch += 1
     this.change()
   }
 
   setDraft(value: string): void {
+    if (this.paletteOpen) {
+      this.paletteFilter = value.startsWith('/') && !/\s/u.test(value) ? value.slice(1) : value
+      this.paletteIndex = 0
+      this.paletteSuppressed = false
+      this.change()
+      return
+    }
     let modeChanged = false
     if (!this.bashMode) {
       const bash = splitBashDraft(value)
@@ -1371,7 +1449,9 @@ export class OpenTuiApplication {
       if (key.name === 'down') { this.paletteIndex = (palette.index + 1) % palette.items.length; this.change(); return true }
       if (key.name === 'return' || key.name === 'enter') return this.acceptPalette()
       if (key.name === 'tab') return key.shift ? true : this.insertPalette()
-      if (key.name === 'escape') { this.paletteOpen = false; this.paletteSuppressed = true; this.paletteIndex = 0; this.change(); return true }
+      if (key.name === 'escape' || (this.paletteOpen && key.ctrl && key.name === 'c')) {
+        this.paletteOpen = false; this.paletteSuppressed = true; this.paletteIndex = 0; this.draftEpoch += 1; this.change(); return true
+      }
     }
     const choice = this.planChoice.view
     if (choice && !palette) {
@@ -1539,6 +1619,7 @@ export class OpenTuiApplication {
     const width = Math.max(20, this.host.columns - 4)
     const above: AnsiLine[][] = []
     const below: AnsiLine[][] = []
+    if (this.subagents.length) above.push(subagentsWidget(this.subagents, width, this.theme))
     for (const widget of this.widgets.values()) {
       const lines = this.componentLines(widget.component, width)
       if (lines) (widget.placement === 'belowEditor' ? below : above).push(lines)
@@ -1559,7 +1640,7 @@ export class OpenTuiApplication {
       subscription: snapshot?.subscription ?? false,
       items: transcript.items,
       hasUserMessages: transcript.hasUserMessages,
-      draft: this.draft,
+      draft: this.paletteOpen ? this.paletteFilter : this.draft,
       draftEpoch: this.draftEpoch,
       draftCursorOffset: this.draftCursorOffset,
       attachments: this.attachments.labels(),

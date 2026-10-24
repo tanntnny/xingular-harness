@@ -1,6 +1,7 @@
 import type { AgentSession } from '@earendil-works/pi-coding-agent'
 
 import { parseProposedPlan } from '../tui/planMode'
+import type { TerminalCommandHelpGroup } from '../commandHelp'
 import { ansiLabel, ansiPlain } from './ansi'
 
 export type ToolStatus = 'running' | 'ok' | 'error' | 'pending'
@@ -56,11 +57,19 @@ export interface NoticeItem {
   level: string
 }
 
+export interface CommandHelpItem {
+  kind: 'command-help'
+  id: string
+  groups: readonly TerminalCommandHelpGroup[]
+}
+
 interface AnchoredNotice {
   afterMessageCount: number
+  /** The last message when the notice was posted; it survives compaction, unlike the count. */
+  anchor?: object
   sequence: number
   multiline: boolean
-  item: NoticeItem
+  item: NoticeItem | CommandHelpItem
 }
 
 export interface BashItem {
@@ -110,6 +119,7 @@ export type TranscriptItem =
   | ToolItem
   | ImageResultItem
   | NoticeItem
+  | CommandHelpItem
   | BashItem
   | CustomItem
   | SummaryItem
@@ -316,21 +326,42 @@ export class TranscriptModel {
   }
 
   notice(text: string, level = 'info'): void {
-    const afterMessageCount = this.session?.messages.length ?? 0
     const lines = text.split(/\r\n?|\n/u).filter(line => line.trim())
     const multiline = lines.length > 1
     for (const line of lines) {
       const sequence = this.nextNotice++
-      this.notices.push({
-        afterMessageCount,
-        sequence,
-        multiline,
-        item: { kind: 'notice', id: `notice-${sequence}`, text: line, level }
-      })
+      this.addNotice(sequence, multiline, { kind: 'notice', id: `notice-${sequence}`, text: line, level })
     }
-    this.notices.sort((left, right) => left.afterMessageCount - right.afterMessageCount || left.sequence - right.sequence)
-    if (this.notices.length > 60) this.notices = this.notices.slice(-60)
     this.invalidate()
+  }
+
+  commandHelp(groups: readonly TerminalCommandHelpGroup[]): void {
+    const sequence = this.nextNotice++
+    this.addNotice(sequence, true, { kind: 'command-help', id: `command-help-${sequence}`, groups })
+    this.invalidate()
+  }
+
+  private addNotice(sequence: number, multiline: boolean, item: NoticeItem | CommandHelpItem): void {
+    const messages = this.session?.messages ?? []
+    this.notices.push({ afterMessageCount: messages.length, anchor: messages.at(-1), sequence, multiline, item })
+    if (this.notices.length > 60) this.notices = this.notices.slice(-60)
+  }
+
+  /**
+   * Notices in the order they appear, each with the message index it goes before. Compaction
+   * replaces the message list with a shorter one, so a notice follows the message it was posted
+   * after; a notice whose message was summarized goes right after the compaction card.
+   */
+  private placedNotices(messages: readonly LooseMessage[]): { place: number; notice: AnchoredNotice }[] {
+    const indexes = new Map<object, number>()
+    messages.forEach((message, index) => indexes.set(message, index))
+    const summary = messages.findIndex(message => message.role === 'compactionSummary')
+    return this.notices.map(notice => {
+      if (!notice.anchor) return { place: 0, notice }
+      const index = indexes.get(notice.anchor)
+      if (index !== undefined) return { place: index + 1, notice }
+      return { place: summary >= 0 ? summary + 1 : Math.min(notice.afterMessageCount, messages.length), notice }
+    }).sort((left, right) => left.place - right.place || left.notice.sequence - right.notice.sequence)
   }
 
   view(): TranscriptView {
@@ -351,10 +382,11 @@ export class TranscriptModel {
     }
     const items: TranscriptItem[] = []
     const bashExecutionCount = messages.filter(message => message.role === 'bashExecution').length
+    const notices = this.placedNotices(messages)
     let noticeIndex = 0
     for (let index = 0; index < all.length; index += 1) {
-      while (noticeIndex < this.notices.length && this.notices[noticeIndex]!.afterMessageCount <= index) {
-        items.push(this.notices[noticeIndex++]!.item)
+      while (noticeIndex < notices.length && notices[noticeIndex]!.place <= index) {
+        items.push(notices[noticeIndex++]!.notice.item)
       }
       const message = all[index]!
       if (message === streaming) {
@@ -377,7 +409,7 @@ export class TranscriptModel {
         output: ansiPlain(this.liveBash.output), running: true, cancelled: false
       })
     }
-    for (; noticeIndex < this.notices.length; noticeIndex += 1) items.push(this.notices[noticeIndex]!.item)
+    for (; noticeIndex < notices.length; noticeIndex += 1) items.push(notices[noticeIndex]!.notice.item)
     return this.cachedView = {
       items: this.stabilize(items),
       hasUserMessages: messages.some(message => message.role === 'user'),

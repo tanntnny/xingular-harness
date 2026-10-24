@@ -28,6 +28,7 @@ import { migrateVariantLayout } from './variant/migrate'
 import { VariantTrust } from './variant/trust'
 import * as notes from './wiki/notes'
 import * as pluginApi from './plugins/api'
+import * as pluginInstall from './plugins/install'
 import * as attachments from './plugins/attachments'
 import { HARNESS_PLUGINS } from './plugins/builtin'
 import { World } from './world/world'
@@ -41,10 +42,14 @@ import type { PluginDescriptor } from './plugins/types'
 import { approvalKey, Approvals } from './sessions/approvals'
 import type { ToolPolicy } from './sessions/policy'
 import { RunRegistry } from './sessions/registry'
-import { markInterruptedRuns } from './sessions/runStore'
+import { loadRun, markInterruptedRuns } from './sessions/runStore'
 import type { SessionFactory } from './sessions/runner'
 import { Sessions } from './sessions/sessions'
 import { Terminals, type TerminalAssets } from './terminal/terminals'
+import { Worktrees } from './worktrees/service'
+import { AnnotationCapture } from './annotations/capture'
+import { NoteDeliveries } from './annotations/delivery'
+import type { WorktreesOptions } from './worktrees/types'
 
 export interface HarnessOptions {
   /** Disable the generic backend when a host supplies its own browser tools. */
@@ -84,6 +89,8 @@ export interface HarnessOptions {
   oauthClients?: AppOAuthClients
   /** Replaces how a plugin's hooks file is read as a module, for tests. */
   hookImporter?: (address: string) => Promise<unknown>
+  /** Where managed worktrees are made, the prefix of branches they get, and how many `prune` keeps. */
+  worktrees?: WorktreesOptions
 }
 
 /** What starting on a data root found and repaired. */
@@ -149,6 +156,12 @@ export class Harness {
   refineHost: RefineHost | null
   readonly terminals: Terminals
   readonly doctor: Doctor
+  /** Managed git worktrees sessions can work in (PROP-0016). */
+  readonly worktrees: Worktrees
+  /** The terminal's visible browser for capturing page notes (PROP-0017). */
+  readonly noteCapture: AnnotationCapture
+  /** Page notes on their way to a session (PROP-0018). */
+  readonly pageNotes: NoteDeliveries
   /** Resolves when what was loaded in the background at construction is in place. */
   readonly ready: Promise<void>
   recovery: Recovery = { interruptedRuns: 0, interruptedRunIds: [], reindexedPages: 0, migrationError: null }
@@ -207,6 +220,8 @@ export class Harness {
       reloadTimer.unref?.()
     })
     this.describe(options.plugins ?? [])
+    this.worktrees = new Worktrees(this.stateDir, options.worktrees)
+    this.noteCapture = new AnnotationCapture({ stateDir: this.stateDir })
     this.subagents = new Subagents(this.env, this.runs, (input) => this.sessions.run(input))
     this.sessions = new Sessions({
       subagents: this.subagents,
@@ -218,9 +233,10 @@ export class Harness {
       plugins: this.plugins,
       resolveCapabilities: (caller, tools, cwd) => capabilities.resolve(this, { agentId: caller.agentId ?? null, projectId: caller.projectId ?? null, cwd, tools }),
       factory: options.sessionFactory,
-      trust: this.trust
+      trust: this.trust,
+      worktrees: this.worktrees
     })
-    this.world = new World({ root: () => this.env.root, stateDir: this.stateDir, secrets, browser: this.browserEnabled ? undefined : false })
+    this.world = new World({ root: () => this.env.root, stateDir: this.stateDir, secrets, browser: this.browserEnabled ? undefined : false, notesChanged: (sessionId, ids) => this.bus.emit({ type: 'annotations.changed', sessionId, ids }) })
     // The harness's own world tools come first; a tool an application provides under the same name is not added again.
     this.sessions.provide(this.world.provider())
     this.doctor = new Doctor({
@@ -230,13 +246,20 @@ export class Harness {
     const refineRuntime = { root: () => this.env.root, runs: this.runs, run: (input: Parameters<Sessions['run']>[0]) => this.sessions.run(input) }
     this.refine = new Refinements({ root: () => this.env.root, bus: this.bus, trust: this.trust, host: () => this.refineHost, runtime: refineRuntime })
     this.lessons = new Lessons({ root: () => this.env.root, runtime: refineRuntime })
-    this.terminals = new Terminals({ trust: this.trust, subagents: this.subagents, resolveCapabilities: (caller, tools, cwd) => capabilities.resolve(this, { agentId: caller.agentId ?? null, projectId: caller.projectId ?? null, cwd, tools }), env: this.env, stateDir: this.stateDir, accounts: this.accounts, runs: this.runs, approvals: this.approvals, apps: this.apps, policy: this.policy, bus: this.bus, plugins: this.plugins, pluginControl: { list: (scope) => pluginApi.list(this, scope), attach: (params, on) => pluginApi.attach(this, params, on), trust: (scope) => pluginApi.trust(this, scope), untrust: (scope) => pluginApi.untrust(this, scope) }, assets: options.assets, hub: this.hub, world: this.world, doctor: this.doctor })
+    this.pageNotes = new NoteDeliveries({ root: () => this.env.root, bus: this.bus, terminals: () => this.terminals ?? null })
+    this.terminals = new Terminals({ trust: this.trust, subagents: this.subagents, resolveCapabilities: (caller, tools, cwd) => capabilities.resolve(this, { agentId: caller.agentId ?? null, projectId: caller.projectId ?? null, cwd, tools }), env: this.env, stateDir: this.stateDir, accounts: this.accounts, runs: this.runs, approvals: this.approvals, apps: this.apps, policy: this.policy, bus: this.bus, plugins: this.plugins, pluginControl: { list: (scope) => pluginApi.list(this, scope), attach: (params, on) => pluginApi.attach(this, params, on), trust: (scope) => pluginApi.trust(this, scope), untrust: (scope) => pluginApi.untrust(this, scope), configure: (params) => pluginApi.configure(this, params), install: params => pluginInstall.install(this, params), remove: params => pluginInstall.remove(this, params) }, assets: options.assets, hub: this.hub, world: this.world, doctor: this.doctor, worktrees: this.worktrees, noteCapture: this.noteCapture, pageNotes: this.pageNotes })
     this.ready = this.apps.start().catch((error) => log('connected apps', error instanceof Error ? error.message : String(error)))
     this.runs.listen((event, run) => {
       this.accounts.onRunEvent(event, run)
       // Each run is indexed when it ends, so the next turn can already recall it.
       if (event.type === 'completed' || event.type === 'failed') recall.indexRun(this.env.root, event.runId)
       if (run?.trigger === 'doctor') return
+      const runEnded = event.type === 'completed' || event.type === 'failed' || (event.type === 'status.changed' && (event.payload as { status?: string }).status === 'interrupted')
+      if (runEnded && run?.sessionId) {
+        // Notes sent with "Proceed now" while this session was working go out now; the terminal
+        // needs a moment to see its run as ended.
+        setTimeout(() => void this.pageNotes.runEnded(run.sessionId).catch((error) => log('page notes', error instanceof Error ? error.message : String(error))), 250).unref?.()
+      }
       if ((event.type === 'completed' || event.type === 'failed') && run) {
         if (event.type === 'completed') this.lessons.consider(run)
         this.hooks.emit({ type: 'history.run.ended', runId: run.id, sessionId: run.sessionId, status: run.status, goal: run.goal ?? null, agentId: run.agentId ?? null, projectId: run.projectId ?? null, startedAt: run.startedAt, endedAt: run.endedAt ?? null, at: event.timestamp })
@@ -299,6 +322,17 @@ export class Harness {
     let interruptedRunIds: string[] = []
     try {
       interruptedRunIds = markInterruptedRuns(root, `${this.env.productName} stopped before the run settled.`)
+      const recoveredSessions = new Set<string>()
+      for (const runId of interruptedRunIds) {
+        try {
+          const sessionId = loadRun(root, runId).sessionId
+          if (!sessionId || recoveredSessions.has(sessionId)) continue
+          recoveredSessions.add(sessionId)
+          setTimeout(() => void this.pageNotes.runEnded(sessionId).catch((error) => log('page notes', error instanceof Error ? error.message : String(error))), 250).unref?.()
+        } catch {
+          // A malformed run record does not prevent the rest of recovery.
+        }
+      }
     } catch (error) {
       log('run recovery', error instanceof Error ? error.message : String(error))
     }
@@ -327,6 +361,7 @@ export class Harness {
     await this.refine.close()
     await this.lessons.close()
     await this.terminals.close()
+    await this.noteCapture.close()
     await this.runs.interruptAll()
     await this.world.close()
     await this.hooks.settled().catch(() => undefined)

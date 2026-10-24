@@ -6,13 +6,21 @@ import type { TerminalSettingItem } from './pages/settingsPage'
 export interface SettingsModelHost {
   session(): AgentSession
   ui: ExtensionUIContext
+  control<T = unknown>(method: string, params?: Record<string, unknown>): Promise<T>
   hotkeys?(): string
   refresh(): void
 }
 
-const GROUP_ORDER = ['Theme', 'Display', 'Images', 'Thinking', 'Recovery', 'Editor', 'Queues', 'Commands', 'Terminal', 'Keyboard', 'Compaction']
+interface BrowserSettings {
+  allowPrivate: boolean
+}
+
+const PRIVATE_ACCESS_ID = 'browser.allowPrivate'
+const GROUP_ORDER = ['Theme', 'Display', 'Images', 'Thinking', 'Recovery', 'Editor', 'Queues', 'Commands', 'Terminal', 'Keyboard', 'Compaction', 'Network']
 
 export function createSettingsModel(host: SettingsModelHost) {
+  let browserSettings: BrowserSettings | null = null
+
   const booleans = (session: AgentSession) => {
     const settings = session.settingsManager
     return [
@@ -50,14 +58,42 @@ export function createSettingsModel(host: SettingsModelHost) {
   ]
 
   function items(): TerminalSettingItem[] {
-    const result = options(host.session()).map((option, index) => {
+    const result: TerminalSettingItem[] = options(host.session()).map((option, index) => {
       const split = option.indexOf(':')
       return { id: String(index), tab: locations[index]![0], group: locations[index]![1], label: split < 0 ? option : option.slice(0, split), value: split < 0 ? '' : option.slice(split + 1).trim(), description: descriptions[index] }
+    })
+    if (browserSettings) result.push({
+      id: PRIVATE_ACCESS_ID,
+      tab: 'Browser',
+      group: 'Network',
+      label: 'Private address access',
+      value: browserSettings.allowPrivate ? 'On' : 'Off',
+      description: 'This device-wide setting affects agent browsing and annotation capture. When on, pages can reach localhost and private networks.'
     })
     return result.sort((a, b) => GROUP_ORDER.indexOf(a.group) - GROUP_ORDER.indexOf(b.group))
   }
 
+  async function load(): Promise<void> {
+    const config = await host.control<BrowserSettings>('terminal.browser.config')
+    if (!config || typeof config.allowPrivate !== 'boolean') throw new Error('The Harness returned invalid browser settings.')
+    browserSettings = { allowPrivate: config.allowPrivate }
+  }
+
   async function apply(id: string): Promise<void> {
+    if (id === PRIVATE_ACCESS_ID) {
+      if (!browserSettings) return
+      const allowPrivate = !browserSettings.allowPrivate
+      if (allowPrivate && !await host.ui.confirm(
+        'Allow private network addresses?',
+        'This device-wide setting lets pages opened by agent browsing and annotation capture reach localhost and private networks.'
+      )) return
+      const saved = await host.control<BrowserSettings>('terminal.browser.configure', { allowPrivate })
+      if (!saved || typeof saved.allowPrivate !== 'boolean') throw new Error('The Harness returned invalid browser settings.')
+      browserSettings = { allowPrivate: saved.allowPrivate }
+      host.refresh()
+      return
+    }
+
     const session = host.session()
     const index = Number(id)
     const switches = booleans(session)
@@ -86,5 +122,5 @@ export function createSettingsModel(host: SettingsModelHost) {
     host.refresh()
   }
 
-  return { items, apply }
+  return { items, apply, load }
 }

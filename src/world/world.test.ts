@@ -58,10 +58,10 @@ describe('world tools', () => {
     // A host with no capability catalogue gets them all.
     expect((await world.provider()(session([]))).map((tool) => tool.name).slice(0, 3)).toEqual(['web_search', 'web_fetch', 'browser_navigate'])
   })
-  it('lets an embedding host disable the generic browser without disabling web tools', async () => {
+  it('lets an embedding host disable the generic browser without disabling web tools or page notes', async () => {
     const root = mkdtempSync(join(tmpdir(), 'world-host-browser-'))
     const world = new World({ root: () => root, stateDir: root, secrets: memorySecretStore(), browser: false })
-    expect(world.plugins.map(plugin => plugin.id)).toEqual(['web'])
+    expect(world.plugins.map(plugin => plugin.id)).toEqual(['web', 'annotations'])
     await world.close()
   })
 

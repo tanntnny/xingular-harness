@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { copyToClipboard } from '@earendil-works/pi-coding-agent'
-import type { AgentSession, AgentSessionEvent } from '@earendil-works/pi-coding-agent'
+import type { AgentSession, AgentSessionEvent, Theme } from '@earendil-works/pi-coding-agent'
 
 vi.mock('@earendil-works/pi-coding-agent', async importOriginal => {
   const actual = await importOriginal<typeof import('@earendil-works/pi-coding-agent')>()
@@ -14,7 +14,10 @@ import { OpenTuiApplication, type KeyInput } from './app'
 import { TranscriptModel } from './model'
 import { QuestionDockState, type QuestionDockQuestion } from './questionDockState'
 import { workingLineText } from './workingLine'
+import { createHarnessTheme } from '../tui/theme'
 import type { TerminalDecision, TerminalRuntime } from '../tui/runtime'
+import type { TerminalSubagentActivity } from '../subagentMonitor'
+import type { TerminalCommandHelpGroup } from '../commandHelp'
 
 function question(requestId: string, overrides: Partial<TerminalDecision> = {}): TerminalDecision {
   return {
@@ -65,15 +68,29 @@ describe('OpenTuiApplication', () => {
     await app.shutdown()
   })
 
-  it('keeps the welcome for one-line notices and hides it for multiline output', async () => {
+  it('keeps the welcome for one-line notices and hides it for generic multiline output', async () => {
     const app = new OpenTuiApplication([])
     const internals = app as unknown as { notify(message: string, type?: string): void }
 
     internals.notify('Starting session…')
     expect(app.view().home).toBe(true)
 
-    internals.notify('/help  List the commands\n/quit  Restore the terminal and exit')
+    internals.notify('first line\nsecond line')
     expect(app.view().home).toBe(false)
+    await app.shutdown()
+  })
+
+  it('shows grouped help as one transcript item and replaces the welcome', async () => {
+    const app = new OpenTuiApplication([])
+    const internals = app as unknown as { showHelp(groups: TerminalCommandHelpGroup[]): void }
+    const groups: TerminalCommandHelpGroup[] = [
+      { name: 'Core', commands: [{ name: 'help', description: 'List commands' }] }
+    ]
+
+    internals.showHelp(groups)
+
+    expect(app.view().home).toBe(false)
+    expect(app.view().items).toMatchObject([{ kind: 'command-help', groups }])
     await app.shutdown()
   })
 
@@ -111,6 +128,26 @@ describe('OpenTuiApplication', () => {
       kind: 'compaction', summary: 'Earlier discussion and decisions.', tokensBefore: 12_345
     })
     expect(app.view().items.filter(item => item.kind === 'compaction')).toHaveLength(1)
+    await app.shutdown()
+  })
+
+  it('shows work after compaction below the compacting notice', async () => {
+    const app = new OpenTuiApplication([])
+    const internals = app as unknown as { accept(event: AgentSessionEvent): void; runtime?: TerminalRuntime }
+    const before = Array.from({ length: 30 }, (_, index) => ({ role: 'user', content: `message ${index}` }))
+    const session = { messages: before as unknown[], state: {} }
+    internals.runtime = { session, snapshot: () => undefined, dispose: async () => {} } as unknown as TerminalRuntime
+    ;(app as unknown as { transcript: { bind(session: unknown): void } }).transcript.bind(session)
+
+    internals.accept({ type: 'compaction_start', reason: 'threshold' } as AgentSessionEvent)
+    session.messages = [{ role: 'compactionSummary', summary: 'Earlier work.', tokensBefore: 50_000 }, ...before.slice(-2)]
+    internals.accept({ type: 'compaction_end', reason: 'threshold', result: { summary: 'Earlier work.', tokensBefore: 50_000 } } as AgentSessionEvent)
+    session.messages.push({ role: 'assistant', content: 'next step' })
+    internals.accept({ type: 'message_end', message: session.messages.at(-1) } as AgentSessionEvent)
+
+    const items = app.view().items
+    expect(items.at(-1)).toMatchObject({ kind: 'assistant', text: 'next step' })
+    expect(items.at(-2)).toMatchObject({ kind: 'notice', text: 'Compacting context…' })
     await app.shutdown()
   })
 
@@ -227,6 +264,21 @@ describe('OpenTuiApplication', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('renders the live subagent roster above the composer', async () => {
+    const app = new OpenTuiApplication([])
+    const internals = app as unknown as { subagents: TerminalSubagentActivity[]; themeValue: Theme }
+    internals.themeValue = createHarnessTheme({ getColorMode: () => 'truecolor' } as Theme)
+    internals.subagents = [{
+      id: 'child', parentRunId: 'parent', relation: 'subagent', goal: 'Inspect auth flow', status: 'running',
+      startedAt: new Date(Date.now() - 3000).toISOString(), endedAt: null, activity: 'read'
+    }]
+
+    const roster = app.view().widgets.above.flatMap(lines => lines.flatMap(line => line.spans.map(span => span.text))).join('\n')
+    expect(roster).toContain('Subagents · 1 active · 0 finished · /plugin:subagents')
+    expect(roster).toContain('Inspect auth flow · running · read')
+    await app.shutdown()
   })
 
   it('shows successful transcript copies as a temporary toast, not a transcript notice', async () => {
@@ -625,6 +677,76 @@ describe('OpenTuiApplication', () => {
     expect(submit).toHaveBeenCalledWith('/settings')
     expect(app.view().palette).toBeNull()
 
+    await app.shutdown()
+  })
+
+  it('shows aliases once in the palette and selects the canonical command name', async () => {
+    const app = new OpenTuiApplication([])
+    const internals = app as unknown as {
+      commands: { completions(): { name: string; aliases?: string[]; description?: string }[] }
+      syncDraft(text: string): void
+      submit(text: string): void
+    }
+    internals.commands = { completions: () => [{ name: 'session', aliases: ['resume'], description: 'Choose a saved session' }] }
+    internals.syncDraft = () => {}
+    const submit = vi.fn()
+    internals.submit = submit
+
+    app.setDraft('/res')
+    expect(app.view().palette?.items).toMatchObject([{ name: 'session', aliases: ['resume'] }])
+    expect(app.view().palette?.items).toHaveLength(1)
+    expect(app.activatePaletteItem(0)).toBe(true)
+    expect(submit).toHaveBeenCalledWith('/session')
+
+    await app.shutdown()
+  })
+
+  it('preserves an existing draft and attachments while filtering and opening the resource browser', async () => {
+    const app = new OpenTuiApplication([])
+    const internals = app as unknown as {
+      commands: { completions(): { name: string }[]; execute(text: string): Promise<boolean> }
+      attachments: import('./attachments').ComposerAttachments
+      openPalette(): void
+      syncDraft(text: string): void
+      submit(text: string): void
+      draft: string
+    }
+    internals.syncDraft = () => {}
+    const image = internals.attachments.addImage('image-data', 'image/png')
+    app.setDraft(`Review this ${image.label}`)
+    const execute = vi.fn(async () => {
+      app.setDraftExternal(`$review ${internals.draft}`)
+      return true
+    })
+    internals.commands = { completions: () => [{ name: 'skills' }], execute }
+    internals.submit = vi.fn()
+    internals.openPalette()
+    app.setDraft('skills')
+    expect(app.view().draft).toBe('skills')
+    expect(app.activatePaletteItem(0)).toBe(true)
+    await vi.waitFor(() => expect(execute).toHaveBeenCalledWith('/skills'))
+    expect(app.view().draft).toBe(`$review Review this ${image.label}`)
+    expect(internals.attachments.expand(app.view().draft).images).toEqual([{ type: 'image', data: 'image-data', mimeType: 'image/png' }])
+    expect(internals.submit).not.toHaveBeenCalled()
+    await app.shutdown()
+  })
+
+  it('offers loaded skills at $ and inserts without submitting a model request', async () => {
+    const app = new OpenTuiApplication([])
+    const internals = app as unknown as {
+      commands: { skills(): { name: string; description: string }[] }
+      syncDraft(text: string): void
+      submit(text: string): void
+    }
+    internals.commands = { skills: () => [{ name: 'review', description: 'Inspect changes' }] }
+    internals.syncDraft = () => {}
+    internals.submit = vi.fn()
+    app.setDraft('$rev')
+    expect(app.view().palette?.items).toEqual([{ name: 'review', description: 'Inspect changes', prefix: '$' }])
+    expect(app.activatePaletteItem(0)).toBe(true)
+    expect(app.view().draft).toBe('$review ')
+    expect(internals.submit).not.toHaveBeenCalled()
+    expect(app.view().palette).toBeNull()
     await app.shutdown()
   })
 

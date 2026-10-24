@@ -81,6 +81,11 @@ A session that cannot open ends its run as `failed` and returns `nativeSessionId
   a dynamic `continuation` section (order 26) saying where the earlier run stopped. The next run
   without `continueFrom` withdraws it. `Recovery.interruptedRunIds` lists the runs `open` marked
   interrupted.
+- **Worktrees** (PROP-0016). When `run.worktreeId` names a worktree in the Harness registry
+  (`worktrees/`), the run works in that worktree's folder (the given `cwd` is replaced), holds a
+  lease on it (holder: the session id, with `git worktree lock`) until the run completes, fails or
+  is interrupted, and records the id. An id the registry does not know is stored and returned as
+  the caller's own field, as before. A terminal session holds its worktree for its whole life.
 - **Usage** (`usage.updated`). `inputTokens` is uncached input; `cacheReadTokens` and
   `cacheWriteTokens` are separate; `outputTokens` includes `reasoningTokens`. Totals are
   cumulative for the run, not the native session. `contextTokens` is the latest request's size.

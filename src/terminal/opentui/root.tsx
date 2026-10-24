@@ -8,13 +8,15 @@ import {
 import { useKeyboard, useRenderer, useSelectionHandler, useTerminalDimensions, type SpanProps } from '@opentui/solid'
 
 import { centeredRect } from '../tui/dialogGeometry'
+import { formatTerminalCommandLabel } from '../commandHelp'
 import type { FileCompletionView, OpenTuiApplication, OpenTuiView, PaletteView } from './app'
 import type { PlanChoiceView } from './planChoice'
 import { QuestionDock } from './questionDock'
 import type { QuestionDockView } from './questionDockState'
 import { type AnsiLine, type AnsiStyle } from './ansi'
 import { addHeadingOneSpacing, markdownSyntaxStyles } from './markdown'
-import type { CompactionItem, ToolItem, TranscriptItem } from './model'
+import type { CommandHelpItem, CompactionItem, ToolItem, TranscriptItem } from './model'
+import { commandHelpColumnWidth } from './commandHelpLayout'
 import { transcriptSelectionText } from './transcriptSelection'
 import { paletteCommandColumnWidth } from './palette'
 import { syncAttachmentMarks } from './composerMarks'
@@ -175,7 +177,37 @@ function CompactionTranscriptItem(props: { item: CompactionItem; expanded: boole
   )
 }
 
-function TranscriptItemView(props: { item: TranscriptItem; expanded: boolean; syntax: SyntaxStyle }) {
+function CommandHelpTranscriptItem(props: { item: CommandHelpItem; width: number }) {
+  const commandWidth = () => commandHelpColumnWidth(props.item.groups, props.width)
+  return (
+    <box width='100%' flexDirection='column' flexShrink={0}>
+      <For each={props.item.groups}>
+        {group => (
+          <box width='100%' flexDirection='column' flexShrink={0}>
+            <text fg={theme.accent} attributes={TextAttributes.BOLD} wrapMode='word'>{group.name}</text>
+            <For each={group.commands}>
+              {command => (
+                <box width='100%' flexDirection='row' flexShrink={0}>
+                  <box width={commandWidth()} minWidth={commandWidth()} flexShrink={0}>
+                    <text width='100%' fg={theme.text} attributes={TextAttributes.BOLD} wrapMode='char'>/{formatTerminalCommandLabel(command.name, command.aliases)}</text>
+                  </box>
+                  <box width={2} minWidth={2} flexShrink={0} />
+                  <box flexGrow={1} minWidth={0} flexShrink={1}>
+                    <Show when={command.description}>
+                      <text width='100%' fg={theme.muted} wrapMode='word'>{command.description}</text>
+                    </Show>
+                  </box>
+                </box>
+              )}
+            </For>
+          </box>
+        )}
+      </For>
+    </box>
+  )
+}
+
+function TranscriptItemView(props: { item: TranscriptItem; expanded: boolean; syntax: SyntaxStyle; width: number }) {
   const item = props.item
   const t: OpenTuiTheme = theme
   if (item.kind === 'user') {
@@ -203,6 +235,9 @@ function TranscriptItemView(props: { item: TranscriptItem; expanded: boolean; sy
   }
   if (item.kind === 'compaction') {
     return <CompactionTranscriptItem item={item} expanded={props.expanded} syntax={props.syntax} />
+  }
+  if (item.kind === 'command-help') {
+    return <CommandHelpTranscriptItem item={item} width={props.width} />
   }
   if (item.kind === 'plan') {
     return (
@@ -308,11 +343,11 @@ function TranscriptItemView(props: { item: TranscriptItem; expanded: boolean; sy
   )
 }
 
-function TranscriptItems(props: { items: readonly TranscriptItem[]; expanded: boolean; syntax: SyntaxStyle }) {
+function TranscriptItems(props: { items: readonly TranscriptItem[]; expanded: boolean; syntax: SyntaxStyle; width: number }) {
   return (
     <box flexDirection='column' flexShrink={0} paddingX={1} rowGap={1}>
       <For each={props.items}>
-        {item => <TranscriptItemView item={item} expanded={props.expanded} syntax={props.syntax} />}
+        {item => <TranscriptItemView item={item} expanded={props.expanded} syntax={props.syntax} width={props.width} />}
       </For>
     </box>
   )
@@ -349,7 +384,7 @@ function Palette(props: { app: OpenTuiApplication; palette: PaletteView; width: 
             >
               <box width={commandWidth()} minWidth={commandWidth()} flexShrink={0}>
                 <text width='100%' fg={selected() ? theme.selectionText : theme.text} attributes={selected() ? TextAttributes.BOLD : 0} wrapMode='char'>
-                  /{item.name}
+                  {item.prefix ?? '/'}{formatTerminalCommandLabel(item.name, item.aliases)}
                 </text>
               </box>
               <box width={2} minWidth={2} flexShrink={0} />
@@ -1002,7 +1037,7 @@ export function OpenTuiRoot(props: { app: OpenTuiApplication }) {
           fallback={(
             <box flexGrow={1} minHeight={0} flexDirection='column'>
               <Home view={view()} />
-              <TranscriptItems items={view().items} expanded={view().toolsExpanded} syntax={syntax} />
+              <TranscriptItems items={view().items} expanded={view().toolsExpanded} syntax={syntax} width={Math.max(1, dimensions().width - 4)} />
             </box>
           )}
         >
@@ -1022,7 +1057,7 @@ export function OpenTuiRoot(props: { app: OpenTuiApplication }) {
               onMouseDrag={scheduleTranscriptScrollState}
               onMouseUp={scheduleTranscriptScrollState}
             >
-              <TranscriptItems items={view().items} expanded={view().toolsExpanded} syntax={syntax} />
+              <TranscriptItems items={view().items} expanded={view().toolsExpanded} syntax={syntax} width={Math.max(1, dimensions().width - 4)} />
             </scrollbox>
             <Show when={showJumpToLatest()}>
               <JumpToLatestBadge activate={activateJumpToLatest} />

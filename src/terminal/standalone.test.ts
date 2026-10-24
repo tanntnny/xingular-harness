@@ -68,6 +68,13 @@ describe('standalone terminal startup', () => {
     expect(() => parseStandaloneOptions(['--model', 'unknown'])).toThrow('Unknown standalone option: --model')
   })
 
+  it('starts in a managed worktree with --worktree or -w, optionally named', () => {
+    expect(standaloneArguments(['-w'])).toEqual(['-w'])
+    expect(parseStandaloneOptions(['--worktree'], '/home/test', '/work/project').worktree).toBe(true)
+    expect(parseStandaloneOptions(['-w', 'fix-login', '--data', '/d'], '/home/test', '/work/project')).toMatchObject({ worktree: 'fix-login', dataRoot: '/d' })
+    expect(parseStandaloneOptions(['--worktree', '--state', '/s'], '/home/test', '/work/project')).toMatchObject({ worktree: true, stateDir: '/s' })
+  })
+
   it('refuses default folders under a home that is not a folder path, and accepts explicit absolute folders', () => {
     expect(() => parseStandaloneOptions([], 'HOME', '/work/project')).toThrow('is not an absolute path')
     expect(parseStandaloneOptions(['--data', '/data', '--state', '/state'], 'HOME', '/work/project')).toEqual({ dataRoot: '/data', stateDir: '/state' })

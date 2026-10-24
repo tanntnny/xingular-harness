@@ -13,21 +13,20 @@ import type { CapabilitySet } from '../capabilities/types'
 import { now, writeJson } from '../core/fs'
 import { takeChars } from '../core/text'
 import type { CallerContext } from '../core/caller'
-import type { DispatchEnv } from '../tools/dispatch'
 import type { Plugins } from '../plugins/plugins'
+import { BUILTIN_PLUGIN_REGISTRY } from '../plugins/builtin'
 import { sessionLaunch, type Launch } from '../prompt/compile'
 import * as attachments from '../plugins/attachments'
 import { FIRST_PARTY_PLUGINS, firstPartyExtensions, type InlineExtension } from '../plugins/firstParty'
 import { imagePruning } from '../world/images'
 import { materialise, type VariantChoice, type Materialised } from '../variant/materialise'
 import type { VariantTrust } from '../variant/trust'
-import { ASK_USER, askUserTool } from '../tools/askUser'
-import { CHECKLIST_WRITE, checklistTool } from '../tools/checklist'
+import { ASK_USER } from '../tools/askUser'
+import { CHECKLIST_WRITE } from '../tools/checklist'
 import { SESSION_NAME, sessionNameTool } from '../tools/sessionName'
-import { subagentTools } from '../tools/spawnSubagent'
 import { DEFAULT_TOOL_NAMES } from '../tools/definitions'
-import { harnessTools } from '../tools/harnessTools'
 import type { ToolProvider, ToolSession, ToolSpec } from '../tools/types'
+import type { DispatchEnv } from '../tools/dispatch'
 import type { RunRecord } from './contracts'
 import { SPAWN_SUBAGENT, WAIT_SUBAGENTS, subagentDepth, subagentHistory, subagentNesting, type SubagentInput, type SubagentOptions } from './subagents'
 import type { Subagents } from './subagentService'
@@ -151,6 +150,12 @@ export interface SessionsOptions {
   factory?: SessionFactory
   /** Which plugin code in variants a person trusted. */
   trust?: VariantTrust | null
+  /** Managed worktrees: a run naming one works in its folder and holds it until the run settles. */
+  worktrees?: {
+    pathOf(id: string): string | null
+    acquire(id: string, holder: string): Promise<unknown>
+    release(id: string, holder: string): Promise<void>
+  } | null
 }
 
 /** The harness's own plugins a person switched on for this caller, with the numbers they set. */
@@ -244,9 +249,47 @@ export class Sessions {
    * session that cannot be opened ends its run as failed and returns no native session id.
    */
   async run(input: SessionRunInput): Promise<{ runId: string; nativeSessionId: string | null }> {
-    const { root } = this.env
     if (!input?.run?.id || !input.run.sessionId || typeof input.text !== 'string') throw invalid('A session turn needs a run id, a session, and text.')
     input = structuredClone(input)
+    const worktree = await this.enterWorktree(input)
+    try {
+      return await this.start(input)
+    } catch (error) {
+      await worktree?.release()
+      throw error
+    }
+  }
+
+  /**
+   * A run that names a worktree the harness manages works in that worktree's folder and holds it
+   * until the run settles. An id the harness does not know is kept as the caller's own field.
+   */
+  private async enterWorktree(input: SessionRunInput): Promise<{ release: () => Promise<void> } | null> {
+    const id = input.run.worktreeId
+    const worktrees = this.options.worktrees
+    if (!id || !worktrees) return null
+    const path = worktrees.pathOf(id)
+    if (!path) return null
+    const holder = input.run.sessionId
+    await worktrees.acquire(id, holder)
+    input.cwd = path
+    let released = false
+    const release = async (): Promise<void> => {
+      if (released) return
+      released = true
+      stop()
+      await worktrees.release(id, holder).catch(() => undefined)
+    }
+    const stop = this.options.runs.listen((event) => {
+      if (event.runId !== input.run.id) return
+      const settled = event.type === 'completed' || event.type === 'failed' || (event.type === 'status.changed' && (event.payload as { status?: string }).status === 'interrupted')
+      if (settled) void release()
+    })
+    return { release }
+  }
+
+  private async start(input: SessionRunInput): Promise<{ runId: string; nativeSessionId: string | null }> {
+    const { root } = this.env
     if ((input.initialBashCommand !== undefined && input.initialBashCommand !== null) || (input.initialBashContext !== undefined && input.initialBashContext !== null)) {
       const request = input.text.trimStart()
       const requestedCommand = /^!\s*([\s\S]+)$/u.exec(request)?.[1]
@@ -393,9 +436,18 @@ export class Sessions {
     })
     try {
       const tools: ToolSpec[] = [
-        ...(broker ? broker.tools(session, { readOnly: typeof input.connections === 'object' && input.connections.readOnly === true }) : []),
-        ...(input.harnessTools === false ? [] : [...harnessTools(this.options.env, caller, { variantDir: variant?.dir ?? null }), askUserTool(run), checklistTool(run), naming]),
-        ...subagentTools(this.options.subagents, runId).filter(tool => allow.includes(tool.name))
+        ...BUILTIN_PLUGIN_REGISTRY.tools({
+          env: this.options.env,
+          caller,
+          variantDir: variant?.dir ?? null,
+          run,
+          runId,
+          allowedTools: allow,
+          harnessTools: input.harnessTools !== false,
+          subagents: this.options.subagents,
+          sessionName: naming,
+          ...(broker ? { connectionTools: () => broker.tools(session, { readOnly: typeof input.connections === 'object' && input.connections.readOnly === true }) } : {})
+        })
       ]
       if (input.providers !== false) {
         const named = new Set(tools.map((tool) => tool.name))

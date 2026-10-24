@@ -214,6 +214,22 @@ describe('TranscriptModel', () => {
     expect(model.view().hasMultilineNotice).toBe(false)
   })
 
+  it('keeps grouped help together as one multiline transcript item', () => {
+    const model = new TranscriptModel()
+    model.bind(session([]))
+    const groups = [
+      { name: 'Core', commands: [{ name: 'help', description: 'List commands' }, { name: 'quit' }] },
+      { name: 'Extensions', commands: [{ name: 'deploy', description: 'Deploy the project' }] }
+    ]
+
+    model.commandHelp(groups)
+
+    expect(model.view()).toMatchObject({
+      hasMultilineNotice: true,
+      items: [{ kind: 'command-help', groups }]
+    })
+  })
+
   it('anchors one-line notices at their point in chat so later messages move them up', () => {
     const messages: unknown[] = [{ role: 'user', content: 'hello' }]
     const model = new TranscriptModel()
@@ -229,6 +245,38 @@ describe('TranscriptModel', () => {
       { text: 'The operation was aborted.', level: 'error' }
     ])
     expect(model.view().items.some(item => item.kind === 'notice' && item.text.includes('\n'))).toBe(false)
+  })
+
+  it('keeps notices at their place when compaction replaces the messages', () => {
+    const before: unknown[] = Array.from({ length: 40 }, (_, index) => ({ role: 'user', content: `message ${index}` }))
+    const target = { messages: before, state: {} }
+    const model = new TranscriptModel()
+    model.bind(target as unknown as AgentSession)
+    model.notice('Compacting context…')
+
+    const after: unknown[] = [{ role: 'compactionSummary', summary: 'earlier work', tokensBefore: 9_000 }, ...before.slice(-3)]
+    target.messages = after
+    after.push({ role: 'assistant', content: 'work after compaction' })
+    model.invalidate()
+
+    const items = model.view().items
+    expect(items.map(item => item.kind)).toEqual(['compaction', 'user', 'user', 'user', 'notice', 'assistant'])
+    expect(items[3]).toMatchObject({ text: 'message 39' })
+    expect(items.at(-1)).toMatchObject({ kind: 'assistant', text: 'work after compaction' })
+  })
+
+  it('puts notices for summarized messages right after the compaction card', () => {
+    const before: unknown[] = Array.from({ length: 3 }, (_, index) => ({ role: 'user', content: `message ${index}` }))
+    const target = { messages: before, state: {} }
+    const model = new TranscriptModel()
+    model.bind(target as unknown as AgentSession)
+    model.notice('early warning', 'warning')
+    before.push({ role: 'user', content: 'message 3' }, { role: 'user', content: 'message 4' })
+
+    target.messages = [{ role: 'compactionSummary', summary: 'earlier work', tokensBefore: 9_000 }, ...before.slice(-1)]
+    model.invalidate()
+
+    expect(model.view().items.map(item => item.kind)).toEqual(['compaction', 'notice', 'user'])
   })
 
   it('returns to notices when the session is cleared', () => {

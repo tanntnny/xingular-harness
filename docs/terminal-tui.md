@@ -29,7 +29,7 @@ empty composer, unmodified Up recalls the latest non-empty user message from the
 After recall, unmodified Up/Down are available for normal editor movement and do not browse history
 while the draft is non-empty. Ctrl+Up/Down remain explicit history shortcuts; Down past the newest
 entry restores a blank draft. History comes from the active Pi session's saved messages, so `/new`
-and `/resume` switch to that session's history. Steering needs a terminal that reports Cmd with the
+and `/session` (also `/resume`) switch to that session's history. Steering needs a terminal that reports Cmd with the
 kitty keyboard protocol; elsewhere `Alt+Return` steers. In the composer, `Tab` opens up to eight matching filesystem entries for the path token at the cursor, or current-folder entries when the token is empty. The list has no heading or hint row. Up/Down select; Enter or Tab inserts the selection; Escape closes the list. Directories end in `/`, and Bash mode escapes shell-special characters. Use `/effort` or Shift+Up/Down to change effort. The command palette opens above the composer under a muted (`dim`) top rule, and has no other border. Its rows align slash commands and descriptions in two columns: the command column sizes to the widest visible name, bounded to preserve description space, and both columns wrap instead of truncating. The plan-choice rule, question block's top-only divider, and `/btw` block's top rule use the same muted color as the normal composer divider. The console has no background of its own: the renderer, root surface
 and transcript are transparent, so the terminal's own background shows through, while panels,
 dialogs and the scrim stay opaque. The composer has no panel background: it is bounded by a top and
@@ -50,8 +50,8 @@ never receive an OpenTUI renderable or a second account. A theme an extension se
 its own components, while the OpenTUI chrome keeps the fixed OpenCode-inspired palette. Component
 UI is supported; an extension that draws only by writing raw ANSI through the TUI terminal is not.
 
-Pages become centered dialogs. The page commands `/accounts`, `/permissions`, `/plugins`,
-`/hub`, `/components`, `/settings`, `/trajectory` and `/log`, the `/model` and `/tree` pickers, and
+Most pages become centered dialogs. The page commands `/accounts`, `/permissions`,
+`/plugin:trajectory` and `/log`, the `/model` and `/history` pickers, and
 the `select`, `confirm`, `input` and `editor` dialogs (such as `/effort` and the Thinking setting),
 take 80% of the terminal, capped at 100 columns by 30 rows, on a flat panel in the console's panel
 colour. A full-screen scrim dims the console behind the panel so the transcript stays faintly
@@ -62,13 +62,15 @@ omit divider rules and footer hints. Shortcut behavior remains available. Search
 the same glyph, placeholder, spacing, and muted result note, with search context included on that
 row. A terminal too small for a 30-column by
 12-row dialog falls back to the full-screen page chrome. A plugin's full-screen surface stays full
-screen.
+screen. `/settings` instead fills the terminal with its category tabs, search, settings list and
+full-screen page chrome. The Harness resource browser and all its shortcuts use a full-screen page
+with persistent resource-section tabs.
 
 The frontend is verified with a real isolated PTY and a loopback provider. Run
 `python3 scripts/verify-terminal.py --composer-only` for explicit-newline and soft-wrap checks of
 both prompt gutters plus normal/plan/Bash mode exclusivity, `--file-completion-only` for filesystem
 completion and insertion,
-`--history-only` for active-session history across `/new` and `/resume`, `--help-only` for `/help` replacing the welcome screen, `--questions-only` for recommended choices,
+`--history-only` for active-session history across `/new` and `/session`, `--help-only` for `/help` replacing the welcome screen with grouped two-column output that wraps without per-command gaps, `--questions-only` for recommended choices,
 selected-row and Continue/Submit colors, `--jump-latest-only` for scroll-away badge visibility and click-to-latest (screen-level click assertions use optional `pyte`), and choice-backed “Something else” answers, or `--thinking-only` for `/thinking` visibility toggles. The full suite covers a complete turn, `read`, `bash` approval, `ask_user_question` approval and picker, plugin overlay/widget/status
 disposal, a completed run record with usage and decision events, `/help`, `/permissions`,
 `/settings`, `/model`, palette selection, confirm cancel, and Ctrl+D exit. Live-provider behavior,
@@ -85,8 +87,15 @@ The terminal joins outstanding children before its final reply, projects child a
 with their original run IDs, and stops descendants when interrupted or disposed. Connected apps
 need not be enabled. `TerminalPrepareInput.subagents: null` disables the capability.
 
-Real scripted Pi execution over the actual terminal socket verifies result delivery and decision
-routing. It does not establish live-provider behavior or new visual UI parity. See
+The terminal also projects the active parent's subagent descendants into a compact roster above
+the composer and a searchable `/plugin:subagents` page. The roster polls a private monitor route once per
+second during a turn and shows task, status, elapsed time and the latest recorded tool summary.
+The projection is read-only, flat across nested descendants, and scoped to the current parent run;
+it keeps finished child rows until that parent settles. It never includes tool arguments or output.
+
+Real scripted Pi execution over the actual terminal socket verifies result delivery, decision
+routing, and the monitor's parent scoping and summary redaction. It does not establish live-provider
+behavior. See
 [ADR-0003](decisions/ADR-0003-shared-asynchronous-subagents.md) for recovery and lifecycle details.
 
 ## Ownership and process boundary
@@ -144,7 +153,9 @@ Until response usage is available, the rate shows `— tok/s`. On settlement, th
 final run statistics stay in that row until the next run replaces them; they do not become a transcript
 entry. Notifications, queue announcements, compaction-start and retry updates—including retries
 while summarizing context or branches—are one-line transcript entries at the point they occur, so
-subsequent chat moves them up rather than keeping them pinned at the bottom. A completed context
+subsequent chat moves them up rather than keeping them pinned at the bottom. Each entry stays after
+the message it followed when compaction shortens the history; an entry whose message was summarized
+sits right after the compaction card. A completed context
 compaction adds a first-class card from Pi's persisted session history, showing the token count and
 an expandable Markdown summary; click the card or use Ctrl+O to toggle its details.
 A successful transcript-selection copy instead shows a temporary, opaque toast at the top-right of the
@@ -203,7 +214,7 @@ of two rule-based shapes, using the 2-cell composer gutter on each side and a di
   Approvals, questions, and the `select`, `confirm`, `input` and `editor` dialogs use this shape
   there. OpenTUI renders Harness-managed centered dialogs with the inset header treatment below.
 - A **page** is a header row (title left, position or status right), a neutral rule, the body,
-  a neutral rule, and the hint row. `/settings`, `/trajectory`, `/log`, `/permissions`, and the
+  a neutral rule, and the hint row. `/settings`, `/plugin:trajectory`, `/log`, `/permissions`, and the
   `/accounts`, `/plugins` and `/hub` menus are pages. Section labels inside a page are plain bold
   headings, never text set into a rule.
 
@@ -214,24 +225,81 @@ frontends draw that field from the same muted-blue selection palette (`selection
 explicit high-contrast text on it instead of the accent colour, so a choice reads the same in every
 list. Rules use the theme's `warning` and `dim` colors, so a custom theme restyles them.
 
-Each page command owns a separate page and its own tab strip: `/accounts` has Accounts
-and Pools; `/permissions` has Overview and Tools; `/plugins` has Plugins and Trust; `/hub` has
-Catalog and Installed; `/components` has Skills, Prompts and Rules; `/settings` has the available
-settings categories; `/trajectory` has Runs and Events; and `/log` has Diagnostics and Run Events.
-Commands never share one cross-page tab strip. Tab and Shift+Tab move between the current page's
-tabs; in centered dialogs, Left and Right move between those tabs too. Up and Down move through
-rows, while PageUp/PageDown, Home and End move through rows or details. Trajectory keeps `[` and
-`]` for run navigation; its Up and Down arrows select events. The `/model` scope tabs and `/tree`
-filter tabs also respond to Left and Right. Every list and picker places the same `⌕ Type to
-search` row immediately under its title or strip, with its result count at the right. Compact pickers
-such as `/model`, `/tree`, `/resume` and `/fork` do not show a page strip. Escape clears a non-empty
-search before closing. Left and right are passed to the current page and do not switch commands.
+The Harness resource browser (PROP-0013) unifies Overview, Foundation, Variant, Skills, Plugins,
+Connections, Tools and Library. `/harness` opens Overview; `/skills`, `/plugins`, `/connections`
+(`/mcp`) and `/tools` open sections. `/hub` selects Discover and `/components` selects Library.
+The existing Accounts, Permissions, Settings, Trajectory and Log pages retain their own tabs.
 
-`/components` browses skills, prompts and rules in the component library. After confirmation, a skill
-or rule is added to the attached Harness scope as a new variant version for future sessions; the current
-terminal stays pinned to the version it started with. Prompts remain browse-only, and terminals without
-a writable scope can browse but cannot add items. These changes go through the extension's private
-control key, so model-issued shell commands cannot add a component.
+`/settings` includes a Browser tab with the device-local **Private address access** setting. It is
+off by default. Enabling it asks for confirmation and allows agent browsing and annotation capture
+to reach localhost and private networks.
+
+Resource sections share Installed/Discover and source filters. Installed includes locally present
+resources; current-session availability comes only from the runtime loader and active tool registry.
+Discover uses the existing Hub with All/Community/Official filtering and an explicit remote refresh.
+No matching community entries is an empty result, never replaced with built-in resources.
+The view preserves search across source switches and restores section selection on return.
+
+The browser fills the terminal (PROP-0014), with Overview, Foundation, Variant, Skills, Plugins,
+Connections, Tools and Library as persistent top tabs. The section dropdown and sidebar are removed.
+When the strip cannot fit, it shows the active tab and its position with previous/next navigation.
+At 88 content columns, inventory sits beside an inspector containing metadata, actions and readable
+content. Enter focuses the inspector. Compact terminals show details/content within the active tab;
+resizing preserves the selected resource and content position, clamped to the available height.
+
+Tab/Shift+Tab focuses tabs, source, filter, toolbar actions, list and (when available) inspector.
+Left/Right changes the focused tab or control; Enter on the tab strip returns to the inventory.
+Ctrl+F focuses search. Escape returns from content to actions, returns to the list, clears search,
+then closes. Mouse clicks select tabs directly, activate resource actions and focus filters;
+wheel scrolling targets the list or inspector under the pointer. Other command pages keep their
+centered presentation; `/settings` uses the full-screen page layout. Closing the browser preserves
+the composer draft and attachments.
+
+Foundation explains fixed runtime ownership; it is read-only. Variant shows c1–c8 with the
+prepared version and current head separately. It previews pinned files from the preparation
+snapshot and compares their text with the latest saved version. No in-place editing or adoption
+is added. Library skills and rules are added through `terminal.components.add`, which commits a
+validated future version. Directory-backed variants stay read-only.
+
+Skill browsing is independent of the Skill commands setting. Use inserts a leading `$name`
+without submitting. Ctrl+K opens a separate command filter; choosing a browser section keeps
+the existing draft text and attachment labels. Canceling the filter restores that draft. OpenTUI completes
+loaded skills for a leading `$`; Enter or Tab inserts the selected skill rather than sending.
+Plugin contributions, settings, attachment and code trust share one detail flow. Package install
+and removal delegate to existing services; installing never trusts or activates code.
+
+Connections supports local stdio and remote HTTP forms, masked credentials, explicit scope,
+saved disabled defaults, explicit testing and OAuth sign-in. Browsing never starts an MCP process.
+Saved test results show timestamps rather than claiming a live connection. A Hub connector document
+is inert: a separate setup action validates supported remote-definition fields before opening the
+normal connection form. Other document kinds stay inspectable data. Tools show their owner,
+parameters, active state and saved approval; each call still passes the gate.
+
+The typed model is `terminal/browser.ts`; the protected adapter is `terminal/browserControl.ts`.
+The browser accepts resource IDs for bounded regular-file previews, not arbitrary paths. Local
+skill import rejects symbolic links and limits bytes, files and traversal. See
+[source study and wireframes](study/tui-resource-browser.md),
+[PROP-0013](architecture/proposals/PROP-0013-resource-browser.md) and
+[ADR-0015](decisions/ADR-0015-resource-browser.md).
+
+## Annotate pane (PROP-0018)
+
+`/plugin:annotate` opens a full-screen page that works beside the window being inspected. That window is one of:
+- the visible capture browser
+- an app's own windows attached over its DevTools port (`--app`)
+- app windows that loaded the page bridge script (`--bridge`)
+
+The header shows the target and window and whether the inspector is on. The list has three groups: Queue, Sent and fixed, and Saved. While the inspector is on, the page polls for the next popover comment every 400 ms, shows the result as a notice, and refreshes the list.
+
+| Key | Action |
+|---|---|
+| `i` | inspector on/off |
+| `s` | send the queue |
+| `x` | unqueue the selected note |
+| `t` | choose a window |
+| `Enter` | the note menu |
+
+The page has no search row, so these letters are free for actions. `/plugin:notes` keeps the searchable list.
 
 ## Plan mode and thinking keys
 
@@ -403,7 +471,7 @@ personal Pi profile. Provider authentication and model catalogs use that account
 The selected account stays pinned. The existing `/accounts` command requests a parent-managed
 restart to use a different account while resuming the conversation.
 
-An initial `--session` or `/resume` target must resolve inside the prepared history directory,
+An initial `--session` option or `/session` target (also accepted as `/resume`) must resolve inside the prepared history directory,
 including symlink targets, and its stored absolute working folder must match the terminal's
 canonical working folder. `/import` may copy an explicitly selected external native JSONL file
 only when its recorded working folder matches. A caller cannot override a foreign recorded
@@ -480,14 +548,23 @@ event subscriptions and custom transcript components detach before native invali
 Cleanup failures cannot prevent terminal restoration. Fatal asynchronous errors restore the
 terminal and exit with failure; startup failures and suspend/resume use the same lifecycle.
 
-The command registry supplies help and completion for Harness commands, loaded extensions,
-prompts and enabled skills. `/plugins` includes the protected code trust workflow. The standalone
+The command registry supplies help and slash completion for Harness commands, loaded extensions
+and prompts. `/session` selects a saved session (`/resume` remains an alias), and `/history` navigates
+branches in the current session (`/tree` remains an alias). `/btw <question>` asks a side question;
+`/side` is its alias. Help and the slash-command palette show each pair once, as `/session (resume)`,
+`/history (tree)` and `/btw (side)`; aliases still match palette searches.
+The separate `$` palette completes enabled skill invocations; `/skills` always browses skills. `/help`
+renders the command list as one transcript entry, grouped under Core, Run, Model, Session, Inspect,
+Harness, Plugins and Prompts; command names and descriptions wrap in aligned columns, with no
+blank rows between choices. `/plugins` opens the browser with protected code trust and plugin settings actions. Settings use
+`plugins.configure`; on/off settings and bounded whole-number settings keep their existing ranges.
+Saved settings are read when the plugin next uses them and do not require a restart. The standalone
 terminal no longer has separate `/login`, `/trust`, `/bug`, `/changelog`, `/share`, `/scoped-mode` or
-`/import` commands. `/btw <question>` asks a short side question in a separate tool-free session. Its block puts the question after `/btw`, shows the normal animated spinner while answering, and separates the answer and hint by one blank row; it has no status labels. Escape closes the block without interrupting the main reply, and `/btw` also dismisses it. `/stop` interrupts the current reply. The `/accounts` page handles sign-in
+`/import` commands. `/btw <question>` (or `/side <question>`) asks a short side question in a separate tool-free session. Its block puts the question after `/btw`, shows the normal animated spinner while answering, and separates the answer and hint by one blank row; it has no status labels. Escape closes the block without interrupting the main reply, and either command with no question dismisses it. `/stop` interrupts the current reply. The `/accounts` page handles sign-in
 and sign-out. `/components` browses reusable skills, prompts and rules; a confirmed skill or rule addition
 creates a variant version for future sessions while the current terminal keeps its pinned version. `/reload` applies trusted resource and keybinding changes.
 
-`/trajectory` opens the newest recorded run for the current native conversation; `/trajectory <run-id>`
+`/plugin:trajectory` opens the newest recorded run for the current native conversation; `/plugin:trajectory <run-id>`
 opens a selected run from that conversation. Tab switches between Runs and Events; `[` and `]` change
 runs, up/down selects recorded events, PageUp/PageDown scrolls event details, and `c` copies the
 selected event. Active runs refresh while the overlay is open. The protected terminal socket scopes both the run list and event
@@ -499,6 +576,14 @@ switches views; arrows, PageUp/PageDown, Home and End scroll; Escape closes. Fet
 diagnostics retain available error stacks and safe request metadata, while the viewer redacts secrets
 and URL queries and omits response bodies, prompts and message contents. Embedded hosts without a
 `harness.log` still show the conversation's recorded run events.
+
+## Slash command ownership
+
+Core terminal commands stay unprefixed. Built-in plugin commands and Pi extension commands use
+`/plugin:<command>`, appear with that prefix in `/help` and the command palette, and dispatch to the
+registered owner. Duplicate extension names are rejected with the extension paths shown as the
+diagnostic. Former unprefixed plugin commands such as `/annotate` and `/doctor` are no longer
+aliases. Prompt templates and `/skill:<name>` keep their existing forms.
 
 ## Input performance profile
 
@@ -658,10 +743,41 @@ The working line shows `Working (2m, 50 tok/s) – Add web browser integrations`
 also stays on the completion line. Unnamed sessions have no separator, and narrow terminals
 truncate trailing text. Renaming refreshes the line through Pi's existing metadata event.
 
-## `/doctor`
+## `/plugin:doctor`
 
 Checks accounts/models, tools, MCP, plugins/skills, variant/prompt validity, runtime assets, storage
-and startup recovery. Every finding says whether it is local readiness or live verification.
-`r` refreshes, `t` retries one local finding, `l` selects live checks, `c` cancels, arrows scroll,
-and Escape closes/cancels. Live checks show their costs and isolated resources before confirmation.
-Providers without diagnostic callbacks are reported unverified. See [Doctor](doctor.md).
+and startup recovery. The summary keeps mode, progress, account/model and status counts visible above
+the findings. Wide layouts use aligned Status, Check, Category and Verification columns, with evidence
+and any next step beneath each finding; narrow layouts stack those fields. Status colors follow the
+active theme: pass is success, warning/blocked warning, fail error, disabled dim and unverified muted.
+
+`r` refreshes, `t` retries one local finding, `l` selects live checks, `c` cancels, Up/Down scroll by
+line, PgUp/PgDn or the mouse wheel by page, and Home/End jump to the first/last finding. Escape
+closes/cancels. Live
+checks show their costs and isolated resources before confirmation. Providers without diagnostic
+callbacks are reported unverified. See [Doctor](doctor.md).
+
+## Resource browser verification (2026-10-22)
+
+The [retained evidence](evidence/terminal-resource-browser/README.md) records three-size PTY
+acceptance, pointer/filter and resize behavior, skill completion/insertion and preserved drafts,
+with zero model requests. Isolated idle/history/stream input profiling reported no missed keys
+and p95 14.81/14.27/17.32 ms. The manifest binds both the CLI and OpenTUI bundle to their digests.
+Live external connector authentication and community package installation were not exercised.
+
+
+## Full-screen browser verification (2026-10-23)
+
+[PROP-0014](architecture/proposals/PROP-0014-fullscreen-browser-tabs.md) and
+[ADR-0016](decisions/ADR-0016-fullscreen-browser-tabs.md) replace the browser's centered layout
+with full-screen section tabs and a responsive inventory/inspector. The
+[retained PTY evidence](evidence/terminal-fullscreen-browser/README.md) covers 40×20, 80×24 and
+120×40, keyboard and pointer tab selection, filter interaction, resizing and draft preservation,
+with zero model requests. The manifest binds the CLI, OpenTUI bundle and verification script.
+
+Harness typecheck, full tests (893 passing, three platform skips), build and standalone proof
+passed. The final focused browser/page/command run passed 75 tests. Agent app typecheck, layer
+checks, frontend tests, all 40 sidecar tests and 240 Rust tests passed (one Rust test ignored).
+Sidecar tests were rerun with two workers and a 30-second timeout after four five-second timeouts
+under concurrent load. Socket-backed Harness and PTY checks required sandbox escalation;
+verification used local fixtures and disposable session data.

@@ -1,6 +1,6 @@
 # Doctor
 
-Run `/doctor` in the Harness terminal. It opens a readiness report for the selected account/model,
+Run `/plugin:doctor` in the Harness terminal. It opens a readiness report for the selected account/model,
 enabled tools, MCP connections, plugins and skills, pinned variant, runtime and storage.
 
 **Local is the default.** It inspects configuration, saved state and resource readability without
@@ -15,11 +15,17 @@ domain”. MCP checks connect/list only. Browser checks use a disposable headles
 offline synthetic page; configured CDP attachment is blocked. Computer input is blocked unless the
 host supplies a disposable diagnostic surface; the current desktop host supplies readiness only.
 
+The report keeps mode, progress, account/model and status counts visible above the findings. Wide
+layouts use aligned Status, Check, Category and Verification columns; evidence and any next step
+appear beneath each finding. Narrow layouts stack those fields. Status colors follow the active
+theme: pass is green, warning/blocked amber, fail red, disabled dim and unverified muted.
+
 `r` refreshes local readiness, `t` retries a selected local check, `c` cancels, and Escape closes
-and cancels pending work. Completed findings survive cancellation. Every finding includes evidence
-and, where useful, a next step. Doctor never signs in, switches accounts, installs, grants access,
-or repairs settings. Findings and jobs are retained in memory until shutdown; live run records
-and usage remain in normal Harness storage.
+and cancels pending work. Use Up/Down to scroll by line, PgUp/PgDn or the mouse wheel to scroll by
+page, and Home/End to jump to the first/last finding. Completed findings survive cancellation. Every finding includes
+evidence and, where useful, a next step. Doctor never signs in, switches accounts, installs, grants
+access, or repairs settings. Findings and jobs are retained in memory until shutdown; live run
+records and usage remain in normal Harness storage.
 
 ## Embedding
 

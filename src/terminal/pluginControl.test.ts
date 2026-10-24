@@ -75,12 +75,24 @@ describe('plugin control from a terminal session', () => {
     expect(off.find((candidate) => candidate.id === plugin.id)!.attachment).toEqual({ global: true, on: { agentIds: [], projectIds: [] }, off: { agentIds: [], projectIds: ['p1'] } })
   })
 
+  it('changes a plugin setting only for the person at the terminal, inside its range', async () => {
+    const { connection } = await session()
+    const keyless = { pluginId: 'web', settings: { keylessSearch: 1 } }
+    await expect(socketCall(connection, 'plugins.configure', keyless)).rejects.toThrow('Only a person at this terminal')
+    const { key } = await socketCall<{ key: string }>(connection, 'control.claim')
+    await expect(socketCall(connection, 'plugins.configure', { pluginId: 'web', settings: { keylessSearch: 5 } }, 5_000, key)).rejects.toThrow('from 0 to 1')
+    const saved = await socketCall<Plugin[]>(connection, 'plugins.configure', keyless, 5_000, key)
+    expect(saved.find((plugin) => plugin.id === 'web')!.settings.find((setting) => setting.key === 'keylessSearch')!.value).toBe(1)
+    const listed = await socketCall<Plugin[]>(connection, 'plugins.list')
+    expect(listed.find((plugin) => plugin.id === 'web')!.settings.find((setting) => setting.key === 'keylessSearch')!.value).toBe(1)
+  })
+
   it('walks a person through switching and trusting, and changes nothing they did not choose', async () => {
     const { harness, connection } = await session()
     const { key } = await socketCall<{ key: string }>(connection, 'control.claim')
     const call = <T>(method: string, params?: Record<string, unknown>) => socketCall<T>(connection, method, params ?? {}, 5_000, key)
     const rows = menuRows(await call<Plugin[]>('plugins.list'), 'p1')
-    expect(rows.map((row) => row.label)).toEqual(['● review-kit · code not trusted', '● Browser', '○ Budget guard · runs code', '○ Lessons · runs code', '○ Output trim · runs code', '● Web'])
+    expect(rows.map((row) => row.label)).toEqual(['● review-kit · code not trusted', '● Browser', '○ Budget guard · runs code', '○ Lessons · runs code', '○ Output trim · runs code', '● Page notes', '● Web'])
     expect(rowActions(rows[0], 'p1')).toEqual(['Switch off for this project', 'Switch off everywhere', 'Trust its code', 'Back'])
     const guard = rows.find((row) => row.label.startsWith('○ Budget guard'))!
     expect(rowActions(guard, null)).toEqual(['Switch on everywhere', 'Back'])

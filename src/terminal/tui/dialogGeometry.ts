@@ -1,6 +1,5 @@
-// Page dialogs share one size policy: 80% of the terminal, capped at 100×30, centered
-// with a margin. The Pi terminal keeps its full-screen pages; a host that sets
-// `centeredDialogs` (the OpenTUI console) gets the centered form.
+// Centered pages use 80% of the terminal, capped at 100×30. Pages can explicitly
+// request the whole screen; OpenTUI reads the presentation through the overlay options.
 import type { OverlayOptions, TUI } from '@earendil-works/pi-tui'
 
 export const DIALOG_MAX_WIDTH = 100
@@ -66,7 +65,8 @@ export function centeredRect(columns: number, rows: number, width: number, heigh
   }
 }
 
-/** The overlay options every full-screen page command passes; OpenTUI reads the marker. */
-export function pageOverlayOptions(): HarnessOverlayOptions {
+/** Page commands declare their presentation; OpenTUI centers only marked dialogs. */
+export function pageOverlayOptions(presentation: 'centered' | 'fullscreen' = 'centered'): HarnessOverlayOptions {
+  if (presentation === 'fullscreen') return { anchor: 'top-left', width: '100%', maxHeight: '100%' }
   return { anchor: 'top-left', width: '100%', maxHeight: '100%', dialog: 'page' }
 }

@@ -258,6 +258,10 @@ class Terminal:
         os.write(self.master, text.encode() if isinstance(text, str) else text)
         self.read(0.12)
 
+    def type_text(self, text):
+        for character in text:
+            self.send(character)
+
     def click(self, x, y):
         self.send(f'\x1b[<0;{x};{y}M')
         self.send(f'\x1b[<0;{x};{y}m')
@@ -414,10 +418,11 @@ def save_evidence(report, source, destination):
     destination.mkdir(parents=True, exist_ok=True)
     wanted = {'40x20': ['welcome', 'settings-interaction', 'settings-keyboard'],
               '80x24': ['approval-0', 'question', 'plugin-light', 'question-batch'], '120x40': ['completed-transcript']}
+    browser_captures = {'harness-browser', 'skills-browser', 'skill-inspector', 'browser-preserved-draft', 'skills-discover', 'community-filter', 'connections-browser', 'browser-resized'}
     captures = []
     for profile in report['profiles']:
         for snapshot in profile.get('snapshots', []):
-            if snapshot['name'] not in wanted.get(profile['size'], []):
+            if snapshot['name'] not in wanted.get(profile['size'], []) and snapshot['name'] not in browser_captures:
                 continue
             original = Path(snapshot['raw'])
             raw = original.read_bytes()
@@ -429,7 +434,8 @@ def save_evidence(report, source, destination):
                              'rawBytes': len(raw), 'rawSha256': hashlib.sha256(raw).hexdigest(),
                              'archiveBytes': len(compressed), 'archiveSha256': hashlib.sha256(compressed).hexdigest()})
     concise = {'passed': report.get('passed', False), 'implementation': report['implementation'],
-               'cli': report['cli'], 'cliSha256': report['cliSha256'], 'verifierSha256': report['verifierSha256'],
+               'cli': report['cli'], 'cliSha256': report['cliSha256'],
+               'terminalBundleSha256': report.get('terminalBundleSha256'), 'verifierSha256': report['verifierSha256'],
                'provider': 'controlled loopback OpenAI-compatible streaming transport; no external model requests or user credentials',
                'requestCount': len(report.get('requests', [])),
                'profiles': [{key: value for key, value in profile.items() if key != 'snapshots'} for profile in report['profiles']],
@@ -451,7 +457,8 @@ def main():
     parser.add_argument('--history-only', action='store_true', help='Verify active-session prompt history in an isolated PTY')
     parser.add_argument('--questions-only', action='store_true', help='Verify question choices, recommendation, and green action colors in an isolated PTY')
     parser.add_argument('--jump-latest-only', action='store_true', help='Verify the transcript jump-to-latest badge and click behavior in an isolated PTY (screen assertions use optional pyte)')
-    parser.add_argument('--help-only', action='store_true', help='Verify /help replaces the welcome screen in an isolated PTY')
+    parser.add_argument('--help-only', action='store_true', help='Verify grouped, wrapping /help output in an isolated PTY')
+    parser.add_argument('--browser-only', action='store_true', help='Verify the unified resource browser, skills and discovery without model requests')
     parser.add_argument('--palette-only', action='store_true', help='Verify two-column slash-command wrapping and selection in an isolated PTY')
     parser.add_argument('--markdown-only', action='store_true', help='Verify streamed Markdown rendering in an isolated PTY')
     parser.add_argument('--attachments-only', action='store_true', help='Verify pasted images, collapsed large pastes, whole-label deletion and image delivery in an isolated PTY')
@@ -470,13 +477,16 @@ def main():
     report = {'output': str(output), 'provider': f'http://127.0.0.1:{server.server_port}',
               'implementation': 'production standalone CLI + real Pi SDK + loopback OpenAI SSE transport',
               'cli': str(cli), 'cliSha256': hashlib.sha256(cli.read_bytes()).hexdigest(),
+              'terminalBundleSha256': hashlib.sha256((cli.parent / 'terminal-opentui.js').read_bytes()).hexdigest() if (cli.parent / 'terminal-opentui.js').exists() else None,
               'verifierSha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(), 'profiles': []}
     print(f'Isolated terminal evidence: {output}', flush=True)
     try:
         sizes = args.sizes.split(',') if args.sizes else ['40x20', '80x24', '120x40']
         if not args.sizes and args.palette_only:
             sizes = ['40x20', '80x24']
-        elif not args.sizes and (args.attachments_only or args.composer_only or args.file_completion_only or args.history_only or args.questions_only or args.jump_latest_only or args.help_only or args.thinking_only or args.compaction_only):
+        elif not args.sizes and args.help_only:
+            sizes = ['40x20', '80x24', '120x40']
+        elif not args.sizes and (args.attachments_only or args.composer_only or args.file_completion_only or args.history_only or args.questions_only or args.jump_latest_only or args.thinking_only or args.compaction_only):
             sizes = ['80x24']
         elif not args.sizes and args.markdown_only:
             sizes = ['120x40']
@@ -503,6 +513,10 @@ def main():
                             'cost': {'input': 0, 'output': 0, 'cacheRead': 0, 'cacheWrite': 0}}]}}}))
             (shared / 'settings.json').write_text(json.dumps({'defaultProvider': 'terminal-local', 'defaultModel': 'terminal-verifier',
                                                               'defaultThinkingLevel': 'medium', 'enableAnalytics': False}))
+            if args.browser_only:
+                active_skill = shared / 'skills' / 'browser-active' / 'SKILL.md'
+                active_skill.parent.mkdir(parents=True)
+                active_skill.write_text('---\nname: browser-active\ndescription: Inspect a browser fixture.\n---\nRead the fixture.\n')
             extensions = shared / 'extensions'
             extensions.mkdir()
             (extensions / 'terminal-verifier.js').write_text('''export default function(pi) {
@@ -560,6 +574,105 @@ def main():
                     profile['checks'].append('welcome and isolated local session startup')
                 else:
                     profile['checks'].append('welcome and real configured model')
+                if args.browser_only:
+                    requests_before = len(LocalProvider.requests)
+                    for command, marker in [('/harness', 'Foundation'), ('/skills', 'Available now')]:
+                        start = len(terminal.data)
+                        terminal.send(command)
+                        terminal.send('\r')
+                        terminal.wait(marker, start, timeout=15)
+                        terminal.snapshot(command[1:] + '-browser')
+                        if terminal.screen is not None:
+                            top = terminal.screen.display[0]
+                            assert ('Overview' if command == '/harness' else 'Skills') in top, f'Browser is not full-screen: {top!r}'
+                        if command == '/harness':
+                            terminal.send('\t\x1b[C')
+                            terminal.wait('Fixed runtime', timeout=15)
+                            terminal.send('\x1b[D')
+                            terminal.send('\x1b[Z')
+                            terminal.read(0.2)
+                            if terminal.screen is not None and width >= 120:
+                                top = terminal.screen.display[0]
+                                terminal.click(top.index('Plugins') + 1, 1)
+                                terminal.wait('Add plugin', timeout=15)
+                                top = terminal.screen.display[0]
+                                terminal.click(top.index('Overview') + 1, 1)
+                                terminal.read(0.2)
+                        terminal.send('\x1b')
+                    start = len(terminal.data)
+                    terminal.send('$browser-a')
+                    terminal.wait('Inspect a browser', start)
+                    terminal.snapshot('skill-completion')
+                    terminal.send('\r')
+                    terminal.read(0.2)
+                    assert len(LocalProvider.requests) == requests_before, 'Skill completion submitted a model request'
+                    terminal.send('\x03')
+                    start = len(terminal.data)
+                    terminal.send('/skills')
+                    terminal.send('\r')
+                    terminal.wait('Available now', start)
+                    terminal.send('browser-active')
+                    terminal.send('\r')
+                    terminal.wait('Use $browser-active', start)
+                    terminal.snapshot('skill-inspector')
+                    terminal.send('\r')
+                    terminal.wait('$browser-active', start)
+                    terminal.send('\x03')
+                    terminal.send('Keep my draft')
+                    terminal.send('\x0b')
+                    terminal.send('skills')
+                    terminal.send('\r')
+                    terminal.wait('Available now')
+                    terminal.send('browser-active')
+                    terminal.send('\r')
+                    terminal.wait('Use $browser-active')
+                    terminal.send('\r')
+                    terminal.read(0.3)
+                    terminal.snapshot('browser-preserved-draft')
+                    if terminal.screen is not None:
+                        shown = '\n'.join(terminal.screen.display)
+                        assert '$browser-active' in shown and 'Keep my draft' in shown, f'Browser lost the existing draft: {shown!r}'
+                    terminal.send('\x03')
+                    start = len(terminal.data)
+                    terminal.send('/skills')
+                    terminal.send('\r')
+                    terminal.wait('Available now', start)
+                    terminal.send('\x1b[Z' * 3)
+                    terminal.send('\x1b[C')
+                    terminal.read(0.3)
+                    terminal.snapshot('skills-discover')
+                    terminal.send('\t')
+                    terminal.send('\x1b[C')
+                    terminal.read(0.2)
+                    terminal.snapshot('community-filter')
+                    terminal.wait('Filter: community')
+                    if terminal.screen is not None:
+                        position = terminal.locate('Filter: community')
+                        terminal.click(*position)
+                        terminal.wait('Choose view')
+                        terminal.send('\x1b')
+                        terminal.read(0.2)
+                        if width >= 80:
+                            terminal.resize(40, 20)
+                            terminal.read(0.4)
+                            terminal.snapshot('browser-resized')
+                            assert 'Filter: community' in '\n'.join(terminal.screen.display), 'Resize lost source/filter state'
+                            terminal.resize(width, height)
+                            terminal.read(0.3)
+                    profile['checks'].append('Ctrl+K preserves existing draft; mouse opens filters; responsive resize preserves filter state')
+                    terminal.send('\x1b')
+                    terminal.send('\x1b')
+                    start = len(terminal.data)
+                    terminal.send('/mcp')
+                    terminal.send('\r')
+                    terminal.wait('Add connection', start)
+                    terminal.snapshot('connections-browser')
+                    terminal.send('\x1b')
+                    assert len(LocalProvider.requests) == requests_before, 'Browser actions sent a model request'
+                    profile['checks'].append('full-screen persistent tabs, keyboard and mouse section selection, unified overview/skills/MCP, loaded skill completion and insertion, Discover and Community filter without model requests')
+                    terminal.send('/quit')
+                    terminal.send('\r')
+                    continue
                 if args.palette_only:
                     start = len(terminal.data)
                     terminal.send('/verify-palette')
@@ -598,17 +711,59 @@ def main():
                     continue
                 if args.help_only:
                     start = len(terminal.data)
-                    terminal.send('/help\r')
-                    terminal.wait('/quit', start, timeout=10)
+                    requests_before_help = len(LocalProvider.requests)
+                    terminal.send('/help')
+                    terminal.send('\r')
+                    terminal.wait('LONG_DESC_END', start, timeout=10)
                     terminal.read(0.3)
-                    if terminal.screen is not None:
-                        visible = '\n'.join(terminal.screen.display)
-                        assert 'One run, done well.' not in visible, f'/help left the welcome message visible: {terminal.screen.display!r}'
-                        assert '/quit' in visible, f'/help command list is not visible: {terminal.screen.display!r}'
-                        profile['checks'].append('/help shows its command list without the welcome message')
-                    else:
-                        profile['checks'].append('/help command list renders; welcome-screen assertion skipped because optional pyte is unavailable')
                     terminal.snapshot('help-transcript')
+                    if terminal.screen is not None:
+                        terminal.send('\x1b[5~' * 20)
+                        terminal.read(0.2)
+                        top_rows = terminal.screen.display
+                        top = '\n'.join(top_rows)
+                        assert 'One run, done well.' not in top, f'/help left the welcome message visible: {top_rows!r}'
+                        assert all(group in top for group in ['Core', '/help', '/hotkeys', '/quit']), f'/help Core group is not visible: {top_rows!r}'
+
+                        def locate_help(fragment, rows):
+                            for row, line in enumerate(rows):
+                                if fragment in line:
+                                    return row, line.index(fragment)
+                            raise AssertionError(f'Could not locate {fragment!r} in /help: {rows!r}')
+
+                        help_row = locate_help('/help', top_rows)[0]
+                        hotkeys_row = locate_help('/hotkeys', top_rows)[0]
+                        quit_row = locate_help('/quit', top_rows)[0]
+                        assert all(line.strip() for line in top_rows[help_row:quit_row + 1]), f'/help inserted blank rows between Core choices: {top_rows!r}'
+                        if width >= 80:
+                            assert hotkeys_row == help_row + 1 and quit_row == hotkeys_row + 1, f'Core choices were not contiguous: {top_rows!r}'
+                            help_description = locate_help('List the commands', top_rows)[1]
+                            hotkeys_description = locate_help('Keyboard controls', top_rows)[1]
+                            assert help_description == hotkeys_description, f'Help descriptions did not align: {top_rows!r}'
+
+                        pages = [top]
+                        for _ in range(20):
+                            terminal.send('\x1b[6~')
+                            pages.append('\n'.join(terminal.screen.display))
+                        rendered = '\n'.join(pages)
+                        for group in ['Run', 'Model', 'Session', 'Inspect', 'Harness', 'Extensions']:
+                            assert group in rendered, f'/help did not render the {group} group while scrolling: {pages!r}'
+                        wrapped_name = 'name-that-wraps' if width >= 80 else 'me-that-wraps'
+                        for marker in ['SHORT_DESC_START', 'SHORT_DESC_END', 'LONG_DESC_START', 'LONG_DESC_END', wrapped_name]:
+                            assert marker in rendered, f'/help did not render wrapped command content {marker!r}'
+                        if width >= 80:
+                            aligned_page = next((page.splitlines() for page in pages if 'SHORT_DESC_START' in page and 'LONG_DESC_START' in page), None)
+                            assert aligned_page is not None, f'Could not inspect both extension descriptions in one view: {pages!r}'
+                            short_column = locate_help('SHORT_DESC_START', aligned_page)[1]
+                            long_column = locate_help('LONG_DESC_START', aligned_page)[1]
+                            assert short_column == long_column, f'Extension descriptions did not align: {aligned_page!r}'
+                        profile['checks'].append('/help groups commands, wraps both columns, and keeps choices contiguous at ' + dimensions)
+                    else:
+                        rendered = normalized(bytes(terminal.data[start:]))
+                        for marker in ['LONG_DESC_START', 'LONG_DESC_END']:
+                            assert marker in rendered, f'/help did not render wrapped content {marker!r}'
+                        profile['checks'].append('/help command and description wrapping render; screen layout assertions skipped because optional pyte is unavailable')
+                    assert len(LocalProvider.requests) == requests_before_help, '/help sent a model request'
                     terminal.send('/quit\r')
                     continue
                 if args.jump_latest_only:
@@ -1012,15 +1167,20 @@ def main():
                 terminal.send('\x15')
                 profile['checks'].append('clicking the transcript focuses the composer')
                 start = len(terminal.data)
-                terminal.send('/settings\r')
+                terminal.send('/settings')
+                terminal.send('\r')
                 terminal.wait('Appearance', start)
+                if terminal.screen is not None:
+                    assert 'Appearance' in terminal.screen.display[0], f'/settings did not fill the screen: {terminal.screen.display!r}'
+                    assert 'Esc close' in terminal.screen.display[-1], f'/settings full-screen footer was not visible: {terminal.screen.display!r}'
                 terminal.send('\t\t')
                 terminal.snapshot('settings-interaction')
                 terminal.send('Keyboard')
                 terminal.wait('Keyboard controls', start)
                 terminal.snapshot('settings-keyboard')
+                clear_start = len(terminal.data)
                 terminal.send('\x1b')
-                terminal.wait('6 settings', start)
+                terminal.wait('Skill commands', clear_start)
                 terminal.send('\x1b')
                 terminal.wait('Reply…', start)
                 profile['checks'].append('actual settings tabs, section focus, keyboard search/control and Escape return')
@@ -1029,11 +1189,9 @@ def main():
                 terminal.send('\t')
                 terminal.snapshot('completion')
                 terminal.send('\r')
-                terminal.read(0.3)
-                if 'Verifier Second' not in normalized(terminal.data[start:]):
-                    terminal.send('\r')
-                terminal.wait('Verifier Second', start)
+                terminal.type_text('Second')
                 terminal.snapshot('accounts')
+                terminal.send('\x1b')
                 terminal.send('\t')
                 terminal.wait('New pool', start)
                 terminal.snapshot('accounts-pools')
@@ -1052,12 +1210,13 @@ def main():
                 terminal.send('/components\r')
                 terminal.wait('Verifier skill', start)
                 terminal.snapshot('components-skills')
-                terminal.send('\t\t')
-                terminal.wait('Rules', start)
-                terminal.snapshot('components-rules')
+                terminal.send('testing')
+                terminal.read(0.2)
+                terminal.snapshot('components-library-search')
+                terminal.send('\x1b')
                 terminal.send('\x1b')
                 terminal.read(0.2)
-                profile['checks'].append('command autocomplete and independent Accounts, Permissions, and Components pages with local tabs')
+                profile['checks'].append('command autocomplete, Accounts and Permissions pages, and unified Library browser')
                 if os.name == 'posix':
                     terminal.send('\x1a')
                     terminal.read(0.4)
@@ -1084,7 +1243,7 @@ def main():
                     flow_runs = [item for item in records(root) if item.get('goal') == 'verify-flow Unicode 知識 🧠']
                     if flow_runs and flow_runs[-1].get('status') == 'completed':
                         break
-                    if 'Allow ' in recent and '?' in recent:
+                    if any(label in recent for label in ('Allow ', 'Approve ')) and '?' in recent:
                         terminal.snapshot(f'approval-{approval_count}')
                         terminal.send('\r')
                         approval_count += 1
@@ -1118,7 +1277,7 @@ def main():
                 assert question_answered, 'No real question dialog was exercised'
                 terminal.snapshot('completed-transcript')
                 start = len(terminal.data)
-                terminal.click(click_x, click_y)
+                terminal.click(max(1, width - 2), click_y)
                 terminal.send('verify-click-transcript-empty')
                 terminal.wait('verify-click-transcript-empty', start)
                 terminal.send('\x15')
@@ -1258,16 +1417,17 @@ def main():
                 profile['checks'].append('/stop interrupts the live stream and records an interrupted run')
                 start = len(terminal.data)
                 terminal.send('/accounts\r')
-                terminal.wait('Verifier Second', start)
-                terminal.send('\x1b[B\r')
+                terminal.wait('Accounts', start)
+                terminal.type_text('Second')
+                terminal.send('\r')
                 terminal.wait('Use for this session', start)
                 terminal.send('\r')
-                terminal.wait('Switch this session?', start)
+                terminal.wait("terminal's Pi process", start)
                 terminal.send('\r')
                 marker = 'Switching this session to account Verifier Second.'
                 terminal.wait(marker, start, timeout=40)
                 restarted = terminal.data.index(marker.encode(), start) + len(marker.encode())
-                terminal.wait('Verifier Second', restarted, timeout=40)
+                terminal.wait('Reply…', restarted, timeout=40)
                 terminal.read(0.5)
                 terminal.snapshot('account-switched')
                 start = len(terminal.data)

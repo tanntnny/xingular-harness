@@ -18,7 +18,7 @@ try {
   const entries = execFileSync('tar', ['-tzf', tarball], { encoding: 'utf8' }).trim().split('\n')
   if (entries.some(entry => !entry.startsWith('package/') || entry.split('/').includes('..'))) throw new Error('Unexpected tarball paths.')
   const pkg = JSON.parse(execFileSync('tar', ['-xOf', tarball, 'package/package.json'], { encoding: 'utf8' }))
-  if (pkg.name !== '@xingular/harness' || pkg.version !== '1.0.0') throw new Error('Unexpected package identity.')
+  if (pkg.name !== '@xingular/harness' || !/^\d+\.\d+\.\d+$/.test(pkg.version)) throw new Error('Unexpected package identity or version.')
   writeFileSync(join(scratch, 'package.json'), JSON.stringify({ private: true, type: 'module' }))
   if (offline) {
     mkdirSync(candidate, { recursive: true })
@@ -71,7 +71,7 @@ try {
   const cli = join(candidate, 'dist', 'cli.js')
   const help = execFileSync(process.execPath, [cli, '--help'], { cwd: scratch, encoding: 'utf8' })
   if (!help.includes('xharness') || !help.includes('serve')) throw new Error('Packaged CLI help is incomplete.')
-  if (execFileSync(process.execPath, [cli, '--version'], { cwd: scratch, encoding: 'utf8' }).trim() !== '1.0.0') throw new Error('Packaged CLI version is wrong.')
+  if (execFileSync(process.execPath, [cli, '--version'], { cwd: scratch, encoding: 'utf8' }).trim() !== pkg.version) throw new Error('Packaged CLI version is wrong.')
   report.checks.push('Packaged CLI executable and version')
   run(process.execPath, [join(root, 'scripts', 'release-server-smoke.mjs'), cli, scratch])
   report.checks.push('Packaged JSON-lines server and Doctor lifecycle')

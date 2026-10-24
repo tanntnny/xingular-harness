@@ -1,10 +1,10 @@
-// The browser, as one part of the harness's world tools: a plugin a person can switch off, and one
-// live browser per session.
+// Foundation owns the isolated browser engine; the Browser plugin exposes its user-facing tools.
 import { rmSync } from 'node:fs'
 import { join } from 'node:path'
 
 import type { PluginDescriptor } from '../plugins/types'
 import type { WorldContext, WorldPart } from '../world/world'
+import type { ToolSpec } from '../tools/types'
 import { readBrowserConfig } from './config'
 import { browserDiagnostic } from './diagnostics'
 import { NetworkPolicy } from './network'
@@ -32,7 +32,16 @@ export interface BrowserPartOptions {
   idleMs?: number
 }
 
-export function browserPart(options: BrowserPartOptions): WorldPart & { sessions: Map<string, BrowserSession> } {
+/** Foundation-owned isolated browser engine. Plugin tools receive sessions through this interface. */
+export interface BrowserEngine {
+  sessions: Map<string, BrowserSession>
+  diagnostics: NonNullable<WorldPart['diagnostics']>
+  tools(context: WorldContext): ToolSpec[]
+  release(sessionKey: string): Promise<void>
+  close(): Promise<void>
+}
+
+export function createBrowserEngine(options: BrowserPartOptions): BrowserEngine {
   const sessions = new Map<string, BrowserSession>()
   const diagnosticKeys = new Set<string>()
   const config = () => readBrowserConfig(options.stateDir)
@@ -65,7 +74,6 @@ export function browserPart(options: BrowserPartOptions): WorldPart & { sessions
     if (diagnosticKeys.delete(key)) rmSync(join(options.stateDir, 'browser', 'downloads', fileName(key)), { recursive: true, force: true })
   }
   return {
-    plugin: BROWSER_PLUGIN,
     diagnostics: () => [browserDiagnostic(config)],
     sessions,
     tools: (context) => browserTools(context, () => sessionFor(context)),
@@ -74,4 +82,15 @@ export function browserPart(options: BrowserPartOptions): WorldPart & { sessions
       await Promise.all([...sessions.keys()].map(release))
     }
   }
+}
+
+/** Plugin adapter that exposes the Foundation engine's checked browser tools to a session. */
+export function browserPluginPart(engine: BrowserEngine): WorldPart {
+  return { plugin: BROWSER_PLUGIN, diagnostics: engine.diagnostics, tools: context => engine.tools(context) }
+}
+
+/** Combined adapter retained for direct browser tests and embedders that construct a WorldPart. */
+export function browserPart(options: BrowserPartOptions): WorldPart & Pick<BrowserEngine, 'sessions' | 'release' | 'close'> {
+  const engine = createBrowserEngine(options)
+  return { ...browserPluginPart(engine), sessions: engine.sessions, release: engine.release, close: engine.close }
 }

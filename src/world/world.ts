@@ -1,21 +1,21 @@
-// The harness's tools that reach outside the machine's files: the web, a browser, the computer's
-// screen. They are foundation code, offered to every session whose plugin is switched on, and
-// every call passes the same gate as any tool (page 13).
+// User-facing web and browser capabilities are built-in World plugins. Their calls pass through
+// the same gate as every other tool (page 13); Foundation owns shared policy and lifecycles.
 import type { SecretStore } from '../accounts/secrets'
 import type { CallerContext } from '../core/caller'
 import * as attachments from '../plugins/attachments'
+import { BUILTIN_PLUGIN_REGISTRY } from '../plugins/builtin'
 import { settingValue } from '../plugins/firstParty'
 import { contributionId } from '../plugins/identity'
 import type { PluginDescriptor } from '../plugins/types'
 import type { ActiveRun } from '../sessions/registry'
 import { findRun } from '../sessions/runStore'
-import type { ToolProvider, ToolSession, ToolSpec } from '../tools/types'
-import { KEYLESS_SEARCH, WEB_PLUGIN, WEB_SETTINGS, webTools } from '../web/tools'
+import type { ToolProvider, ToolSpec } from '../tools/types'
+import { KEYLESS_SEARCH, WEB_PLUGIN, WEB_SETTINGS } from '../web/tools'
 import type { WebRequest } from '../web/safeRequest'
 import { SEARCH_PROVIDERS } from '../web/search'
 import { invalid } from '../core/errors'
 import { readBrowserConfig, writeBrowserConfig, type BrowserConfig } from '../browser/config'
-import { browserPart, type BrowserPartOptions } from '../browser/index'
+import { createBrowserEngine, type BrowserEngine, type BrowserPartOptions } from '../browser/index'
 
 /** What a world tool knows about the session calling it. */
 export interface WorldContext {
@@ -39,6 +39,8 @@ export interface WorldOptions {
   request?: WebRequest
   /** Replaces the browser's launcher and address check in tests. */
   browser?: Omit<BrowserPartOptions, 'stateDir'> | false
+  /** Told when the agent marks a page note fixed, so front ends refresh (PROP-0018). */
+  notesChanged?: (sessionId: string | null, ids: string[]) => void
 }
 
 /** A family of world tools, switched as one plugin. */
@@ -55,12 +57,11 @@ const UNATTENDED = new Set(['probe', 'improver', 'reflection'])
 
 export class World {
   readonly parts: WorldPart[] = []
-  private readonly web: ToolProvider
+  private readonly browserEngine: BrowserEngine | null
 
   constructor(private readonly options: WorldOptions) {
-    this.web = webTools({ secrets: options.secrets, request: options.request, keyless: () => this.setting(WEB_PLUGIN.id, KEYLESS_SEARCH) === 1 })
-    this.parts.push({ plugin: WEB_PLUGIN, tools: () => this.web({} as ToolSession) as ToolSpec[] })
-    if (options.browser !== false) this.parts.push(browserPart({ stateDir: options.stateDir, ...options.browser }))
+    this.browserEngine = options.browser === false ? null : createBrowserEngine({ stateDir: options.stateDir, ...options.browser })
+    this.parts.push(...BUILTIN_PLUGIN_REGISTRY.worldParts({ options, setting: (pluginId, key) => this.setting(pluginId, key), browserEngine: this.browserEngine }))
   }
 
   add(part: WorldPart): void {
@@ -124,11 +125,11 @@ export class World {
   }
 
   async release(sessionKey: string): Promise<void> {
-    await Promise.all(this.parts.map((part) => part.release?.(sessionKey)))
+    await Promise.all([...this.parts.map((part) => part.release?.(sessionKey)), this.browserEngine?.release(sessionKey)])
   }
 
   async close(): Promise<void> {
-    await Promise.all(this.parts.map((part) => part.close?.()))
+    await Promise.all([...this.parts.map((part) => part.close?.()), this.browserEngine?.close()])
   }
 }
 

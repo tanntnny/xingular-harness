@@ -35,6 +35,20 @@ proposal is `Accepted`.
 
 | [PROP-0012](PROP-0012-release-baseline.md) | Public 1.0.0 distribution and generic browser ownership | Accepted; candidate implementation | INV-BND-2, 00, 07, 11, 13 | 2026-10-22 |
 
+| [PROP-0013](PROP-0013-resource-browser.md) | Unified terminal resource browser | Implemented; working tree verified | 03, 06, 09, 11 | 2026-10-22 |
+
+| [PROP-0014](PROP-0014-fullscreen-browser-tabs.md) | Full-screen browser with persistent section tabs | Implemented; working tree verified | 11, terminal-tui.md | 2026-10-23 |
+
+| [PROP-0015](PROP-0015-one-capability-surface.md) | One capability surface: the terminal and every host offer the same capabilities | Accepted | INV-BND-2, new INV-PAR, 00, 11, 14, AGENTS.md | 2026-10-23 |
+
+| [PROP-0016](PROP-0016-managed-worktrees.md) | Managed git worktrees in the terminal and every host | Harness/terminal in 4.0.0 candidate; App create integration, remaining actions PAR-012 | INV-BND-2, D-5, INV-STO-3, INV-SRV-1, 00, 02, 10, 11, 12, 14 | 2026-10-23 |
+
+| [PROP-0017](PROP-0017-page-annotations.md) | Page annotations captured in the headed browser or a host's web view | Harness/terminal in 4.0.0 candidate; App source pending native-gesture acceptance | INV-STO-3, INV-SRV-1, 07, 10, 11, 12, 13, 14 | 2026-10-23 |
+
+| [PROP-0018](PROP-0018-annotation-queue-and-app-targets.md) | Inspector-style page notes, a fix queue to the agent, and app windows as capture targets | Harness/terminal in 4.0.0 candidate; App source present, native WKWebView acceptance pending | INV-STO-3, INV-SRV-1, 07, 10, 11, 12, 13, 14 | 2026-10-23 |
+| [PROP-0019](PROP-0019-contextual-side-questions.md) | Harness-owned contextual side questions across surfaces | Proposed | INV-RUN-1/3, INV-GATE-1, INV-SRV-1/2, INV-PAR-1/2, 02, 07, 10, 11, 12, 14 | 2026-10-24 |
+| [PROP-0020](PROP-0020-builtin-feature-plugins.md) | Built-in feature modules and namespaced plugin commands | Implemented; included in 4.0.0 candidate | INV-PLG-5/6, INV-TUI-2/7, INV-SRV-1, 06, 11, 13, 14 | 2026-10-24 |
+
 Numbers are four digits, start at `0001`, and are never reused.
 
 ## Template

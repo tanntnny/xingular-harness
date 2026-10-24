@@ -44,6 +44,11 @@ export class PageOverlay implements Component, Focusable {
   handleMouse(event: TerminalMouseInput): TuiMouseEventResult | undefined {
     if (this.disposed) return undefined
     if (event.type === 'wheel') {
+      const layout = this.pointerLayout
+      if (layout && event.y >= layout.bodyStart) {
+        const handled = this.page.handleMouse?.({ ...event, x: event.x - layout.contentX, y: event.y - layout.bodyStart })
+        if (handled?.handled) return handled
+      }
       const key = event.wheelDelta !== undefined && event.wheelDelta < 0 ? '\x1b[5~' : '\x1b[6~'
       this.handleInput(key)
       return { handled: true, render: true }
@@ -66,6 +71,11 @@ export class PageOverlay implements Component, Focusable {
       const target = tabIndex ?? (tabX < layout.contentWidth / 2
         ? (current - 1 + tabs.length) % tabs.length
         : (current + 1) % tabs.length)
+      if (this.page.selectTab) {
+        this.page.selectTab(tabs[target]!.id)
+        this.hoveredTab = undefined
+        return { handled: true, render: true }
+      }
       const delta = (target - Math.max(0, current) + tabs.length) % tabs.length
       const reverse = (Math.max(0, current) - target + tabs.length) % tabs.length
       const direction = delta <= reverse ? '\t' : '\x1b[Z'
@@ -90,9 +100,9 @@ export class PageOverlay implements Component, Focusable {
       this.options.close()
       return
     }
-    const centered = centeredDialogHost(this.options.tui) && dialogFits(this.options.tui.terminal.columns, this.options.tui.terminal.rows)
+    const centered = this.page.presentation !== 'fullscreen' && centeredDialogHost(this.options.tui) && dialogFits(this.options.tui.terminal.columns, this.options.tui.terminal.rows)
     const tabs = this.options.page.tabs()
-    const input = centered && tabs.length > 1
+    const input = centered && tabs.length > 1 && !this.options.page.ownsNavigation
       ? matchesKey(data, 'right') ? '\t' : matchesKey(data, 'left') ? '\x1b[Z' : data
       : data
     if (this.options.page.handleInput(input)) {
@@ -104,12 +114,12 @@ export class PageOverlay implements Component, Focusable {
 
   render(width: number): string[] {
     if (this.disposed) return []
-    const rows = pageRows(this.options.tui)
+    const rows = this.page.presentation === 'fullscreen' ? this.options.tui.terminal.rows : pageRows(this.options.tui)
     const page = this.options.page
     const tabs = page.tabs()
     if (width < 1 || rows < 1 || !tabs.length) return []
     const theme = this.options.theme()
-    const centered = centeredDialogHost(this.options.tui) && dialogFits(this.options.tui.terminal.columns, this.options.tui.terminal.rows)
+    const centered = this.page.presentation !== 'fullscreen' && centeredDialogHost(this.options.tui) && dialogFits(this.options.tui.terminal.columns, this.options.tui.terminal.rows)
     const inner = centered ? centerDialogContentWidth(width) : contentWidth(width)
     if (centered) {
       const tabRows = tabs.length > 1 ? 1 : 0
@@ -134,9 +144,9 @@ export class PageOverlay implements Component, Focusable {
       contentWidth: contentWidth(width),
       centered
     }
-    const footer = [
+    const footer = page.ownsNavigation ? `Esc back/close · ${page.hint()}` : [
       page.hint(),
-      tabs.length > 1 ? 'Tab/Shift+Tab sections' : '',
+      tabs.length > 1 && !page.ownsNavigation ? 'Tab/Shift+Tab sections' : '',
       'Esc close'
     ].filter(Boolean).join(' · ')
     return pageFrame({

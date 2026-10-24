@@ -1,6 +1,6 @@
 {
   "name": "@xingular/harness",
-  "version": "1.0.0",
+  "version": "4.0.0",
   "type": "module",
   "description": "Xingular Harness \u2014 a Pi agent harness built on recursive harnessing (Harness\u00b2): versioned eight-component variants, refinement from evidence, multi-account sessions, a compiled prompt, project notes, tools, and MCP",
   "repository": {

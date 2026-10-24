@@ -83,8 +83,16 @@ skills, prompts, rules and Pi packages.
 ## Account and connector diagnostics
 
 `Accounts.inspect` reads credentials and a non-refreshing Pi model catalogue through a read-only
-credential store. It never refreshes OAuth tokens or verifies a key over the network. `/doctor`
+credential store. It never refreshes OAuth tokens or verifies a key over the network. `/plugin:doctor`
 labels this local readiness. A selected live model probe sends one synthetic request, caps output
 at 64 tokens, and records usage through the normal run writer. It never substitutes an account.
 MCP live diagnostics connect and list tools on the selected scoped connector, without calling
 connector tools or starting sign-in. Disposable grants and clients are closed afterwards.
+
+## Terminal connection setup
+
+The unified browser exposes existing connection save/test/sign-in/sign-out/remove services through
+private terminal controls (PROP-0013). New definitions are saved disabled. Saving does not connect,
+sign in or approve tools. Secrets use masked fields and the existing secret store; snapshots omit
+saved credential values and scrub connection errors/tool metadata. Hub documents remain inert until
+a person explicitly chooses setup and completes the normal validated connection form.

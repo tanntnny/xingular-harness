@@ -93,3 +93,10 @@ The surface is `PI_SURFACE` (`variant/surface.ts`), the one surface this harness
 ## Source map
 
 `src/variant/*.ts` (`migrate.ts` renames state written before PROP-0009 on `open`). Method origin: Harness² (`harness2/core/tree.py`, Apache-2.0).
+
+## Terminal inspection
+
+The resource browser retains the materialised preparation snapshot and labels it pinned. The
+current scope head is separately labelled latest saved; browsing and comparison never rematerialise
+the head as the running variant. Directory-backed variants remain browse-only. Library additions
+use the existing validated commit door and affect future terminals.

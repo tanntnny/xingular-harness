@@ -13,7 +13,10 @@ async function overlayOf(ui: ExtensionUIContext): Promise<PageOverlay> {
   return await factory({ terminal: { rows: 24 }, requestRender: vi.fn() } as unknown as TUI, harnessTheme, {} as KeybindingsManager, vi.fn()) as unknown as PageOverlay
 }
 
-function setup() {
+function setup(extensionCommands = [{
+  name: 'deploy', invocationName: 'deploy', description: 'Deploy the project',
+  sourceInfo: { path: '/project/extensions/deploy.ts' }, handler: vi.fn(async () => {})
+}]) {
   const ui = {
     notify: vi.fn(), select: vi.fn(), confirm: vi.fn(), input: vi.fn(), custom: vi.fn(async () => undefined),
     theme: { name: 'harness-titanium' }
@@ -21,7 +24,11 @@ function setup() {
   let hideThinking = false
   const setHideThinkingBlock = vi.fn((hidden: boolean) => { hideThinking = hidden })
   const session = {
-    extensionRunner: { getRegisteredCommands: () => [{ name: 'deploy', description: 'Deploy the project' }] },
+    extensionRunner: {
+      getRegisteredCommands: () => extensionCommands,
+      getCommand: (name: string) => extensionCommands.find(command => command.invocationName === name),
+      createCommandContext: () => ({ commandContext: true })
+    },
     resourceLoader: {
       getPrompts: () => ({ prompts: [{ name: 'review', description: 'Review code' }] }),
       getSkills: () => ({ skills: [{ name: 'diagnose', description: 'Diagnose a problem' }] })
@@ -50,7 +57,8 @@ function setup() {
   const host: TerminalCommandHost = {
     session: () => session, runtime: () => runtime as unknown as ReturnType<TerminalCommandHost['runtime']>, ui,
     cwd: () => '/isolated/project', sessionDirectory: () => '/isolated/account/history',
-    refresh: vi.fn(), changed: vi.fn(), shutdown: vi.fn(), setEditorText: vi.fn(), copyText: vi.fn(async () => {}),
+    refresh: vi.fn(), changed: vi.fn(), showHelp: vi.fn(), shutdown: vi.fn(), setEditorText: vi.fn(), copyText: vi.fn(async () => {}),
+    subagents: () => [],
     plan: vi.fn(),
     btw: vi.fn(async () => {}),
     control: vi.fn(async (method: string) => ({
@@ -69,12 +77,65 @@ function setup() {
 }
 
 describe('owned terminal commands', () => {
-  it('leaves ordinary prompts and supported extension/resource commands for the SDK', async () => {
+  it('leaves ordinary prompts and supported prompt/skill commands for the SDK', async () => {
     const { commands, ui } = setup()
-    for (const text of ['hello', '/deploy', '/review module', '/skill:diagnose trace']) {
+    for (const text of ['hello', '/review module', '/skill:diagnose trace']) {
       expect(await commands.execute(text)).toBe(false)
     }
     expect(ui.notify).not.toHaveBeenCalled()
+  })
+
+  it('namespaces Pi extension commands and dispatches their arguments to the registered handler', async () => {
+    const handler = vi.fn(async () => {})
+    const command = {
+      name: 'deploy', invocationName: 'deploy', description: 'Deploy the project',
+      sourceInfo: { path: '/project/extensions/deploy.ts' }, handler
+    }
+    const { commands, session, ui } = setup([command])
+    expect(commands.completions().map(item => item.name)).toContain('plugin:deploy')
+    expect(commands.completions().map(item => item.name)).not.toContain('deploy')
+
+    expect(await commands.execute('/plugin:deploy staging now')).toBe(true)
+    expect(handler).toHaveBeenCalledWith('staging now', { commandContext: true })
+    expect(await commands.execute('/deploy staging now')).toBe(true)
+    expect(handler).toHaveBeenCalledTimes(1)
+    expect(ui.notify).toHaveBeenLastCalledWith(expect.stringContaining('Unknown command: /deploy'), 'error')
+    expect(session.extensionRunner.getCommand('deploy')).toBe(command)
+  })
+
+  it('rejects duplicate extension command names with owner diagnostics', async () => {
+    const commandsForExtension = setup([
+      { name: 'deploy', invocationName: 'deploy', description: 'First deploy', sourceInfo: { path: '/project/extensions/first.ts' }, handler: vi.fn(async () => {}) },
+      { name: 'deploy', invocationName: 'deploy:1', description: 'Second deploy', sourceInfo: { path: '/project/extensions/second.ts' }, handler: vi.fn(async () => {}) }
+    ])
+    expect(commandsForExtension.commands.completions().map(item => item.name)).not.toContain('plugin:deploy')
+    expect(await commandsForExtension.commands.execute('/plugin:deploy staging')).toBe(true)
+    expect(commandsForExtension.ui.notify).toHaveBeenLastCalledWith(
+      expect.stringContaining('/project/extensions/first.ts, /project/extensions/second.ts'), 'error'
+    )
+  })
+
+  it('keeps built-in plugin commands reserved and reports a colliding extension owner', async () => {
+    const handler = vi.fn(async () => {})
+    const { commands, ui } = setup([{
+      name: 'annotate', invocationName: 'annotate', description: 'Other annotate',
+      sourceInfo: { path: '/project/extensions/annotate.ts' }, handler
+    }])
+    expect(commands.completions().map(item => item.name)).toContain('plugin:annotate')
+    expect(commands.completions().map(item => item.name)).not.toContain('plugin:annotate:1')
+    await commands.execute('/plugin:annotate')
+    expect(ui.custom).toHaveBeenCalledOnce()
+    expect(handler).not.toHaveBeenCalled()
+    expect(ui.notify).toHaveBeenCalledWith(expect.stringContaining('/project/extensions/annotate.ts'), 'error')
+  })
+
+  it('rejects retired unprefixed plugin commands locally', async () => {
+    const { commands, ui } = setup()
+    for (const name of ['doctor', 'worktree', 'trajectory', 'subagents', 'notes', 'annotate']) {
+      expect(await commands.execute(`/${name}`)).toBe(true)
+    }
+    expect(ui.custom).not.toHaveBeenCalled()
+    expect(ui.notify).toHaveBeenLastCalledWith(expect.stringContaining('Unknown command: /annotate'), 'error')
   })
 
   it('consumes unknown slash commands without sending them to the model', async () => {
@@ -86,9 +147,35 @@ describe('owned terminal commands', () => {
   it('populates completion from builtins and loaded resources', () => {
     const { commands } = setup()
     const names = commands.completions().map(item => item.name)
-    expect(names).toEqual(expect.arrayContaining(['model', 'resume', 'accounts', 'review', 'effort', 'thinking', 'trajectory', 'log', 'permissions', 'components']))
+    expect(names).toEqual(expect.arrayContaining(['model', 'session', 'history', 'accounts', 'review', 'effort', 'thinking', 'plugin:doctor', 'plugin:trajectory', 'plugin:subagents', 'log', 'permissions', 'components', 'plugin:notes', 'plugin:annotate', 'plugin:worktree']))
+    expect(names).not.toContain('resume')
+    expect(names).not.toContain('tree')
+    expect(names).not.toContain('side')
+    expect(commands.completions().find(item => item.name === 'btw')?.aliases).toEqual(['side'])
     expect(names).not.toContain('skill:diagnose')
     expect(new Set(names).size).toBe(names.length)
+    expect(names).not.toEqual(expect.arrayContaining(['doctor', 'trajectory', 'subagents', 'notes', 'annotate', 'worktree']))
+  })
+
+  it('shows help as ordered groups, including loaded extension and prompt commands', async () => {
+    const { commands, host, ui } = setup()
+    await commands.execute('/help')
+
+    const groups = vi.mocked(host.showHelp).mock.calls[0]![0]
+    expect(groups.map(group => group.name)).toEqual(['Core', 'Run', 'Model', 'Session', 'Inspect', 'Harness', 'Plugins', 'Prompts'])
+    expect(groups.find(group => group.name === 'Core')?.commands).toContainEqual({ name: 'help', description: 'List the commands' })
+    const sessionCommands = groups.find(group => group.name === 'Session')?.commands ?? []
+    expect(sessionCommands).toContainEqual({ name: 'session', aliases: ['resume'], description: 'Choose a saved session in this account and folder' })
+    expect(sessionCommands).toContainEqual({ name: 'history', aliases: ['tree'], description: 'Navigate branches in the current session' })
+    expect(sessionCommands.map(command => command.name)).not.toContain('resume')
+    expect(sessionCommands.map(command => command.name)).not.toContain('tree')
+    const runCommands = groups.find(group => group.name === 'Run')?.commands ?? []
+    expect(runCommands).toContainEqual({ name: 'btw', aliases: ['side'], description: 'Ask a side question without interrupting: /btw <question>' })
+    expect(runCommands.map(command => command.name)).not.toContain('side')
+    expect(groups.find(group => group.name === 'Inspect')?.commands.map(command => command.name)).toEqual(['copy', 'export', 'log'])
+    expect(groups.find(group => group.name === 'Plugins')?.commands.map(command => command.name)).toEqual(['plugin:subagents', 'plugin:trajectory', 'plugin:notes', 'plugin:annotate', 'plugin:doctor', 'plugin:worktree', 'plugin:deploy'])
+    expect(groups.find(group => group.name === 'Prompts')?.commands).toEqual([{ name: 'review', description: 'Review code' }])
+    expect(ui.notify).not.toHaveBeenCalled()
   })
 
   it('toggles transcript thinking visibility with /thinking and supports explicit show or hide', async () => {
@@ -142,12 +229,25 @@ describe('owned terminal commands', () => {
     expect(commands.expandSkill('$diagnose the trace')).toBe('$diagnose the trace')
   })
 
-  it('uses the scope checked runtime for an explicit resume path', async () => {
+  it('uses the scope checked runtime for both session names and an explicit path', async () => {
     const { commands, runtime } = setup()
-    await commands.execute('/resume /isolated/account/history/session.jsonl')
-    expect(runtime.switchSession).toHaveBeenCalledWith('/isolated/account/history/session.jsonl')
+    await commands.execute('/session /isolated/account/history/session.jsonl')
+    await commands.execute('/resume /isolated/account/history/other.jsonl')
+    expect(runtime.switchSession).toHaveBeenNthCalledWith(1, '/isolated/account/history/session.jsonl')
+    expect(runtime.switchSession).toHaveBeenNthCalledWith(2, '/isolated/account/history/other.jsonl')
     await commands.execute('/new')
     expect(runtime.newSession).toHaveBeenCalledOnce()
+  })
+
+  it.each(['/history', '/tree'])('opens current-session branch navigation through %s', async command => {
+    const { commands, session, ui } = setup()
+    Object.assign(session, { sessionManager: { getTree: vi.fn(() => [{}]), getLeafId: vi.fn(() => 'leaf') } })
+    Object.assign(session.settingsManager, { getTreeFilterMode: () => 'default' })
+
+    await commands.execute(command)
+
+    expect(session.sessionManager.getTree).toHaveBeenCalledOnce()
+    expect(ui.custom).toHaveBeenCalledOnce()
   })
 
   it('reports rejected navigation without claiming success', async () => {
@@ -188,18 +288,22 @@ describe('owned terminal commands', () => {
     expect(ui.notify).toHaveBeenCalledWith('Escape: interrupt', 'info')
   })
 
-  it.each(['login', 'logout', 'share', 'bug', 'changelog', 'trust', 'scoped-models', 'session', 'import'])('no longer has /%s', async name => {
+  it.each(['login', 'logout', 'share', 'bug', 'changelog', 'trust', 'scoped-models', 'import'])('no longer has /%s', async name => {
     const { commands, ui } = setup()
     expect(commands.completions().map(item => item.name)).not.toContain(name)
     expect(await commands.execute(`/${name} anything`)).toBe(true)
     expect(ui.notify).toHaveBeenCalledWith(expect.stringContaining(`Unknown command: /${name}`), 'error')
   })
 
-  it('asks a side question with /btw, and dismisses the one showing when it has no question', async () => {
+  it('asks and dismisses side questions through /btw and its /side alias', async () => {
     const { commands, host } = setup()
     expect(await commands.execute('/btw what does the plan step do?')).toBe(true)
     expect(host.btw).toHaveBeenLastCalledWith('what does the plan step do?')
+    await commands.execute('/side what is the next step?')
+    expect(host.btw).toHaveBeenLastCalledWith('what is the next step?')
     await commands.execute('/btw')
+    expect(host.btw).toHaveBeenLastCalledWith('')
+    await commands.execute('/side')
     expect(host.btw).toHaveBeenLastCalledWith('')
     expect(commands.completions().find(item => item.name === 'btw')?.description).toContain('/btw <question>')
   })
@@ -216,7 +320,7 @@ describe('owned terminal commands', () => {
 
   it('opens Trajectory as a standalone full-screen page on the requested run', async () => {
     const { commands, host, ui } = setup()
-    await commands.execute('/trajectory run-1')
+    await commands.execute('/plugin:trajectory run-1')
     expect(ui.custom).toHaveBeenCalledOnce()
     expect(ui.custom).toHaveBeenCalledWith(expect.any(Function), { overlay: true, overlayOptions: { width: '100%', maxHeight: '100%', anchor: 'top-left', dialog: 'page' } })
     const shown = await overlayOf(ui)
@@ -248,9 +352,9 @@ describe('owned terminal commands', () => {
 
   it.each([
     ['/accounts', ['Accounts', 'Pools']], ['/permissions', ['Overview', 'Tools']],
-    ['/plugins', ['Plugins', 'Trust']], ['/hub', ['Catalog', 'Installed']],
-    ['/components', ['Skills', 'Prompts', 'Rules']], ['/settings', expect.any(Array)],
-    ['/trajectory', ['Runs', 'Events']], ['/log', ['Diagnostics', 'Run Events']]
+    ['/plugins', ['Overview', 'Foundation', 'Variant', 'Skills', 'Plugins', 'Connections', 'Tools', 'Library']], ['/hub', ['Overview', 'Foundation', 'Variant', 'Skills', 'Plugins', 'Connections', 'Tools', 'Library']],
+    ['/components', ['Overview', 'Foundation', 'Variant', 'Skills', 'Plugins', 'Connections', 'Tools', 'Library']], ['/harness', ['Overview', 'Foundation', 'Variant', 'Skills', 'Plugins', 'Connections', 'Tools', 'Library']], ['/skills', ['Overview', 'Foundation', 'Variant', 'Skills', 'Plugins', 'Connections', 'Tools', 'Library']], ['/mcp', ['Overview', 'Foundation', 'Variant', 'Skills', 'Plugins', 'Connections', 'Tools', 'Library']], ['/connections', ['Overview', 'Foundation', 'Variant', 'Skills', 'Plugins', 'Connections', 'Tools', 'Library']], ['/tools', ['Overview', 'Foundation', 'Variant', 'Skills', 'Plugins', 'Connections', 'Tools', 'Library']], ['/settings', expect.any(Array)],
+    ['/plugin:trajectory', ['Runs', 'Events']], ['/plugin:subagents', ['Subagents']], ['/log', ['Diagnostics', 'Run Events']]
   ])('opens %s as its own page with local tabs', async (command, tabs) => {
     const { commands, ui } = setup()
     await commands.execute(command)
@@ -260,7 +364,11 @@ describe('owned terminal commands', () => {
     if (Array.isArray(tabs)) expect(titles).toEqual(tabs)
     else expect(titles.length).toBeGreaterThan(1)
     const rows = shown.render(100).map(stripTerminalSequences)
-    expect(rows[0]).toContain(titles[0]!)
+    expect(rows[0]).toContain(titles.length === 8 ? shown.page.tabs().find(tab => tab.id === shown.page.activeTab())!.title : titles[0]!)
+    if (titles.length === 8) {
+      expect(shown.page.presentation).toBe('fullscreen')
+      expect(ui.custom).toHaveBeenCalledWith(expect.any(Function), { overlay: true, overlayOptions: { anchor: 'top-left', width: '100%', maxHeight: '100%' } })
+    }
     expect(rows.join('\n')).not.toContain('  Accounts  Permissions  Plugins  Hub  Settings  Trajectory  Log')
     shown.dispose()
   })
@@ -268,14 +376,14 @@ describe('owned terminal commands', () => {
   it('shows empty history and refuses run IDs outside the current native session on the page itself', async () => {
     const { commands, host, ui } = setup()
     vi.mocked(host.trajectory.list).mockResolvedValue([])
-    await commands.execute('/trajectory')
+    await commands.execute('/plugin:trajectory')
     const empty = await overlayOf(ui)
     await vi.waitFor(() => expect(empty.render(100).map(stripTerminalSequences).join('\n')).toContain('No runs recorded for this native session yet'))
     empty.dispose()
 
     vi.mocked(ui.custom).mockClear()
     vi.mocked(host.trajectory.list).mockResolvedValue([{ id: 'run-1', mode: 'code', goal: null, startedAt: '2026-10-18T00:00:00.000Z', endedAt: null, status: 'running' }])
-    await commands.execute('/trajectory other-run')
+    await commands.execute('/plugin:trajectory other-run')
     const missing = await overlayOf(ui)
     await vi.waitFor(() => expect(missing.render(100).map(stripTerminalSequences).join('\n')).toContain('Run not found in this native session'))
     expect(host.trajectory.read).not.toHaveBeenCalled()
@@ -322,9 +430,9 @@ describe('owned terminal commands', () => {
 
 })
 
-it('offers /doctor and consumes it as a local command', async () => {
+it('offers /plugin:doctor and consumes it as a local plugin command', async () => {
   const { commands, ui } = setup()
-  expect(commands.completions().some(command => command.name === 'doctor')).toBe(true)
-  expect(await commands.execute('/doctor')).toBe(true)
+  expect(commands.completions().some(command => command.name === 'plugin:doctor')).toBe(true)
+  expect(await commands.execute('/plugin:doctor')).toBe(true)
   expect(ui.custom).toHaveBeenCalledOnce()
 })

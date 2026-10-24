@@ -1,9 +1,10 @@
 import type { Theme } from '@earendil-works/pi-coding-agent'
-import { CURSOR_MARKER, stripTerminalSequences, visibleWidth } from '@earendil-works/pi-tui'
+import { CURSOR_MARKER, stripTerminalSequences, visibleWidth, type TUI } from '@earendil-works/pi-tui'
 import { describe, expect, it, vi } from 'vitest'
 
 import { createHarnessTheme } from '../theme'
 import { SEARCH_FIELD_ROWS } from '../search'
+import { PageOverlay } from '../pageOverlay'
 import { SettingsPage, type TerminalSettingItem } from './settingsPage'
 
 const theme = createHarnessTheme({ getColorMode: () => 'truecolor' } as Theme)
@@ -27,6 +28,57 @@ function setup(source = items, apply = vi.fn(async (_id: string) => {})) {
 const plain = (page: SettingsPage, width = 80, rows = 24) => page.render(width, rows).map(stripTerminalSequences)
 
 describe('the Settings page', () => {
+  it('fills the terminal using the existing full-screen page chrome', () => {
+    const { page } = setup()
+    const tui = { terminal: { columns: 80, rows: 24 }, centeredDialogs: true } as unknown as TUI
+    const overlay = new PageOverlay({ page, tui, theme: () => theme, close: vi.fn(), changed: vi.fn() })
+    const rows = overlay.render(80).map(stripTerminalSequences)
+
+    expect(rows).toHaveLength(24)
+    expect(rows[0]).toContain('Appearance')
+    expect(rows[1]).toBe('─'.repeat(80))
+    expect(rows.at(-1)).toContain('Esc close')
+  })
+
+  it('loads device-local browser settings without replacing the session settings', async () => {
+    let current = items
+    const notify = vi.fn()
+    const page = new SettingsPage({
+      theme: () => theme,
+      items: () => current,
+      apply: vi.fn(async () => {}),
+      load: async () => {
+        current = [...items, {
+          id: 'browser.allowPrivate', tab: 'Browser', group: 'Network', label: 'Private address access', value: 'Off',
+          description: 'This setting applies to agent browsing and annotation capture.'
+        }]
+      },
+      notify,
+      changed: vi.fn()
+    } as unknown as ConstructorParameters<typeof SettingsPage>[0])
+
+    await vi.waitFor(() => expect(page.tabs().map(tab => tab.title)).toContain('Browser'))
+    for (let index = 0; index < 4; index++) page.handleInput('\t')
+    expect(plain(page).join('\n')).toContain('Private address access')
+    expect(plain(page).join('\n')).toContain('Off')
+  })
+
+  it('reports a browser-settings load error while keeping session settings available', async () => {
+    const notify = vi.fn()
+    const page = new SettingsPage({
+      theme: () => theme,
+      items: () => items,
+      apply: vi.fn(async () => {}),
+      load: async () => { throw new Error('Browser settings unavailable.') },
+      notify,
+      changed: vi.fn()
+    } as unknown as ConstructorParameters<typeof SettingsPage>[0])
+
+    await vi.waitFor(() => expect(notify).toHaveBeenCalledWith('Browser settings unavailable.', 'error'))
+    expect(page.tabs().map(tab => tab.title)).not.toContain('Browser')
+    expect(plain(page).join('\n')).toContain('Dark Theme')
+  })
+
   it('shows the search row, then the category strip, grouped rows with values at the right, and the description', () => {
     const { page } = setup()
     const rows = plain(page)

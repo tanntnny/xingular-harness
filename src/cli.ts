@@ -10,6 +10,7 @@
 //   xharness plugins <command>  List, install, switch and trust plugins.
 //   xharness web <command>      Search keys for web_search.
 //   xharness browser <command>  How the agent's browser runs.
+//   xharness worktree <command> Managed git worktrees of the repository you are in.
 import { resolve } from 'node:path'
 import manifest from '../package.json' with { type: 'json' }
 
@@ -24,9 +25,10 @@ import { RpcPeer, stdioTransport } from './server/rpc'
 import { attach } from './server/serve'
 import { runAppsCli, runWikiCli } from './terminal/cli'
 import { runStandaloneTerminal, standaloneArguments } from './terminal/standalone'
+import { runWorktreeCli } from './worktrees/cli'
 
 const USAGE = `Usage: xharness [--data <dir>] [--state <dir>]
-       xharness <terminal | serve | wiki | mcp | plugins | hub | refine | web | browser> [arguments]
+       xharness <terminal | serve | wiki | mcp | plugins | hub | refine | web | browser | worktree> [arguments]
 
   --version          Print the package version
   (no command)       Start the interactive Harness terminal
@@ -41,12 +43,16 @@ const USAGE = `Usage: xharness [--data <dir>] [--state <dir>]
   refine <command>   Refine a harness from evidence (refine demo, refine run)
   web <command>      Search keys for the web tools (web help)
   browser <command>  How the agent's browser runs (browser help)
+  worktree <command> Managed git worktrees (worktree help)
 
 Standalone terminal options:
   --data <dir>       Data directory (installed default: ~/.xingular-harness/data;
                      npm run dev default: ~/.xingular-harness-dev/data)
   --state <dir>      State directory (installed default: ~/.xingular-harness/state;
                      npm run dev default: ~/.xingular-harness-dev/state)
+  --worktree [name], -w [name]
+                     Start in a new managed worktree of this repository, or in
+                     the named one
 `
 
 function flags(argv: string[]): { values: Record<string, string[]>; switches: Set<string> } {
@@ -123,6 +129,7 @@ async function main(): Promise<number> {
   if (command === 'refine') return runRefineCli(rest)
   if (command === 'web') return runWebCli(rest)
   if (command === 'browser') return runBrowserCli(rest)
+  if (command === 'worktree') return runWorktreeCli(rest)
   process.stdout.write(USAGE)
   return command ? 2 : 0
 }

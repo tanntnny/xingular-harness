@@ -1,8 +1,17 @@
 # Changelog
 
-## 1.0.0 — release candidate
+## 4.0.0 — breaking terminal command namespace, managed worktrees, and annotations
 
-- Establish the public stable baseline under Apache-2.0, with compiled ESM SDK modules and declarations. Preserve historical version tags; explicitly assign npm latest only after approval and successful validation.
+- **Breaking terminal commands:** built-in plugin commands now use the `/plugin:` namespace. Existing `/doctor` and `/trajectory` commands become `/plugin:doctor` and `/plugin:trajectory`; update scripts and keybindings that invoke the old names. New feature commands are namespaced from their introduction.
+- Add Harness-managed Git worktrees for sessions and the terminal, including isolated creation, leases, safe setup scripts, handoff, pruning, and bounded snapshots of work before removal.
+- Add page annotations and queued page notes, with capture, review, resolution, sharing, and delivery through Harness methods and terminal `/plugin:annotate` and `/plugin:notes` surfaces.
+- Add a unified terminal resource browser with persistent full-screen sections for browser tabs, plugins, skills, connectors, variants, and other Harness resources.
+- Expand terminal controls for browsing subagent activity and managing browser and plugin settings; document the terminal/host parity boundary.
+- Generalize release packaging, smoke checks, registry verification, and CI workflows to use the package version, and require a clean committed tree for release candidates.
+
+## 1.0.0 — stable baseline
+
+- Established the public stable baseline under Apache-2.0, with compiled ESM SDK modules and declarations. Preserved historical version tags and assigned npm latest after release validation.
 - Add /doctor with passive readiness inspection, selected live probes, cancellable reports and Node/RPC APIs.
 - Include the generic isolated browser backend and document its boundary with App browser UI and native computer control.
 - Add exact-tarball installation/consumer checks and a Bun-aware, two-OS release pipeline.

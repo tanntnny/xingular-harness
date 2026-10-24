@@ -43,7 +43,7 @@ describe('the model picker', () => {
     expect(rows.some(row => row.includes('Type to search') && row.includes('4 models'))).toBe(true)
     expect(rows.some(row => /^ {2}❯ ✓ claude-sonnet +anthropic$/.test(row))).toBe(true)
     expect(rows.some(row => /^ {6}gpt-5 +openai · default$/.test(row))).toBe(true)
-    expect(rows.join('\n')).toContain('Model name: Claude Sonnet')
+    expect(rows.join('\n')).not.toContain('Model name:')
     expect(rows.join('\n')).not.toMatch(/[╭╮╰╯│├┤]/)
     await vi.waitFor(() => expect(plain(picker)[0]).not.toContain('Refreshing'))
   })
@@ -116,10 +116,12 @@ describe('the model picker', () => {
     expect(plain(picker).join('\n')).not.toContain('llama')
   })
 
-  it('refreshes catalogs on the account, says so, and reports what could not be refreshed', async () => {
+  it('refreshes catalogs silently on success and reports refresh failures', async () => {
     const ok = setup()
     await vi.waitFor(() => expect(ok.runtime.refresh).toHaveBeenCalledWith({ allowNetwork: true, signal: expect.any(AbortSignal) }))
-    await vi.waitFor(() => expect(plain(ok.picker)[0]).toContain('Model catalogs refreshed.'))
+    await vi.waitFor(() => expect(plain(ok.picker)[0]).not.toContain('Refreshing'))
+    expect(plain(ok.picker).join('\n')).not.toContain('Model catalogs refreshed.')
+    expect(plain(ok.picker).join('\n')).not.toContain('Model name:')
     const failing = setup({}, async () => ({ aborted: false, errors: new Map([['openai', new Error('401')]]) }))
     await vi.waitFor(() => expect(plain(failing.picker).join('\n')).toContain('Could not refresh openai; showing cached models.'))
     const slow = setup({}, async () => ({ aborted: true, errors: new Map() }))

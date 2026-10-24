@@ -23,6 +23,17 @@ Everything you build here must follow it.
 
 When unsure whether a change alters the architecture, write the proposal.
 
+## One capability surface
+
+Every capability a person uses is built here, and the standalone terminal (`xharness`) surfaces
+it. A host such as the App is a richer presentation of the same capabilities. A request that names
+the App ("add X to the App") is still Harness work first when X is something a person or a model
+can do: build the capability, its server methods, any model tools, and its terminal surface here,
+then the host's screen. Only presentation that cannot exist in a terminal stays host-only, and the
+host registers it. See [14 Surfaces and parity](docs/architecture/14-surfaces-and-parity.md) and
+the register [`docs/parity.md`](docs/parity.md); update the register when a capability or its
+surface changes.
+
 ## Foundation and variants
 
 The harness has a fixed half, the **foundation**, and a mutating half, a **variant** (one c1–c8
@@ -50,6 +61,7 @@ two words in code, docs, data and the protocol; do not write "harness tree". See
 | The Harness-owned terminal (detail in [`docs/terminal-tui.md`](docs/terminal-tui.md)) | [11 Terminal](docs/architecture/11-terminal.md) |
 | Generic web and isolated browser tools | [13 World tools](docs/architecture/13-world-tools.md) |
 | Data root and state directory | [12 Storage](docs/architecture/12-storage.md) |
+| Terminal and host parity, host-backed capabilities, host-only surfaces | [14 Surfaces and parity](docs/architecture/14-surfaces-and-parity.md) |
 
 The rules agents break most often, in brief (the pages are authoritative):
 

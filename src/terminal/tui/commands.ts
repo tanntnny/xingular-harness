@@ -1,13 +1,20 @@
 import { isAbsolute, relative, resolve } from 'node:path'
 import { SessionManager, type AgentSession, type ExtensionUIContext } from '@earendil-works/pi-coding-agent'
+import { BUILTIN_PLUGIN_REGISTRY } from '../../plugins/builtin'
 import { PageOverlay } from './pageOverlay'
 import { ModelPicker } from './modelPicker'
 import { TreePicker } from './treePicker'
+import type { AnnotateStart } from './pages/annotatePage'
 import { createCommandPage, type CommandPageId } from './commandPages'
 import { pageOverlayOptions } from './dialogGeometry'
 import { expandSkillInvocation, type SkillEntry } from './skillInvocation'
 import type { TerminalRuntime } from './runtime'
 import type { TerminalTrajectoryRun, TerminalTrajectorySnapshot } from '../trajectory'
+import type { TerminalSubagentActivity } from '../subagentMonitor'
+import { groupTerminalCommands, type TerminalCommandCompletion, type TerminalCommandHelpGroup } from '../commandHelp'
+import { createBuiltinPluginCommandHandlers } from './pluginCommands'
+export type { TerminalCommandCompletion } from '../commandHelp'
+export { parseAnnotate } from './pluginCommands'
 
 export interface TerminalCommandHost {
   session(): AgentSession
@@ -21,6 +28,7 @@ export interface TerminalCommandHost {
   sessionDirectory(): string
   refresh(): void
   changed(): void
+  showHelp(groups: TerminalCommandHelpGroup[]): void
   plan(brief: string): void
   /** Asks a side question in its own tool-free session; empty text dismisses the one showing. */
   btw(question: string): Promise<void>
@@ -30,44 +38,48 @@ export interface TerminalCommandHost {
   suspend?(): Promise<void>
   hotkeys?(): string
   logs: { read(): Promise<string> }
+  subagents(): readonly TerminalSubagentActivity[]
   trajectory: {
     list(): Promise<TerminalTrajectoryRun[]>
     read(runId: string, afterSequence?: number): Promise<TerminalTrajectorySnapshot>
   }
 }
 
-export interface TerminalCommandCompletion { name: string; description?: string }
-
 const BUILTINS: TerminalCommandCompletion[] = [
-  { name: 'doctor', description: 'Check account, model, tools and runtime readiness' },
-  { name: 'help', description: 'List the commands' },
-  { name: 'plan', description: 'Plan one request, read-only: /plan <brief>' },
-  { name: 'btw', description: 'Ask a side question without interrupting: /btw <question>' },
-  { name: 'new', description: 'Start a new session' },
-  { name: 'stop', description: 'Stop the current reply' },
-  { name: 'resume', description: 'Resume a session in this account and folder' },
-  { name: 'tree', description: 'Navigate the session tree' },
-  { name: 'fork', description: 'Fork from an earlier message' },
-  { name: 'clone', description: 'Clone this branch into a new session' },
-  { name: 'model', description: 'Choose the model' },
-  { name: 'effort', description: 'Choose the thinking effort' },
-  { name: 'thinking', description: 'Toggle transcript thinking visibility: /thinking [show|hide]' },
-  { name: 'name', description: 'Name this session' },
-  { name: 'compact', description: 'Compact the context' },
-  { name: 'copy', description: 'Copy the last reply' },
-  { name: 'export', description: 'Export this branch to HTML or JSONL' },
-  { name: 'reload', description: 'Reload trusted resources and keybindings' },
-  { name: 'accounts', description: 'Sign in, switch, check and remove Pi accounts' },
-  { name: 'permissions', description: 'Full Permission and per-tool approvals' },
-  { name: 'plugins', description: 'Switch plugins on or off and trust their code' },
-  { name: 'hub', description: 'Browse and install reviewed skills, plugins and documents' },
-  { name: 'components', description: 'Browse skills, prompts and rules for this Harness scope' },
-  { name: 'settings', description: 'Session and terminal settings' },
-  { name: 'trajectory', description: 'Inspect the recorded runs of this session' },
-  { name: 'log', description: "Harness diagnostics and this conversation's run events" },
-  { name: 'hotkeys', description: 'Keyboard controls' },
-  { name: 'quit', description: 'Restore the terminal and exit' }
+  { name: 'help', description: 'List the commands', group: 'Core' },
+  { name: 'plan', description: 'Plan one request, read-only: /plan <brief>', group: 'Run' },
+  { name: 'btw', aliases: ['side'], description: 'Ask a side question without interrupting: /btw <question>', group: 'Run' },
+  { name: 'new', description: 'Start a new session', group: 'Session' },
+  { name: 'stop', description: 'Stop the current reply', group: 'Run' },
+  { name: 'session', aliases: ['resume'], description: 'Choose a saved session in this account and folder', group: 'Session' },
+  { name: 'history', aliases: ['tree'], description: 'Navigate branches in the current session', group: 'Session' },
+  { name: 'fork', description: 'Fork from an earlier message', group: 'Session' },
+  { name: 'clone', description: 'Clone this branch into a new session', group: 'Session' },
+  { name: 'model', description: 'Choose the model', group: 'Model' },
+  { name: 'effort', description: 'Choose the thinking effort', group: 'Model' },
+  { name: 'thinking', description: 'Toggle transcript thinking visibility: /thinking [show|hide]', group: 'Model' },
+  { name: 'name', description: 'Name this session', group: 'Session' },
+  { name: 'compact', description: 'Compact the context', group: 'Session' },
+  { name: 'copy', description: 'Copy the last reply', group: 'Inspect' },
+  { name: 'export', description: 'Export this branch to HTML or JSONL', group: 'Inspect' },
+  { name: 'reload', description: 'Reload trusted resources and keybindings', group: 'Harness' },
+  { name: 'accounts', description: 'Sign in, switch, check and remove Pi accounts', group: 'Harness' },
+  { name: 'permissions', description: 'Full Permission and per-tool approvals', group: 'Harness' },
+  { name: 'harness', description: 'Browse foundation, variant and all resources', group: 'Harness' },
+  { name: 'skills', description: 'View, inspect and use skills; discover more', group: 'Harness' },
+  { name: 'connections', description: 'Manage local and remote MCP connections', group: 'Harness' },
+  { name: 'mcp', description: 'Open Connections in the Harness browser', group: 'Harness' },
+  { name: 'tools', description: 'Inspect available tools, owners and approvals', group: 'Harness' },
+  { name: 'plugins', description: 'Switch plugins on or off and trust their code', group: 'Harness' },
+  { name: 'hub', description: 'Browse and install reviewed skills, plugins and documents', group: 'Harness' },
+  { name: 'components', description: 'Browse skills, prompts and rules for this Harness scope', group: 'Harness' },
+  { name: 'settings', description: 'Session, terminal and browser settings', group: 'Harness' },
+  { name: 'log', description: "Harness diagnostics and this conversation's run events", group: 'Inspect' },
+  { name: 'hotkeys', description: 'Keyboard controls', group: 'Core' },
+  { name: 'quit', description: 'Restore the terminal and exit', group: 'Core' }
 ]
+
+const COMMAND_ALIASES = new Map(BUILTINS.flatMap(command => (command.aliases ?? []).map(alias => [alias, command.name] as const)))
 
 export function createTerminalCommands(host: TerminalCommandHost) {
   const notify = (text: string) => host.ui.notify(text, 'info')
@@ -75,17 +87,6 @@ export function createTerminalCommands(host: TerminalCommandHost) {
     const labels = items.map(label)
     const selected = await host.ui.select(title, labels)
     return selected === undefined ? undefined : items[labels.indexOf(selected)]
-  }
-  const completions = (): TerminalCommandCompletion[] => {
-    const session = host.session()
-    const commands = new Map(BUILTINS.map(command => [command.name, command]))
-    for (const command of session.extensionRunner.getRegisteredCommands()) {
-      if (!commands.has(command.name)) commands.set(command.name, { name: command.name, description: command.description })
-    }
-    for (const prompt of session.resourceLoader.getPrompts().prompts) {
-      if (!commands.has(prompt.name)) commands.set(prompt.name, { name: prompt.name, description: prompt.description })
-    }
-    return [...commands.values()]
   }
   /** The skills this session may be asked to use, each invoked as `$name`. Off with the "Skill commands" setting. */
   const skills = (): SkillEntry[] => {
@@ -96,29 +97,104 @@ export function createTerminalCommands(host: TerminalCommandHost) {
   /** The text to send: a leading `$name` of a loaded skill becomes the `/skill:name` form Pi expands. */
   const expandSkill = (text: string): string => expandSkillInvocation(text, new Set(skills().map((skill) => skill.name)))
 
-  async function openPage(id: CommandPageId, options: { runId?: string } = {}) {
-    await host.ui.custom<void>((tui, _theme, _keys, done) => new PageOverlay({
-      page: createCommandPage(host, id, options), tui, theme: () => host.ui.theme,
-      close: () => done(undefined), changed: host.changed
-    }), { overlay: true, overlayOptions: pageOverlayOptions() })
+  async function openPage(id: CommandPageId, options: { runId?: string; url?: string; annotate?: AnnotateStart } = {}) {
+    let close = () => {}
+    const page = createCommandPage(host, id, { ...options, close: () => close() })
+    await host.ui.custom<void>((tui, _theme, _keys, done) => {
+      close = () => done(undefined)
+      return new PageOverlay({ page, tui, theme: () => host.ui.theme, close, changed: host.changed })
+    }, { overlay: true, overlayOptions: pageOverlayOptions(page.presentation) })
+  }
+
+  const pluginHandlers = createBuiltinPluginCommandHandlers(host, openPage)
+  const extensionCommands = () => {
+    const byName = new Map<string, ReturnType<AgentSession['extensionRunner']['getRegisteredCommands']>[number][]>()
+    for (const command of host.session().extensionRunner.getRegisteredCommands()) {
+      byName.set(command.name, [...(byName.get(command.name) ?? []), command])
+    }
+    const unique = new Map<string, ReturnType<AgentSession['extensionRunner']['getRegisteredCommands']>[number]>()
+    const duplicates = new Map<string, ReturnType<AgentSession['extensionRunner']['getRegisteredCommands']>[number][]>()
+    for (const [name, commands] of byName) {
+      if (commands.length === 1) unique.set(name, commands[0]!)
+      else duplicates.set(name, commands)
+    }
+    return { unique, duplicates }
+  }
+  const completions = (): TerminalCommandCompletion[] => {
+    const session = host.session()
+    const commands = new Map(BUILTINS.map(command => [command.name, command]))
+    for (const command of BUILTIN_PLUGIN_REGISTRY.commands()) {
+      const name = `plugin:${command.name}`
+      commands.set(name, { name, description: command.description, group: 'Plugins' })
+    }
+    const extensions = extensionCommands()
+    const reserved = new Set(BUILTIN_PLUGIN_REGISTRY.commands().map(command => command.name))
+    for (const [name, command] of extensions.unique) {
+      if (!reserved.has(name)) {
+        const invocation = `plugin:${name}`
+        commands.set(invocation, { name: invocation, description: command.description, group: 'Plugins' })
+      }
+    }
+    for (const prompt of session.resourceLoader.getPrompts().prompts) {
+      if (!commands.has(prompt.name) && !COMMAND_ALIASES.has(prompt.name)) commands.set(prompt.name, { name: prompt.name, description: prompt.description, group: 'Prompts' })
+    }
+    return [...commands.values()]
   }
 
   async function execute(text: string): Promise<boolean> {
     const match = /^\/([^\s]+)(?:\s+([\s\S]*))?$/.exec(text.trim())
     if (!match) return false
-    const name = match[1]!
+    const typedName = match[1]!
     const argument = match[2]?.trim() ?? ''
+    if (typedName.startsWith('plugin:')) {
+      const pluginName = typedName.slice('plugin:'.length)
+      const builtin = BUILTIN_PLUGIN_REGISTRY.command(pluginName)
+      const extensions = extensionCommands()
+      if (builtin) {
+        const collisions = extensions.unique.get(pluginName) ? [extensions.unique.get(pluginName)!] : extensions.duplicates.get(pluginName) ?? []
+        if (collisions.length) {
+          const owners = collisions.map(command => command.sourceInfo.path).join(', ')
+          host.ui.notify(`Extension command /plugin:${pluginName} from ${owners} is unavailable because the name belongs to the built-in ${builtin.pluginId} plugin.`, 'error')
+        }
+        try {
+          const handler = pluginHandlers.get(pluginName)
+          if (!handler) throw new Error(`No terminal handler for built-in plugin command ${pluginName}.`)
+          await handler(argument)
+          host.refresh()
+        } catch (error) { host.ui.notify(error instanceof Error ? error.message : String(error), 'error') }
+        return true
+      }
+      const duplicate = extensions.duplicates.get(pluginName)
+      if (duplicate) {
+        const owners = duplicate.map(command => command.sourceInfo.path).join(', ')
+        host.ui.notify(`Plugin command /plugin:${pluginName} is ambiguous. Registered by: ${owners}. Rename or remove one command.`, 'error')
+        return true
+      }
+      const registered = extensions.unique.get(pluginName)
+      if (registered) {
+        try {
+          const command = host.session().extensionRunner.getCommand(registered.invocationName)
+          if (!command) throw new Error(`Plugin command /plugin:${pluginName} is no longer registered. Reload trusted resources.`)
+          await command.handler(argument, host.session().extensionRunner.createCommandContext())
+          host.refresh()
+        } catch (error) { host.ui.notify(error instanceof Error ? error.message : String(error), 'error') }
+        return true
+      }
+      host.ui.notify(`Unknown plugin command: /${typedName}. Use /help to list the commands.`, 'error')
+      return true
+    }
+    const name = COMMAND_ALIASES.get(typedName) ?? typedName
     if (!BUILTINS.some(item => item.name === name)) {
-      if (completions().some(item => item.name === name)) return false
       // A skill is offered as $name; the typed /skill:name form still reaches the SDK, which expands it.
       if (skills().some(skill => `skill:${skill.name}` === name)) return false
+      if (host.session().resourceLoader.getPrompts().prompts.some(prompt => prompt.name === name)) return false
       host.ui.notify(`Unknown command: /${name}. Use /help to list commands.`, 'error')
       return true
     }
     try {
       const session = host.session()
       switch (name) {
-        case 'help': notify(completions().map(item => `/${item.name}  ${item.description ?? ''}`).join('\n')); break
+        case 'help': host.showHelp(groupTerminalCommands(completions())); break
         case 'plan': {
           if (!argument || ['on', 'off', 'toggle'].includes(argument.toLowerCase())) throw new Error('Use /plan <plan brief>.')
           host.plan(argument)
@@ -132,7 +208,7 @@ export function createTerminalCommands(host: TerminalCommandHost) {
           break
         }
         case 'new': await host.runtime().newSession(); break
-        case 'resume': {
+        case 'session': {
           let path = argument
           if (!path) {
             const sessions = await SessionManager.list(host.cwd(), host.sessionDirectory())
@@ -163,7 +239,7 @@ export function createTerminalCommands(host: TerminalCommandHost) {
           if (!result.cancelled) { host.setEditorText(''); notify('Cloned to new session') }
           break
         }
-        case 'tree': {
+        case 'history': {
           const tree = session.sessionManager.getTree()
           if (!tree.length) throw new Error('No entries in this session')
           const selected = await host.ui.custom<string | undefined>((tui, _theme, keys, done) => new TreePicker({
@@ -212,10 +288,14 @@ export function createTerminalCommands(host: TerminalCommandHost) {
           if (selected) await session.setModel(selected.model, { persist: selected.persist })
           break
         }
-        case 'doctor': await openPage('doctor'); break
         case 'settings': await openPage('settings'); break
         case 'permissions': await openPage('permissions'); break
         case 'accounts': await openPage('accounts'); break
+        case 'harness': await openPage('harness'); break
+        case 'skills': await openPage('skills'); break
+        case 'connections':
+        case 'mcp': await openPage('connections'); break
+        case 'tools': await openPage('tools'); break
         case 'plugins': await openPage('plugins'); break
         case 'hub': await openPage('hub'); break
         case 'components': await openPage('components'); break
@@ -224,7 +304,6 @@ export function createTerminalCommands(host: TerminalCommandHost) {
           if (name !== undefined) session.setSessionName(name)
           break
         }
-        case 'trajectory': await openPage('trajectory', { runId: argument }); break
         case 'log': await openPage('log'); break
         case 'compact': await session.compact(argument || undefined); break
         case 'reload': await host.runtime().reload(); notify('Trusted resources reloaded'); break

@@ -97,4 +97,12 @@ export { attach, serve, type Served } from './server/serve'
 export { DEFAULT_SUBAGENT_DEPTH, MAX_SUBAGENT_DEPTH, type SubagentOptions, type SubagentInput } from './sessions/subagents'
 
 export { Subagents } from './sessions/subagentService'
+export { Worktrees } from './worktrees/service'
+export type { CreateWorktreeInput, CreateWorktreeResult, HandoffResult, WorktreeRecord, WorktreeStatus, WorktreesOptions, WorktreeKind } from './worktrees/types'
 export { WAIT_SUBAGENTS, type SubagentResult, type SubagentSelection } from './sessions/subagents'
+
+export * as pageNotes from './annotations/store'
+export type { Note as PageNote, NoteApp as PageNoteApp, NoteDelivery as PageNoteDelivery, NoteInput as PageNoteInput, NoteSource as PageNoteSource, NoteTarget as PageNoteTarget } from './annotations/store'
+export { PAGE_SCRIPT } from './annotations/pageScript'
+export { NoteDeliveries, type SendResult } from './annotations/delivery'
+export type { CaptureTargetSpec, CaptureWindow, InspectState } from './annotations/capture'

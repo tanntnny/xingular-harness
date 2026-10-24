@@ -443,7 +443,7 @@ export class Connections {
   async launch(connection: Connection): Promise<LaunchConfig> {
     if (connection.kind === 'remote') {
       const headers: Record<string, string> = {}
-      for (const key of connection.headerKeys) {
+      if (connection.auth === 'headers') for (const key of connection.headerKeys) {
         const value = await this.secret(connection.id, headerItem(key))
         if (value !== null) headers[key] = value
       }
@@ -558,7 +558,12 @@ export class Connections {
       throw scopeMigrationError()
     }
     connection.envKeys = [...(existing?.envKeys ?? [])]
-    connection.headerKeys = [...(existing?.headerKeys ?? [])]
+    const keepHeaders = remote && connection.auth === 'headers' && existing?.kind === 'remote'
+      && existing.url === connection.url && existing.auth === 'headers'
+    connection.headerKeys = keepHeaders ? [...existing.headerKeys] : []
+    if (!keepHeaders) {
+      for (const key of existing?.headerKeys ?? []) await this.deleteSecret(connection.id, headerItem(key))
+    }
     // A sign-in belongs to one server and one client; never carry it to another.
     const sameServer = (existing?.url ?? null) === connection.url && (existing?.auth ?? '') === connection.auth && existing?.oauthClient === connection.oauthClient && existing?.catalogId === connection.catalogId && !oauthCredentials
     if (!sameServer || connection.auth !== 'oauth') await this.forgetSignIn(connection.id)
@@ -569,7 +574,7 @@ export class Connections {
       if (oauthCredentials.clientSecret) await this.setSecret(connection.id, OAUTH_CLIENT_SECRET, oauthCredentials.clientSecret)
       else await this.deleteSecret(connection.id, OAUTH_CLIENT_SECRET)
     }
-    for (const [key, value] of Object.entries(headers ?? {})) {
+    for (const [key, value] of Object.entries(remote && connection.auth === 'headers' ? headers ?? {} : {})) {
       if (!/^[A-Za-z0-9_-]+$/.test(key) || /[\r\n\0]/.test(value)) throw invalid('Invalid header name or value.')
       await this.setSecret(connection.id, headerItem(key), value)
       if (!connection.headerKeys.includes(key)) connection.headerKeys.push(key)

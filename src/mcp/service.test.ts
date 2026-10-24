@@ -247,6 +247,35 @@ describe('remote connected apps', () => {
     expect(JSON.stringify(harness.apps.connections.list())).not.toContain('fixture-key')
   })
 
+  it('does not carry stored header secrets to a changed endpoint', async () => {
+    const original = await remoteFixture()
+    const replacement = await remoteFixture()
+    const { harness, secrets } = await live()
+    const saved = await harness.apps.save({ ...remote, url: original.url, auth: 'headers', headers: { 'X-Api-Key': 'old-endpoint-secret' } })
+
+    const changed = await harness.apps.save({ ...saved, url: replacement.url })
+    expect(changed.headerKeys).toEqual([])
+    expect(secrets.values.has(`mcp--${saved.id}/header:X-Api-Key`)).toBe(false)
+    await harness.apps.test(saved.id)
+    expect(replacement.requests.length).toBeGreaterThan(0)
+    expect(replacement.requests.every(headers => headers['x-api-key'] === undefined)).toBe(true)
+  })
+
+  it('clears stored headers when auth changes to none and never launches them', async () => {
+    const server = await remoteFixture()
+    const { harness, secrets } = await live()
+    const saved = await harness.apps.save({ ...remote, url: server.url, auth: 'headers', headers: { 'X-Api-Key': 'auth-change-secret' } })
+
+    const changed = await harness.apps.save({ ...saved, auth: 'none', headers: { 'X-Api-Key': 'unused-with-none-auth' } })
+    expect(changed.headerKeys).toEqual([])
+    expect(secrets.values.has(`mcp--${saved.id}/header:X-Api-Key`)).toBe(false)
+    expect([...secrets.values.values()]).not.toContain('unused-with-none-auth')
+    expect(await harness.apps.connections.launch(changed)).toMatchObject({ auth: 'none', headers: {} })
+    await harness.apps.test(saved.id)
+    expect(server.requests.length).toBeGreaterThan(0)
+    expect(server.requests.every(headers => headers['x-api-key'] === undefined)).toBe(true)
+  })
+
   it('reports an unreachable server without naming its credentials', async () => {
     const server = await remoteFixture(500)
     const { harness, granted } = await live()

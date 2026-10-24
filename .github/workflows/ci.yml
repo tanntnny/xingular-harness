@@ -29,7 +29,10 @@ jobs:
       - run: npx --no-install playwright-core install --with-deps chromium
       - run: npm run ci
       - run: npm run release:pack -- outputs/ci-candidate
-      - run: npm run release:smoke -- outputs/ci-candidate/xingular-harness-1.0.0.tgz --terminal
+      - name: Smoke-test the packaged release
+        run: |
+          version=$(node -p "require('./package.json').version")
+          npm run release:smoke -- "outputs/ci-candidate/xingular-harness-${version}.tgz" --terminal
       - uses: actions/upload-artifact@v4
         with:
           name: harness-ci-${{ matrix.os }}

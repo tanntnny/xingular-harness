@@ -44,7 +44,10 @@ jobs:
           bun-version: '1.4.2'
       - run: npm ci
       - run: npm run release:pack -- outputs/release
-      - run: npm run release:smoke -- outputs/release/xingular-harness-1.0.0.tgz --terminal
+      - name: Smoke-test the exact release tarball
+        run: |
+          version=$(node -p "require('./package.json').version")
+          npm run release:smoke -- "outputs/release/xingular-harness-${version}.tgz" --terminal
       - uses: actions/upload-artifact@v4
         with:
           name: harness-candidate
@@ -72,10 +75,14 @@ jobs:
         working-directory: outputs/release
         run: sha256sum --check SHA256SUMS
       - name: Publish the tested tarball with provenance
-        run: npm publish ./outputs/release/xingular-harness-1.0.0.tgz --ignore-scripts --provenance --access public --tag latest
+        run: |
+          version=$(node -p "require('./package.json').version")
+          npm publish "./outputs/release/xingular-harness-${version}.tgz" --ignore-scripts --provenance --access public --tag latest
       - name: Verify published package
         run: node scripts/release-verify.mjs outputs/release/candidate.json
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" outputs/release/xingular-harness-1.0.0.tgz outputs/release/SHA256SUMS --verify-tag --title "Xingular Harness 1.0.0" --notes-file docs/releases/1.0.0.md
+        run: |
+          version=$(node -p "require('./package.json').version")
+          gh release create "$GITHUB_REF_NAME" "outputs/release/xingular-harness-${version}.tgz" outputs/release/SHA256SUMS --verify-tag --title "Xingular Harness ${version}" --notes-file "docs/releases/${version}.md"

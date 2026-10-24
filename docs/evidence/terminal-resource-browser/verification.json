@@ -1,0 +1,296 @@
+{
+  "passed": true,
+  "implementation": "production standalone CLI + real Pi SDK + loopback OpenAI SSE transport",
+  "cli": "/Users/tanny/Documents/Projects/Xingular/Xingular Agent/Harness/dist/cli.js",
+  "cliSha256": "232ac305ba840c46dd9f09ebab8f3e8c78fef497412f7c26d43394eaceff8ca7",
+  "verifierSha256": "7696a103d12f1e8553e1168e75dea85a95bbd5f9e31b3d88df57090bd0f141a3",
+  "provider": "controlled loopback OpenAI-compatible streaming transport; no external model requests or user credentials",
+  "requestCount": 0,
+  "profiles": [
+    {
+      "size": "40x20",
+      "checks": [
+        "welcome and real configured model",
+        "Ctrl+K preserves existing draft; mouse opens filters; responsive resize preserves filter state",
+        "unified overview/skills/MCP, loaded skill completion and insertion, Discover and Community filter without model requests"
+      ],
+      "exitCode": 0,
+      "termiosRestored": true,
+      "bracketedPasteDisabled": true,
+      "cursorShown": true
+    },
+    {
+      "size": "80x24",
+      "checks": [
+        "welcome and real configured model",
+        "Ctrl+K preserves existing draft; mouse opens filters; responsive resize preserves filter state",
+        "unified overview/skills/MCP, loaded skill completion and insertion, Discover and Community filter without model requests"
+      ],
+      "exitCode": 0,
+      "termiosRestored": true,
+      "bracketedPasteDisabled": true,
+      "cursorShown": true
+    },
+    {
+      "size": "120x40",
+      "checks": [
+        "welcome and real configured model",
+        "Ctrl+K preserves existing draft; mouse opens filters; responsive resize preserves filter state",
+        "unified overview/skills/MCP, loaded skill completion and insertion, Discover and Community filter without model requests"
+      ],
+      "exitCode": 0,
+      "termiosRestored": true,
+      "bracketedPasteDisabled": true,
+      "cursorShown": true
+    }
+  ],
+  "captures": [
+    {
+      "file": "40x20-welcome.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 40,
+      "rows": 20,
+      "rawBytes": 8802,
+      "rawSha256": "db19461ed267a6f6572c4d0c124542ada8a33f1589a2bd4ac0e15eb1acb7c438",
+      "archiveBytes": 1365,
+      "archiveSha256": "e36ef5236ac605b0413901a38669f4b75a7c8b84a5e880d9f54598e52159a36b"
+    },
+    {
+      "file": "40x20-harness-browser.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 40,
+      "rows": 20,
+      "rawBytes": 27601,
+      "rawSha256": "dffd32a6626fce6deb2415feb479a746a842df9d36c8aa24099f530c251a382f",
+      "archiveBytes": 3262,
+      "archiveSha256": "fc08441ebde4a5bd834d5ed3ae5c09bb29389ef2d02e6d172c91ab855f98a3e9"
+    },
+    {
+      "file": "40x20-skills-browser.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 40,
+      "rows": 20,
+      "rawBytes": 51728,
+      "rawSha256": "b2323503593a8a0f39e2a5afa96195d81059f8d391b40084d8902a5fae7c6094",
+      "archiveBytes": 4143,
+      "archiveSha256": "e954440f95d33e40a84e368686bb11f04c864a6dbb2a821f2aa942e3c1024336"
+    },
+    {
+      "file": "40x20-skill-inspector.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 40,
+      "rows": 20,
+      "rawBytes": 85421,
+      "rawSha256": "729ed3a7172790bb74c601b65f9b0c6bcef0a81296f5049e439bd1f090070534",
+      "archiveBytes": 5100,
+      "archiveSha256": "08c316ccdbe7d042e784ef07402da443ef45ef60828f0bd749e0c28d709bb621"
+    },
+    {
+      "file": "40x20-browser-preserved-draft.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 40,
+      "rows": 20,
+      "rawBytes": 117252,
+      "rawSha256": "2071011a482d21747285924749b006a4a410fd9c674af2fa76428f33ad22328b",
+      "archiveBytes": 6501,
+      "archiveSha256": "a450616b06d4359b2967c7a9d242bbd8b5376e5cbe9a888e2ebe3612d6a41572"
+    },
+    {
+      "file": "40x20-skills-discover.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 40,
+      "rows": 20,
+      "rawBytes": 137038,
+      "rawSha256": "32afe57c9068e9cc7fd3615050b1af1f2f5d5f62d50575143f9a1b9088d07651",
+      "archiveBytes": 7222,
+      "archiveSha256": "c099f8491dfda37e32a477c9c0e18b1cbedb0de1bc3639b0964ec8da90e3fb6c"
+    },
+    {
+      "file": "40x20-community-filter.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 40,
+      "rows": 20,
+      "rawBytes": 138985,
+      "rawSha256": "958bb4d4976c5bfb88460a51fe42eb2af921a844651649816ef381a4154f1cdd",
+      "archiveBytes": 7389,
+      "archiveSha256": "10de2eb375892d3805409621342e2c9be80a3d018fc23156b5f66167629c705e"
+    },
+    {
+      "file": "40x20-connections-browser.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 40,
+      "rows": 20,
+      "rawBytes": 163891,
+      "rawSha256": "9b01f564c2398e629285fe6fe408bf696406adb02af9f0f4f0664f6c050dad21",
+      "archiveBytes": 8283,
+      "archiveSha256": "30424fcc34dad1a9010106b88736507194374cbe8b6d575c41bd35c8fbc5b532"
+    },
+    {
+      "file": "80x24-harness-browser.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 80,
+      "rows": 24,
+      "rawBytes": 40937,
+      "rawSha256": "e88a649203577aa3e9ae58fa2973eb3c3e201caa16f9fdb92ebab22d92a886c3",
+      "archiveBytes": 4227,
+      "archiveSha256": "62a9c2c65598a15e7e5bfabc212d8a2a7dba76b837fd4c248f25ca0190a8be40"
+    },
+    {
+      "file": "80x24-skills-browser.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 80,
+      "rows": 24,
+      "rawBytes": 75806,
+      "rawSha256": "a2d50a184e95da15e2affe5489963f3abbb3111f1578cc310c3037bc60b7484d",
+      "archiveBytes": 7097,
+      "archiveSha256": "7b26a82c5d053efbb563ccda7eeafcd0aef0822a8468d42a9491e97df06a6d8b"
+    },
+    {
+      "file": "80x24-skill-inspector.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 80,
+      "rows": 24,
+      "rawBytes": 125679,
+      "rawSha256": "e0cf16e46bb5632b7b50d2d1fcdf88678d150741b27e33aaddcfb6a0781d56e8",
+      "archiveBytes": 11139,
+      "archiveSha256": "dc593413c3acb6ff82d916f34deedd9c424027271de8091ec89b3f8029459269"
+    },
+    {
+      "file": "80x24-browser-preserved-draft.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 80,
+      "rows": 24,
+      "rawBytes": 177045,
+      "rawSha256": "5c62ce588719811422d434b72b732067bd6504da9c170756943a7219b262a743",
+      "archiveBytes": 15661,
+      "archiveSha256": "e48a9212ad1a3221a1e04cc811ed777349102c57067bceb55e8b47c715193f54"
+    },
+    {
+      "file": "80x24-skills-discover.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 80,
+      "rows": 24,
+      "rawBytes": 205635,
+      "rawSha256": "5a29f6c05a7810da5adf6d2f68c7aa84044a54957b04efd0c7f6e8b9d4cb29a3",
+      "archiveBytes": 18123,
+      "archiveSha256": "df24d0307ef10d0b00300019a33e6ad2bec5bac7b7359feae1847b320329857f"
+    },
+    {
+      "file": "80x24-community-filter.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 80,
+      "rows": 24,
+      "rawBytes": 209481,
+      "rawSha256": "f8f8ff683e6d232d75dac0bc95687c20870528284b258cc5c831f05d3c0a8eca",
+      "archiveBytes": 18332,
+      "archiveSha256": "6589b2710e28b799f21d8de508bd3fd071be9bc3b9b9f2cca376105b0b5b1e86"
+    },
+    {
+      "file": "80x24-browser-resized.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 40,
+      "rows": 20,
+      "rawBytes": 222205,
+      "rawSha256": "c76ce078c7bbc5f74816a1ceea413f05e1c830dbeb22ed9b770f851cbaac6472",
+      "archiveBytes": 19238,
+      "archiveSha256": "cc67a173dbdf84e850f8cbfcbb98e73214d39ef45b86c7a732de9162ae2bb4d7"
+    },
+    {
+      "file": "80x24-connections-browser.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 80,
+      "rows": 24,
+      "rawBytes": 268988,
+      "rawSha256": "dbe44e61b4811026635bfb57bcc1e2ca19bc7f007170d16551fa1474e06f7ebf",
+      "archiveBytes": 23043,
+      "archiveSha256": "a1b28e50279978aa5f72d000cfa1a4509d3f076593e5d18fa4cfad58af3e513c"
+    },
+    {
+      "file": "120x40-harness-browser.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 120,
+      "rows": 40,
+      "rawBytes": 53116,
+      "rawSha256": "8fc290d14fc05863f15a05abb8146c55536f2142e294a1e2c906f7c490aa4c71",
+      "archiveBytes": 4673,
+      "archiveSha256": "bc76e7f05f768b902c013e42919411a381c7bfa675eaf47feb81388525e671a5"
+    },
+    {
+      "file": "120x40-skills-browser.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 120,
+      "rows": 40,
+      "rawBytes": 100933,
+      "rawSha256": "2468ba40876829d6796fb4e5b044a13f7a1fd51ca8ea2a4a598118c2fd72ea1d",
+      "archiveBytes": 8386,
+      "archiveSha256": "3bf5fac14bb64402f578238da6656a47276acbde604b7e36b3d74b2b63755b03"
+    },
+    {
+      "file": "120x40-skill-inspector.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 120,
+      "rows": 40,
+      "rawBytes": 162114,
+      "rawSha256": "cf0110fa54c6f08d653de21ad91f71914610f43f489be52596b38f0c53129981",
+      "archiveBytes": 13310,
+      "archiveSha256": "057219ad8df5b307be245f7d57d6768c6f739c807e3d8409933d215338958015"
+    },
+    {
+      "file": "120x40-browser-preserved-draft.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 120,
+      "rows": 40,
+      "rawBytes": 235296,
+      "rawSha256": "753c83706f02a84e99e9b0bb043b0e5941cda818ad35887f530e78b56196cdaf",
+      "archiveBytes": 19555,
+      "archiveSha256": "e39e8035539b06b621f050d96db11333f6c20b3f3a767a826293e3130831bf9c"
+    },
+    {
+      "file": "120x40-skills-discover.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 120,
+      "rows": 40,
+      "rawBytes": 274551,
+      "rawSha256": "9f4e2829bcd88411e8682fd71ad7ff5af037b214ffdd2612b2554a646c1c7b04",
+      "archiveBytes": 23080,
+      "archiveSha256": "ad86d0d3993072ce3bcdeb0001f08bdb1e7fe54a8d9054047b6915c2c87752d7"
+    },
+    {
+      "file": "120x40-community-filter.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 120,
+      "rows": 40,
+      "rawBytes": 281590,
+      "rawSha256": "16ad0a03d610eda52c7cd1f7f3be4eb6b89bc22bdc473e8ee4af4359d27b312d",
+      "archiveBytes": 23410,
+      "archiveSha256": "cdba315125778953d1f071e33b46d5bc0e729e4f86c0ae435ae4303d1eb34379"
+    },
+    {
+      "file": "120x40-browser-resized.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 40,
+      "rows": 20,
+      "rawBytes": 295615,
+      "rawSha256": "b2366c3a0f80796ffdb16ad32cb1ed729caacbf4c8835801c01532b22e31c846",
+      "archiveBytes": 24430,
+      "archiveSha256": "13d7aa9049f6b992ff11192e624da7f31fe17405abb521dbc2603c94cc9849b7"
+    },
+    {
+      "file": "120x40-connections-browser.ansi.gz",
+      "kind": "actual PTY cumulative raw ANSI stream",
+      "columns": 120,
+      "rows": 40,
+      "rawBytes": 354317,
+      "rawSha256": "765264550bb0af72f3c736a0bbc365da9598e2574b0524dcce6f07efabc8c6bd",
+      "archiveBytes": 28561,
+      "archiveSha256": "bea50bd5c3321cf367f4c7307e462cfb650aefe3805d47f6d68ff6790b971608"
+    }
+  ],
+  "limits": [
+    "The AgentSession, frontend, native tools, authorization and run writer are production code.",
+    "The controlled local transport supplies deterministic model responses and usage fixtures.",
+    "These functional checks do not establish external provider OAuth/service availability or visual equivalence to OMP.",
+    "Each compressed capture is a cumulative actual ANSI stream from PTY startup through the named interaction. Replay at its recorded dimensions."
+  ],
+  "terminalBundleSha256": "53fa7c8466fb2d17765d15b50b70a223f855799f3b6c66da68629b4b57632607"
+}

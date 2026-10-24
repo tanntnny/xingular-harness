@@ -17,7 +17,8 @@ callable result for one run.
 | `Plugins` (`loading`, `loaded`) | `plugins/plugins.ts` | Chooses the paths a session or terminal loads; records what each extension registered. |
 | discovery | `plugins/discover.ts` | Finds items with Pi's own resolver, which runs no extension code. |
 | attachments (`load`, `save`, `attached`, `decided`, `set`) | `plugins/attachments.ts` | The one store of what is switched on, per scope. |
-| `HARNESS_PLUGINS` | `plugins/builtin.ts` | Descriptors of the harness's own parts: `pi`, `harness`, `subagents`, `wiki`, `history`, `ask-user`, `checklist`, `connected-apps`. |
+| `BuiltinPluginRegistry`, `BuiltinPluginModule` | `plugins/builtinRegistry.ts`, `plugins/builtin.ts` | Registers built-in modules and their descriptors, world parts, server handlers and terminal command metadata. |
+| `HARNESS_PLUGINS` | `plugins/builtin.ts` | Descriptor view of the registered Harness parts and feature plugins. |
 | `FIRST_PARTY_PLUGINS` | `plugins/firstParty.ts` | `output-trim`, `budget-guard`: inline extensions shipped switched off. `lessons`: switched off; its contribution turns on reflection after a run (page 08, PROP-0008) and loads no Pi code. |
 | `Hooks` | `plugins/hooks.ts` | Runs a package's hooks file after a write. |
 | install / trust | `plugins/install.ts`, `plugins/trust.ts` | Install through Pi's package manager with scripts off; trust code by hash. |
@@ -70,6 +71,12 @@ callable result for one run.
   each delivery. A working folder's package cannot bring a hook.
 - **INV-PLG-9** Unattended runs load no extension found on disk (`INV-RUN-5`). The harness's own
   parts are required and refuse to be switched off; switching something on grants no permission.
+- **INV-PLG-10** Every Harness-managed built-in feature is registered by `BuiltinPluginRegistry`.
+  Its descriptor, world tools, server handlers and terminal command metadata share one owner. A
+  module's world part releases resources through the existing session and Harness lifecycle. This
+  registry does not load third-party Pi code or bypass its trust checks.
+- **INV-PLG-11** Built-in plugin categories are a documentation ownership taxonomy. They are not a
+  `PluginDescriptor` field, a public response field or a second attachment scope.
 - **INV-CAP-1** A capability set only narrows. `intersect` never adds access; a run's set is
   frozen when it starts (`INV-RUN-2`).
 - **INV-CAP-2** The capability contract is generic. It names no application task, role or UI
@@ -91,3 +98,24 @@ callable result for one run.
 ## Source map
 
 `src/plugins/*.ts`, `src/capabilities/*.ts`, `src/core/changes.ts`.
+
+## Built-in ownership taxonomy (PROP-0020)
+
+These categories make ownership visible in docs and source layout. They do not change plugin
+metadata or availability:
+
+| Category | Features | Foundation boundary |
+|---|---|---|
+| Foundation | Accounts, sessions and run recording, prompt and variant validation, gate, plugin loading/trust/attachments, resource browser, server and terminal frameworks | Release-owned infrastructure and security contracts |
+| World | Web search/read tools, browser tools, page annotations | The isolated browser engine and network policy remain Foundation services |
+| Memory | Wiki, history and trajectory | Storage and run records remain Foundation-owned services |
+| Automation | Subagents, ask-user, checklist, lessons and refinement | Run lifecycle, capability narrowing and approval gate remain Foundation-owned |
+| Integrations | Connected apps/MCP and Hub | Connector credentials and plugin installation remain behind Foundation services |
+| Operations | Doctor and worktrees | Diagnostics and repository operations remain Harness-managed services |
+
+## Terminal resource inspection
+
+The unified browser joins saved plugin/contribution metadata with actual session skills and tool
+registration. A saved on/off state does not prove a resource loaded; origins and owners distinguish
+same-name resources. Protected install/remove, settings, attachment and trust actions call the
+existing services. No second discovery or enablement mechanism is introduced (PROP-0013).

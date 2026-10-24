@@ -16,6 +16,7 @@ per-call gate that asks the application's policy, then standing approvals, then 
 | `askUserTool` (`ask_user`) | `tools/askUser.ts` | Stops the run and asks a question with choices. |
 | `checklistTool` (`checklist_write`) | `tools/checklist.ts` | Writes the run's whole checklist as a `checklist.updated` event (PROP-0006). Read-only for the gate, so plan mode allows it. |
 | `subagentTools` | `tools/spawnSubagent.ts` | `spawn_subagent`, `wait_subagents`. |
+| `annotationsPart` (`page_notes_list`, `page_notes_read`, `page_notes_mark_fixed`) | `annotations/part.ts` | World tools over the page notes a person shared with the session or agent (PROP-0017). `page_notes_mark_fixed` records the agent's claim that it fixed a note it was sent; it never resolves a note or changes grants (PROP-0018). |
 | `webTools` | `web/tools.ts` | `web_search` (Brave, key from the secret store), `web_fetch` (checked public reads). An application provides them as a provider. |
 | gate | `sessions/sessions.ts::gate`, `sessions/runner.ts` | `ToolGate { ask, check }`, loaded as the last extension (`xagent-approvals`). |
 | `Approvals`, `decide`, `grant`, `approvalKey` | `sessions/approvals.ts` | Standing approvals. |
@@ -82,7 +83,7 @@ persistence. It is a foundation tool, not mutable variant data.
 
 ## Diagnostic probes
 
-`/doctor` is a user command, never a model tool. Live diagnostics create separate real runs,
+`/plugin:doctor` is a user command, never a model tool. Live diagnostics create separate real runs,
 intersect current capabilities, and execute tool calls through the existing gate. Calls that
 require an additional per-call approval report blocked; batch diagnostic consent does not grant
 standing permission. No raw tool inputs, results, or screenshots enter diagnostic findings.

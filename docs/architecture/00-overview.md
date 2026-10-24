@@ -11,9 +11,11 @@ of the harness is improved from evidence (refinement). It knows a *caller*, a *s
 ## Layers
 
 ```text
-Application (for example the App repo)      agents, groups, tasks, projects, worktrees, UI, PTY, keychain
+Host (for example the App repo)             presentation, windows, PTY, keychain, native OS bridges, host-only surfaces
    │  seven extension points (01) and the server protocol (10)
-Harness (this package)                      variants, prompt, sessions, runs, gate, Wiki, history, plugins, MCP, refinement, terminal
+Harness (this package)                      every capability: variants, prompt, sessions, runs, gate, Wiki, history,
+                                            plugins, MCP, refinement, world tools, worktrees, annotations,
+                                            and the reference terminal frontend
    │  Pi SDK: createAgentSession, ModelRuntime, SessionManager, DefaultResourceLoader
 Pi                                          model calls, native JSONL history, tool execution, extensions
 ```
@@ -21,17 +23,23 @@ Pi                                          model calls, native JSONL history, t
 - **Pi** supplies the model runtime, native history, tool execution and the extension API.
 - **The harness** decides everything Pi is given: the account folder, the prompt, the tools, the
   extensions, skills and prompts it may load, and the gate in front of each tool call. It records
-  every run.
-- **The application** supplies what only it knows, through the extension points, and reads what
-  the harness records.
+  every run. It owns every capability a person uses, and its standalone terminal surfaces each one
+  (page 14, `INV-PAR-1`).
+- **A host** presents the same capabilities with its own UI, supplies what only it knows through
+  the extension points, and reads what the harness records. The terminal and a host offer the same
+  capabilities; a host may add registered host-only surfaces (`INV-PAR-4`).
 
 **Belongs in the harness:** Pi sessions and accounts, variants and refinement
 (Propose–Probe–Compose, selection, the experience library), the prompt compiler and its delivery,
 project notes (the Wiki), recall, the tool gate and standing approvals, connectors (MCP), terminal
-sessions and their owned standalone frontend, generic web/isolated-browser tools, and the server protocol.
+sessions and their owned standalone frontend, generic web/isolated-browser tools, managed git
+worktrees (PROP-0016), page annotations (PROP-0017), and the server protocol.
 
-**Stays in the application:** agents, groups, conversations, tasks and coordination, projects and
-worktrees, App browser UI and tab sharing, computer use, windows, the PTY, the keychain, and application UI.
+**Stays in the host:** windows, the PTY, the keychain, native operating-system bridges (a WebKit
+tab, computer control) behind Harness contracts (`INV-PAR-3`), presentation, and registered
+host-only surfaces (`INV-PAR-4`). Orchestration across agents (organizations, routed chats, group
+chats, delegated work queues) is not a Harness capability; a host that wants it must first bring it
+here through a proposal, with a terminal surface.
 
 This package is consumed as source by the App's sidecar and is meant to be embedded by other
 applications, so a change here changes every application built on it.
@@ -102,6 +110,7 @@ opens the data root.
 | `apps` | `ConnectedApps` | `mcp/service.ts` | 09 |
 | `hub` | `Hub` | `hub/hub.ts` | 09 |
 | `terminals` | `Terminals` | `terminal/terminals.ts` | 11 |
+| `worktrees` | `Worktrees` | `worktrees/service.ts` | 02, 14 |
 | `bus` | `Bus` (state-changed notices) | `core/bus.ts` | 10 |
 
 Modules with no member of their own: `variant/` (functions over the variant store), `prompt/compile.ts`,
@@ -132,18 +141,19 @@ Modules with no member of their own: `variant/` (functions over the variant stor
 | **V** Verification | Isolated refinement probes and answer-free selection |
 | **G** Governance | The per-call gate, standing approvals, account pinning, redaction |
 
-The application's column (PTY, worktrees, roles, tasks, review, schedules, UI) is in the parent
-`AGENTS.md` and the App's architecture pages.
+The host's column (PTY, windows, native bridges, presentation) is in the parent `AGENTS.md` and
+the App's architecture pages. Page 14 states how the terminal and a host share capabilities.
 
 ## Invariants
 
 - **INV-BND-1** The harness imports nothing from an application. Application data reaches it only
   through the extension points (page 01) or the server protocol (page 10).
 - **INV-BND-2** The harness names no application and no application concept (agent role, group,
-  task, pane, worktree, handoff, App browser workspace, computer use) in code paths it reads or text a model or
+  task, pane, handoff, App browser workspace, computer use) in code paths it reads or text a model or
   person sees. Text names the product through `env.productName` (default `Xingular Harness`;
   `{product}` in a tool description). Ids such as `agentId`, `projectId` and a variant `scope` are
-  opaque; names come from `Directory` or `CallerContext.agentName`.
+  opaque; names come from `Directory` or `CallerContext.agentName`. A managed git worktree is a
+  Harness object since PROP-0016.
 - **INV-BND-3** A new need of one application is met by a generic extension point or option,
   never by a branch on an application's name or concept.
 - **INV-BND-4** Variants, the prompt compiler and Wiki notes are synchronous (`variant/`, `prompt/`,
@@ -156,4 +166,5 @@ The application's column (PTY, worktrees, roles, tasks, review, schedules, UI) i
 ## Source map
 
 `src/harness.ts`, `src/index.ts` (public exports), `src/core/` (env, caller, bus, errors, fs,
-text, index), `src/cli.ts` (command line).
+text, index), `src/cli.ts` (command line). Boundary decisions: [PROP-0015](proposals/PROP-0015-one-capability-surface.md),
+[ADR-0017](../decisions/ADR-0017-one-capability-surface.md).

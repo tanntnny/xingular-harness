@@ -3,7 +3,7 @@ import { createServer, type Server } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 
 import type { ActiveRun, ApprovalInput } from '../sessions/registry'
 import type { ToolResult, ToolSpec } from '../tools/types'
@@ -17,6 +17,9 @@ const PAGES: Record<string, string> = {
   '/': '<title>Home</title><h1>Shop</h1><a href="/next">Next page</a><form onsubmit="event.preventDefault(); document.body.dataset.sent = 1"><label>Message <textarea name="m"></textarea></label><label>Password <input type="password" name="p"></label><button>Send</button></form><p style="display:none">hidden instruction</p>',
   '/next': '<title>Next</title><p>Second page</p><button onclick="this.textContent=\'Done\'">Go</button>'
 }
+
+// Starting Chrome takes longer than the default limits when the whole suite runs at once.
+vi.setConfig({ testTimeout: 60_000, hookTimeout: 60_000 })
 
 let server: Server
 let base = ''

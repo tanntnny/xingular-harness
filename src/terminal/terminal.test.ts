@@ -1,10 +1,12 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
 import { connect } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { memorySecretStore } from '../accounts/secrets'
+import { read as readPageNote } from '../annotations/store'
 import { createHarness, type Harness } from '../harness'
 import type { RunEvent } from '../sessions/contracts'
 import type { ToolPolicy } from '../sessions/policy'
@@ -143,6 +145,26 @@ describe('a pi terminal session', () => {
     expect(await prepare()).toEqual([...flags, '--extension', join(root, '.pi/extensions/local.ts'), ...loaded])
   })
 
+  it('releases an acquired worktree lease when terminal preparation fails', async () => {
+    const { harness } = await setup()
+    const base = mkdtempSync(join(tmpdir(), 'hs-worktree-'))
+    const repo = join(base, 'repo')
+    mkdirSync(repo)
+    const env = { ...process.env, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' }
+    execFileSync('git', ['init', '-q'], { cwd: repo, env })
+    writeFileSync(join(repo, 'file.txt'), 'content\n')
+    execFileSync('git', ['add', '.'], { cwd: repo, env })
+    execFileSync('git', ['commit', '-q', '-m', 'first'], { cwd: repo, env })
+    const { worktree } = await harness.worktrees.create({ repo })
+
+    await expect(harness.terminals.prepare({
+      sessionId: 'failed-worktree-prepare', accountId: 'missing-account', cwd: repo,
+      sessionFolder: join(base, 'session'), run: { worktreeId: worktree.id }
+    })).rejects.toThrow()
+    expect(harness.worktrees.get(worktree.id).lease).toBeNull()
+    expect(harness.terminals.has('failed-worktree-prepare')).toBe(false)
+  })
+
   it('never launches on an account it cannot find', async () => {
     const other = createHarness({ dataRoot: rootWithProject(), stateDir: mkdtempSync(join(tmpdir(), 'hs-')), secrets: memorySecretStore() })
     open.push(other)
@@ -184,6 +206,35 @@ describe('a pi terminal session', () => {
     await harness.runs.interrupt('reserved')
     expect(await tell('poll')).toEqual({ command: { type: 'interrupt' } })
     expect(loadRun(root, 'reserved').status).toBe('interrupted')
+  })
+
+  it('queues page notes for the terminal, sends them as one run, and sends a busy "proceed now" when the run ends', async () => {
+    const { tell, harness, connection, root } = await setup()
+    const readNote = (id: string) => readPageNote(root, id)
+    await tell('ready', {})
+    const { key } = await socketCall<{ key: string }>(connection, 'control.claim')
+    const input = { source: { url: 'http://localhost:5173/', title: 'Dev', capturedAt: '' }, target: { kind: 'page' as const }, body: 'Fix the header' }
+    const queued = await harness.pageNotes.createAndAct(input, 'queue', 'term-1', true)
+    expect(queued.note.delivery).toMatchObject({ state: 'queued', sessionId: 'term-1' })
+    const sent = socketCall<{ state: string; runId: string }>(connection, 'terminal.annotations.send', {}, 5000, key)
+    let command: { command: { text: string } } | null = null
+    await vi.waitFor(async () => {
+      command = await tell('poll') as typeof command
+      expect(command).toMatchObject({ command: { type: 'send', text: expect.stringContaining('Fix the header') } })
+    })
+    await tell('begin', { text: command!.command.text })
+    expect(await sent).toMatchObject({ state: 'sent' })
+
+    // The agent is working: "Proceed now" waits, then goes out when the run ends.
+    const later = await harness.pageNotes.createAndAct({ ...input, body: 'Then the footer' }, 'send', 'term-1', true)
+    expect(later.send).toMatchObject({ state: 'busy' })
+    await tell('settled', {})
+    await vi.waitFor(async () => {
+      command = await tell('poll') as typeof command
+      expect(command).toMatchObject({ command: { type: 'send', text: expect.stringContaining('Then the footer') } })
+    }, { timeout: 3000 })
+    await tell('begin', { text: command!.command.text })
+    await vi.waitFor(() => expect(readNote(later.note.id).delivery?.state).toBe('sent'))
   })
 
   it('will not send over a draft the person is typing, and fails a delivery the native session never acknowledges', async () => {
@@ -373,7 +424,7 @@ describe('a pi terminal session', () => {
     expect(await socketCall<string>(connection, 'skill.load')).toBe('You have no skills.')
     expect(await socketCall<string>(connection, 'wiki.list')).toContain('home')
     const listed = await socketCall<{ tools: { name: string; parameters: { type: string } }[] }>(connection, 'tools.list')
-    expect(listed.tools.map((tool) => tool.name)).toEqual(['mcp_list_tools', 'mcp_call_tool', 'web_search', 'web_fetch', 'browser_navigate', 'browser_snapshot', 'browser_read', 'browser_screenshot', 'browser_click', 'browser_type', 'browser_select', 'browser_press', 'browser_scroll', 'browser_wait', 'browser_tabs'])
+    expect(listed.tools.map((tool) => tool.name)).toEqual(['mcp_list_tools', 'mcp_call_tool', 'web_search', 'web_fetch', 'browser_navigate', 'browser_snapshot', 'browser_read', 'browser_screenshot', 'browser_click', 'browser_type', 'browser_select', 'browser_press', 'browser_scroll', 'browser_wait', 'browser_tabs', 'page_notes_list', 'page_notes_read', 'page_notes_mark_fixed'])
     expect(listed.tools[0].parameters.type).toBe('object')
     // Account calls exist, but only the session's extension holds the key that unlocks them.
     await expect(socketCall(connection, 'accounts.list')).rejects.toMatchObject({ code: 'unauthorized' })
