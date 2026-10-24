@@ -1,8 +1,14 @@
 # Changelog
 
-## 1.1.0 — agent profiles and named subagents
+## 1.1.1 — agent profiles and named subagents
 
-This is the next version after the published 1.0.0 baseline, and it becomes npm `latest`. Earlier 2.x–4.x numbers keep their existing meaning and are not reused.
+The first published release of the 1.1 line, and npm `latest`. It follows the 1.0.0 baseline; earlier 2.x–4.x numbers keep their existing meaning and are not reused. The 1.1.0 tag was pushed, but its release run stopped before publishing, so nothing was published under 1.1.0. This release carries the same changes, plus the release-pipeline fixes below.
+
+- The release pack and smoke scripts take their npm cache from the system temp folder. They previously used a macOS-only path, which failed on Linux runners.
+- The `/help` terminal check matches the documented grouped, scrollable help: it pages until every group is seen, and its expected group is `Plugins`.
+
+### Changes in 1.1.0
+
 
 - Add agent profiles (PROP-0029, ADR-0030). A subagent can start from a named profile: the built-in `worker` and `explorer`, a person's `<data root>/agents/<name>.md`, a repository's `.xingular/agents/<name>.md`, or a variant's c5 subagent. A profile narrows the child's tools and plugins and may choose its variant, model and effort. New `agents.list|get|create|remove` methods, `RunRecord.profile`, and `agent`/`unavailableTools` on the spawn result. The prompt's `subagents` section lists every profile. The terminal's `/agents` page browses, creates, edits (in `$EDITOR`), copies and deletes them, and the terminal now passes its variant to subagents, so c5 names work there.
 - The terminal registers `checklist_write` (closing the terminal half of PAR-001), shows each write as a checklist block, and terminal subagents inherit it. The tool description and a new Progress paragraph in the prompt ask the model to keep a checklist for multi-step work, because the person follows progress from it. Each agent keeps its own checklist; there is no shared task pool.
