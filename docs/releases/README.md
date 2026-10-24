@@ -26,14 +26,14 @@ intentional 1.0.0 reset does not rewrite historical decisions or claim an orderi
 
 ## 4.0.0 candidate preparation
 
-Local checks on the current candidate source passed: Harness `npm run ci` (typecheck, 132 test files
-with 1,000 passing tests and 3 skipped, plus the standalone proof); App typecheck, renderer and
-sidecar tests, layer check and Rust tests (168 passed, 1 ignored); and App UI consistency. The npm
-registry lists 1.0.0 as `latest` and 4.0.0 as unused. The local release preflight correctly blocks
-until the candidate is committed cleanly. Exact-tarball packaging, fresh-install smoke testing, and
-the tagged preflight remain required after the clean release commit. The npm trusted-publisher
-configuration for `tanntnny/xingular-harness` and `release.yml` still requires package-owner
-verification; `npm login` does not verify that setting.
+Local checks on the candidate source passed: Harness `npm run ci` (typecheck, 132 test files with
+1,000 passing tests and 3 skipped, plus the standalone proof); App typecheck, renderer and sidecar
+tests, layer check and Rust tests (168 passed, 1 ignored); and App UI consistency. The registry lists
+1.0.0 as `latest` and 4.0.0 as unused. The clean-tree release preflight passed. Exact-tarball
+packaging and a fresh-install smoke test passed, including the packaged SDK, types, CLI, server and
+isolated terminal. The tagged preflight and remote two-OS CI still run through the release workflow.
+The npm trusted-publisher configuration for `tanntnny/xingular-harness` and `release.yml` still
+requires package-owner verification; `npm login` does not verify that setting.
 
 The release workflow runs its full CI and exact-tarball smoke test on both Ubuntu and macOS before
 publishing. Branch upload and the matching release-tag push are separate GitHub side effects; only
