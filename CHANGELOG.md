@@ -8,6 +8,7 @@
 - Add a unified terminal resource browser with persistent full-screen sections for browser tabs, plugins, skills, connectors, variants, and other Harness resources.
 - Upgrade `/plugin:trajectory` to a full-screen Runs/Events browser with searchable event details, selected-event JSON, and responsive split-pane layout.
 - Expand terminal controls for browsing subagent activity and managing browser and plugin settings; document the terminal/host parity boundary.
+- Fix SQLite parameter binding for the supported Node 22 runtime and prevent early-exiting Git commands from raising an unhandled broken-pipe error.
 - Generalize release packaging, smoke checks, registry verification, and CI workflows to use the package version, and require a clean committed tree for release candidates.
 
 ## 1.0.0 — stable baseline

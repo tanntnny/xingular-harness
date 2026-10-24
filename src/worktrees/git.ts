@@ -58,15 +58,17 @@ export async function git(cwd: string, args: readonly string[], options: GitOpti
   const env = { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_LFS_SKIP_SMUDGE: '1', LC_ALL: 'C', ...options.env }
   const filters = await configuredFilters(cwd, env)
   return new Promise((resolve, reject) => {
+    const input = options.input
+    const hasInput = input !== undefined && input.length > 0
     const child = spawn('git', [...QUIET_FILTERS, ...filters, ...args], {
       cwd,
       env,
-      stdio: ['pipe', 'pipe', 'pipe']
+      stdio: [hasInput ? 'pipe' : 'ignore', 'pipe', 'pipe']
     })
     const out: Buffer[] = []
     const err: Buffer[] = []
-    child.stdout.on('data', (chunk: Buffer) => out.push(chunk))
-    child.stderr.on('data', (chunk: Buffer) => err.push(chunk))
+    child.stdout!.on('data', (chunk: Buffer) => out.push(chunk))
+    child.stderr!.on('data', (chunk: Buffer) => err.push(chunk))
     child.once('error', (error) => reject(new HarnessError('git_unavailable', `Git could not be started: ${error.message}`, 'Install git and make sure it is on PATH.')))
     child.once('close', (code) => {
       const result = { code: code ?? 1, stdout: Buffer.concat(out).toString('utf8'), stderr: Buffer.concat(err).toString('utf8') }
@@ -76,7 +78,12 @@ export async function git(cwd: string, args: readonly string[], options: GitOpti
       }
       resolve(result)
     })
-    child.stdin.end(options.input ?? '')
+    if (hasInput && child.stdin) {
+      child.stdin.on('error', (error) => {
+        if ((error as NodeJS.ErrnoException).code !== 'EPIPE') reject(new HarnessError('git_failed', `git ${args.join(' ')} could not read input: ${error.message}`))
+      })
+      child.stdin.end(input)
+    }
   })
 }
 

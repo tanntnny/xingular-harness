@@ -26,8 +26,8 @@ intentional 1.0.0 reset does not rewrite historical decisions or claim an orderi
 
 ## 4.0.0 candidate preparation
 
-Local checks on the candidate source passed: Harness `npm run ci` (typecheck, 133 test files with
-1,003 passing tests and 3 skipped, plus the standalone proof); App typecheck, `npm test` (566 renderer
+Local checks on the candidate source passed: Harness `npm run ci` (typecheck, 134 test files with
+1,004 passing tests and 3 skipped, plus the standalone proof); App typecheck, `npm test` (566 renderer
 tests, 47 sidecar tests, and 7 dev-signing tests passed with 1 skipped), layer check, and Rust tests
 (168 passed, 1 ignored); and App UI consistency. The registry lists 1.0.0 as `latest` and 4.0.0 as
 unused. The clean-tree release preflight passed. Exact-tarball packaging and a fresh-install smoke
