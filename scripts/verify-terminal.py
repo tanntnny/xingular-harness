@@ -902,8 +902,13 @@ def main():
                     terminal.read(0.3)
                     terminal.snapshot('help-transcript')
                     if terminal.screen is not None:
-                        terminal.send('\x1b[5~' * 20)
-                        terminal.read(0.2)
+                        # Page up in small bursts until the Core group is at the top: a long /help output needs more
+                        # than twenty pages, and each burst is read before the next one is sent.
+                        for _ in range(120):
+                            if any(row.strip() == 'Core' for row in terminal.screen.display):
+                                break
+                            terminal.send('\x1b[5~' * 5)
+                            terminal.read(0.15)
                         top_rows = terminal.screen.display
                         top = '\n'.join(top_rows)
                         assert 'One run, done well.' not in top, f'/help left the welcome message visible: {top_rows!r}'
@@ -925,14 +930,19 @@ def main():
                             hotkeys_description = locate_help('Keyboard controls', top_rows)[1]
                             assert help_description == hotkeys_description, f'Help descriptions did not align: {top_rows!r}'
 
+                        # The documented groups are Core, Run, Model, Session, Inspect, Harness, Plugins and Prompts (terminal-tui.md).
+                        wrapped_name = 'that-wraps' if width >= 80 else 'that-wr'
+                        wanted = ['Run', 'Model', 'Session', 'Inspect', 'Harness', 'Plugins', 'SHORT_DESC_START', 'SHORT_DESC_END', 'LONG_DESC_START', 'LONG_DESC_END', wrapped_name]
                         pages = [top]
-                        for _ in range(20):
+                        for _ in range(120):
+                            if all(item in '\n'.join(pages) for item in wanted):
+                                break
                             terminal.send('\x1b[6~')
+                            terminal.read(0.15)
                             pages.append('\n'.join(terminal.screen.display))
                         rendered = '\n'.join(pages)
-                        for group in ['Run', 'Model', 'Session', 'Inspect', 'Harness', 'Extensions']:
+                        for group in ['Run', 'Model', 'Session', 'Inspect', 'Harness', 'Plugins']:
                             assert group in rendered, f'/help did not render the {group} group while scrolling: {pages!r}'
-                        wrapped_name = 'name-that-wraps' if width >= 80 else 'me-that-wraps'
                         for marker in ['SHORT_DESC_START', 'SHORT_DESC_END', 'LONG_DESC_START', 'LONG_DESC_END', wrapped_name]:
                             assert marker in rendered, f'/help did not render wrapped command content {marker!r}'
                         if width >= 80:
