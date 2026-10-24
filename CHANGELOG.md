@@ -6,6 +6,7 @@
 - Add Harness-managed Git worktrees for sessions and the terminal, including isolated creation, leases, safe setup scripts, handoff, pruning, and bounded snapshots of work before removal.
 - Add page annotations and queued page notes, with capture, review, resolution, sharing, and delivery through Harness methods and terminal `/plugin:annotate` and `/plugin:notes` surfaces.
 - Add a unified terminal resource browser with persistent full-screen sections for browser tabs, plugins, skills, connectors, variants, and other Harness resources.
+- Upgrade `/plugin:trajectory` to a full-screen Runs/Events browser with searchable event details, selected-event JSON, and responsive split-pane layout.
 - Expand terminal controls for browsing subagent activity and managing browser and plugin settings; document the terminal/host parity boundary.
 - Generalize release packaging, smoke checks, registry verification, and CI workflows to use the package version, and require a clean committed tree for release candidates.
 

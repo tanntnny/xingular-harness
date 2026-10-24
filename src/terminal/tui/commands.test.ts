@@ -322,7 +322,7 @@ describe('owned terminal commands', () => {
     const { commands, host, ui } = setup()
     await commands.execute('/plugin:trajectory run-1')
     expect(ui.custom).toHaveBeenCalledOnce()
-    expect(ui.custom).toHaveBeenCalledWith(expect.any(Function), { overlay: true, overlayOptions: { width: '100%', maxHeight: '100%', anchor: 'top-left', dialog: 'page' } })
+    expect(ui.custom).toHaveBeenCalledWith(expect.any(Function), { overlay: true, overlayOptions: { width: '100%', maxHeight: '100%', anchor: 'top-left' } })
     const shown = await overlayOf(ui)
     expect(shown.page.tabs().map(tab => tab.title)).toEqual(['Runs', 'Events'])
     await vi.waitFor(() => expect(host.trajectory.read).toHaveBeenCalledWith('run-1'))

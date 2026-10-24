@@ -51,7 +51,7 @@ its own components, while the OpenTUI chrome keeps the fixed OpenCode-inspired p
 UI is supported; an extension that draws only by writing raw ANSI through the TUI terminal is not.
 
 Most pages become centered dialogs. The page commands `/accounts`, `/permissions`,
-`/plugin:trajectory` and `/log`, the `/model` and `/history` pickers, and
+`/log`, the `/model` and `/history` pickers, and
 the `select`, `confirm`, `input` and `editor` dialogs (such as `/effort` and the Thinking setting),
 take 80% of the terminal, capped at 100 columns by 30 rows, on a flat panel in the console's panel
 colour. A full-screen scrim dims the console behind the panel so the transcript stays faintly
@@ -214,9 +214,10 @@ of two rule-based shapes, using the 2-cell composer gutter on each side and a di
   Approvals, questions, and the `select`, `confirm`, `input` and `editor` dialogs use this shape
   there. OpenTUI renders Harness-managed centered dialogs with the inset header treatment below.
 - A **page** is a header row (title left, position or status right), a neutral rule, the body,
-  a neutral rule, and the hint row. `/settings`, `/plugin:trajectory`, `/log`, `/permissions`, and the
-  `/accounts`, `/plugins` and `/hub` menus are pages. Section labels inside a page are plain bold
-  headings, never text set into a rule.
+  a neutral rule, and the hint row. `/settings`, `/log`, `/permissions`, and the `/accounts`,
+  `/plugins` and `/hub` menus are pages. Section labels inside a page are plain bold headings, never
+  text set into a rule. `/plugin:trajectory` is a full-screen page with searchable Runs and Events
+  tabs; its Events view keeps the event list beside the selected event's JSON on wide terminals.
 
 `DialogPanel` takes a `variant` (`block` by default). `ui.select` accepts a harness-owned `page`
 option, which Pi's own dialogs ignore, so the same extension code runs in either terminal. Selected
@@ -565,10 +566,12 @@ and sign-out. `/components` browses reusable skills, prompts and rules; a confir
 creates a variant version for future sessions while the current terminal keeps its pinned version. `/reload` applies trusted resource and keybinding changes.
 
 `/plugin:trajectory` opens the newest recorded run for the current native conversation; `/plugin:trajectory <run-id>`
-opens a selected run from that conversation. Tab switches between Runs and Events; `[` and `]` change
-runs, up/down selects recorded events, PageUp/PageDown scrolls event details, and `c` copies the
-selected event. Active runs refresh while the overlay is open. The protected terminal socket scopes both the run list and event
-reads to the current terminal and native session file.
+opens a selected run from that conversation. The full-screen page keeps searchable Runs and Events
+tabs. In Events, the list sits beside the selected event's JSON on wide terminals and stacks above it
+on compact terminals. Type to search run IDs, goals, event types, timestamps, summaries and payload
+text; `[` and `]` change runs, up/down selects events, PageUp/PageDown scrolls event details, and
+`Shift+C` copies the selected event JSON. Active runs refresh while the page is open. The protected
+terminal socket scopes both the run list and event reads to the current terminal and native session file.
 
 `/log` opens a centered page dialog with separate Harness diagnostics and current-conversation
 run-event views. The diagnostic file is read at its captured size in bounded socket chunks. Tab/Shift+Tab

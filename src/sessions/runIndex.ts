@@ -11,7 +11,7 @@ export function upsertRun(database: DatabaseSync, record: RunRecord): void {
   execute(
     database,
     `INSERT OR REPLACE INTO runs (id, project_id, mode, harness, session_type, session_id, status, started_at, ended_at, account_id, agent_id)
-     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     record.id,
     record.projectId,
     record.mode,
@@ -69,7 +69,7 @@ export function syncRuns(root: string): number {
 }
 
 export function runsForSession(root: string, sessionId: string, limit: number): string[] {
-  return withIndex(root, (database) => all<{ id: string }>(database, 'SELECT id FROM runs WHERE session_id = ?1 ORDER BY started_at DESC LIMIT ?2', sessionId, limit).map((row) => row.id))
+  return withIndex(root, (database) => all<{ id: string }>(database, 'SELECT id FROM runs WHERE session_id = ? ORDER BY started_at DESC LIMIT ?', sessionId, limit).map((row) => row.id))
 }
 
 /** Which runs to read: one session's, one agent's wherever it replied, one account's, or all. */
@@ -85,14 +85,18 @@ export function runsSince(root: string, filter: RunFilter, since: string | null)
     // A chat run recorded before the agent column belongs to the agent whose own session it ran in.
     all<{ id: string }>(
       database,
-      `SELECT id FROM runs WHERE started_at >= ?1
-          AND (?2 IS NULL OR session_id = ?2)
-          AND (?3 IS NULL OR agent_id = ?3 OR (agent_id IS NULL AND mode = 'chat' AND session_id = ?3))
-          AND (?4 IS NULL OR account_id = ?4)
+      `SELECT id FROM runs WHERE started_at >= ?
+          AND (? IS NULL OR session_id = ?)
+          AND (? IS NULL OR agent_id = ? OR (agent_id IS NULL AND mode = 'chat' AND session_id = ?))
+          AND (? IS NULL OR account_id = ?)
        ORDER BY started_at`,
       since ?? '',
       filter.session ?? null,
+      filter.session ?? null,
       filter.agent ?? null,
+      filter.agent ?? null,
+      filter.agent ?? null,
+      filter.account ?? null,
       filter.account ?? null
     ).map((row) => row.id)
   )

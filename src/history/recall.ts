@@ -45,11 +45,11 @@ export function passages(run: RunRecord, events: readonly RunEvent[]): Passage[]
 }
 
 function writeRun(database: DatabaseSync, run: RunRecord, found: readonly Passage[]): void {
-  execute(database, 'DELETE FROM recall_fts WHERE run_id = ?1', run.id)
+  execute(database, 'DELETE FROM recall_fts WHERE run_id = ?', run.id)
   found.forEach((passage, seq) => {
-    execute(database, 'INSERT INTO recall_fts (run_id, seq, role, at, mode, session_id, project_id, text) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)', run.id, seq, passage.role, passage.at, run.mode, run.sessionId, run.projectId, passage.text)
+    execute(database, 'INSERT INTO recall_fts (run_id, seq, role, at, mode, session_id, project_id, text) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', run.id, seq, passage.role, passage.at, run.mode, run.sessionId, run.projectId, passage.text)
   })
-  execute(database, 'INSERT OR REPLACE INTO recall_runs (run_id, passages, status) VALUES (?1, ?2, ?3)', run.id, found.length, run.status)
+  execute(database, 'INSERT OR REPLACE INTO recall_runs (run_id, passages, status) VALUES (?, ?, ?)', run.id, found.length, run.status)
 }
 
 function eventsOf(root: string, runId: string): RunEvent[] {
@@ -145,14 +145,18 @@ export function search(root: string, query: string, scope: Scope, limit: number)
     all<HitRow>(
       database,
       `SELECT run_id, seq, role, at, mode, session_id, project_id, snippet(recall_fts, 7, '', '', '…', 40) AS snippet
-       FROM recall_fts WHERE recall_fts MATCH ?1
-         AND (?2 IS NULL OR session_id = ?2) AND (?3 IS NULL OR mode = ?3)
-         AND (?4 IS NULL OR project_id = ?4) AND (?5 IS NULL OR at >= ?5)
-       ORDER BY bm25(recall_fts), at DESC LIMIT ?6`,
+       FROM recall_fts WHERE recall_fts MATCH ?
+         AND (? IS NULL OR session_id = ?) AND (? IS NULL OR mode = ?)
+         AND (? IS NULL OR project_id = ?) AND (? IS NULL OR at >= ?)
+       ORDER BY bm25(recall_fts), at DESC LIMIT ?`,
       fts,
       scope.sessionId ?? null,
+      scope.sessionId ?? null,
+      scope.mode ?? null,
       scope.mode ?? null,
       scope.projectId ?? null,
+      scope.projectId ?? null,
+      scope.since ?? null,
       scope.since ?? null,
       Math.min(Math.max(limit, 1), SEARCH_MAX)
     ).map((row) => ({ runId: row.run_id, seq: Number(row.seq), role: row.role, at: row.at ?? '', mode: row.mode ?? '', sessionId: row.session_id ?? '', projectId: row.project_id, snippet: row.snippet }))
@@ -168,7 +172,7 @@ export interface RecallMessage {
 
 export function read(root: string, runId: string): RecallMessage[] {
   return withIndex(root, (database) =>
-    all<{ seq: number | string; role: string; at: string | null; text: string }>(database, 'SELECT seq, role, at, text FROM recall_fts WHERE run_id = ?1 ORDER BY CAST(seq AS INTEGER)', runId).map((row) => ({ seq: Number(row.seq), role: row.role, at: row.at ?? '', text: row.text }))
+    all<{ seq: number | string; role: string; at: string | null; text: string }>(database, 'SELECT seq, role, at, text FROM recall_fts WHERE run_id = ? ORDER BY CAST(seq AS INTEGER)', runId).map((row) => ({ seq: Number(row.seq), role: row.role, at: row.at ?? '', text: row.text }))
   )
 }
 

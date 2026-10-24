@@ -459,6 +459,7 @@ def main():
     parser.add_argument('--jump-latest-only', action='store_true', help='Verify the transcript jump-to-latest badge and click behavior in an isolated PTY (screen assertions use optional pyte)')
     parser.add_argument('--help-only', action='store_true', help='Verify grouped, wrapping /help output in an isolated PTY')
     parser.add_argument('--browser-only', action='store_true', help='Verify the unified resource browser, skills and discovery without model requests')
+    parser.add_argument('--trajectory-only', action='store_true', help='Verify the full-screen searchable trajectory page in an isolated PTY')
     parser.add_argument('--palette-only', action='store_true', help='Verify two-column slash-command wrapping and selection in an isolated PTY')
     parser.add_argument('--markdown-only', action='store_true', help='Verify streamed Markdown rendering in an isolated PTY')
     parser.add_argument('--attachments-only', action='store_true', help='Verify pasted images, collapsed large pastes, whole-label deletion and image delivery in an isolated PTY')
@@ -484,7 +485,7 @@ def main():
         sizes = args.sizes.split(',') if args.sizes else ['40x20', '80x24', '120x40']
         if not args.sizes and args.palette_only:
             sizes = ['40x20', '80x24']
-        elif not args.sizes and args.help_only:
+        elif not args.sizes and (args.help_only or args.trajectory_only):
             sizes = ['40x20', '80x24', '120x40']
         elif not args.sizes and (args.attachments_only or args.composer_only or args.file_completion_only or args.history_only or args.questions_only or args.jump_latest_only or args.thinking_only or args.compaction_only):
             sizes = ['80x24']
@@ -574,6 +575,42 @@ def main():
                     profile['checks'].append('welcome and isolated local session startup')
                 else:
                     profile['checks'].append('welcome and real configured model')
+                if args.trajectory_only:
+                    start = len(terminal.data)
+                    terminal.send('verify-trajectory')
+                    terminal.send('\r')
+                    terminal.wait('LOCAL_FINAL:', start, timeout=50)
+                    record = wait_for_goal(terminal, root, 'verify-trajectory')
+                    assert record.get('status') == 'completed', 'The trajectory fixture run did not complete'
+                    terminal.send('/plugin:trajectory')
+                    terminal.send('\r')
+                    terminal.wait('Type to search', start, timeout=15)
+                    terminal.snapshot('trajectory-runs-fullscreen')
+                    if terminal.screen is not None:
+                        visible = '\n'.join(terminal.screen.display)
+                        assert 'Runs' in terminal.screen.display[0], f'Trajectory Runs did not fill the screen: {terminal.screen.display!r}'
+                        assert 'Esc close' in terminal.screen.display[-1], f'Trajectory full-screen footer was not visible: {terminal.screen.display!r}'
+                    terminal.send('\t')
+                    terminal.wait('Event JSON', start, timeout=15)
+                    search_start = len(terminal.data)
+                    terminal.send('usage.updated')
+                    terminal.wait('1 of', search_start, timeout=10)
+                    terminal.snapshot('trajectory-events-search')
+                    if terminal.screen is not None:
+                        visible = '\n'.join(terminal.screen.display)
+                        assert 'Events' in terminal.screen.display[0], f'Trajectory Events tab was not active: {terminal.screen.display!r}'
+                        assert 'usage.updated' in visible and '1 of ' in visible, f'Event search did not filter the ledger: {terminal.screen.display!r}'
+                        assert 'Event JSON · usage.updated' in visible, f'Selected-event JSON was not shown: {terminal.screen.display!r}'
+                        if width >= 80:
+                            event_line = next(line for line in terminal.screen.display if '❯' in line and 'usage.updated' in line)
+                            detail_line = next(line for line in terminal.screen.display if 'Event JSON · usage.updated' in line)
+                            assert detail_line.index('Event JSON') > event_line.index('usage.updated'), 'The JSON details did not appear beside the event list'
+                    profile['checks'].append('full-screen Runs/Events tabs, event search, selected-event JSON, and responsive layout')
+                    terminal.send('\x1b')
+                    terminal.send('\x1b')
+                    terminal.send('/quit')
+                    terminal.send('\r')
+                    continue
                 if args.browser_only:
                     requests_before = len(LocalProvider.requests)
                     for command, marker in [('/harness', 'Foundation'), ('/skills', 'Available now')]:

@@ -1,9 +1,10 @@
 import type { Theme } from '@earendil-works/pi-coding-agent'
-import { stripTerminalSequences, visibleWidth } from '@earendil-works/pi-tui'
+import { stripTerminalSequences, visibleWidth, type TUI } from '@earendil-works/pi-tui'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { RunEvent } from '../../../sessions/contracts'
 import type { TerminalTrajectoryRun, TerminalTrajectorySnapshot } from '../../trajectory'
+import { PageOverlay } from '../pageOverlay'
 import { createHarnessTheme } from '../theme'
 import { TrajectoryPage } from './trajectoryPage'
 
@@ -42,27 +43,76 @@ async function opened(options: Parameters<typeof setup>[0] = {}) {
 afterEach(() => vi.useRealTimers())
 
 describe('the Trajectory page', () => {
-  it('says it is loading, then shows run usage, a selectable event ledger and the selected payload', async () => {
+  it('fills the screen and shows searchable events beside selected-event JSON', async () => {
     const { page } = setup()
+    expect(page.presentation).toBe('fullscreen')
     expect(plain(page)).toContain('Loading recorded runs…')
     page.activate()
     await vi.waitFor(() => expect(page.selectedRunId).toBe('run-1'))
     expect(page.tabs().map(tab => tab.title)).toEqual(['Runs', 'Events'])
+    expect(plain(page)).toContain('Type to search')
+
     page.handleInput('\t')
-    const text = plain(page)
+    let text = plain(page)
     expect(text).toContain('Run 1/1 · run-1 · completed')
     expect(text).toContain('context.snapshot')
     expect(text).toContain('tool.completed')
+    expect(text).toContain('Event JSON · tool.completed · #2')
     expect(text).toContain('file contents')
+    expect(text).toContain('"type": "tool.completed"')
     expect(page.selectedEvent?.sequence).toBe(2)
-    expect(text).not.toMatch(/[╭╮╰╯│├┤]/)
+    expect(text).toContain(' │ ')
+
+    const lines = page.render(100, 24).map(stripTerminalSequences)
+    const eventRow = lines.find(line => line.includes('❯ ') && line.includes('tool.completed'))!
+    const jsonRow = lines.find(line => line.includes('"type": "tool.completed"'))!
+    expect(jsonRow.indexOf('"type":')).toBeGreaterThan(eventRow.indexOf('tool.completed'))
     const selectedRow = page.render(100, 24).find(line => stripTerminalSequences(line).includes('❯ '))
     expect(selectedRow).toContain(theme.getBgAnsi('selectedBg'))
     expect(selectedRow).not.toContain(theme.getFgAnsi('accent'))
+
     expect(page.handleInput('\x1b[A')).toBe(true)
     expect(page.selectedEvent?.sequence).toBe(1)
-    expect(plain(page)).toContain('README.md')
+    text = plain(page)
+    expect(text).toContain('README.md')
+    expect(text).toContain('"type": "tool.started"')
     page.dispose()
+  })
+
+  it('filters event type, timestamp, summary, and payload text', async () => {
+    const { page } = await opened()
+    page.handleInput('\t')
+    page.handleInput('context.snapshot')
+    expect(page.selectedEvent?.type).toBe('context.snapshot')
+    const text = plain(page)
+    expect(text).toContain('context.snapshot')
+    expect(text).toContain('"systemPrompt": "prompt"')
+    expect(text).not.toContain('tool.completed')
+
+    page.handleInput('\x1b')
+    page.handleInput('Recorded prompt')
+    expect(page.selectedEvent?.type).toBe('context.snapshot')
+    page.handleInput('\x1b')
+    expect(plain(page)).toContain('tool.completed')
+    page.dispose()
+  })
+
+  it('renders full-screen through the page overlay, including on a centered-dialog host', async () => {
+    const { page } = await opened()
+    const terminal = { columns: 120, rows: 40 }
+    const overlay = new PageOverlay({
+      page,
+      tui: { terminal, centeredDialogs: true } as unknown as TUI,
+      theme: () => theme,
+      close: vi.fn(),
+      changed: vi.fn()
+    })
+    const lines = overlay.render(terminal.columns).map(stripTerminalSequences)
+    expect(lines).toHaveLength(40)
+    expect(lines[0]).toContain('Runs')
+    expect(lines[1]).toContain('─')
+    expect(lines.at(-1)).toContain('Esc close')
+    overlay.dispose()
   })
 
   it('moves between runs with [ and ], while the page owns run and event sections', async () => {
@@ -95,17 +145,17 @@ describe('the Trajectory page', () => {
     missing.page.dispose()
   })
 
-  it('copies the selected event', async () => {
+  it('copies the selected event JSON', async () => {
     const { page, copy, notify } = await opened()
     page.handleInput('\t')
-    page.handleInput('c')
+    page.handleInput('C')
     await vi.waitFor(() => expect(copy).toHaveBeenCalledOnce())
     expect(JSON.parse(copy.mock.calls[0]![0])).toMatchObject({ type: 'tool.completed', sequence: 2 })
     await vi.waitFor(() => expect(notify).toHaveBeenCalledWith('Copied selected trajectory event'))
     page.dispose()
   })
 
-  it('refreshes an active run on the page and stops polling when it closes', async () => {
+  it('refreshes an active run and follows its newest event until the page closes', async () => {
     vi.useFakeTimers()
     const active = run('run-1', 'running')
     const completed = run('run-1')
@@ -118,6 +168,7 @@ describe('the Trajectory page', () => {
     await vi.advanceTimersByTimeAsync(2_000)
     expect(read).toHaveBeenCalledWith('run-1', 0)
     expect(plain(page)).toContain('completed')
+    expect(page.selectedEvent?.sequence).toBe(1)
     page.deactivate()
     const calls = read.mock.calls.length
     await vi.advanceTimersByTimeAsync(6_000)
@@ -125,7 +176,7 @@ describe('the Trajectory page', () => {
     page.dispose()
   })
 
-  it('says when there are no runs, and bounds output for small terminals and narrow widths', async () => {
+  it('says when there are no runs and bounds narrow and compact layouts', async () => {
     const { page } = setup({ runs: [] })
     page.activate()
     await vi.waitFor(() => expect(plain(page)).toContain('No runs recorded for this native session yet'))
@@ -133,7 +184,7 @@ describe('the Trajectory page', () => {
     const { page: small } = await opened({ snapshot: { run: run('run-1'), events: [] } })
     small.handleInput('\t')
     expect(plain(small, 6)).toContain('No recorded events')
-    for (const rows of [0, 1, 3, 6, 12, 30]) for (let width = 0; width <= 60; width++) {
+    for (const rows of [0, 1, 3, 6, 12, 30]) for (let width = 0; width <= 100; width++) {
       const lines = small.render(width, rows)
       expect(lines.length).toBeLessThanOrEqual(rows)
       for (const line of lines) expect(visibleWidth(line), `${width}x${rows}`).toBeLessThanOrEqual(width)
