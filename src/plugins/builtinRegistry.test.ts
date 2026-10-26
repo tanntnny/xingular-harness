@@ -25,19 +25,20 @@ describe('built-in plugin registry', () => {
     const registry = createBuiltinPluginRegistry([module])
 
     expect(registry.descriptors()).toEqual([module.descriptor])
-    expect(registry.commands()).toEqual([{ pluginId: 'world', name: 'inspect', description: 'Inspect the world', namespace: 'plugin' }])
-    expect(registry.command('inspect')?.pluginId).toBe('world')
+    expect(registry.commands()).toEqual([{ pluginId: 'world', prefix: 'world', name: 'inspect', description: 'Inspect the world', legacyBare: false }])
+    expect(registry.command('world', 'inspect')?.pluginId).toBe('world')
     expect(registry.worldParts(context)).toEqual([worldPart])
     expect(registry.serverMethods({} as Harness)).toEqual({ 'world.inspect': handler })
   })
 
-  it('uses the bare namespace for commands owned by required plugins', () => {
+  it('namespaces required plugin commands while retaining their temporary bare alias', () => {
     const registry = createBuiltinPluginRegistry([{
       descriptor: { ...descriptor('required'), required: 'Always available.' },
       commands: [{ name: 'inspect', description: 'Inspect the world' }]
     }])
 
-    expect(registry.commands()).toEqual([{ pluginId: 'required', name: 'inspect', description: 'Inspect the world', namespace: 'unprefixed' }])
+    expect(registry.commands()).toEqual([{ pluginId: 'required', prefix: 'required', name: 'inspect', description: 'Inspect the world', legacyBare: true }])
+    expect(registry.command('required', 'inspect')?.legacyBare).toBe(true)
   })
 
   it('rejects duplicate plugin IDs and command names at registry construction', () => {
@@ -46,10 +47,21 @@ describe('built-in plugin registry', () => {
       { descriptor: descriptor('one') }
     ])).toThrow('Duplicate built-in plugin id: one')
 
-    expect(() => createBuiltinPluginRegistry([
+    const separateOwners = createBuiltinPluginRegistry([
       { descriptor: descriptor('one'), commands: [{ name: 'inspect', description: 'First' }] },
       { descriptor: descriptor('two'), commands: [{ name: 'inspect', description: 'Second' }] }
-    ])).toThrow('Duplicate built-in plugin command: inspect')
+    ])
+    expect(separateOwners.commands().map(command => `${command.prefix}:${command.name}`)).toEqual(['one:inspect', 'two:inspect'])
+    expect(() => createBuiltinPluginRegistry([
+      { descriptor: descriptor('one'), commands: [{ name: 'inspect', description: 'First' }, { name: 'inspect', description: 'Second' }] }
+    ])).toThrow('Duplicate built-in plugin command: one:inspect')
+    expect(() => createBuiltinPluginRegistry([
+      { descriptor: descriptor('one'), commandPrefix: 'shared', commands: [{ name: 'inspect', description: 'First' }] },
+      { descriptor: descriptor('two'), commandPrefix: 'shared', commands: [{ name: 'deploy', description: 'Second' }] }
+    ])).toThrow('Duplicate built-in plugin command prefix: shared')
+    expect(() => createBuiltinPluginRegistry([{
+      descriptor: descriptor('root'), defaultCommand: 'missing', commands: [{ name: 'inspect', description: 'Inspect' }]
+    }])).toThrow('Unknown default command for built-in plugin root: missing')
   })
 
   it('rejects overlapping server method ownership', () => {
@@ -71,22 +83,19 @@ describe('built-in plugin registry', () => {
     expect(registry.tools({} as BuiltinToolContext).map(item => item.name)).toEqual(['early-tool', 'late-tool'])
   })
 
-  it('assigns plugin-owned terminal commands to their feature modules', () => {
-    const owners = Object.fromEntries(BUILTIN_PLUGIN_REGISTRY.commands().map(command => [command.name, { pluginId: command.pluginId, namespace: command.namespace }]))
-    expect(owners).toMatchObject({
-      doctor: { pluginId: 'doctor', namespace: 'unprefixed' },
-      worktree: { pluginId: 'worktrees', namespace: 'unprefixed' },
-      trajectory: { pluginId: 'history', namespace: 'unprefixed' },
-      subagents: { pluginId: 'subagents', namespace: 'unprefixed' },
-      notes: { pluginId: 'annotations', namespace: 'plugin' },
-      annotate: { pluginId: 'annotations', namespace: 'plugin' }
-    })
-    expect(owners.doctor).not.toBe('pi')
+  it('keeps first-class Harness pages out of plugin command metadata', () => {
+    const routes = BUILTIN_PLUGIN_REGISTRY.commands().map(command => `${command.prefix}:${command.name}`)
+    expect(routes).toEqual(['annotate:notes', 'annotate:annotate', 'usage:analysis', 'usage:limit'])
+    expect(BUILTIN_PLUGIN_REGISTRY.defaultCommand('annotate')?.name).toBe('annotate')
+    expect(BUILTIN_PLUGIN_REGISTRY.defaultCommand('usage')?.name).toBe('analysis')
     expect(BUILTIN_PLUGIN_REGISTRY.descriptors().map(plugin => plugin.id)).toEqual(expect.arrayContaining([
       'web', 'browser', 'annotations', 'history', 'subagents', 'connected-apps', 'hub', 'refinement', 'doctor', 'worktrees'
     ]))
     expect(BUILTIN_PLUGIN_REGISTRY.modules.find(module => module.descriptor.id === 'subagents')?.tools).toBeTypeOf('function')
     expect(BUILTIN_PLUGIN_REGISTRY.modules.find(module => module.descriptor.id === 'connected-apps')?.tools).toBeTypeOf('function')
+    for (const id of ['history', 'subagents', 'doctor', 'worktrees', 'usage']) {
+      expect(BUILTIN_PLUGIN_REGISTRY.modules.find(module => module.descriptor.id === id)?.serverMethods).toBeTypeOf('function')
+    }
   })
 
   it('composes connected-app and subagent tools through their registered owners', () => {

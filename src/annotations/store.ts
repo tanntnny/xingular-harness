@@ -49,10 +49,16 @@ export interface NoteDelivery {
   summary?: string
 }
 
+/**
+ * `tree: 'composed'` marks a target captured over the composed tree (open shadow roots and slotted
+ * content). A target without it was captured over the document alone and is always resolved that way.
+ */
+export type NoteTree = 'composed'
+
 export type NoteTarget =
   | { kind: 'page' }
-  | { kind: 'text'; exact: string; prefix: string; suffix: string; start: number; end: number }
-  | { kind: 'element'; tag: string; role: string; name: string; text: string; context: string; selector: string }
+  | { kind: 'text'; exact: string; prefix: string; suffix: string; start: number; end: number; tree?: NoteTree }
+  | { kind: 'element'; tag: string; role: string; name: string; text: string; context: string; selector: string; tree?: NoteTree }
 
 /** Who may read a note through the model tools: a session, or an agent by its opaque id. */
 export interface NotePrincipal {
@@ -160,8 +166,12 @@ function validateSource(source: unknown): NoteSource {
 export function validateTarget(target: unknown): NoteTarget {
   if (!target || typeof target !== 'object') throw invalid('A note needs a target.')
   const value = target as Record<string, unknown>
-  const keys = Object.keys(value).sort().join(',')
+  const composed = 'tree' in value
+  if (composed && value.tree !== 'composed') throw invalid('Invalid note target tree.')
+  const keys = Object.keys(value).filter((key) => key !== 'tree').sort().join(',')
+  const tree = composed ? { tree: 'composed' as const } : {}
   if (value.kind === 'page') {
+    if (composed) throw invalid('Invalid page target.')
     if (keys !== 'kind') throw invalid('Invalid page target.')
     return { kind: 'page' }
   }
@@ -176,7 +186,7 @@ export function validateTarget(target: unknown): NoteTarget {
     if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || (start as number) < 0 || (end as number) <= (start as number) || (end as number) - (start as number) !== codepoints(exact)) {
       throw invalid('Note text offsets do not match the exact text.')
     }
-    return { kind: 'text', exact, prefix, suffix, start: start as number, end: end as number }
+    return { kind: 'text', exact, prefix, suffix, start: start as number, end: end as number, ...tree }
   }
   if (value.kind === 'element') {
     if (keys !== 'context,kind,name,role,selector,tag,text') throw invalid('Invalid element target.')
@@ -187,9 +197,11 @@ export function validateTarget(target: unknown): NoteTarget {
       name: bounded(value.name, 200, false, 'element name'),
       text: bounded(value.text, 500, false, 'element text'),
       context: bounded(value.context, 200, false, 'element context'),
-      selector: bounded(value.selector, 500, false, 'element selector')
+      selector: bounded(value.selector, 500, false, 'element selector'),
+      ...tree
     }
-    if (!element.name.trim() && !element.text.trim()) throw invalid('An element note needs a meaningful name or text.')
+    const specificSelector = element.selector.trim().toLowerCase() !== element.tag.trim().toLowerCase() && ['#', '.', '[', ':', '>', '+', '~'].some((marker) => element.selector.includes(marker))
+    if (!element.name.trim() && !element.text.trim() && !specificSelector) throw invalid('An element note needs a meaningful name, text or specific selector.')
     return element
   }
   throw invalid('A note target is a page, text or an element.')

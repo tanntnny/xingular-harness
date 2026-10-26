@@ -209,7 +209,7 @@ describe('sending page notes', () => {
     expect(await tool.execute({ id: note.id, summary: 'Made it primary' })).toContain('Marked')
     expect(read(root, note.id)).toMatchObject({ status: 'open', delivery: { state: 'fixed', summary: 'Made it primary' } })
     expect(changed).toHaveBeenCalledWith('s1', [note.id])
-    expect(await tool.execute({ id: other.id, summary: 'x' })).toContain('No page note')
+    expect(await tool.execute({ id: other.id, summary: 'x' })).toContain('No web annotation')
     expect(read(root, other.id).delivery).toBeUndefined()
   })
 })

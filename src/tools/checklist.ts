@@ -32,6 +32,7 @@ export function checklistTool(run: Pick<ActiveRun, 'emit'>): ToolSpec {
       'Keep a checklist of the steps of the current work. The user watches this list to follow your progress, so write it early and keep it current. Send the whole list every time; it replaces the previous one. ' +
       'Use it whenever the work has several distinct steps or will take several tool calls, when the user gives several things to do, and when a subagent brief asks for more than one thing. Do not use it for a single, simple step or for conversation. ' +
       'Statuses: pending, in_progress, completed. Keep exactly one step in_progress while you work, mark a step completed as soon as it is done (not in batches), and add steps you discover. ' +
+      'Before your final response, write one final checklist update: mark every fully completed step completed, and leave unfinished or blocked steps in their accurate pending or in_progress status. Never mark unfinished work completed. ' +
       'Only mark a step completed when it is fully done; if something blocks it, keep it in_progress and add a step for the blocker.',
     parameters: (Type) =>
       Type.Object({

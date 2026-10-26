@@ -25,6 +25,8 @@ export const runEventTypeSchema = z.enum([
   'reaction.added',
   'agent.message',
   'checklist.updated',
+  'checkpoint',
+  'heartbeat',
   'artifact.added',
   'file.changed',
   'usage.updated',
@@ -184,6 +186,54 @@ export type ChecklistItem = z.infer<typeof checklistItemSchema>
 export const MAX_CHECKLIST_ITEMS = 50
 /** The whole checklist as the model last wrote it; the latest event replaces every earlier one. */
 const checklistPayload = z.object({ items: z.array(checklistItemSchema).max(MAX_CHECKLIST_ITEMS) }).strict()
+export const MAX_CHECKPOINT_SUMMARY = 1_200
+export const MAX_CHECKPOINT_DONE = 20
+export const MAX_CHECKPOINT_EVIDENCE = 5
+export const MAX_CHECKPOINT_FILES = 20
+export const MAX_CHECKPOINT_CHECKS = 8
+export const MAX_CHECKPOINT_DECISIONS = 8
+/**
+ * The handoff a reply writes when it reaches its work-slice budget. The harness validates and
+ * records it; the next slice is told where this one stopped from it (PROP-0041).
+ */
+export const checkpointItemSchema = z.object({
+  item: z.string().min(1).max(300),
+  evidence: z.array(z.string().min(1).max(300)).max(MAX_CHECKPOINT_EVIDENCE).default([])
+}).strict()
+export const checkpointFileSchema = z.object({ path: z.string().min(1).max(300), why: z.string().max(200).default('') }).strict()
+export const checkpointCheckSchema = z.object({
+  command: z.string().min(1).max(200),
+  ok: z.boolean(),
+  detail: z.string().max(300).optional()
+}).strict()
+export const checkpointDecisionSchema = z.object({ what: z.string().min(1).max(200), why: z.string().max(300).default('') }).strict()
+export const checkpointReasonSchema = z.enum(['budget', 'stuck', 'compaction-thrash', 'requested'])
+const checkpointPayload = z.object({
+  summary: z.string().max(MAX_CHECKPOINT_SUMMARY),
+  done: z.array(checkpointItemSchema).max(MAX_CHECKPOINT_DONE).default([]),
+  next: z.string().max(500).default(''),
+  blocked: z.string().max(500).optional(),
+  files: z.array(checkpointFileSchema).max(MAX_CHECKPOINT_FILES).default([]),
+  checks: z.array(checkpointCheckSchema).max(MAX_CHECKPOINT_CHECKS).default([]),
+  decisions: z.array(checkpointDecisionSchema).max(MAX_CHECKPOINT_DECISIONS).default([]),
+  /** Which slice of the session wrote it, from 1. */
+  slice: z.number().int().positive(),
+  reason: checkpointReasonSchema
+}).strict()
+export type Checkpoint = z.infer<typeof checkpointPayload>
+export type CheckpointItem = z.infer<typeof checkpointItemSchema>
+export type CheckpointFile = z.infer<typeof checkpointFileSchema>
+export type CheckpointCheck = z.infer<typeof checkpointCheckSchema>
+export type CheckpointDecision = z.infer<typeof checkpointDecisionSchema>
+/** Counters a live reply reports while it works; a person and the watchdog read liveness from it. */
+const heartbeatPayload = z.object({
+  steps: z.number().int().nonnegative(),
+  elapsedMs: z.number().nonnegative(),
+  lastTool: z.string().max(120).nullable(),
+  compactions: z.number().int().nonnegative(),
+  slice: z.number().int().positive(),
+  maxToolCalls: z.number().int().nonnegative()
+}).strict()
 const artifactPayload = z.object({ artifactId: z.string(), name: z.string(), file: z.unknown().optional() })
 const fileChangedPayload = z.object({ path: z.string(), change: z.enum(['added', 'modified', 'deleted']) })
 /** Where a cost figure comes from: Pi reported it, or the tokens were priced at list rates. */
@@ -239,9 +289,19 @@ export const accountLimitSchema = z.object({
   id: z.string(),
   label: z.string(),
   usedPercent: z.number().nullable().optional(),
+  remainingPercent: z.number().nullable().optional(),
   resetsAt: z.string().nullable().optional(),
   windowMinutes: z.number().nullable().optional(),
-  status: z.string().nullable().optional()
+  status: z.string().nullable().optional(),
+  provider: z.string().nullable().optional(),
+  kind: z.enum(['window', 'rate', 'credit', 'configured', 'error']).nullable().optional(),
+  unit: z.enum(['percent', 'requests', 'tokens', 'usd', 'currency', 'count']).nullable().optional(),
+  used: z.number().nullable().optional(),
+  limit: z.number().nullable().optional(),
+  remaining: z.number().nullable().optional(),
+  source: z.enum(['headers', 'provider', 'estimate', 'error']).nullable().optional(),
+  observedAt: z.string().nullable().optional(),
+  detail: z.string().nullable().optional()
 })
 export type AccountLimit = z.infer<typeof accountLimitSchema>
 /** Limit snapshots, plan changes, and classified account failures. */
@@ -278,6 +338,8 @@ export const runEventPayloadSchemas = {
   'reaction.added': reactionAddedPayload,
   'agent.message': agentMessagePayload,
   'checklist.updated': checklistPayload,
+  checkpoint: checkpointPayload,
+  heartbeat: heartbeatPayload,
   'artifact.added': artifactPayload,
   'file.changed': fileChangedPayload,
   'usage.updated': usagePayloadSchema,
@@ -328,6 +390,8 @@ export interface RunRecord {
   sessionId: string
   nativeSessionId: string | null
   workingDirectory: string | null
+  /** Canonical filesystem root whose writes this run may make by default. */
+  workspaceRoot?: string | null
   worktreeId: string | null
   goal: string | null
   attachmentCount: number
@@ -366,6 +430,7 @@ export const runRecordSchema = z.object({
   sessionId: z.string(),
   nativeSessionId: text,
   workingDirectory: text,
+  workspaceRoot: text.optional(),
   worktreeId: text,
   goal: text,
   attachmentCount: z.number().int().nonnegative().default(0),

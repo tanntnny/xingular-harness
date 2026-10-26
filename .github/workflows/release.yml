@@ -1,6 +1,6 @@
 name: Release
 
-# A tag push is a publication request. Prepare and approve the candidate before pushing it.
+# The candidate is reviewed before tagging; this workflow retests it and waits at the separate publish gate.
 on:
   push:
     tags: ['v*']
@@ -28,6 +28,12 @@ jobs:
         run: node --input-type=module -e "import p from './package.json' with {type:'json'}; if (process.env.GITHUB_REF_NAME !== 'v' + p.version) process.exit(1)"
       - run: npm ci
       - run: npx --no-install playwright-core install --with-deps chromium
+      - name: Install bubblewrap for Linux sandbox verification
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes bubblewrap
+          test -x /usr/bin/bwrap
       - run: npm run ci
 
   candidate:
@@ -44,18 +50,41 @@ jobs:
           bun-version: '1.4.2'
       - run: npm ci
       - run: npm run release:pack -- outputs/release
-      - name: Smoke-test the exact release tarball
-        run: |
-          version=$(node -p "require('./package.json').version")
-          npm run release:smoke -- "outputs/release/xingular-harness-${version}.tgz" --terminal
       - uses: actions/upload-artifact@v4
         with:
           name: harness-candidate
           path: outputs/release/
           if-no-files-found: error
 
-  publish:
+  smoke:
     needs: candidate
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.19.0'
+          cache: npm
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.2'
+      - uses: actions/download-artifact@v4
+        with:
+          name: harness-candidate
+          path: outputs/release
+      - name: Smoke-test the exact candidate tarball
+        run: |
+          version=$(node -p "require('./package.json').version")
+          npm run release:smoke -- "outputs/release/xingular-harness-${version}.tgz" --terminal
+
+  publish:
+    needs: [candidate, smoke]
+    # Configure required reviewers here; this approval gates publication, not pre-tag candidate review.
+    environment: npm-publish
     runs-on: ubuntu-latest
     permissions:
       contents: write

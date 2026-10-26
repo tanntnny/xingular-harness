@@ -33,6 +33,16 @@ describe('PiDialogHost', () => {
     expect(host.sendToOverlay('\x1b[B')).toBe(false)
   })
 
+  it('forwards pasted text through the bracketed-paste protocol', () => {
+    const inputs: string[] = []
+    const host = new PiDialogHost(() => {})
+    host.showOverlay(component(() => ['dialog'], data => inputs.push(data)))
+
+    expect(host.sendPasteToOverlay('first line\nsecond line')).toBe(true)
+    expect(inputs).toEqual(['\x1b[200~first line\nsecond line\x1b[201~'])
+    expect(host.sendPasteToOverlay('')).toBe(false)
+  })
+
   it('normalizes OpenTUI clicks to component-local TUI mouse events', () => {
     const events: TerminalMouseInput[] = []
     const changed = vi.fn()

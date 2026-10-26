@@ -15,6 +15,8 @@ import { BUILTIN_PLUGIN_REGISTRY } from '../plugins/builtin'
 import * as install from '../plugins/install'
 import { compile, load, render, type Launch } from '../prompt/compile'
 import { continuationOf } from '../sessions/continuation'
+import * as control from '../sessions/control'
+import { listCommands } from '../commands/list'
 import { selectHistory } from '../sessions/history'
 import { runsSince } from '../sessions/runIndex'
 import { findRun, listRuns, loadRun, pendingDecisions, readEvents, runFamily, snapshot } from '../sessions/runStore'
@@ -41,6 +43,7 @@ const questionAnswer = (value: unknown): { selected: string[]; text?: string; no
       : {})
   }
 }
+const sessionRef = (params: Params): control.SessionRef => ({ sessionDir: text(params, 'sessionDir'), sessionFile: optional(params, 'sessionFile'), cwd: optional(params, 'cwd') })
 const pluginScope = (params: Params): plugins.PluginScope => ({ cwd: optional(params, 'cwd'), accountId: optional(params, 'accountId'), agentId: optional(params, 'agentId'), projectId: optional(params, 'projectId') })
 
 const variantOf = (value: unknown): Variant => {
@@ -294,6 +297,22 @@ export function methods(harness: Harness): Record<string, Handler> {
     'sessions.spawnSubagent': (params: Params) => sessions.spawnSubagent(params as SubagentInput),
     'sessions.run': (params: Params) => sessions.run(params as SessionRunInput),
     'sessions.history': (params: Params) => ({ sessionFile: selectHistory({ sessionDir: text(params, 'sessionDir'), resume: params.resume ?? null }) }),
+    // The commands that need no model act on the saved history; see sessions/control.ts.
+    'sessions.tree': (params: Params) => control.tree(sessionRef(params)),
+    'sessions.navigate': (params: Params) => control.navigate({ ...sessionRef(params), entryId: text(params, 'entryId') }),
+    'sessions.fork': (params: Params) => control.fork({ ...sessionRef(params), entryId: text(params, 'entryId'), targetDir: text(params, 'targetDir') }),
+    'sessions.clone': (params: Params) => control.clone({ ...sessionRef(params), targetDir: text(params, 'targetDir') }),
+    'sessions.rename': (params: Params) => control.rename({ ...sessionRef(params), name: text(params, 'name') }),
+    'sessions.lastReply': (params: Params) => control.lastReply(sessionRef(params)),
+    'sessions.export': (params: Params) => control.exportJsonl({ ...sessionRef(params), path: text(params, 'path') }),
+    // Each structured turn loads its resources fresh; this reloads what lives between turns.
+    'sessions.reload': async () => {
+      await harness.hooks.reload()
+      return { reloaded: true }
+    },
+
+    // ---- Commands ----------------------------------------------------------------------------------
+    'commands.list': async (params: Params) => listCommands(await plugins.list(harness, pluginScope(params))),
 
     // ---- Terminal sessions -------------------------------------------------------------------------
     'terminal.prepare': (params: Params) => terminals.prepare(params as TerminalPrepareInput),

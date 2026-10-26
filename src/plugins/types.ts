@@ -69,6 +69,8 @@ export interface Plugin {
   connectorTemplates: ConnectorTemplate[]
   /** Where the whole plugin is switched on and off, or `null` when only its parts are, or nothing is. */
   attachment: Attachment | null
+  /** Where it works best, for a plugin that works better in a host. */
+  surfaces?: PluginSurfaces | null
   contributions: Contribution[]
 }
 
@@ -118,6 +120,20 @@ export interface PluginDescriptor {
   connectorTemplates?: ConnectorTemplate[]
   /** Code of its own that runs in a session. */
   code?: { name: string; description: string }[]
+  /** Where it works best, when that is not everywhere alike (PROP-0039). Never a category. */
+  surfaces?: PluginSurfaces
+}
+
+/**
+ * A plugin that works better in a host such as a desktop application: an add-on there. The
+ * capability is the same in both; the host adds presentation or a native backend the terminal
+ * cannot have. `terminal` says what the terminal offers instead (INV-PAR-3).
+ */
+export interface PluginSurfaces {
+  preferred: 'host'
+  terminal: 'fallback' | 'unavailable'
+  /** One sentence for a person: what the host adds, and what the terminal does instead. */
+  note: string
 }
 
 export type Delivery = 'system' | 'context' | 'tool' | 'on-demand' | 'code' | 'background'

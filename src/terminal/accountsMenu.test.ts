@@ -55,7 +55,7 @@ function view(id: string, label: string, overrides: Partial<AccountView> = {}): 
     authKind: 'subscription',
     createdAt: '2026-10-01T00:00:00.000Z',
     isDefault: false,
-    state: { health: 'unknown', signedIn: null, authMethod: null, plan: null, identity: null, limits: [], lastError: null, lastCheckedAt: null, cliVersion: null, capabilities: [], piProviders: [] },
+    state: { health: 'unknown', signedIn: null, authMethod: null, plan: null, identity: null, limits: [], providerLimits: [], lastError: null, lastCheckedAt: null, cliVersion: null, capabilities: [], piProviders: [] },
     ...overrides
   }
 }

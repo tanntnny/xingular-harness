@@ -1,8 +1,8 @@
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
-export const PINNED_PI_VERSION = '1.2.0'
-const HTTP_DISPATCHER_CHUNK = 'dist/bundle/chunks/chunk-TJXZSVTD.js'
+export const PINNED_PI_VERSION = '1.4.0'
+export const HTTP_DISPATCHER_CHUNK = 'dist/bundle/chunks/chunk-MM3LKT73.js'
 
 type PiRuntimeModule = {
   VERSION: string

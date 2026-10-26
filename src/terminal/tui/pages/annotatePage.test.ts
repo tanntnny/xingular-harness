@@ -38,7 +38,7 @@ function setup(start: AnnotateStart, notes: Note[], steps: Array<Record<string, 
 
 const text = (page: AnnotatePage) => page.render(120, 30).map(stripTerminalSequences).join('\n')
 
-describe('/plugin:annotate arguments', () => {
+describe('/annotate:annotate arguments', () => {
   it('reads a page address, an app DevTools address, or the bridge', () => {
     expect(parseAnnotate('')).toEqual({ kind: 'web' })
     expect(parseAnnotate('localhost:5173')).toEqual({ kind: 'web', url: 'http://localhost:5173' })
@@ -47,7 +47,7 @@ describe('/plugin:annotate arguments', () => {
     expect(parseAnnotate('--app http://127.0.0.1:9229 My App')).toEqual({ kind: 'cdp', endpoint: 'http://127.0.0.1:9229', name: 'My App' })
     expect(parseAnnotate('--bridge Desktop')).toEqual({ kind: 'bridge', name: 'Desktop' })
     expect(parseAnnotate('--app')).toContain('DevTools address')
-    expect(parseAnnotate('a b')).toContain('/plugin:annotate')
+    expect(parseAnnotate('a b')).toContain('/annotate:annotate')
   })
 })
 

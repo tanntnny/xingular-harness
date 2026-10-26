@@ -7,3 +7,8 @@ outputs/
 external/
 __pycache__/
 *.tgz
+
+# Generated scratch from refinement demos, Node compile cache and test runs
+harness-demo-*/
+node-compile-cache/
+test-results/

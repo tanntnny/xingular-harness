@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { afterEach, expect, it } from 'vitest'
 
 import { memorySecretStore } from '../accounts/secrets'
+import { resolveWorkspaceRoot } from '../core/workspace'
 import { createHarness, type Harness } from '../harness'
 import { methods } from '../server/methods'
 import { writeFile } from '../../tests/helpers'
@@ -32,7 +33,7 @@ export default function(pi) {
  pi.on('resources_discover', () => ({ skillPaths: [${JSON.stringify(skill)}], promptPaths: [${JSON.stringify(prompt)}] }))
 }`)
   const table = methods(harness)
-  const load = async (agentId: string) => piSessionFactory({ params: { runId: 'r', cwd: base, sessionDir: join(base, agentId), historyFile: null, model: null, text: '', account, system: '', update: null,
+  const load = async (agentId: string) => piSessionFactory({ params: { runId: 'r', cwd: base, workspaceRoot: resolveWorkspaceRoot(base), sessionDir: join(base, agentId), historyFile: null, model: null, text: '', account, system: '', update: null,
     plugins: { loading: () => harness.plugins.loading({ cwd: base, agentDir: account.configDir, caller: { agentId } }), loaded: (records) => harness.plugins.loaded(records) } },
     allow: ['read'], tools: [], gate: { check: async () => null }, runtime: () => harness.accounts.runtime(account), extensions: { ask: async () => ({ selected: [] }), notice: () => {} } })
   const first = await load('a1')

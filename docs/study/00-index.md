@@ -20,6 +20,9 @@ written and the claim moves to checked behavior. Cite material as
   side question, and checked-out external implementations.
 - [Harness feature-gap review](feature-gap-review.md) — task/goal management, long-running work,
   memory, execution isolation, verification, and observability gaps against the studied peers.
+- [Why a long run takes hours](STUDY-0003-long-horizon-runs.md) — measured diagnosis of two 70–97
+  minute replies (447 and 266 tool calls, 5 and 2 compactions, zero assistant text), what other
+  harnesses do about it, and the fixes proposed in [PROP-0041](../architecture/proposals/PROP-0041-bounded-work-slices.md).
 
 ## Sources
 

@@ -3,18 +3,19 @@
 
 Each target runs in a real PTY. Keys are written at a fixed human-fast interval and a pyte
 virtual screen records when each typed prefix first becomes visible. A loopback
-OpenAI-compatible server feeds every target the same deterministic replies, so no model
-request leaves the machine unless `--real` is given (then each target uses its own login and
-only the "stream" scenario runs).
+OpenAI-compatible server feeds every target the same deterministic replies. Credentialed
+runs are restricted to one Xingular stream using its existing account.
 
 Scenarios:
   idle     fresh session, nothing running
   history  after a ~240-message tool loop has finished (transcript length cost)
-  stream   while a reply streams ~200 tokens/s (work-in-progress cost)
-  question while an ask_user question waits above the composer
+  stream   while a reply streams at a regular cadence
+  burst    while a reply arrives in short bursts with pauses
+  question Harness-only typing while a plan-mode ask_user waits above the composer
 
-Run `npm run build` first. Example:
-  python3 scripts/profile-terminal-latency.py --targets xingular,pi,opencode --output /tmp/lat
+Run `npm run build` first. Fixture runs use isolated temporary profiles and a local
+OpenAI-compatible provider; the Xingular-only `--real` mode uses its existing account. Example:
+  python3 scripts/profile-terminal-latency.py --targets xingular,pi,opencode --repeats 5 --output /tmp/lat
 """
 import argparse
 import errno
@@ -23,11 +24,13 @@ import http.server
 import json
 import os
 from pathlib import Path
+import platform
 import pty
 import random
 import select
 import shutil
 import signal
+import statistics
 import struct
 import subprocess
 import tempfile
@@ -43,7 +46,7 @@ FILLER = ('the agent reads each file and then plans a change . it runs the tests
           'one result per line . nothing else is done here . the harness records the run and '
           'its tool calls so that a person can follow the trail later . ').split(' ')
 HISTORY_TURNS = 80
-STREAM_SECONDS = 30
+DEFAULT_STREAM_SECONDS = 30
 
 
 def filler_words(count, rng):
@@ -66,6 +69,7 @@ class Provider(http.server.BaseHTTPRequestHandler):
     protocol_version = 'HTTP/1.1'
     fixture = None
     requests = 0
+    stream_seconds = DEFAULT_STREAM_SECONDS
 
     def log_message(self, *args):
         pass
@@ -139,19 +143,24 @@ class Provider(http.server.BaseHTTPRequestHandler):
                                        'function': {'name': 'ask_user', 'arguments': json.dumps(arguments)}}]})
                 done('tool_calls')
                 return
-            if 'latency-stream' in text:
+            if 'latency-stream' in text or 'latency-burst' in text:
                 chunk({'reasoning_content': filler_words(40, rng)})
-                deadline = time.monotonic() + STREAM_SECONDS
+                deadline = time.monotonic() + Provider.stream_seconds
                 line = 0
+                bursting = 'latency-burst' in text
                 while time.monotonic() < deadline:
-                    line += 1
-                    if line % 25 == 1:
-                        chunk({'content': f'\n## section {line // 25 + 1}\n\n'})
-                    elif line % 25 == 12:
-                        chunk({'content': '\n```\nconst result = run ( task )\n```\n'})
-                    else:
-                        chunk({'content': f'- {filler_words(3, rng)}' + ('\n' if line % 4 == 0 else ' ')})
-                    time.sleep(1 / 60)
+                    count = 18 if bursting else 1
+                    for _ in range(count):
+                        if time.monotonic() >= deadline:
+                            break
+                        line += 1
+                        if line % 25 == 1:
+                            chunk({'content': f'\n## section {line // 25 + 1}\n\n'})
+                        elif line % 25 == 12:
+                            chunk({'content': '\n```\nconst result = run ( task )\n```\n'})
+                        else:
+                            chunk({'content': f'- {filler_words(3, rng)}' + ('\n' if line % 4 == 0 else ' ')})
+                    time.sleep(0.3 if bursting else 1 / 60)
                 done()
                 return
             chunk({'content': 'finished . ' + filler_words(20, rng)})
@@ -164,6 +173,10 @@ class Provider(http.server.BaseHTTPRequestHandler):
 
 class Terminal:
     def __init__(self, command, cwd, env, width, height):
+        self.started_at = time.monotonic()
+        self.first_output_at = None
+        self.first_visible_at = None
+        self.last_output_at = None
         self.master, slave = pty.openpty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', height, width, 0, 0))
         self.screen = pyte.Screen(width, height)
@@ -190,6 +203,9 @@ class Terminal:
         if not part:
             return False
         self.bytes += len(part)
+        now = time.monotonic()
+        self.first_output_at = self.first_output_at or now
+        self.last_output_at = now
         # Answer the terminal queries a real emulator would, so startup does not wait on timeouts.
         for query, reply in [(b'\x1b[6n', b'\x1b[1;1R'), (b'\x1b[c', b'\x1b[?1;2c'), (b'\x1b[?u', b'\x1b[?0u')]:
             if query in part:
@@ -199,9 +215,26 @@ class Terminal:
                     pass
         try:
             self.stream.feed(part)
+            if self.first_visible_at is None and any(line.strip() for line in self.screen.display):
+                self.first_visible_at = time.monotonic()
         except Exception:
             pass
         return True
+
+    def wait_for_initial_screen(self, quiet=0.75, timeout=60):
+        deadline = self.started_at + timeout
+        while time.monotonic() < deadline:
+            self.pump(0.05)
+            now = time.monotonic()
+            if self.first_visible_at is not None and self.last_output_at is not None and now - self.last_output_at >= quiet:
+                return {
+                    'launchToFirstOutputMs': round((self.first_output_at - self.started_at) * 1000, 2),
+                    'launchToFirstVisibleMs': round((self.first_visible_at - self.started_at) * 1000, 2),
+                    'launchToQuietScreenMs': round((now - self.started_at) * 1000, 2)
+                }
+            if self.process.poll() is not None:
+                break
+        raise AssertionError(f'Terminal did not reach a visible, quiet screen; exit={self.process.poll()}\n{self.text()}')
 
     def read(self, seconds):
         deadline = time.monotonic() + seconds
@@ -255,6 +288,21 @@ class Terminal:
             stack.extend(children.get(pid, []))
         return total
 
+    def rss_kb(self):
+        """Resident set size in KiB for the whole process tree."""
+        out = subprocess.run(['ps', '-A', '-o', 'pid=,ppid=,rss='], capture_output=True, text=True).stdout
+        children, rss = {}, {}
+        for line in out.splitlines():
+            pid, ppid, size = line.split(None, 2)
+            children.setdefault(int(ppid), []).append(int(pid))
+            rss[int(pid)] = int(size)
+        total, stack = 0, [self.process.pid]
+        while stack:
+            pid = stack.pop()
+            total += rss.get(pid, 0)
+            stack.extend(children.get(pid, []))
+        return total
+
     def close(self):
         if self.process.poll() is None:
             try:
@@ -280,7 +328,8 @@ def percentile(values, p):
 def type_rounds(terminal, rounds, length, interval, rng, timeout=3.0):
     """Type `rounds` strings; return per-key latency in ms (None when never seen within timeout)."""
     latencies = []
-    cpu_before, wall_before, bytes_before = terminal.cpu_seconds(), time.monotonic(), terminal.bytes
+    cpu_before, rss_before, bytes_before = terminal.cpu_seconds(), terminal.rss_kb(), terminal.bytes
+    wall_before = time.monotonic()
     for _ in range(rounds):
         text = ''.join(rng.choice(TYPED) for _ in range(length))
         sent = []
@@ -315,12 +364,30 @@ def type_rounds(terminal, rounds, length, interval, rng, timeout=3.0):
         terminal.read(0.6)
     wall = time.monotonic() - wall_before
     cpu = terminal.cpu_seconds() - cpu_before
+    rss_after = terminal.rss_kb()
     measured = [value for value in latencies if value is not None]
     return {
         'keys': len(latencies), 'missed': len(latencies) - len(measured),
         'p50': percentile(measured, 50), 'p95': percentile(measured, 95), 'p99': percentile(measured, 99),
         'max': round(max(measured), 2) if measured else None,
-        'cpuPercent': round(100 * cpu / wall, 1), 'bytesPerKey': round((terminal.bytes - bytes_before) / max(1, len(latencies) + 8 * rounds))
+        'cpuPercent': round(100 * cpu / wall, 1), 'rssBeforeKb': rss_before, 'rssAfterKb': rss_after,
+        'bytesPerKey': round((terminal.bytes - bytes_before) / max(1, len(latencies) + 8 * rounds))
+    }
+
+
+def idle_usage(terminal, seconds):
+    cpu_before = terminal.cpu_seconds()
+    rss_before = terminal.rss_kb()
+    started = time.monotonic()
+    terminal.read(seconds)
+    elapsed = time.monotonic() - started
+    cpu = terminal.cpu_seconds() - cpu_before
+    rss_after = terminal.rss_kb()
+    return {
+        'durationSeconds': round(elapsed, 2),
+        'cpuPercent': round(100 * cpu / elapsed, 1),
+        'rssBeforeKb': rss_before,
+        'rssAfterKb': rss_after
     }
 
 
@@ -330,6 +397,43 @@ def base_env():
            and key not in ['PI_CODING_AGENT_DIR', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'OPENCODE_CONFIG']}
     env.update({'TERM': 'xterm-256color', 'COLORTERM': 'truecolor'})
     return env
+
+
+def command_version(command):
+    if not command or not command[0]:
+        return None
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=8)
+        value = (result.stdout or result.stderr).strip()
+        return value.splitlines()[0] if result.returncode == 0 and value else None
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
+def opencode_binary():
+    return shutil.which('opencode') or str(Path.home() / '.opencode/bin/opencode')
+
+
+def benchmark_metadata():
+    package = json.loads((REPOSITORY / 'package.json').read_text())
+    pi_package = REPOSITORY / 'node_modules/@earendil-works/pi-coding-agent/package.json'
+    pi_version = json.loads(pi_package.read_text()).get('version') if pi_package.exists() else None
+    commit = command_version(['git', 'rev-parse', '--short', 'HEAD'])
+    dirty = subprocess.run(['git', 'status', '--porcelain'], cwd=REPOSITORY, capture_output=True, text=True)
+    return {
+        'commit': commit,
+        'workingTreeDirty': bool(dirty.stdout.strip()),
+        'dirtyPathCount': len(dirty.stdout.splitlines()),
+        'platform': platform.platform(),
+        'machine': platform.machine(),
+        'cpuCount': os.cpu_count(),
+        'python': platform.python_version(),
+        'node': command_version(['node', '--version']),
+        'bun': command_version(['bun', '--version']),
+        'harnessVersion': package.get('version'),
+        'piVersion': pi_version,
+        'opencodeVersion': command_version([opencode_binary(), '--version'])
+    }
 
 
 def model_entry(provider_url):
@@ -383,7 +487,7 @@ def launch(target, root, project, provider_url, real, cli):
         env['PI_CODING_AGENT_DIR'] = str(agent)
         return ['node', str(REPOSITORY / 'node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js')], env
     if target == 'opencode':
-        binary = shutil.which('opencode') or str(Path.home() / '.opencode/bin/opencode')
+        binary = opencode_binary()
         if real:
             return [binary], env
         for name in ['XDG_DATA_HOME', 'XDG_CONFIG_HOME', 'XDG_STATE_HOME', 'XDG_CACHE_HOME']:
@@ -411,8 +515,16 @@ def submit(terminal, text):
     terminal.send('\r')
 
 
-def run_target(target, args, output, provider_url):
-    root = output / target
+def enable_plan_mode(terminal):
+    if 'plan mode' in terminal.text():
+        return
+    submit(terminal, '/plan')
+    terminal.wait('plan mode', timeout=10)
+    terminal.settle(0.5, 10)
+
+
+def run_target(target, args, output, provider_url, repeat):
+    root = output / target if args.repeats == 1 else output / f'run-{repeat + 1:02d}' / target
     root.mkdir(parents=True, exist_ok=True)
     project = root / 'project'
     project.mkdir(exist_ok=True)
@@ -421,11 +533,13 @@ def run_target(target, args, output, provider_url):
     subprocess.run(['git', 'init', '-q'], cwd=project)
     command, env = launch(target, root, project, provider_url, args.real, args.cli.resolve())
     rng = random.Random(7)
-    result = {'target': target, 'command': command[0], 'scenarios': {}}
+    result = {'target': target, 'repeat': repeat + 1, 'command': command[0], 'scenarios': {}}
     terminal = Terminal(command, project, env, args.width, args.height)
     try:
-        terminal.read(4)
-        terminal.settle(1.5, 40)
+        result['startup'] = terminal.wait_for_initial_screen()
+        result['startup']['rssKb'] = terminal.rss_kb()
+        terminal.read(args.warm_idle_seconds)
+        result['idleResourceUsage'] = idle_usage(terminal, args.idle_seconds)
         for keys in args.setup:  # For example a model choice: --setup /model '\r' codex '\r'
             terminal.send(keys.encode().decode('unicode_escape'))
             terminal.read(1.5)
@@ -444,6 +558,7 @@ def run_target(target, args, output, provider_url):
                 stats['historySetupSeconds'] = round(time.monotonic() - started, 1)
                 result['scenarios']['history'] = stats
             elif scenario == 'question':
+                enable_plan_mode(terminal)
                 submit(terminal, 'latency-question: ask me')
                 deadline = time.monotonic() + 60
                 while 'Which path' not in terminal.text() and 'Allow once' not in terminal.text() and time.monotonic() < deadline:
@@ -463,51 +578,107 @@ def run_target(target, args, output, provider_url):
                 result['scenarios']['question'] = type_rounds(terminal, args.rounds, args.length, args.interval, rng)
                 terminal.send('\x1b')
                 terminal.settle(1.0, 20)
-            elif scenario == 'stream':
+            elif scenario in ('stream', 'burst'):
+                marker = 'latency-burst' if scenario == 'burst' else 'latency-stream'
                 prompt = ('Write a long, detailed markdown essay (at least 1500 words, many headings and bullet lists) '
-                          'about how terminal user interfaces render text. Do not use any tools.') if args.real else 'latency-stream: go'
+                          'about how terminal user interfaces render text. Do not use any tools.') if args.real else f'{marker}: go'
                 submit(terminal, prompt)
                 terminal.read(10 if args.real else 2)  # A real model may think before it streams.
-                (root / 'stream-start.txt').write_text(terminal.text())
-                result['scenarios']['stream'] = type_rounds(terminal, max(1, args.rounds - 1), args.length, args.interval, rng)
-                (root / 'stream-end.txt').write_text(terminal.text())
-                terminal.read(STREAM_SECONDS if not args.real else 5)
+                (root / f'{scenario}-start.txt').write_text(terminal.text())
+                result['scenarios'][scenario] = type_rounds(terminal, max(1, args.rounds - 1), args.length, args.interval, rng)
+                (root / f'{scenario}-end.txt').write_text(terminal.text())
+                terminal.read(args.stream_seconds if not args.real else 5)
                 terminal.settle(2.0, 120)
-            print(target, scenario, json.dumps(result['scenarios'][scenario]), flush=True)
+            print(target, repeat + 1, scenario, json.dumps(result['scenarios'][scenario]), flush=True)
     finally:
         (root / 'final.txt').write_text(terminal.text())
         terminal.close()
     return result
 
 
+def numeric_medians(rows):
+    summary = {'runs': len(rows)}
+    keys = sorted({key for row in rows for key, value in row.items()
+                   if isinstance(value, (int, float)) and not isinstance(value, bool)})
+    for key in keys:
+        values = [row[key] for row in rows if isinstance(row.get(key), (int, float)) and not isinstance(row.get(key), bool)]
+        summary[key] = round(statistics.median(values), 2)
+    return summary
+
+
+def summarize_results(results):
+    targets = sorted({result['target'] for result in results if 'target' in result})
+    summary = []
+    for target in targets:
+        runs = [result for result in results if result.get('target') == target and not result.get('error')]
+        item = {'target': target, 'runs': len(runs)}
+        for section in ['startup', 'idleResourceUsage']:
+            rows = [run[section] for run in runs if isinstance(run.get(section), dict)]
+            if rows:
+                item[section] = numeric_medians(rows)
+        scenario_names = sorted({name for run in runs for name in run.get('scenarios', {})})
+        item['scenarios'] = {}
+        for name in scenario_names:
+            rows = [run['scenarios'][name] for run in runs if isinstance(run.get('scenarios', {}).get(name), dict)]
+            item['scenarios'][name] = numeric_medians(rows)
+        summary.append(item)
+    return summary
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--targets', default='xingular,pi,opencode')
-    parser.add_argument('--scenarios', default='idle,history,stream')
+    parser.add_argument('--scenarios', default='idle,history,stream,burst')
     parser.add_argument('--rounds', type=int, default=4)
+    parser.add_argument('--repeats', type=int, default=1, help='Independent PTY launches per target; target order rotates per repeat')
     parser.add_argument('--length', type=int, default=60)
     parser.add_argument('--interval', type=float, default=0.035)
     parser.add_argument('--width', type=int, default=160)
     parser.add_argument('--height', type=int, default=45)
-    parser.add_argument('--real', action='store_true', help='Use each target\'s own login (stream scenario only)')
+    parser.add_argument('--warm-idle-seconds', type=float, default=2)
+    parser.add_argument('--idle-seconds', type=float, default=3)
+    parser.add_argument('--stream-seconds', type=float, default=DEFAULT_STREAM_SECONDS)
+    parser.add_argument('--real', action='store_true', help='Run one Xingular-only live stream with its existing account (never copies credentials)')
     parser.add_argument('--setup', nargs='*', default=[], help='Key strings (backslash escapes allowed) sent after startup, before measuring')
     parser.add_argument('--cli', type=Path, default=REPOSITORY / 'dist' / 'cli.js')
     parser.add_argument('--output', type=Path)
     args = parser.parse_args()
+    if args.repeats < 1 or args.rounds < 1 or args.warm_idle_seconds < 0 or args.idle_seconds <= 0 or args.stream_seconds <= 0:
+        parser.error('repeats and rounds must be positive; idle-seconds and stream-seconds must be positive; warm-idle-seconds cannot be negative')
+    targets = [target.strip() for target in args.targets.split(',') if target.strip()]
+    if not targets:
+        parser.error('at least one target is required')
+    if args.real and (targets != ['xingular'] or args.repeats != 1):
+        parser.error('--real is restricted to one Xingular run; use loopback for Pi and OpenCode comparisons')
+    scenarios = [scenario.strip() for scenario in args.scenarios.split(',') if scenario.strip()]
+    if any(scenario not in {'idle', 'history', 'stream', 'burst', 'question'} for scenario in scenarios):
+        parser.error('scenarios must be idle, history, stream, burst, or question')
+    if 'question' in scenarios and targets != ['xingular']:
+        parser.error('question is a Harness-only scenario; use --targets xingular for question latency')
+    Provider.stream_seconds = args.stream_seconds
     output = (args.output or Path(tempfile.mkdtemp(prefix='terminal-latency-'))).resolve()
     output.mkdir(parents=True, exist_ok=True)
     server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Provider)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     provider_url = f'http://127.0.0.1:{server.server_port}'
     print(f'Output: {output}', flush=True)
-    report = {'interval': args.interval, 'length': args.length, 'rounds': args.rounds, 'size': f'{args.width}x{args.height}',
-              'real': args.real, 'results': []}
-    for target in args.targets.split(','):
-        try:
-            report['results'].append(run_target(target, args, output, provider_url))
-        except Exception as error:  # Keep measuring the other targets.
-            report['results'].append({'target': target, 'error': str(error)[:4000]})
-            print(target, 'failed:', str(error)[:2000], flush=True)
+    report = {
+        'metadata': benchmark_metadata(),
+        'interval': args.interval, 'length': args.length, 'rounds': args.rounds,
+        'repeats': args.repeats, 'size': f'{args.width}x{args.height}',
+        'warmIdleSeconds': args.warm_idle_seconds,
+        'idleSeconds': args.idle_seconds, 'streamSeconds': args.stream_seconds,
+        'scenarios': scenarios, 'real': args.real, 'results': []
+    }
+    for repeat in range(args.repeats):
+        ordered = targets[repeat % len(targets):] + targets[:repeat % len(targets)]
+        for target in ordered:
+            try:
+                report['results'].append(run_target(target, args, output, provider_url, repeat))
+            except Exception as error:  # Keep measuring the other targets.
+                report['results'].append({'target': target, 'repeat': repeat + 1, 'error': str(error)[:4000]})
+                print(target, repeat + 1, 'failed:', str(error)[:2000], flush=True)
+    report['summary'] = summarize_results(report['results'])
     (output / 'report.json').write_text(json.dumps(report, indent=2) + '\n')
     print(json.dumps(report, indent=2))
 

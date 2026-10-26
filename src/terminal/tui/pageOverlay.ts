@@ -1,5 +1,5 @@
 import type { Theme } from '@earendil-works/pi-coding-agent'
-import { matchesKey, type Component, type Focusable, type TUI, type TuiMouseEventResult } from '@earendil-works/pi-tui'
+import { matchesKey, visibleWidth, type Component, type Focusable, type TUI, type TuiMouseEventResult } from '@earendil-works/pi-tui'
 
 import { CENTER_DIALOG_PAD, CHROME_PAD, centerDialogBodyRows, centerDialogContentWidth, centerDialogFrame, centerDialogVerticalPad, contentWidth, pageBodyRows, pageFrame, tabIndexAt, tabStrip } from './chrome'
 import { centeredDialogHost, dialogFits, pageRows } from './dialogGeometry'
@@ -144,11 +144,20 @@ export class PageOverlay implements Component, Focusable {
       contentWidth: contentWidth(width),
       centered
     }
-    const footer = page.ownsNavigation ? `Esc back/close · ${page.hint()}` : [
+    const escapeHint = page.ownsNavigation ? 'Esc back/close' : 'Esc close'
+    const fullFooter = page.ownsNavigation ? `${escapeHint} · ${page.hint()}` : [
       page.hint(),
-      tabs.length > 1 && !page.ownsNavigation ? 'Tab/Shift+Tab sections' : '',
-      'Esc close'
+      tabs.length > 1 ? 'Tab/Shift+Tab sections' : '',
+      escapeHint
     ].filter(Boolean).join(' · ')
+    const footerWidth = Math.max(0, width - CHROME_PAD * 2)
+    const primaryHint = page.hint().split(' · ')[0] ?? ''
+    const compactFooter = [
+      primaryHint,
+      !page.ownsNavigation && tabs.length > 1 ? 'Tab/⇧Tab' : '',
+      escapeHint
+    ].filter(Boolean).join(' · ')
+    const footer = visibleWidth(fullFooter) <= footerWidth ? fullFooter : compactFooter
     return pageFrame({
       title: '',
       headerLine: tabStrip(tabs, page.activeTab(), inner, theme, 'top', this.hoveredTab),

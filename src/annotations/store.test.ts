@@ -32,10 +32,30 @@ describe('page note store', () => {
       expect(() => create(dir, { ...page, source: { ...page.source, url } })).toThrow()
     }
     expect(() => create(dir, { ...page, target: { kind: 'text', exact: 'abc', prefix: '', suffix: '', start: 0, end: 4 } })).toThrow('offsets')
-    expect(() => create(dir, { ...page, target: { kind: 'element', tag: 'button', role: '', name: ' ', text: '', context: '', selector: '' } })).toThrow('meaningful')
+    expect(() => create(dir, { ...page, target: { kind: 'element', tag: 'button', role: '', name: ' ', text: '', context: '', selector: 'button' } })).toThrow('meaningful')
     expect(() => create(dir, { ...page, target: { kind: 'page', extra: 1 } as never })).toThrow()
     expect(() => create(dir, { ...page, body: '   ' })).toThrow()
     expect(() => create(dir, { ...page, tags: Array.from({ length: 13 }, (_, index) => `t${index}`) })).toThrow('12 tags')
+  })
+
+  it('accepts an otherwise empty element only when its CSS selector is specific', () => {
+    const dir = root()
+    const target = { kind: 'element' as const, tag: 'div', role: '', name: '', text: '', context: '', selector: 'main > div.empty-space:nth-of-type(2)' }
+    expect(create(dir, { ...page, target }).target).toEqual(target)
+    expect(() => create(dir, { ...page, target: { ...target, selector: 'div' } })).toThrow('specific selector')
+  })
+
+  it('keeps the composed-tree marker on text and element targets, and only that value', () => {
+    const dir = root()
+    const text = { kind: 'text' as const, exact: 'quick fox', prefix: 'The ', suffix: '', start: 4, end: 13, tree: 'composed' as const }
+    const element = { kind: 'element' as const, tag: 'button', role: 'button', name: 'Share', text: 'Share', context: 'Body', selector: 'button', tree: 'composed' as const }
+    expect(create(dir, { ...page, target: text }).target).toEqual(text)
+    expect(create(dir, { ...page, target: element }).target).toEqual(element)
+    // A target without it is a document-only target and stays that way.
+    const { tree: _tree, ...legacy } = element
+    expect(create(dir, { ...page, target: legacy }).target).toEqual(legacy)
+    expect(() => create(dir, { ...page, target: { ...text, tree: 'flat' } as never })).toThrow('tree')
+    expect(() => create(dir, { ...page, target: { kind: 'page', tree: 'composed' } as never })).toThrow()
   })
 
   it('is private until shared with a session or an agent, and a binding revokes its grants', () => {

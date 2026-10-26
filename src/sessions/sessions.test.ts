@@ -1,4 +1,5 @@
 import { mkdirSync, mkdtempSync, realpathSync, utimesSync, writeFileSync } from 'node:fs'
+import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -14,6 +15,8 @@ import { selectHistory } from './history'
 import type { ToolPolicy } from './policy'
 import type { PiEvent, PiSessionLike, SessionFactory } from './runner'
 import { loadRun, readEvents } from './runStore'
+import { COMPACTION_CHECKPOINT_EXTENSION } from './compactionCheckpoint'
+import { PLAN_RESEARCH_SUBAGENT_INSTRUCTIONS } from './planMode'
 import type { SessionRunInput } from './sessions'
 
 const tick = (ms = 20) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -52,6 +55,28 @@ function fakeSession(script: (emit: (event: PiEvent) => void, gateCheck: () => P
   }
   return session
 }
+
+describe('session commands', () => {
+  it('compacts a saved conversation without sending a request', async () => {
+    const calls: string[] = []
+    const { run, sessionDir, harness } = setup(async ({ gate }) => {
+      const session = fakeSession(async () => { calls.push('prompt') }, gate)
+      session.compact = async (instructions) => { calls.push(`compact:${instructions ?? ''}`) }
+      return session
+    })
+    mkdirSync(sessionDir, { recursive: true })
+    writeFileSync(join(sessionDir, 'history.jsonl'), `${JSON.stringify({ type: 'session', version: 3, id: 'native-1', timestamp: new Date().toISOString(), cwd: harness.env.root })}\n`)
+    await run('compact-1', { text: '/compact', command: { name: 'compact', instructions: 'keep decisions' } })
+    await tick()
+    expect(calls).toEqual(['compact:keep decisions'])
+    expect(loadRun(harness.env.root, 'compact-1').status).toBe('completed')
+  })
+
+  it('refuses a command before there is a saved conversation', async () => {
+    const { run } = setup(async ({ gate }) => fakeSession(async () => undefined, gate))
+    await expect(run('compact-2', { command: { name: 'compact' } })).rejects.toThrow(/no saved conversation/)
+  })
+})
 
 describe('session turns on Pi', () => {
   it('runs an initial Bash command before asking the agent to inspect its result', async () => {
@@ -440,6 +465,91 @@ describe('session turns on Pi', () => {
     expect(events.some((event) => event.type === 'status.changed' && (event.payload as { status: string }).status === 'waiting_for_approval')).toBe(false)
   })
 
+  it('requires per-operation approval for outside writes despite remembered tool grants', async () => {
+    let blockReason: string | null | undefined
+    let outsidePath = ''
+    const { events, run, harness } = setup(async ({ gate }) => fakeSession(async () => {
+      blockReason = await gate.check('write', { path: outsidePath })
+    }, gate))
+    outsidePath = join(harness.env.root, '..', 'outside-workspace.txt')
+    harness.approvals.remember('agent-1', 'write')
+
+    await run('run-outside-write')
+    await tick()
+
+    const request = events.find((event) => event.type === 'approval.requested')!.payload as { approvalId: string }
+    expect(request).toMatchObject({ target: 'write', rememberable: false })
+    expect(request).not.toHaveProperty('automatic')
+    expect(events.some((event) => event.type === 'status.changed' && (event.payload as { status: string }).status === 'waiting_for_approval')).toBe(true)
+    harness.runs.resolveApproval('run-outside-write', request.approvalId, 'denied')
+    await tick()
+    expect(blockReason).toMatch(/user denied this action/i)
+  })
+
+  it('bypasses the Bash workspace boundary only with Full Permission on interactive user runs', async () => {
+    const bypasses: boolean[] = []
+    const { run, harness } = setup(async ({ gate }) => {
+      bypasses.push(await gate.workspaceBoundaryBypass?.('bash', { command: 'touch ../outside-workspace.txt' }) ?? false)
+      return fakeSession(async () => undefined, gate)
+    })
+    harness.approvals.remember('agent-1', 'bash')
+
+    await run('run-without-full-permission')
+    await tick()
+    expect(bypasses.at(-1)).toBe(false)
+
+    harness.approvals.setAuto('chat', true)
+    await run('run-with-full-permission')
+    await tick()
+    expect(bypasses.at(-1)).toBe(true)
+
+    await run('run-automatic-with-full-permission', { automatic: true })
+    await tick()
+    expect(bypasses.at(-1)).toBe(false)
+
+    await run('run-probe-with-full-permission', { run: { id: 'run-probe-with-full-permission', sessionId: 'agent-1', trigger: 'probe' } })
+    await tick()
+    expect(bypasses.at(-1)).toBe(false)
+  })
+
+  it('requires a nonrememberable pre-execution approval for explicit outside-scope Bash', async () => {
+    let approved: boolean | undefined
+    const command = `${'printf x; '.repeat(30)}touch ../outside-workspace.txt`
+    const { events, run, harness } = setup(async ({ gate }) => fakeSession(async () => {
+      approved = await gate.requestWorkspaceWriteScope?.('bash', { command, workspaceWriteScope: 'outside' }, 'This command requests outside-workspace writes before it runs.')
+    }, gate))
+    harness.approvals.remember('agent-1', 'bash')
+
+    await run('run-explicit-outside-scope')
+    await tick()
+
+    const request = events.find((event) => event.type === 'approval.requested')!.payload as { approvalId: string; action: string }
+    expect(request).toMatchObject({ target: 'workspace-write', rememberable: false })
+    expect(request.action).toContain(command)
+    expect(request).not.toHaveProperty('automatic')
+    harness.runs.resolveApproval('run-explicit-outside-scope', request.approvalId, 'approved')
+    await tick()
+    expect(approved).toBe(true)
+  })
+
+  it('rechecks host hard denials after an outside Bash approval', async () => {
+    let scopeAllowed = true
+    let approved: boolean | undefined
+    const policy: ToolPolicy = { scope: async () => ({ allowed: scopeAllowed }) }
+    const { events, run, harness } = setup(async ({ gate }) => fakeSession(async () => {
+      approved = await gate.requestWorkspaceWriteScope?.('bash', { command: 'touch ../outside.txt', workspaceWriteScope: 'outside' }, 'Outside scope requested before execution.')
+    }, gate), policy)
+
+    await run('run-outside-policy-recheck')
+    await tick()
+    const request = events.find((event) => event.type === 'approval.requested')!.payload as { approvalId: string }
+    scopeAllowed = false
+    harness.runs.resolveApproval('run-outside-policy-recheck', request.approvalId, 'approved')
+    await tick()
+
+    expect(approved).toBe(false)
+  })
+
   it('still asks when the application cannot say what is allowed', async () => {
     const { events, run } = setup(async ({ gate }) => fakeSession(async (_emit, check) => void (await check()), gate), { approval: async () => { throw new Error('down') } })
     await run('run-ask', { text: 'list files' })
@@ -485,15 +595,15 @@ describe('session turns on Pi', () => {
   })
 
   it('refuses unsafe calls, allows explicitly safe research calls, and preserves normal runs', async () => {
-    const seen: { system: string; update: string | null; reasons: (string | null)[] }[] = []
+    const seen: { system: string; update: string | null; plan: boolean; reasons: (string | null)[] }[] = []
     const { run, harness } = setup(async ({ gate, params }) => fakeSession(async () => {
       const reasons = [
-        await gate.check('bash', {}), await gate.check('write', {}), await gate.check('memory_append', {}),
+        await gate.check('bash', { command: 'git log', workspaceWriteScope: 'outside' }), await gate.check('write', {}), await gate.check('memory_append', {}),
         await gate.check('lookup', {}), await gate.check('change', {}),
         await gate.check('browser', { op: 'navigate' }), await gate.check('browser', { op: 'click' }),
-        await gate.check('mcp_call_tool', {})
+        await gate.check('mcp_call_tool', {}), await gate.check('bash', { command: 'git log --oneline' })
       ]
-      seen.push({ system: params.system, update: params.update?.content ?? null, reasons })
+      seen.push({ system: params.system, update: params.update?.content ?? null, plan: params.plan === true, reasons })
     }, gate))
     harness.approvals.setAuto('chat', true)
     harness.sessions.provide(() => [
@@ -507,8 +617,11 @@ describe('session turns on Pi', () => {
     await run('normal-run', { tools: { allow: allowedTools } })
     await tick()
     const [planned, normal] = seen
-    expect(planned.reasons.map((reason) => reason?.startsWith('Plan mode is research-only') ?? null)).toEqual([true, true, true, null, true, null, true, true])
-    expect(normal.reasons).toEqual([null, null, null, null, null, null, null, null])
+    expect(planned.reasons[0]).toContain('Plan mode Bash is read-only')
+    expect(planned.reasons.slice(1).map((reason) => reason?.startsWith('Plan mode is research-only') ?? null)).toEqual([true, true, null, true, null, true, true, null])
+    expect(planned.plan).toBe(true)
+    expect(normal.plan).toBe(false)
+    expect(normal.reasons.slice(1)).toEqual([null, null, null, null, null, null, null, null])
     expect(planned.system).toBe(normal.system)
     expect(planned.update).toContain('<proposed_plan>')
     expect(planned.update).toContain('browser')
@@ -540,7 +653,7 @@ describe('session turns on Pi', () => {
     expect(received!.allow).not.toContain(ASK_USER)
     expect(received!.allow).toEqual(expect.arrayContaining(['history_search', 'wiki_search', 'wiki_read', 'skill_load', 'trajectory_read']))
     expect(received!.allow).not.toContain('wiki_write')
-    expect(received!.tools.map((tool) => tool.name)).toEqual(['history_search', 'history_read', 'trajectory_search', 'trajectory_read', 'wiki_search', 'wiki_read', 'wiki_list', 'wiki_write', 'skill_load', 'checklist_write', 'session_name', 'spawn_subagent', 'wait_subagents', 'web_search', 'web_fetch', 'browser_navigate', 'browser_snapshot', 'browser_read', 'browser_screenshot', 'browser_click', 'browser_type', 'browser_select', 'browser_press', 'browser_scroll', 'browser_wait', 'browser_tabs', 'page_notes_list', 'page_notes_read', 'page_notes_mark_fixed', 'react'])
+    expect(received!.tools.map((tool) => tool.name)).toEqual(['get_capabilities', 'history_search', 'history_read', 'trajectory_search', 'trajectory_read', 'wiki_search', 'wiki_read', 'wiki_list', 'wiki_write', 'skill_load', 'checklist_write', 'checkpoint_write', 'session_name', 'spawn_subagent', 'wait_subagents', 'web_search', 'web_fetch', 'browser_navigate', 'browser_snapshot', 'browser_read', 'browser_screenshot', 'browser_click', 'browser_type', 'browser_select', 'browser_press', 'browser_scroll', 'browser_wait', 'browser_tabs', 'page_notes_list', 'page_notes_read', 'page_notes_mark_fixed', 'react'])
     expect(await received!.tools.find((tool) => tool.name === 'skill_load')!.execute({})).toBe('You have no skills.')
     expect(received!.params.system).toContain('# Xingular Agent context')
   })
@@ -570,6 +683,41 @@ describe('session turns on Pi', () => {
       expect(seen.get(id)!.allow).not.toContain(ASK_USER)
       expect(seen.get(id)!.tools).not.toContain(ASK_USER)
     }
+  })
+
+  it('loads the compaction checkpoint extension in SDK sessions', async () => {
+    let extensions: NonNullable<Parameters<SessionFactory>[0]['params']['inline']> = []
+    const { run } = setup(async ({ gate, params }) => {
+      extensions = params.inline ?? []
+      return fakeSession(async () => undefined, gate)
+    })
+    await run('checkpoint-run', { plan: true })
+    await tick()
+    expect(extensions.map((extension) => extension.name)).toContain(COMPACTION_CHECKPOINT_EXTENSION)
+  })
+
+  it('rehydrates only research-role plan instructions for compacted plan-mode subagents', async () => {
+    let checkpointFactory: ((pi: ExtensionAPI) => void | Promise<void>) | undefined
+    const { run } = setup(async ({ gate, params }) => {
+      const checkpoint = params.inline?.find((extension) => typeof extension !== 'function' && extension.name === COMPACTION_CHECKPOINT_EXTENSION)
+      if (checkpoint && typeof checkpoint !== 'function') checkpointFactory = checkpoint.factory as (pi: ExtensionAPI) => void | Promise<void>
+      return fakeSession(async () => undefined, gate)
+    })
+    await run('checkpoint-subagent', {
+      run: { id: 'checkpoint-subagent', sessionId: 'agent-1', parentRunId: 'parent-run', relation: 'subagent' },
+      plan: true,
+      tools: { allow: ['read'], gated: [] },
+      subagents: null
+    })
+    expect(checkpointFactory).toBeDefined()
+
+    const handlers = new Map<string, (event: any) => unknown>()
+    const api = { on: (event: string, handler: (event: any) => unknown) => { handlers.set(event, handler); return () => undefined } } as unknown as ExtensionAPI
+    await checkpointFactory!(api)
+    await handlers.get('before_agent_start')!({ messageType: 'user', prompt: 'Research this bounded question' })
+    const result = await handlers.get('context')!({ messages: [{ role: 'compactionSummary', summary: 'Earlier research.', tokensBefore: 50_000, timestamp: 1 }] }) as { messages: { content?: string }[] }
+    expect(result.messages.at(-1)?.content).toContain(PLAN_RESEARCH_SUBAGENT_INSTRUCTIONS)
+    expect(result.messages.at(-1)?.content).not.toContain('Plan mode is on for this request')
   })
 
   it('records the checklist the model writes, whole, and allows it in plan mode', async () => {
@@ -884,5 +1032,99 @@ describe('standing approvals', () => {
     expect(grant(policy, 'chat', 'pane-1', 'edit files', facts(false, false))).toBeNull()
     expect(grant(policy, 'pi', 'pane-2', 'shell', {})).toBe('always')
     expect(grant({ auto: {}, globalTools: {}, remembered: policy.remembered }, 'pi', 'pane-2', 'shell', {})).toBeNull()
+  })
+})
+
+describe('work slices', () => {
+  /** Drives the slice guard the way Pi does, without a Pi session. */
+  function driveGuard(input: Parameters<SessionFactory>[0]) {
+    const extension = (input.params.inline ?? []).find((candidate) => candidate.name === 'work-slice')
+    expect(extension).toBeDefined()
+    const handlers = new Map<string, (event: unknown) => unknown>()
+    ;(extension!.factory as (pi: unknown) => void)({
+      on: (name: string, handler: (event: unknown) => unknown) => {
+        handlers.set(name, handler)
+      }
+    })
+    return {
+      start: () => handlers.get('agent_start')!({}),
+      call: (event: unknown) => handlers.get('tool_call')!(event),
+      result: (event: unknown) => handlers.get('tool_result')!(event)
+    }
+  }
+
+  it('leaves a reply unbounded when the work slice is turned off', async () => {
+    let received: Parameters<SessionFactory>[0] | null = null
+    const { harness, events, run } = setup(async (input) => {
+      received = input
+      return fakeSession(async () => undefined, input.gate)
+    })
+    await run('slice-off', { workSlice: { enabled: false } })
+    await tick(80)
+    expect((received!.params.inline ?? []).some((extension) => extension.name === 'work-slice')).toBe(false)
+    expect(received!.params.slice).toBeUndefined()
+    expect(loadRun(harness.env.root, 'slice-off').status).toBe('completed')
+    expect(events.some((event) => event.type === 'checkpoint')).toBe(false)
+  })
+
+  it('ends a reply at its work-slice budget with a derived checkpoint', async () => {
+    const { harness, events, run } = setup(async (input) => fakeSession(async () => {
+      const slice = driveGuard(input)
+      slice.start()
+      for (let step = 0; step < 4; step += 1) slice.call({ toolName: 'read', input: { path: `file-${step}` } })
+    }, input.gate))
+    await run('slice-budget', { workSlice: { maxToolCalls: 3, continue: false } })
+    await tick(120)
+    expect(loadRun(harness.env.root, 'slice-budget')).toMatchObject({ status: 'interrupted', terminalReason: 'slice_complete' })
+    const checkpoint = events.find((event) => event.type === 'checkpoint')
+    expect(checkpoint?.payload).toMatchObject({ slice: 1, reason: 'budget' })
+  })
+
+  it('keeps the checkpoint the model wrote and continues from it', async () => {
+    const inputs: Parameters<SessionFactory>[0][] = []
+    const { harness, run, sessionDir } = setup(async (input) => {
+      inputs.push(input)
+      mkdirSync(sessionDir, { recursive: true })
+      writeFileSync(join(sessionDir, 'saved.jsonl'), `${JSON.stringify({ type: 'session', id: 'native-1' })}\n`)
+      return fakeSession(async () => {
+        const slice = driveGuard(input)
+        slice.start()
+        await input.tools.find((candidate) => candidate.name === 'checkpoint_write')!.execute({
+          summary: 'Halfway through the boundary work',
+          done: [{ item: 'Read the sandbox check', evidence: ['src/core/workspaceSandbox.ts'] }],
+          next: 'Fix the failing sandbox test'
+        })
+        slice.result({ toolName: 'checkpoint_write', isError: false, input: {} })
+        for (let step = 0; step < 4; step += 1) slice.call({ toolName: 'read', input: { path: `file-${step}` } })
+      }, input.gate)
+    })
+    await run('slice-first', { workSlice: { maxToolCalls: 3, maxSlices: 2, continue: true } })
+    await tick(250)
+    expect(inputs).toHaveLength(2)
+    expect(inputs[1].params.text).toBe('Continue from where you stopped.')
+    expect(inputs[1].params.update?.content ?? '').toContain('Halfway through the boundary work')
+    expect(loadRun(harness.env.root, 'slice-first').terminalReason).toBe('slice_complete')
+    expect(inputs[1].params.runId).not.toBe('slice-first')
+  })
+
+  it('does not call a reply that rewrites its checklist a stall', async () => {
+    // Three updates with different items are the progress report PROP-0006 asks for, not a loop.
+    const { harness, events, run } = setup(async (input) => fakeSession(async () => {
+      const slice = driveGuard(input)
+      slice.start()
+      for (const items of [
+        [{ text: 'Land the fix', status: 'pending' }],
+        [{ text: 'Land the fix', status: 'in_progress' }, { text: 'Run the checks', status: 'pending' }],
+        [{ text: 'Land the fix', status: 'completed' }, { text: 'Run the checks', status: 'in_progress' }],
+        [{ text: 'Land the fix', status: 'completed' }, { text: 'Run the checks', status: 'completed' }]
+      ]) {
+        slice.call({ toolName: 'checklist_write', input: { items } })
+      }
+    }, input.gate))
+    await run('slice-checklist', { workSlice: { continue: false } })
+    await tick(120)
+    expect(loadRun(harness.env.root, 'slice-checklist')).toMatchObject({ status: 'completed' })
+    expect(loadRun(harness.env.root, 'slice-checklist').terminalReason).toBeNull()
+    expect(events.some((event) => event.type === 'checkpoint')).toBe(false)
   })
 })

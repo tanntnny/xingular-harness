@@ -1,0 +1,422 @@
+{
+  "metadata": {
+    "commit": "6f72a07",
+    "workingTreeDirty": true,
+    "dirtyPathCount": 81,
+    "platform": "macOS-27.0-arm64-arm-64bit",
+    "machine": "arm64",
+    "cpuCount": 8,
+    "python": "3.12.12",
+    "node": "v26.8.2",
+    "bun": "1.4.2",
+    "harnessVersion": "1.1.1",
+    "piVersion": "1.2.0",
+    "opencodeVersion": "opencode v2.1.4"
+  },
+  "interval": 0.035,
+  "length": 30,
+  "rounds": 2,
+  "repeats": 3,
+  "size": "160x45",
+  "warmIdleSeconds": 1.0,
+  "idleSeconds": 1.0,
+  "streamSeconds": 2.0,
+  "scenarios": [
+    "history"
+  ],
+  "real": false,
+  "results": [
+    {
+      "target": "xingular",
+      "repeat": 1,
+      "command": "node",
+      "scenarios": {
+        "history": {
+          "keys": 44,
+          "missed": 0,
+          "p50": 5.27,
+          "p95": 10.1,
+          "p99": 10.64,
+          "max": 10.64,
+          "cpuPercent": 8.9,
+          "rssBeforeKb": 544304,
+          "rssAfterKb": 517792,
+          "bytesPerKey": 83,
+          "historySetupSeconds": 7.6
+        }
+      },
+      "startup": {
+        "launchToFirstOutputMs": 2470.47,
+        "launchToFirstVisibleMs": 2473.48,
+        "launchToQuietScreenMs": 3418.9,
+        "rssKb": 399408
+      },
+      "idleResourceUsage": {
+        "durationSeconds": 1.0,
+        "cpuPercent": 2.0,
+        "rssBeforeKb": 398960,
+        "rssAfterKb": 391600
+      }
+    },
+    {
+      "target": "pi",
+      "repeat": 1,
+      "command": "node",
+      "scenarios": {
+        "history": {
+          "keys": 44,
+          "missed": 0,
+          "p50": 5.44,
+          "p95": 10.59,
+          "p99": 10.91,
+          "max": 10.91,
+          "cpuPercent": 4.3,
+          "rssBeforeKb": 223280,
+          "rssAfterKb": 213488,
+          "bytesPerKey": 227,
+          "historySetupSeconds": 6.5
+        }
+      },
+      "startup": {
+        "launchToFirstOutputMs": 225.65,
+        "launchToFirstVisibleMs": 258.52,
+        "launchToQuietScreenMs": 1018.19,
+        "rssKb": 138832
+      },
+      "idleResourceUsage": {
+        "durationSeconds": 1.0,
+        "cpuPercent": 8.0,
+        "rssBeforeKb": 141792,
+        "rssAfterKb": 146352
+      }
+    },
+    {
+      "target": "opencode",
+      "repeat": 1,
+      "command": "opencode",
+      "scenarios": {
+        "history": {
+          "keys": 44,
+          "missed": 0,
+          "p50": 9.57,
+          "p95": 13.42,
+          "p99": 23.48,
+          "max": 23.48,
+          "cpuPercent": 31.9,
+          "rssBeforeKb": 658960,
+          "rssAfterKb": 697872,
+          "bytesPerKey": 92,
+          "historySetupSeconds": 9.7
+        }
+      },
+      "startup": {
+        "launchToFirstOutputMs": 300.63,
+        "launchToFirstVisibleMs": 303.96,
+        "launchToQuietScreenMs": 1074.24,
+        "rssKb": 538208
+      },
+      "idleResourceUsage": {
+        "durationSeconds": 1.0,
+        "cpuPercent": 7.0,
+        "rssBeforeKb": 578800,
+        "rssAfterKb": 571120
+      }
+    },
+    {
+      "target": "pi",
+      "repeat": 2,
+      "command": "node",
+      "scenarios": {
+        "history": {
+          "keys": 44,
+          "missed": 0,
+          "p50": 5.5,
+          "p95": 10.34,
+          "p99": 10.98,
+          "max": 10.98,
+          "cpuPercent": 4.9,
+          "rssBeforeKb": 229376,
+          "rssAfterKb": 217536,
+          "bytesPerKey": 227,
+          "historySetupSeconds": 6.5
+        }
+      },
+      "startup": {
+        "launchToFirstOutputMs": 238.26,
+        "launchToFirstVisibleMs": 269.65,
+        "launchToQuietScreenMs": 1024.96,
+        "rssKb": 138256
+      },
+      "idleResourceUsage": {
+        "durationSeconds": 1.0,
+        "cpuPercent": 0.0,
+        "rssBeforeKb": 149808,
+        "rssAfterKb": 149808
+      }
+    },
+    {
+      "target": "opencode",
+      "repeat": 2,
+      "command": "opencode",
+      "scenarios": {
+        "history": {
+          "keys": 44,
+          "missed": 0,
+          "p50": 9.35,
+          "p95": 12.44,
+          "p99": 12.57,
+          "max": 12.57,
+          "cpuPercent": 32.6,
+          "rssBeforeKb": 654416,
+          "rssAfterKb": 551520,
+          "bytesPerKey": 92,
+          "historySetupSeconds": 9.8
+        }
+      },
+      "startup": {
+        "launchToFirstOutputMs": 296.64,
+        "launchToFirstVisibleMs": 299.99,
+        "launchToQuietScreenMs": 1061.07,
+        "rssKb": 538576
+      },
+      "idleResourceUsage": {
+        "durationSeconds": 1.0,
+        "cpuPercent": 8.0,
+        "rssBeforeKb": 547504,
+        "rssAfterKb": 534864
+      }
+    },
+    {
+      "target": "xingular",
+      "repeat": 2,
+      "command": "node",
+      "scenarios": {
+        "history": {
+          "keys": 44,
+          "missed": 0,
+          "p50": 5.09,
+          "p95": 10.05,
+          "p99": 10.26,
+          "max": 10.26,
+          "cpuPercent": 9.2,
+          "rssBeforeKb": 419248,
+          "rssAfterKb": 302352,
+          "bytesPerKey": 83,
+          "historySetupSeconds": 7.5
+        }
+      },
+      "startup": {
+        "launchToFirstOutputMs": 2403.07,
+        "launchToFirstVisibleMs": 2405.4,
+        "launchToQuietScreenMs": 3391.33,
+        "rssKb": 456944
+      },
+      "idleResourceUsage": {
+        "durationSeconds": 1.0,
+        "cpuPercent": 3.0,
+        "rssBeforeKb": 457136,
+        "rssAfterKb": 457136
+      }
+    },
+    {
+      "target": "opencode",
+      "repeat": 3,
+      "command": "opencode",
+      "scenarios": {
+        "history": {
+          "keys": 44,
+          "missed": 0,
+          "p50": 9.47,
+          "p95": 12.7,
+          "p99": 13.17,
+          "max": 13.17,
+          "cpuPercent": 33.8,
+          "rssBeforeKb": 618384,
+          "rssAfterKb": 654448,
+          "bytesPerKey": 92,
+          "historySetupSeconds": 9.8
+        }
+      },
+      "startup": {
+        "launchToFirstOutputMs": 303.6,
+        "launchToFirstVisibleMs": 306.75,
+        "launchToQuietScreenMs": 1072.94,
+        "rssKb": 512736
+      },
+      "idleResourceUsage": {
+        "durationSeconds": 1.0,
+        "cpuPercent": 8.0,
+        "rssBeforeKb": 477600,
+        "rssAfterKb": 437280
+      }
+    },
+    {
+      "target": "xingular",
+      "repeat": 3,
+      "command": "node",
+      "scenarios": {
+        "history": {
+          "keys": 44,
+          "missed": 0,
+          "p50": 4.15,
+          "p95": 8.93,
+          "p99": 10.63,
+          "max": 10.63,
+          "cpuPercent": 8.3,
+          "rssBeforeKb": 456656,
+          "rssAfterKb": 439776,
+          "bytesPerKey": 83,
+          "historySetupSeconds": 7.3
+        }
+      },
+      "startup": {
+        "launchToFirstOutputMs": 2337.31,
+        "launchToFirstVisibleMs": 2340.57,
+        "launchToQuietScreenMs": 3293.34,
+        "rssKb": 455792
+      },
+      "idleResourceUsage": {
+        "durationSeconds": 1.0,
+        "cpuPercent": 1.0,
+        "rssBeforeKb": 455952,
+        "rssAfterKb": 430096
+      }
+    },
+    {
+      "target": "pi",
+      "repeat": 3,
+      "command": "node",
+      "scenarios": {
+        "history": {
+          "keys": 44,
+          "missed": 0,
+          "p50": 5.14,
+          "p95": 10.13,
+          "p99": 11.02,
+          "max": 11.02,
+          "cpuPercent": 4.3,
+          "rssBeforeKb": 219696,
+          "rssAfterKb": 209648,
+          "bytesPerKey": 227,
+          "historySetupSeconds": 6.5
+        }
+      },
+      "startup": {
+        "launchToFirstOutputMs": 227.51,
+        "launchToFirstVisibleMs": 259.86,
+        "launchToQuietScreenMs": 1013.32,
+        "rssKb": 137200
+      },
+      "idleResourceUsage": {
+        "durationSeconds": 1.0,
+        "cpuPercent": 0.0,
+        "rssBeforeKb": 144368,
+        "rssAfterKb": 144368
+      }
+    }
+  ],
+  "summary": [
+    {
+      "target": "opencode",
+      "runs": 3,
+      "startup": {
+        "runs": 3,
+        "launchToFirstOutputMs": 300.63,
+        "launchToFirstVisibleMs": 303.96,
+        "launchToQuietScreenMs": 1072.94,
+        "rssKb": 538208
+      },
+      "idleResourceUsage": {
+        "runs": 3,
+        "cpuPercent": 8.0,
+        "durationSeconds": 1.0,
+        "rssAfterKb": 534864,
+        "rssBeforeKb": 547504
+      },
+      "scenarios": {
+        "history": {
+          "runs": 3,
+          "bytesPerKey": 92,
+          "cpuPercent": 32.6,
+          "historySetupSeconds": 9.8,
+          "keys": 44,
+          "max": 13.17,
+          "missed": 0,
+          "p50": 9.47,
+          "p95": 12.7,
+          "p99": 13.17,
+          "rssAfterKb": 654448,
+          "rssBeforeKb": 654416
+        }
+      }
+    },
+    {
+      "target": "pi",
+      "runs": 3,
+      "startup": {
+        "runs": 3,
+        "launchToFirstOutputMs": 227.51,
+        "launchToFirstVisibleMs": 259.86,
+        "launchToQuietScreenMs": 1018.19,
+        "rssKb": 138256
+      },
+      "idleResourceUsage": {
+        "runs": 3,
+        "cpuPercent": 0.0,
+        "durationSeconds": 1.0,
+        "rssAfterKb": 146352,
+        "rssBeforeKb": 144368
+      },
+      "scenarios": {
+        "history": {
+          "runs": 3,
+          "bytesPerKey": 227,
+          "cpuPercent": 4.3,
+          "historySetupSeconds": 6.5,
+          "keys": 44,
+          "max": 10.98,
+          "missed": 0,
+          "p50": 5.44,
+          "p95": 10.34,
+          "p99": 10.98,
+          "rssAfterKb": 213488,
+          "rssBeforeKb": 223280
+        }
+      }
+    },
+    {
+      "target": "xingular",
+      "runs": 3,
+      "startup": {
+        "runs": 3,
+        "launchToFirstOutputMs": 2403.07,
+        "launchToFirstVisibleMs": 2405.4,
+        "launchToQuietScreenMs": 3391.33,
+        "rssKb": 455792
+      },
+      "idleResourceUsage": {
+        "runs": 3,
+        "cpuPercent": 2.0,
+        "durationSeconds": 1.0,
+        "rssAfterKb": 430096,
+        "rssBeforeKb": 455952
+      },
+      "scenarios": {
+        "history": {
+          "runs": 3,
+          "bytesPerKey": 83,
+          "cpuPercent": 8.9,
+          "historySetupSeconds": 7.5,
+          "keys": 44,
+          "max": 10.63,
+          "missed": 0,
+          "p50": 5.09,
+          "p95": 10.05,
+          "p99": 10.63,
+          "rssAfterKb": 439776,
+          "rssBeforeKb": 456656
+        }
+      }
+    }
+  ]
+}

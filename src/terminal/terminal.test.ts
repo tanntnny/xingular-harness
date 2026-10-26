@@ -72,11 +72,14 @@ describe('a pi terminal session', () => {
     expect(launch.args.slice(0, 2)).toEqual(['--conditions=browser', '/opt/harness/terminal-opentui.js'])
     expect(launch.args[2]).toBe('--append-system-prompt')
     expect(launch.args[3]).toContain('# Xingular Agent context')
-    expect(launch.args[3]).toContain('xagent-wiki')
-    // Pi's own discovery is off; its command's built-in extensions are named, and the harness's comes last.
+    // The terminal's tools are the same ones a host's session has, named by tool, not by shell command.
+    expect(launch.args[3]).not.toContain('xagent-wiki')
+    expect(launch.args[3]).toContain('wiki_search')
+    expect(launch.args[3]).toContain('## Working folder')
+    // Pi's own discovery is off, and so are its command's built-in extensions: a host's session cannot
+    // load them, so the terminal does not either (PROP-0039). The harness's extension comes last.
     expect(launch.args.slice(4)).toEqual([
       '--model', 'chosen-model', '--no-extensions', '--no-skills', '--no-prompt-templates', '--no-themes',
-      '--extension', 'builtin:llama.cpp', '--extension', 'builtin:codemode', '--extension', 'builtin:tool-search', '--extension', 'builtin:mcp',
       '--extension', '/opt/harness/terminal-pi.js', '--session-dir', join(sessionFolder, 'pi')
     ])
     expect(launch.env.PI_CODING_AGENT_DIR).toBe(join(harness.accounts.dir, account.id, 'home', 'pi'))
@@ -131,7 +134,7 @@ describe('a pi terminal session', () => {
     const prepare = async () => (await harness.terminals.prepare({ sessionId: 'term-1', accountId: account.id, projectId: 'p1', cwd: root, sessionFolder: join(root, 'sessions', 'p1', 'term-1'), variant: { scope: 'term-agent' } })).args.slice(4)
 
     const loaded = [
-      '--extension', '/shared/extensions/mine.ts', '--extension', 'builtin:mcp', '--extension', join(version, 'plugins/guard.ts'),
+      '--extension', '/shared/extensions/mine.ts', '--extension', join(version, 'plugins/guard.ts'),
       '--skill', join(version, 'skills'), '--skill', '/shared/skills/alpha/SKILL.md',
       '--prompt-template', '/shared/prompts/p.md',
       '--theme', '/shared/themes/dark.json',
@@ -144,6 +147,57 @@ describe('a pi terminal session', () => {
     const code = (await harness.plugins.loading({ cwd: root, agentDir: join(harness.accounts.dir, account.id, 'home', 'pi') })).projectCode!
     harness.plugins.trust.grant(code, root)
     expect(await prepare()).toEqual([...flags, '--extension', join(root, '.pi/extensions/local.ts'), ...loaded])
+  })
+
+  it('records the explicitly chosen variant version on typed and reserved runs after head changes', async () => {
+    const { harness, root, account, sessionFolder } = await setup()
+    const { commit } = await import('../variant/store')
+    const variant = { 'systemprompt.md': 'Pinned instructions.\n', 'guardrails.md': '', 'memory.md': '', 'tool_guidance.md': '' }
+    const pinned = commit(root, 'terminal-pin', variant, { kind: 'seed' })
+    const newer = commit(root, 'terminal-pin', { ...variant, 'systemprompt.md': 'Newer head before prepare.\n' }, { kind: 'seed' })
+    expect(newer.fingerprint).not.toBe(pinned.fingerprint)
+    const launch = await harness.terminals.prepare({ sessionId: 'term-1', accountId: account.id, projectId: 'p1', cwd: root, sessionFolder, variant: { scope: 'terminal-pin', version: pinned.fingerprint }, subagents: null })
+    const connection = { socket: String(launch.env[SOCKET_ENV]), token: String(launch.env[TOKEN_ENV]) }
+    const { key } = await socketCall<{ key: string }>(connection, 'control.claim')
+    commit(root, 'terminal-pin', { ...variant, 'systemprompt.md': 'Moved head after prepare.\n' }, { kind: 'seed' })
+    await expect(socketCall(connection, 'terminal.resources', {}, 1000, key)).resolves.toEqual({})
+    await tellOn(connection, 'ready', { nativeSessionId: '/history/pinned.jsonl' })
+    const begun = await tellOn(connection, 'begin', { text: 'Typed turn' })
+    expect(loadRun(root, begun.runId)).toMatchObject({ variantScope: 'terminal-pin', variantVersion: pinned.fingerprint })
+    const params = { tools: ['read', 'read', 'ask_user'] }
+    await socketCall(connection, 'terminal.subagents.register', params, 1000, key)
+    const { loadRun: capabilities } = await import('../capabilities/runSnapshot')
+    expect(capabilities(root, begun.runId)).toMatchObject({ tools: ['read'], caller: { projectId: 'p1' } })
+    await expect(socketCall(connection, 'terminal.subagents.register', params, 1000, key)).resolves.toEqual({ runId: begun.runId, connectors: [] })
+    await expect(socketCall(connection, 'terminal.subagents.register', { ...params, tools: ['write'] }, 1000, key)).rejects.toThrow('frozen capability')
+    await tellOn(connection, 'settled', { aborted: false })
+    const sent = harness.terminals.send({ sessionId: 'term-1', text: 'Reserved turn' })
+    // Delivery reserves its record synchronously, then waits for the terminal to acknowledge it.
+    const delivery = await tellOn(connection, 'poll')
+    await tellOn(connection, 'begin', { text: delivery.command.text, turnId: 'reserved' })
+    const reserved = await sent
+    expect(loadRun(root, reserved.runId)).toMatchObject({ variantScope: 'terminal-pin', variantVersion: pinned.fingerprint })
+    await tellOn(connection, 'settled', { aborted: false })
+  })
+
+  it('rechecks pinned variant code trust and content, not the latest scope head', async () => {
+    const { harness, root, account, sessionFolder } = await setup()
+    const { commit, versionPath } = await import('../variant/store')
+    const code = 'export default function () {}\n'
+    const variant = { 'systemprompt.md': 'Pinned.\n', 'guardrails.md': '', 'memory.md': '', 'tool_guidance.md': '', 'plugins/guard.ts': code }
+    const pinned = commit(root, 'terminal-trust', variant, { kind: 'seed' })
+    const trust = harness.trust.grant(code, 'plugins/guard.ts', 'terminal-trust')
+    const launch = await harness.terminals.prepare({ sessionId: 'term-1', accountId: account.id, cwd: root, sessionFolder, variant: { scope: 'terminal-trust' } })
+    const connection = { socket: String(launch.env[SOCKET_ENV]), token: String(launch.env[TOKEN_ENV]) }
+    const { key } = await socketCall<{ key: string }>(connection, 'control.claim')
+    const check = () => socketCall(connection, 'terminal.resources', {}, 1000, key)
+    await expect(check()).resolves.toEqual({})
+    harness.trust.revoke(trust.hash)
+    await expect(check()).rejects.toThrow('Trusted resources changed')
+    harness.trust.grant(code, 'plugins/guard.ts', 'terminal-trust')
+    await expect(check()).resolves.toEqual({})
+    writeFileSync(join(versionPath(root, 'terminal-trust', pinned.fingerprint), 'plugins/guard.ts'), code + '// changed\n')
+    await expect(check()).rejects.toThrow('Trusted resources changed')
   })
 
   it('releases an acquired worktree lease when terminal preparation fails', async () => {
@@ -260,19 +314,62 @@ describe('a pi terminal session', () => {
     expect(await tell('poll')).toEqual({ command: { type: 'interrupt' } })
   })
 
-  it('asks before a native action unless the policy allows it, and reads never ask', async () => {
-    const { tell, events, harness } = await setup()
+  it('allows in-workspace Bash, requires one-shot approval for outside writes, and reads never ask', async () => {
+    const { tell, events, harness, root } = await setup()
     await tell('ready', {})
     await tell('begin', { text: 'Edit' })
-    expect(await tell('policy', { tool: 'read', args: { path: 'a' } })).toEqual({ allowed: true })
-    expect(await tell('policy', { tool: 'session_name', args: { name: 'Inspect browser tools' } })).toEqual({ allowed: true })
-    expect(await tell('policy', { tool: 'checklist_write', args: { items: [] } })).toEqual({ allowed: true })
-    expect(await tell('policy', { tool: 'bash', args: { command: 'rm -rf x' } })).toMatchObject({ allowed: false, requiresApproval: true })
-    const decision = tell('approval', { requestId: 'call-1', target: 'bash', action: '{"command":"rm -rf x"}', tool: 'bash', args: { command: 'rm -rf x' } })
+    expect(await tell('policy', { tool: 'read', args: { path: 'a' } })).toMatchObject({ allowed: true })
+    expect(await tell('policy', { tool: 'session_name', args: { name: 'Inspect browser tools' } })).toMatchObject({ allowed: true })
+    expect(await tell('policy', { tool: 'checklist_write', args: { items: [] } })).toMatchObject({ allowed: true })
+    expect(await tell('policy', { tool: 'bash', args: { command: 'rm -rf x' } })).toMatchObject({ allowed: true })
+    const outside = join(root, '..', 'outside-workspace.txt')
+    expect(await tell('policy', { tool: 'write', args: { path: outside } })).toMatchObject({ allowed: false, requiresApproval: true, rememberable: false, standing: 'switch' })
+    const decision = tell('approval', { requestId: 'call-1', target: 'write', action: JSON.stringify({ path: outside }), tool: 'write', args: { path: outside } })
     await vi.waitFor(() => expect(events.some((event) => event.type === 'approval.requested')).toBe(true))
     const request = events.find((event) => event.type === 'approval.requested')!
     harness.runs.resolveApproval(request.runId, (request.payload as { approvalId: string }).approvalId, 'approved')
     expect(await decision).toEqual({ decision: 'approved' })
+  })
+
+  it('surfaces the complete explicit outside-scope command before Bash runs', async () => {
+    const { connection, tell } = await setup()
+    await tell('ready')
+    const { runId } = await tell('begin', { text: 'Retry an outside write' })
+    const { key } = await socketCall<{ key: string }>(connection, 'control.claim')
+    const command = `${'printf x; '.repeat(30)}printf marker > ../outside-workspace.txt`
+    const escape = socketCall<{ approved: boolean }>(connection, 'terminal.workspaceEscape', {
+      tool: 'bash', args: { command, workspaceWriteScope: 'outside' }, reason: 'This command requests outside-workspace writes before it runs.'
+    }, 1000, key)
+    let requestId = ''
+    await vi.waitFor(async () => {
+      const { requests } = await socketCall<{ requests: Array<Record<string, unknown> & { requestId: string }> }>(connection, 'terminal.pending', {}, 1000, key)
+      expect(requests).toHaveLength(1)
+      expect(requests[0]).toMatchObject({ type: 'approval', target: 'workspace-write', rememberable: false, runId })
+      expect(requests[0]!.action).toContain(command)
+      requestId = requests[0]!.requestId
+    })
+    await socketCall(connection, 'terminal.approve', { requestId, decision: 'approved' }, 1000, key)
+    await expect(escape).resolves.toEqual({ approved: true })
+  })
+
+  it('rechecks host hard denials after a terminal outside-scope approval', async () => {
+    let scopeAllowed = true
+    const { connection, tell } = await setup({ scope: async () => ({ allowed: scopeAllowed }) })
+    await tell('ready')
+    await tell('begin', { text: 'Check an outside Bash request' })
+    const { key } = await socketCall<{ key: string }>(connection, 'control.claim')
+    const request = socketCall<{ approved: boolean }>(connection, 'terminal.workspaceEscape', {
+      tool: 'bash', args: { command: 'touch ../outside.txt', workspaceWriteScope: 'outside' }, reason: 'Outside scope requested before execution.'
+    }, 1000, key)
+    let requestId = ''
+    await vi.waitFor(async () => {
+      const { requests } = await socketCall<{ requests: Array<Record<string, unknown> & { requestId: string }> }>(connection, 'terminal.pending', {}, 1000, key)
+      expect(requests).toHaveLength(1)
+      requestId = requests[0]!.requestId
+    })
+    scopeAllowed = false
+    await socketCall(connection, 'terminal.approve', { requestId, decision: 'approved' }, 1000, key)
+    await expect(request).resolves.toEqual({ approved: false })
   })
 
   it('protects permission controls and shares saved terminal grants across sessions', async () => {
@@ -293,8 +390,24 @@ describe('a pi terminal session', () => {
     await expect(socketCall(connection, 'terminal.permissions.setFull', { enabled: 'yes' }, 1000, key)).rejects.toMatchObject({ code: 'invalid_request' })
   })
 
+  it('keeps outside writes behind approval despite remembered grants and exposes the explicit boundary bypass', async () => {
+    const { connection, tell, root, harness } = await setup()
+    await tell('ready')
+    await tell('begin', { text: 'Check write scope' })
+    const { key } = await socketCall<{ key: string }>(connection, 'control.claim')
+    const outside = join(root, '..', 'outside-workspace.txt')
+    await socketCall(connection, 'terminal.permissions.setTool', { tool: 'write', allowed: true }, 1000, key)
+
+    expect(await socketCall(connection, 'terminal.policy', { tool: 'write', args: { path: outside } }, 1000, key)).toMatchObject({ allowed: false, requiresApproval: true, rememberable: false, standing: 'switch' })
+    expect(await socketCall(connection, 'terminal.workspaceBoundaryBypass', { tool: 'bash', args: { command: 'touch ../outside-workspace.txt' } }, 1000, key)).toEqual({ bypass: false })
+
+    await socketCall(connection, 'terminal.permissions.setFull', { enabled: true }, 1000, key)
+    expect(await socketCall(connection, 'terminal.workspaceBoundaryBypass', { tool: 'bash', args: { command: 'touch ../outside-workspace.txt' } }, 1000, key)).toEqual({ bypass: true })
+    expect(harness.approvals.read().globalTools.pi).toEqual(['write'])
+  })
+
   it('does not let a permission change retroactively resolve an already pending approval', async () => {
-    const { connection, tell } = await setup()
+    const { connection, tell } = await setup({ scope: async () => ({ allowed: true, requiresApproval: true }) })
     await tell('ready')
     await tell('begin', { text: 'Wait for a decision' })
     const { key } = await socketCall<{ key: string }>(connection, 'control.claim')
@@ -343,6 +456,7 @@ describe('a pi terminal session', () => {
     await tell('begin', { text: 'Human decision required' })
     const { key } = await socketCall<{ key: string }>(connection, 'control.claim')
     expect(await socketCall(connection, 'terminal.policy', { tool: 'bash', args: {} }, 1000, key)).toMatchObject({ requiresApproval: true, rememberable: false, standing: 'none' })
+    expect(await socketCall(connection, 'terminal.workspaceBoundaryBypass', { tool: 'bash', args: { command: 'touch outside.txt' } }, 1000, key)).toEqual({ bypass: false })
     const approval = socketCall<{ decision: string }>(connection, 'terminal.approval', { requestId: 'human-only', tool: 'bash', args: {} }, 1000, key)
     let requestId = ''
     await vi.waitFor(async () => {
@@ -357,7 +471,7 @@ describe('a pi terminal session', () => {
   })
 
   it('remembers a tool choice for future Pi terminal sessions sharing the state directory', async () => {
-    const { connection, tell, events, harness, account, root } = await setup()
+    const { connection, tell, events, harness, account, root } = await setup({ scope: async () => ({ allowed: true, requiresApproval: true }) })
     await tell('ready')
     await tell('begin', { text: 'Allow a tool' })
     const { key } = await socketCall<{ key: string }>(connection, 'control.claim')
@@ -399,8 +513,8 @@ describe('a pi terminal session', () => {
     })
     await tell('ready', {})
     await tell('begin', { text: 'Go' })
-    expect(await tell('policy', { tool: 'bash', args: {} })).toEqual({ allowed: false, reason: 'Outside the task.' })
-    expect(await tell('policy', { tool: 'write', args: {} })).toEqual({ allowed: false, reason: 'Switched off.' })
+    expect(await tell('policy', { tool: 'bash', args: {} })).toMatchObject({ allowed: false, reason: 'Outside the task.' })
+    expect(await tell('policy', { tool: 'write', args: {} })).toMatchObject({ allowed: false, reason: 'Switched off.' })
     expect(await tell('policy', { tool: 'edit', args: {} })).toMatchObject({ allowed: true })
     expect(seen).toEqual(['term-1:bash', 'term-1:write', 'term-1:edit'])
   })
@@ -429,7 +543,7 @@ describe('a pi terminal session', () => {
     expect(await socketCall<string>(connection, 'skill.load')).toBe('You have no skills.')
     expect(await socketCall<string>(connection, 'wiki.list')).toContain('home')
     const listed = await socketCall<{ tools: { name: string; parameters: { type: string } }[] }>(connection, 'tools.list')
-    expect(listed.tools.map((tool) => tool.name)).toEqual(['mcp_list_tools', 'mcp_call_tool', 'web_search', 'web_fetch', 'browser_navigate', 'browser_snapshot', 'browser_read', 'browser_screenshot', 'browser_click', 'browser_type', 'browser_select', 'browser_press', 'browser_scroll', 'browser_wait', 'browser_tabs', 'page_notes_list', 'page_notes_read', 'page_notes_mark_fixed'])
+    expect(listed.tools.map((tool) => tool.name)).toEqual(['history_search', 'history_read', 'trajectory_search', 'trajectory_read', 'wiki_search', 'wiki_read', 'wiki_list', 'skill_load', 'mcp_list_tools', 'mcp_call_tool', 'web_search', 'web_fetch', 'browser_navigate', 'browser_snapshot', 'browser_read', 'browser_screenshot', 'browser_click', 'browser_type', 'browser_select', 'browser_press', 'browser_scroll', 'browser_wait', 'browser_tabs', 'page_notes_list', 'page_notes_read', 'page_notes_mark_fixed'])
     expect(listed.tools[0].parameters.type).toBe('object')
     // Account calls exist, but only the session's extension holds the key that unlocks them.
     await expect(socketCall(connection, 'accounts.list')).rejects.toMatchObject({ code: 'unauthorized' })

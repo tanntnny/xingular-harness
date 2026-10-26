@@ -1,0 +1,420 @@
+{
+  "schemaVersion": 1,
+  "benchmark": "harness-session-runtime-overhead",
+  "status": "ok",
+  "metadata": {
+    "generatedAt": "2026-10-25T04:50:13.626Z",
+    "scriptVersion": 1,
+    "node": "v26.8.2",
+    "platform": "darwin",
+    "arch": "arm64",
+    "iterations": 5,
+    "warmups": 1,
+    "operationTimeoutMs": 5000,
+    "maxBenchmarkDurationMs": 120000,
+    "isolation": {
+      "dataAndStateRootsAreTemporary": true,
+      "homeIsRedirectedToTemporaryRoot": true,
+      "userPiCodexClaudeProfilesUsed": false,
+      "credentialsUsed": false,
+      "modelProvider": null,
+      "sessionImplementation": "injected deterministic fake session"
+    },
+    "outputPath": "/private/tmp/harness-session-runtime-audit.json",
+    "harnessVersion": "1.1.1",
+    "temporaryRootsRemoved": true,
+    "elapsedMs": 1966.283
+  },
+  "measurements": {
+    "sdkModuleImport": {
+      "ok": true,
+      "elapsedMs": 245.822,
+      "entrypoint": "dist/sdk/index.js"
+    },
+    "harnessInitialization": {
+      "ok": true,
+      "elapsedMs": 27.782
+    },
+    "terminalPreparation": {
+      "cold": {
+        "ok": true,
+        "prepareMs": 1157.73
+      },
+      "description": "First terminal.prepare call in this Harness process, including first socket-listener setup.",
+      "warmupErrors": [],
+      "samples": [
+        {
+          "index": 1,
+          "ok": true,
+          "prepareMs": 9.76
+        },
+        {
+          "index": 2,
+          "ok": true,
+          "prepareMs": 7.69
+        },
+        {
+          "index": 3,
+          "ok": true,
+          "prepareMs": 9.106
+        },
+        {
+          "index": 4,
+          "ok": true,
+          "prepareMs": 9.543
+        },
+        {
+          "index": 5,
+          "ok": true,
+          "prepareMs": 10.794
+        }
+      ],
+      "summary": {
+        "prepareMs": {
+          "count": 5,
+          "minMs": 7.69,
+          "medianMs": 9.543,
+          "meanMs": 9.379,
+          "p95Ms": 10.794,
+          "maxMs": 10.794
+        }
+      }
+    },
+    "sessionsRun": {
+      "description": "sessions.run invocation through first persisted message.delta and terminal completed event.",
+      "warmupErrors": [],
+      "samples": [
+        {
+          "index": 1,
+          "ok": true,
+          "runId": "profile-run-run-sample-1-2",
+          "metrics": {
+            "runReturnMs": 24.623,
+            "invocationToFirstDeltaMs": 24.331,
+            "invocationToCompletionMs": 32.75,
+            "persistence": {
+              "verified": true,
+              "eventCount": 6,
+              "eventLogBytes": 4295,
+              "eventTypes": [
+                "started",
+                "status.changed",
+                "context.snapshot",
+                "message.delta",
+                "message.completed",
+                "completed"
+              ]
+            }
+          }
+        },
+        {
+          "index": 2,
+          "ok": true,
+          "runId": "profile-run-run-sample-2-3",
+          "metrics": {
+            "runReturnMs": 22.063,
+            "invocationToFirstDeltaMs": 21.78,
+            "invocationToCompletionMs": 27.958,
+            "persistence": {
+              "verified": true,
+              "eventCount": 6,
+              "eventLogBytes": 4295,
+              "eventTypes": [
+                "started",
+                "status.changed",
+                "context.snapshot",
+                "message.delta",
+                "message.completed",
+                "completed"
+              ]
+            }
+          }
+        },
+        {
+          "index": 3,
+          "ok": true,
+          "runId": "profile-run-run-sample-3-4",
+          "metrics": {
+            "runReturnMs": 26.993,
+            "invocationToFirstDeltaMs": 26.705,
+            "invocationToCompletionMs": 33.742,
+            "persistence": {
+              "verified": true,
+              "eventCount": 6,
+              "eventLogBytes": 4295,
+              "eventTypes": [
+                "started",
+                "status.changed",
+                "context.snapshot",
+                "message.delta",
+                "message.completed",
+                "completed"
+              ]
+            }
+          }
+        },
+        {
+          "index": 4,
+          "ok": true,
+          "runId": "profile-run-run-sample-4-5",
+          "metrics": {
+            "runReturnMs": 29.684,
+            "invocationToFirstDeltaMs": 29.336,
+            "invocationToCompletionMs": 35.116,
+            "persistence": {
+              "verified": true,
+              "eventCount": 6,
+              "eventLogBytes": 4295,
+              "eventTypes": [
+                "started",
+                "status.changed",
+                "context.snapshot",
+                "message.delta",
+                "message.completed",
+                "completed"
+              ]
+            }
+          }
+        },
+        {
+          "index": 5,
+          "ok": true,
+          "runId": "profile-run-run-sample-5-6",
+          "metrics": {
+            "runReturnMs": 24.774,
+            "invocationToFirstDeltaMs": 24.484,
+            "invocationToCompletionMs": 32.473,
+            "persistence": {
+              "verified": true,
+              "eventCount": 6,
+              "eventLogBytes": 4295,
+              "eventTypes": [
+                "started",
+                "status.changed",
+                "context.snapshot",
+                "message.delta",
+                "message.completed",
+                "completed"
+              ]
+            }
+          }
+        }
+      ],
+      "summary": {
+        "runReturnMs": {
+          "count": 5,
+          "minMs": 22.063,
+          "medianMs": 24.774,
+          "meanMs": 25.627,
+          "p95Ms": 29.684,
+          "maxMs": 29.684
+        },
+        "invocationToFirstDeltaMs": {
+          "count": 5,
+          "minMs": 21.78,
+          "medianMs": 24.484,
+          "meanMs": 25.327,
+          "p95Ms": 29.336,
+          "maxMs": 29.336
+        },
+        "invocationToCompletionMs": {
+          "count": 5,
+          "minMs": 27.958,
+          "medianMs": 32.75,
+          "meanMs": 32.408,
+          "p95Ms": 35.116,
+          "maxMs": 35.116
+        }
+      }
+    },
+    "toolEventPersistence": {
+      "description": "One synthetic tool execution and the validated, persisted tool/event stream.",
+      "warmupErrors": [],
+      "samples": [
+        {
+          "index": 1,
+          "ok": true,
+          "runId": "profile-run-tool-sample-1-8",
+          "metrics": {
+            "runReturnMs": 28.263,
+            "invocationToFirstDeltaMs": 28.771,
+            "invocationToCompletionMs": 37.074,
+            "invocationToToolStartedMs": 28.26,
+            "invocationToToolCompletedMs": 28.573,
+            "persistence": {
+              "verified": true,
+              "eventCount": 8,
+              "eventLogBytes": 5060,
+              "eventTypes": [
+                "started",
+                "status.changed",
+                "context.snapshot",
+                "tool.started",
+                "tool.completed",
+                "message.delta",
+                "message.completed",
+                "completed"
+              ]
+            }
+          }
+        },
+        {
+          "index": 2,
+          "ok": true,
+          "runId": "profile-run-tool-sample-2-9",
+          "metrics": {
+            "runReturnMs": 27.771,
+            "invocationToFirstDeltaMs": 28.274,
+            "invocationToCompletionMs": 37.555,
+            "invocationToToolStartedMs": 27.768,
+            "invocationToToolCompletedMs": 28.069,
+            "persistence": {
+              "verified": true,
+              "eventCount": 8,
+              "eventLogBytes": 5060,
+              "eventTypes": [
+                "started",
+                "status.changed",
+                "context.snapshot",
+                "tool.started",
+                "tool.completed",
+                "message.delta",
+                "message.completed",
+                "completed"
+              ]
+            }
+          }
+        },
+        {
+          "index": 3,
+          "ok": true,
+          "runId": "profile-run-tool-sample-3-10",
+          "metrics": {
+            "runReturnMs": 29.133,
+            "invocationToFirstDeltaMs": 29.696,
+            "invocationToCompletionMs": 38.952,
+            "invocationToToolStartedMs": 29.129,
+            "invocationToToolCompletedMs": 29.471,
+            "persistence": {
+              "verified": true,
+              "eventCount": 8,
+              "eventLogBytes": 5080,
+              "eventTypes": [
+                "started",
+                "status.changed",
+                "context.snapshot",
+                "tool.started",
+                "tool.completed",
+                "message.delta",
+                "message.completed",
+                "completed"
+              ]
+            }
+          }
+        },
+        {
+          "index": 4,
+          "ok": true,
+          "runId": "profile-run-tool-sample-4-11",
+          "metrics": {
+            "runReturnMs": 29.109,
+            "invocationToFirstDeltaMs": 29.779,
+            "invocationToCompletionMs": 38.965,
+            "invocationToToolStartedMs": 29.105,
+            "invocationToToolCompletedMs": 29.527,
+            "persistence": {
+              "verified": true,
+              "eventCount": 8,
+              "eventLogBytes": 5080,
+              "eventTypes": [
+                "started",
+                "status.changed",
+                "context.snapshot",
+                "tool.started",
+                "tool.completed",
+                "message.delta",
+                "message.completed",
+                "completed"
+              ]
+            }
+          }
+        },
+        {
+          "index": 5,
+          "ok": true,
+          "runId": "profile-run-tool-sample-5-12",
+          "metrics": {
+            "runReturnMs": 29.194,
+            "invocationToFirstDeltaMs": 29.848,
+            "invocationToCompletionMs": 39.943,
+            "invocationToToolStartedMs": 29.19,
+            "invocationToToolCompletedMs": 29.584,
+            "persistence": {
+              "verified": true,
+              "eventCount": 8,
+              "eventLogBytes": 5080,
+              "eventTypes": [
+                "started",
+                "status.changed",
+                "context.snapshot",
+                "tool.started",
+                "tool.completed",
+                "message.delta",
+                "message.completed",
+                "completed"
+              ]
+            }
+          }
+        }
+      ],
+      "summary": {
+        "runReturnMs": {
+          "count": 5,
+          "minMs": 27.771,
+          "medianMs": 29.109,
+          "meanMs": 28.694,
+          "p95Ms": 29.194,
+          "maxMs": 29.194
+        },
+        "invocationToFirstDeltaMs": {
+          "count": 5,
+          "minMs": 28.274,
+          "medianMs": 29.696,
+          "meanMs": 29.274,
+          "p95Ms": 29.848,
+          "maxMs": 29.848
+        },
+        "invocationToToolStartedMs": {
+          "count": 5,
+          "minMs": 27.768,
+          "medianMs": 29.105,
+          "meanMs": 28.69,
+          "p95Ms": 29.19,
+          "maxMs": 29.19
+        },
+        "invocationToToolCompletedMs": {
+          "count": 5,
+          "minMs": 28.069,
+          "medianMs": 29.471,
+          "meanMs": 29.045,
+          "p95Ms": 29.584,
+          "maxMs": 29.584
+        },
+        "invocationToCompletionMs": {
+          "count": 5,
+          "minMs": 37.074,
+          "medianMs": 38.952,
+          "meanMs": 38.498,
+          "p95Ms": 39.943,
+          "maxMs": 39.943
+        }
+      }
+    }
+  },
+  "limitations": [
+    "Terminal timing covers Harness Terminals.prepare and its launch specification only; it does not spawn Bun/OpenTUI or measure interactive terminal process startup.",
+    "Session timings include Harness preparation, event validation, synchronous run-event persistence, and the injected fake-session seam; they exclude model/provider latency and real Pi initialization.",
+    "The tool case executes one deterministic local ToolSpec through the injected session, then verifies tool.started/tool.completed/message.delta/completed in the on-disk run event log."
+  ],
+  "errors": []
+}

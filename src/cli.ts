@@ -46,13 +46,14 @@ const USAGE = `Usage: xagent [--data <dir>] [--state <dir>]
   worktree <command> Managed git worktrees (worktree help)
 
 Standalone terminal options:
-  --data <dir>       Data directory (installed default: ~/.xingular-harness/data;
-                     npm run dev default: ~/.xingular-harness-dev/data)
-  --state <dir>      State directory (installed default: ~/.xingular-harness/state;
-                     npm run dev default: ~/.xingular-harness-dev/state)
+  --data <dir>       Data directory (interactive profile default; otherwise
+                     ~/.xingular-harness/data; npm run dev passes its own data root)
+  --state <dir>      State directory (interactive profile default; otherwise
+                     ~/.xingular-harness/state; npm run dev passes its own state directory)
   --worktree [name], -w [name]
                      Start in a new managed worktree of this repository, or in
                      the named one
+  --variant <scope>  Run on this variant scope's head (default: interactive profile scope)
 `
 
 function flags(argv: string[]): { values: Record<string, string[]>; switches: Set<string> } {

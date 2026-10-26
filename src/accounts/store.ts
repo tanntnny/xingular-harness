@@ -49,10 +49,34 @@ export interface Limit {
   id: string
   label: string
   usedPercent?: number | null
+  /** The same window from the other side: quota left. Additive for surfaces that read limits as remaining. */
+  remainingPercent?: number | null
   resetsAt?: string | null
   windowMinutes?: number | null
-  /** `allowed`, `warning`, or `rejected` when the provider reports it. */
+  /** `allowed`, `warning`, `rejected`, or `configured` when the provider reports it. */
   status?: string | null
+  /** Which provider the reading belongs to. Older records may omit it. */
+  provider?: string | null
+  /** What kind of ceiling this is. */
+  kind?: 'window' | 'rate' | 'credit' | 'configured' | 'error'
+  /** The unit of `used`, `limit` and `remaining`. */
+  unit?: 'percent' | 'requests' | 'tokens' | 'usd' | 'currency' | 'count'
+  used?: number | null
+  limit?: number | null
+  remaining?: number | null
+  /** How the reading was obtained. */
+  source?: 'headers' | 'provider' | 'estimate' | 'error'
+  observedAt?: string | null
+  /** A short provider note, such as a balance currency. */
+  detail?: string | null
+}
+
+/** The last readout for one provider of one account, including when nothing could be read. */
+export interface ProviderLimitState {
+  provider: string
+  source: 'headers' | 'provider' | 'estimate' | 'unavailable'
+  reason: string | null
+  observedAt: string
 }
 
 export interface Issue {
@@ -71,6 +95,8 @@ export interface AccountState {
   plan: string | null
   identity: string | null
   limits: Limit[]
+  /** What the last limit readout found for each provider, including an unavailable one. */
+  providerLimits: ProviderLimitState[]
   lastError: Issue | null
   lastCheckedAt: string | null
   cliVersion: string | null
@@ -80,7 +106,7 @@ export interface AccountState {
   piProviders: string[]
 }
 
-export const emptyState = (): AccountState => ({ health: 'unknown', signedIn: null, authMethod: null, plan: null, identity: null, limits: [], lastError: null, lastCheckedAt: null, cliVersion: null, capabilities: [], piProviders: [] })
+export const emptyState = (): AccountState => ({ health: 'unknown', signedIn: null, authMethod: null, plan: null, identity: null, limits: [], providerLimits: [], lastError: null, lastCheckedAt: null, cliVersion: null, capabilities: [], piProviders: [] })
 
 export type AccountView = Account & { isDefault: boolean; state: AccountState }
 

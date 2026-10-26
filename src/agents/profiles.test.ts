@@ -43,7 +43,7 @@ describe('agent profiles', () => {
     const { root, project, cwd, base } = folders()
     expect(projectRoot(cwd)).toBe(project)
     expect(profileDirs(root, cwd)).toEqual({ global: join(root, 'agents'), project: join(project, '.xingular', 'agents') })
-    expect(listProfiles(root, cwd).profiles.map(profile => [profile.name, profile.source])).toEqual([['explorer', 'builtin'], ['worker', 'builtin']])
+    expect(listProfiles(root, cwd).profiles.map(profile => [profile.name, profile.source])).toEqual([['explorer', 'builtin'], ['researcher', 'builtin'], ['worker', 'builtin']])
 
     write(join(root, 'agents'), 'worker', '---\ndescription: Global worker\n---\nGlobal.\n')
     write(join(root, 'agents'), 'reviewer', '---\ndescription: Reviews\ncolor: magenta\n---\nReview.\n')
@@ -59,6 +59,7 @@ describe('agent profiles', () => {
     expect(listing.profiles.map(profile => [profile.name, profile.source, profile.description])).toEqual([
       ['explorer', 'builtin', 'Finds and explains code, files and history without changing anything.'],
       ['reader', 'variant', 'Reads logs'],
+      ['researcher', 'builtin', 'Researches code, history and public sources without changing anything.'],
       ['reviewer', 'project', 'Project reviewer'],
       ['worker', 'global', 'Global worker']
     ])
@@ -66,7 +67,21 @@ describe('agent profiles', () => {
     expect(resolveProfile(root, cwd, 'reviewer')?.instructions).toBe('Project.')
     expect(resolveProfile(root, cwd, 'missing')).toBeNull()
     expect(resolveProfile(root, cwd, '../escape')).toBeNull()
-    expect(profileSection(root, cwd, variantDir).body).toContain('- reader — Reads logs')
+    const normalSection = profileSection(root, cwd, variantDir)
+    const normalProfiles = normalSection.body
+    expect(normalSection.dynamic).toBe(true)
+    expect(normalProfiles).toContain('- reader — Reads logs')
+    expect(normalProfiles).toContain('known-file lookup')
+    expect(normalProfiles).toContain('one or two simple tool calls')
+    expect(normalProfiles).toContain('never assign overlapping edits')
+    expect(normalProfiles).toContain('You own integration, verification and the user-facing report.')
+    const planSection = profileSection(root, cwd, variantDir, true)
+    const planProfiles = planSection.body
+    expect(planSection.dynamic).toBe(true)
+    expect(planProfiles).toContain('- explorer — Finds and explains code')
+    expect(planProfiles).toContain('- researcher — Researches code, history and public sources')
+    expect(planProfiles).not.toContain('- worker —')
+    expect(planProfiles).not.toContain('- reader —')
   })
 
   it('creates profiles from the template or a copy, never over one, and removes only files', () => {

@@ -12,7 +12,7 @@ import {
 import { matchesKey, type Component, type EditorComponent } from '@earendil-works/pi-tui'
 
 import { controlCall } from '../control'
-import { selectionText } from '../tui/chrome'
+import { CHROME_ROWS, centerDialogChromeRows, selectionText } from '../tui/chrome'
 import { createTerminalCommands } from '../tui/commands'
 import { BROWSER_COMMANDS } from '../browser'
 import type { TerminalCommandHelpGroup } from '../commandHelp'
@@ -25,7 +25,7 @@ import { SideQuestion, sideQuestionSnapshot } from '../tui/sideQuestion'
 import type { SideQuestionContext, SideQuestionRead } from '../../sessions/sideQuestions'
 import { createHarnessLightTheme, createHarnessTheme } from '../tui/theme'
 import { createTerminalUi, type TerminalUi } from '../tui/ui'
-import { centeredDialogHost } from '../tui/dialogGeometry'
+import { centeredDialogHost, dialogFits } from '../tui/dialogGeometry'
 import { chooseCompletionVerb, chooseWorkingVerb, getWorkingSpinnerFrames, SPINNER_INTERVAL_MS, spinnerFrameAt } from '../tui/workingStatus'
 import { stageClipboardFiles } from '../tui/clipboardFiles'
 import { readHarnessLogSnapshot, type HarnessLogChunk, type HarnessLogInfo } from '../logs'
@@ -71,6 +71,10 @@ type DeferredInput =
 /** Larger images are refused when Pi cannot shrink them. */
 const MAX_UNRESIZED_IMAGE_BYTES = 5 * 1024 * 1024
 
+function normalizeDialogPaste(text: string): string {
+  return text.replace(/\x1b\[[0-?]*[ -/]*[@-~]/gu, '').replace(/\r\n?/gu, '\n')
+}
+
 export interface KeyInput {
   name: string
   sequence: string
@@ -81,7 +85,11 @@ export interface KeyInput {
   super?: boolean
   repeated?: boolean
   cursorOffset?: number
+  atFirstVisualLine?: boolean
+  atLastVisualLine?: boolean
 }
+
+type ComposerMode = 'normal' | 'plan' | 'bash'
 
 export interface RendererControls {
   suspend(): Promise<void>
@@ -166,6 +174,14 @@ export class OpenTuiApplication {
   private readonly widgets = new Map<string, { component: Mounted; placement: string }>()
   private readonly branchListeners = new Set<() => void>()
   private historyIndex: number | undefined
+  private historyScratch?: {
+    draft: string
+    cursorOffset: number
+    mode: ComposerMode
+    attachments: ReturnType<ComposerAttachments['snapshot']>
+  }
+  private historyBaseMode?: 'normal' | 'plan'
+  private readonly slashCommandHistory: { text: string; timestamp: number }[] = []
   private runtime?: TerminalRuntime
   private ui?: TerminalUi
   private commands?: ReturnType<typeof createTerminalCommands>
@@ -196,6 +212,7 @@ export class OpenTuiApplication {
   private branch: string | null = null
   private subagents: TerminalSubagentActivity[] = []
   private subagentsPolling = false
+  private subagentsRefreshPending = false
   private subagentGeneration = 0
   private startedAt: number | null = null
   /** While context compaction runs, it replaces the working verb; set even when no run is active. */
@@ -465,6 +482,7 @@ export class OpenTuiApplication {
         runtime: () => this.runtime!,
         ui: this.ui,
         cwd: () => this.runtime!.cwd,
+        branch: () => this.branch,
         sessionDirectory: () => this.runtime!.sessionDirectory,
         refresh: () => this.refresh(),
         shutdown: () => { void this.shutdown() },
@@ -551,20 +569,24 @@ export class OpenTuiApplication {
     }
   }
 
-  private async refreshSubagents(): Promise<void> {
-    if (!this.runtime || this.startedAt === null || this.stopped || this.subagentsPolling) return
+  private async refreshSubagents(settled = false): Promise<void> {
+    if (!this.runtime || (!settled && this.startedAt === null) || this.stopped) return
+    if (this.subagentsPolling) {
+      if (settled) this.subagentsRefreshPending = true
+      return
+    }
     const generation = this.subagentGeneration
     this.subagentsPolling = true
     try {
-      if (!this.session.getActiveToolNames().includes('spawn_subagent')) {
+      if (!settled && !this.session.getActiveToolNames().includes('spawn_subagent')) {
         if (this.subagents.length) {
           this.subagents = []
           this.change()
         }
         return
       }
-      const result = await controlCall<{ children: TerminalSubagentActivity[] }>('terminal.subagents.monitor')
-      if (generation !== this.subagentGeneration || this.startedAt === null || this.stopped) return
+      const result = await this.readSubagentMonitor()
+      if (generation !== this.subagentGeneration || (!settled && this.startedAt === null) || this.stopped) return
       if (JSON.stringify(result.children) !== JSON.stringify(this.subagents)) {
         this.subagents = result.children
         this.change()
@@ -572,7 +594,15 @@ export class OpenTuiApplication {
     } catch { /* Keep the last observed activity through a transient monitor error. */ }
     finally {
       this.subagentsPolling = false
+      if (this.subagentsRefreshPending && !this.stopped) {
+        this.subagentsRefreshPending = false
+        void this.refreshSubagents(true)
+      }
     }
+  }
+
+  private readSubagentMonitor(): Promise<{ children: TerminalSubagentActivity[] }> {
+    return controlCall<{ children: TerminalSubagentActivity[] }>('terminal.subagents.monitor')
   }
 
   private release(component?: Mounted): void {
@@ -646,7 +676,7 @@ export class OpenTuiApplication {
 
   private resetPresentation(): void {
     this.slashCommandNames = undefined
-    this.historyIndex = undefined
+    this.resetHistoryBrowse()
     this.invalidateFileCompletion()
     void this.sideQuestion?.dismiss()
     this.pendingAbort?.abort()
@@ -660,6 +690,7 @@ export class OpenTuiApplication {
     this.activeDeferredKind = undefined
     this.resetActiveWorkingStatus()
     this.subagentGeneration += 1
+    this.subagentsRefreshPending = false
     this.subagents = []
     this.transcript.clear()
     this.ui?.reset()
@@ -686,6 +717,7 @@ export class OpenTuiApplication {
         for (const alias of command.aliases ?? []) names.add(alias)
       }
       for (const skill of this.commands.skills()) names.add(`skill:${skill.name}`)
+      for (const alias of this.commands.legacyAliases()) names.add(alias)
     } catch { /* A resource reload may briefly leave command metadata unavailable. */ }
     return this.slashCommandNames = [...names]
   }
@@ -718,6 +750,7 @@ export class OpenTuiApplication {
     }
     if (event.type === 'agent_start') {
       this.subagentGeneration += 1
+      this.subagentsRefreshPending = false
       this.startedAt = Date.now()
       this.subagents = []
       this.requestStartedAt = null
@@ -737,10 +770,10 @@ export class OpenTuiApplication {
         }
       }
       this.startedAt = null
-      this.subagents = []
       this.requestStartedAt = null
       this.activeVerb = undefined
       this.activeTurnId = undefined
+      void this.refreshSubagents(true)
       queueMicrotask(() => this.drainDeferred())
     }
     if (event.type === 'compaction_start') this.compacting = { since: Date.now(), label: 'Compacting context' }
@@ -972,6 +1005,8 @@ export class OpenTuiApplication {
       { value: 'deny', label: 'Deny' }
     ]
     const details = [
+      'PageUp/PageDown scrolls the complete approval details.',
+      '',
       request.rememberable
         ? `Always allow applies to every future ${tool} call in Pi terminal sessions sharing this local Harness state.`
         : 'This approval cannot be saved as a tool grant.',
@@ -979,6 +1014,7 @@ export class OpenTuiApplication {
       request.action ?? ''
     ].join('\n')
     let abortListener: (() => void) | undefined
+    let tooSmall = false
     try {
       const choice = await this.ui!.custom<string | undefined>((tui, theme, _keys, done) => {
         const finish = (value: string | undefined) => {
@@ -990,11 +1026,20 @@ export class OpenTuiApplication {
         signal.addEventListener('abort', abortListener, { once: true })
         if (signal.aborted) abortListener()
         const list = new SearchableSelect(choices.map(item => item.label), tui, () => theme,
-          index => finish(choices[index]?.value), () => finish(undefined))
+          index => finish(choices[index]?.value), () => finish(undefined), 'never')
+        const centered = centeredDialogHost(tui) && dialogFits(tui.terminal.columns, tui.terminal.rows)
+        const maxRows = Math.max(3, Math.floor(tui.terminal.rows * 0.9))
+        const chromeRows = centered ? centerDialogChromeRows(maxRows) : CHROME_ROWS
+        if (maxRows - chromeRows < choices.length + 1) {
+          tooSmall = true
+          finish(undefined)
+        }
         const panel = new DialogPanel(`Approve ${tool}?`, list, () => theme, 'Enter choose · Esc deny', details)
-        panel.centered = centeredDialogHost(tui)
+        panel.centered = centered
+        panel.maxRows = () => maxRows
         return panel
       }, { overlay: true, overlayOptions: { width: '100%', maxHeight: '90%' } })
+      if (tooSmall) this.notify('Terminal too small to review all approval details; request denied.', 'warning')
       return { decision: choice === 'once' || choice === 'global' ? 'approved' : 'denied', alwaysAllow: choice === 'global' }
     } finally {
       if (abortListener) signal.removeEventListener('abort', abortListener)
@@ -1013,6 +1058,12 @@ export class OpenTuiApplication {
     if (!shortcut) return false
     this.attempt(() => shortcut[1].handler(this.session.extensionRunner.createContext()))
     return true
+  }
+
+  private clipboardPasteKey(key: KeyInput): boolean {
+    const forwardedSuperPaste = Boolean(key.super && key.name === 'v' && !key.ctrl && !key.meta)
+    try { return this.keybindings!.matches(key.sequence, 'app.clipboard.pasteImage') || forwardedSuperPaste }
+    catch { return forwardedSuperPaste }
   }
 
   private invalidateFileCompletion(): void {
@@ -1114,8 +1165,10 @@ export class OpenTuiApplication {
       if (this.commandBusy) { this.notify('Finish or cancel the active command first.', 'error'); return true }
       this.commandBusy = true
       this.attempt(async () => {
-        try { await this.commands!.execute(`/${item.name}`) }
-        finally { this.commandBusy = false }
+        try {
+          const command = `/${item.name}`
+          if (await this.commands!.execute(command)) this.rememberSlashCommand(command)
+        } finally { this.commandBusy = false }
       })
       return true
     }
@@ -1130,7 +1183,8 @@ export class OpenTuiApplication {
     this.paletteOpen = false
     this.paletteSuppressed = true
     this.paletteIndex = 0
-    this.setDraftExternal(`${item.prefix ?? '/'}${item.name} `)
+    const text = `${item.prefix ?? '/'}${item.name} `
+    this.setDraftExternal(text, text.length)
     return true
   }
 
@@ -1165,7 +1219,7 @@ export class OpenTuiApplication {
       if (modeChanged) this.change()
       return
     }
-    this.historyIndex = undefined
+    this.resetHistoryBrowse()
     this.invalidateFileCompletion()
     this.draftCursorOffset = null
     this.draft = value
@@ -1178,6 +1232,7 @@ export class OpenTuiApplication {
   }
 
   setDraftExternal(value: string, cursorOffset?: number, preserveBashMode = false): void {
+    this.resetHistoryBrowse()
     const bash = preserveBashMode ? { body: value, bashMode: this.bashMode } : splitBashDraft(value)
     this.invalidateFileCompletion()
     this.applyComposerMode(bash.bashMode ? 'bash' : this.planMode ? 'plan' : 'normal')
@@ -1227,7 +1282,7 @@ export class OpenTuiApplication {
   }
 
   private clearDraft(): void {
-    this.historyIndex = undefined
+    this.resetHistoryBrowse()
     this.invalidateFileCompletion()
     this.applyComposerMode(this.planMode ? 'plan' : 'normal')
     this.draft = ''
@@ -1295,7 +1350,7 @@ export class OpenTuiApplication {
     const images = attached.length ? attached : undefined
     this.planChoice.clear()
     if (/^\/plan\s*$/u.test(text)) {
-      this.historyIndex = undefined
+      this.rememberSlashCommand(draft)
       this.clearDraft()
       this.togglePlanMode()
       return
@@ -1307,13 +1362,15 @@ export class OpenTuiApplication {
     const command = text.trimStart().startsWith('/')
     if (images && (command || bangMode)) this.notify('Images are only sent with a message; this one runs without them.', 'warning')
     if (command) this.commandBusy = true
-    this.historyIndex = undefined
     this.clearDraft()
     this.attempt(async () => {
       try {
         await this.draftSync
         if (this.stopped) return
-        if (command && await this.commands!.execute(text)) return
+        if (command && await this.commands!.execute(text)) {
+          this.rememberSlashCommand(draft)
+          return
+        }
         if (bangMode) {
           if (this.planBarrierOpen || !this.session.isIdle) {
             this.planBarrierOpen = true
@@ -1421,17 +1478,86 @@ export class OpenTuiApplication {
   }
 
   private promptHistory(): string[] {
-    return this.transcript.view().items.flatMap(item =>
-      item.kind === 'user' && item.text.trim() ? [item.text] : []
-    )
+    const entries: { text: string; timestamp: number; order: number }[] = []
+    for (const item of this.transcript.view().items) {
+      if (item.kind === 'user' && item.text.trim()) entries.push({ text: item.text, timestamp: item.timestamp, order: entries.length })
+      else if (item.kind === 'bash' && item.command.trim()) entries.push({ text: `!${item.command}`, timestamp: item.timestamp, order: entries.length })
+    }
+    for (const command of this.slashCommandHistory) entries.push({ ...command, order: entries.length })
+    return entries
+      .sort((left, right) => left.timestamp - right.timestamp || left.order - right.order)
+      .map(entry => entry.text)
   }
 
-  private historyPrevious(): void {
+  private rememberSlashCommand(text: string): void {
+    this.slashCommandHistory.push({ text, timestamp: Date.now() })
+    if (this.slashCommandHistory.length > 200) this.slashCommandHistory.shift()
+  }
+
+  private resetHistoryBrowse(): void {
+    this.historyIndex = undefined
+    this.historyScratch = undefined
+    this.historyBaseMode = undefined
+  }
+
+  private historyPrevious(cursorOffset?: number): boolean {
     const history = this.promptHistory()
-    if (!history.length) return
+    if (!history.length) return false
+    if (this.historyIndex === undefined) {
+      this.historyScratch = {
+        draft: this.draft,
+        cursorOffset: cursorOffset ?? this.draftCursorOffset ?? this.draft.length,
+        mode: this.bashMode ? 'bash' : this.planMode ? 'plan' : 'normal',
+        attachments: this.attachments.snapshot()
+      }
+      this.historyBaseMode = this.planMode ? 'plan' : 'normal'
+    }
     const next = this.historyIndex === undefined ? history.length - 1 : Math.max(0, this.historyIndex - 1)
     this.historyIndex = next
-    this.setDraftExternal(history[next] ?? '')
+    this.setHistoryDraft(history[next] ?? '')
+    return true
+  }
+
+  private moveComposerCursor(offset: number): void {
+    this.draftCursorOffset = offset
+    this.draftEpoch += 1
+    this.change()
+  }
+
+  private setHistoryDraft(value: string): void {
+    const parsed = splitBashDraft(value)
+    const mode = parsed.bashMode ? 'bash' : this.historyBaseMode ?? 'normal'
+    this.invalidateFileCompletion()
+    this.applyComposerMode(mode)
+    this.draft = parsed.body
+    this.attachments.clearForDraft(this.draft)
+    this.draftCursorOffset = this.draft.length
+    this.draftEpoch += 1
+    this.paletteSuppressed = false
+    this.paletteIndex = 0
+    this.updateCustomEditor(this.draft)
+    this.syncDraft(this.draft)
+    this.change()
+  }
+
+  private restoreHistoryScratch(): void {
+    const scratch = this.historyScratch
+    this.resetHistoryBrowse()
+    if (!scratch) {
+      this.setDraftExternal('')
+      return
+    }
+    this.invalidateFileCompletion()
+    this.applyComposerMode(scratch.mode)
+    this.draft = scratch.draft
+    this.attachments.restore(scratch.attachments)
+    this.draftCursorOffset = scratch.cursorOffset
+    this.draftEpoch += 1
+    this.paletteSuppressed = false
+    this.paletteIndex = 0
+    this.updateCustomEditor(this.draft)
+    this.syncDraft(this.draft)
+    this.change()
   }
 
   private historyNext(): void {
@@ -1439,12 +1565,11 @@ export class OpenTuiApplication {
     if (this.historyIndex === undefined) return
     const next = this.historyIndex + 1
     if (next >= history.length) {
-      this.historyIndex = undefined
-      this.setDraftExternal('')
+      this.restoreHistoryScratch()
       return
     }
     this.historyIndex = next
-    this.setDraftExternal(history[next] ?? '')
+    this.setHistoryDraft(history[next] ?? '')
   }
 
   handleMouse(event: OpenTuiMouseInput): boolean {
@@ -1477,7 +1602,13 @@ export class OpenTuiApplication {
   private onHandleKey(key: KeyInput): boolean {
     if (this.stopped) return true
     this.statistics = undefined
-    if (this.host.hasOverlay()) return this.host.sendToOverlay(key.sequence)
+    if (this.host.hasOverlay()) {
+      if (this.clipboardPasteKey(key)) {
+        this.attempt(() => this.pasteToOverlay(''))
+        return true
+      }
+      return this.host.sendToOverlay(key.sequence)
+    }
     if (this.customEditor) { this.customEditor.handleInput(key.sequence); return true }
     const routed = this.host.emitInput(key.sequence)
     if (routed?.consume) return true
@@ -1489,6 +1620,29 @@ export class OpenTuiApplication {
     if (this.handleQuestionKey(key, data)) return true
     // Question editors own their remaining keys; global '?' and '!' shortcuts must not eat input.
     if (this.questionDock && ['note', 'answer'].includes(this.questionDock.view.focus)) return false
+    if (!this.paletteOpen && key.ctrl && key.name === 'up') { this.historyPrevious(key.cursorOffset); return true }
+    if (!this.paletteOpen && key.ctrl && key.name === 'down') { this.historyNext(); return true }
+    const plainArrow = !key.ctrl && !key.meta && !key.shift && !key.option && !key.super
+    const atDraftEndpoint = this.draft === '' || key.cursorOffset === 0 || key.cursorOffset === this.draft.length
+    if (!this.paletteOpen && !this.fileCompletion && plainArrow && atDraftEndpoint) {
+      if (key.name === 'up' && (this.draft === '' || key.cursorOffset !== undefined)) {
+        if (this.historyPrevious(key.cursorOffset)) return true
+      }
+      if (key.name === 'down' && this.historyIndex !== undefined) {
+        this.historyNext()
+        return true
+      }
+    }
+    if (!this.paletteOpen && !this.fileCompletion && plainArrow && key.name === 'up' && key.atFirstVisualLine &&
+      key.cursorOffset !== undefined && key.cursorOffset > 0) {
+      this.moveComposerCursor(0)
+      return true
+    }
+    if (!this.paletteOpen && !this.fileCompletion && plainArrow && key.name === 'down' && key.atLastVisualLine &&
+      key.cursorOffset !== undefined && key.cursorOffset < this.draft.length) {
+      this.moveComposerCursor(this.draft.length)
+      return true
+    }
     const palette = this.paletteView()
     if (palette) {
       if (key.name === 'up') { this.paletteIndex = (palette.index - 1 + palette.items.length) % palette.items.length; this.change(); return true }
@@ -1538,17 +1692,6 @@ export class OpenTuiApplication {
     if (fileCompletion && unmodified && key.name === 'escape') {
       this.invalidateFileCompletion()
       this.change()
-      return true
-    }
-    if (key.ctrl && key.name === 'up') { this.historyPrevious(); return true }
-    if (key.ctrl && key.name === 'down') { this.historyNext(); return true }
-    const plainArrow = !key.ctrl && !key.meta && !key.shift && !key.option && !key.super
-    if (plainArrow && key.name === 'up' && this.draft === '') {
-      this.historyPrevious()
-      return true
-    }
-    if (plainArrow && key.name === 'down' && this.draft === '' && this.historyIndex !== undefined) {
-      this.historyNext()
       return true
     }
     if (key.name === 'tab' && !key.shift) {
@@ -1613,7 +1756,7 @@ export class OpenTuiApplication {
   private hotkeys(): string {
     return [
       'Tab files/folders · Shift+Tab plan mode', 'Shift+↑/↓ effort · /effort · Ctrl+K commands', 'Ctrl+O expand details · Ctrl+T thinking',
-      'Ctrl+L model', 'Ctrl+N new session', '↑ recalls when empty · Ctrl+↑/↓ browse history',
+      'Ctrl+L model', 'Ctrl+N new session', '↑/↓ at draft start/end browse history; line edges jump to characters · Ctrl+↑/↓ anywhere',
       'Enter send or queue · Cmd+Enter steer · Esc dismisses btw or stops reply', 'Ctrl+C clear or quit · Ctrl+D quit',
       'PgUp/PgDn transcript'
     ].join('\n')
@@ -1726,9 +1869,20 @@ export class OpenTuiApplication {
     }
   }
 
-  /** A bracketed paste from the terminal (Cmd+V, drag and drop) reaching the composer. */
+  /** A bracketed paste from the terminal (Cmd+V, drag and drop) reaching the composer or an overlay. */
   paste(text: string): void {
-    this.attempt(() => this.handlePaste(text))
+    this.attempt(() => this.host.hasOverlay() ? this.pasteToOverlay(text) : this.handlePaste(text))
+  }
+
+  private async pasteToOverlay(text: string): Promise<void> {
+    let payload = text
+    if (!payload) payload = await this.readClipboardText() ?? ''
+    const normalized = normalizeDialogPaste(payload)
+    if (normalized) this.host.sendPasteToOverlay(normalized)
+  }
+
+  private async readClipboardText(): Promise<string | null> {
+    return (await loadPiAdapter()).readClipboardText()
   }
 
   private async handlePaste(text: string): Promise<void> {

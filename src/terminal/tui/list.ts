@@ -1,7 +1,7 @@
 // The one list every screen uses: an optional search row, windowed rows with a `❯` marker and a
 // full-width selected row like the slash-command list, group headings, and a status at the right.
 import type { Theme } from '@earendil-works/pi-coding-agent'
-import { fuzzyFilter, matchesKey, truncateToWidth, visibleWidth, type Component, type Focusable, type TuiMouseEventResult } from '@earendil-works/pi-tui'
+import { fuzzyFilter, matchesKey, parseColor, truncateToWidth, visibleWidth, type Component, type Focusable, type TuiMouseEventResult } from '@earendil-works/pi-tui'
 
 import { safeText, selectedRow, selectionMuted, selectionText } from './chrome'
 import { SEARCH_FIELD_ROWS, SearchField, searchFieldRowsFor } from './search'
@@ -9,11 +9,21 @@ import { isPrimaryClick, type TerminalMouseInput } from './mouse'
 
 export type RowTone = 'success' | 'warning' | 'error' | 'muted' | 'dim' | 'accent'
 
+export interface ListLabelPart {
+  text: string
+  color?: string
+  tone?: RowTone
+}
+
 export interface ListRow<T = unknown> {
   id: string
   label: string
+  /** Optional colored spans for the label; selected rows keep the shared high-contrast text. */
+  labelParts?: readonly ListLabelPart[]
   /** Shown at the right edge, in `tone`. */
   detail?: string
+  /** An optional muted second line beneath the label. */
+  subtitle?: string
   tone?: RowTone
   /** Rows with the same consecutive group share a heading (not shown while searching). */
   group?: string
@@ -30,6 +40,8 @@ export interface FilterListOptions<T> {
   search?: 'always' | 'never'
   /** Rows the list may use; the search field is part of it. Defaults to what `render` is given. */
   limit?: () => number
+  /** Blank lines between visible rows. */
+  rowGap?: number
   empty?: string
   noun?: readonly [string, string]
   /** Short context included in the search row while a query is active. */
@@ -40,7 +52,7 @@ export interface FilterListOptions<T> {
   onCancel?: () => void
 }
 
-interface Entry<T> { row?: ListRow<T>; heading?: string }
+interface Entry<T> { row?: ListRow<T>; heading?: string; spacer?: true }
 
 export class FilterList<T = unknown> implements Component, Focusable {
   private rows: ListRow<T>[]
@@ -65,7 +77,10 @@ export class FilterList<T = unknown> implements Component, Focusable {
   get total(): number { return this.rows.length }
   get shown(): number { return this.visible.length }
   /** Rows the list would use if nothing cut it: the search field, headings and rows. */
-  get height(): number { return (this.searchVisible() ? this.renderedSearchRows : 0) + this.entries().length }
+  get height(): number {
+    return (this.searchVisible() ? this.renderedSearchRows : 0)
+      + this.entries().reduce((height, entry) => height + (entry.row?.subtitle === undefined ? 1 : 2), 0)
+  }
   /** Rows at the top of `render` that a frame must keep when it has to cut the list. */
   get pinnedRows(): number { return this.searchVisible() ? this.renderedSearchRows : 0 }
 
@@ -102,6 +117,10 @@ export class FilterList<T = unknown> implements Component, Focusable {
   invalidate(): void { this.search.invalidate() }
 
   private limit(): number { return Math.max(1, Math.floor(this.options.limit?.() ?? Number.POSITIVE_INFINITY)) }
+  private rowGap(): number {
+    const gap = this.options.rowGap ?? 0
+    return Number.isFinite(gap) ? Math.max(0, Math.floor(gap)) : 0
+  }
   private mode(): 'always' | 'never' { return this.options.search ?? 'always' }
   private canSearch(): boolean { return this.mode() === 'always' }
   private searchVisible(): boolean { return this.canSearch() || this.query.length > 0 }
@@ -110,7 +129,7 @@ export class FilterList<T = unknown> implements Component, Focusable {
   private refilter(): void {
     const query = this.query.trim()
     this.visible = query
-      ? fuzzyFilter(this.rows, query, row => row.searchText ?? `${row.label} ${row.detail ?? ''} ${row.group ?? ''}`)
+      ? fuzzyFilter(this.rows, query, row => row.searchText ?? `${row.label} ${row.subtitle ?? ''} ${row.detail ?? ''} ${row.group ?? ''}`)
       : this.rows
     if (!this.visible.some(row => row.id === this.selectedId && !row.disabled)) this.selectedId = this.firstSelectable()?.id
   }
@@ -152,15 +171,19 @@ export class FilterList<T = unknown> implements Component, Focusable {
   private entries(): Entry<T>[] {
     const entries: Entry<T>[] = []
     let last: string | undefined
-    for (const row of this.visible) {
+    const gap = this.rowGap()
+    for (const [index, row] of this.visible.entries()) {
       if (!this.query && row.group && row.group !== last) entries.push({ heading: row.group })
       last = row.group
       entries.push({ row })
+      if (index < this.visible.length - 1) {
+        for (let line = 0; line < gap; line += 1) entries.push({ spacer: true })
+      }
     }
     return entries
   }
 
-  private line(row: ListRow<T>, width: number): string {
+  private lines(row: ListRow<T>, width: number): string[] {
     const theme = this.options.theme()
     const selected = row.id === this.selectedId
     const detail = row.detail ? safeText(row.detail) : ''
@@ -169,9 +192,37 @@ export class FilterList<T = unknown> implements Component, Focusable {
     const label = truncateToWidth(safeText(row.label), Math.max(0, room - (showDetail ? visibleWidth(detail) + 2 : 0)), '…')
     const gap = ' '.repeat(Math.max(0, room - visibleWidth(label) - (showDetail ? visibleWidth(detail) : 0)))
     const tone = (text: string) => theme.fg(row.tone ?? 'muted', text)
-    const main = (selected ? '❯ ' : '  ') + label
-    if (selected) return selectedRow(selectionText(theme, main) + gap + (showDetail ? selectionMuted(theme, detail) : ''), width, theme)
-    return (row.disabled ? theme.fg('dim', main) : main) + gap + (showDetail ? tone(detail) : '')
+    const prefix = selected ? '❯ ' : '  '
+    const labelText = selected || row.disabled || !row.labelParts?.length ? label : this.labelParts(row.labelParts, label, theme)
+    const main = prefix + label
+    const primary = selected
+      ? selectedRow(selectionText(theme, main) + gap + (showDetail ? selectionMuted(theme, detail) : ''), width, theme)
+      : (row.disabled ? theme.fg('dim', main) : prefix + labelText) + gap + (showDetail ? tone(detail) : '')
+    if (row.subtitle === undefined) return [primary]
+    const subtitle = truncateToWidth(`  ${safeText(row.subtitle)}`, width, '…')
+    const secondary = selected
+      ? selectedRow(selectionMuted(theme, subtitle), width, theme)
+      : theme.fg(row.disabled ? 'dim' : 'muted', subtitle)
+    return [primary, secondary]
+  }
+
+  private labelParts(parts: readonly ListLabelPart[], visibleLabel: string, theme: Theme): string {
+    const source = parts.map(part => safeText(part.text)).join('')
+    const truncated = visibleWidth(source) > visibleWidth(visibleLabel)
+    let remaining = Math.max(0, visibleWidth(visibleLabel) - (truncated ? 1 : 0))
+    const output: string[] = []
+    for (const part of parts) {
+      if (remaining <= 0) break
+      const text = safeText(part.text)
+      const fitted = truncateToWidth(text, remaining, '')
+      if (fitted) {
+        output.push(part.color ? theme.style(fitted, { fg: parseColor(part.color) }) : part.tone ? theme.fg(part.tone, fitted) : fitted)
+      }
+      remaining -= visibleWidth(fitted)
+      if (visibleWidth(fitted) < visibleWidth(text)) break
+    }
+    if (truncated) output.push('…')
+    return output.join('')
   }
 
   /** `rows` is the most the list may use, the search row included. */
@@ -201,11 +252,43 @@ export class FilterList<T = unknown> implements Component, Focusable {
       return lines.map(line => truncateToWidth(line, width, ''))
     }
     const at = Math.max(0, entries.findIndex(entry => entry.row?.id === this.selectedId))
-    const start = Math.max(0, Math.min(Math.max(0, entries.length - budget), at - Math.floor(budget / 2)))
-    for (const entry of entries.slice(start, start + budget)) {
-      lines.push(entry.row ? this.line(entry.row, width) : theme.fg('dim', safeText(entry.heading ?? '')))
-      this.renderedRows.push(entry.row)
+    let start = at
+    let end = at + 1
+    let used = entries[at]?.row?.subtitle === undefined ? 1 : 2
+    let preferBefore = true
+    while (start > 0 || end < entries.length) {
+      const before = entries[start - 1]
+      const after = entries[end]
+      const beforeHeight = before ? (before.row?.subtitle === undefined ? 1 : 2) : Number.POSITIVE_INFINITY
+      const afterHeight = after ? (after.row?.subtitle === undefined ? 1 : 2) : Number.POSITIVE_INFINITY
+      if (preferBefore && before && used + beforeHeight <= budget) {
+        start -= 1
+        used += beforeHeight
+      } else if (after && used + afterHeight <= budget) {
+        end += 1
+        used += afterHeight
+      } else if (before && used + beforeHeight <= budget) {
+        start -= 1
+        used += beforeHeight
+      } else break
+      preferBefore = !preferBefore
     }
-    return lines.map(line => truncateToWidth(line, width, ''))
+    if (entries[start]?.spacer) start += 1
+    if (entries[end - 1]?.spacer) end -= 1
+    for (const entry of entries.slice(start, end)) {
+      if (entry.row) {
+        const rendered = this.lines(entry.row, width)
+        lines.push(...rendered)
+        this.renderedRows.push(...rendered.map(() => entry.row))
+      } else if (entry.spacer) {
+        lines.push('')
+        this.renderedRows.push(undefined)
+      } else {
+        lines.push(theme.fg('dim', safeText(entry.heading ?? '')))
+        this.renderedRows.push(undefined)
+      }
+    }
+    this.renderedRows = this.renderedRows.slice(0, rowBudget)
+    return lines.slice(0, rowBudget).map(line => truncateToWidth(line, width, ''))
   }
 }

@@ -83,7 +83,7 @@ export interface ActiveRun {
   requestAnswer(input: QuestionInput): Promise<QuestionAnswer>
   /** Asks one to five related questions and resolves only after the whole batch is answered. */
   requestAnswers(inputs: QuestionInput[]): Promise<QuestionAnswer[]>
-  finish(outcome: 'completed' | 'failed' | 'interrupted', failure?: { code: string; message: string }): void
+  finish(outcome: 'completed' | 'failed' | 'interrupted', failure?: { code: string; message: string }, reason?: string): void
   readonly finished: boolean
 }
 
@@ -249,14 +249,14 @@ export class RunRegistry {
         emit('status.changed', { status: 'waiting_for_input' })
         return Promise.all(answers)
       },
-      finish: (outcome, failure) => {
+      finish: (outcome, failure, reason) => {
         if (finished || finishing) return
         finishing = true
         // Persist cancellation receipts while emit is still open, so every interface clears them.
         for (const [, approval] of [...this.approvals]) if (approval.runId === runId) approval.resolve('denied')
         for (const [, question] of [...this.questions]) if (question.runId === runId) question.resolve({ selected: [] })
         if (outcome === 'failed') emit('failed', failure ?? { code: 'failed', message: 'The run failed.' })
-        else if (outcome === 'interrupted') emit('status.changed', { status: 'interrupted' })
+        else if (outcome === 'interrupted') emit('status.changed', { status: 'interrupted', ...(reason ? { reason } : {}) })
         else emit('completed', {})
         finished = true
         this.runs.delete(runId)

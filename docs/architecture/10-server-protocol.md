@@ -33,7 +33,7 @@ harness → host   { v: 1, id, call, params }          host → harness   { v: 1
 - `harness.methods` lists every method. Groups in the table: `accounts`, `harnesses`, `runs`,
   `connections`, `plugins`, `wiki`, `refine`, `capabilities`, `hub`, `terminal`, `approvals`,
   `harness`, `subagents`, `agents`, `sessions`, `sideQuestions`, `library`, `recall`, `context`,
-  `worktrees`, `annotations`.
+  `worktrees`, `annotations`, `commands`, `usage`.
 - Host calls (only with the matching `--host-*` flag): `secrets.get|set|delete`,
   `policy.scope|authorize|approval|connections`, `tools.call`. The host registers tools with
   `tools.register` and names with `directory.set`, and describes its parts with
@@ -41,15 +41,68 @@ harness → host   { v: 1, id, call, params }          host → harness   { v: 1
 - `refine.start` takes `{ task, k?, mode?, improver?, executor?, baseVersion?, retainWorkspaces?, id? }`;
   `refine.candidates` returns each execution with `workspace: string | null` (page 05, PROP-0002, PROP-0003).
 - `runs.checklist { runId }` returns the run's latest checklist, `[]` when it wrote none (PROP-0006).
+- Run records include optional nullable `workspaceRoot`, the canonical root whose files a run may
+  modify by default (page 02). New Harness runs set it; older records may omit it. Hosts must
+  tolerate the additive field and must not nominate or widen the root.
 - `agents.list { cwd? }` returns `{ profiles, problems }`; `agents.get { cwd?, name }` one profile;
   `agents.create { cwd?, name, scope: 'global' | 'project', from? }` writes the template or a copy
   and refuses an existing file; `agents.remove { cwd?, name, scope }` deletes a person's own file.
   `subagents.spawn` takes `agent` as a profile name and returns `agent` and `unavailableTools`
   (PROP-0029). It takes an optional `title` (at most six words); without one the child's title is
   the first line of its brief (PROP-0030).
-- `runs.continuation { runId, sessionDir? }` returns a `Continuation`, and `sessions.run` accepts
-  `continueFrom` (page 02, PROP-0007). `harness.status` reports `recovery.interruptedRunIds`.
+- `runs.continuation { runId, sessionDir? }` returns a `Continuation` (its `checkpoint` is the last
+  work-slice handoff), and `sessions.run` accepts `continueFrom` (page 02, PROP-0007) and `workSlice`
+  (PROP-0041). `harness.status` reports `recovery.interruptedRunIds`.
+- `workSlice { enabled?, maxToolCalls?, maxMinutes?, maxNewTokens?, maxSlices?, continue? }` on
+  `sessions.run` bounds that reply; absent uses 160 calls, 40 minutes, 320 000 new tokens, 8 slices and
+  automatic continuation. A token cap counts new input, cache writes and output, never the cached
+  prefix. `enabled: false` turns the guard off for that run; `XINGULAR_WORK_SLICE=off` in the
+  launching process turns it off for every run in it, and nothing is persisted. The policy is
+  carried into the continuation. A value outside its range is refused with `invalid_request` before
+  the run record is written.
+- The run-event stream adds `checkpoint` (the bounded handoff) and `heartbeat` (steps, elapsed time,
+  last tool, compactions, slice, call budget). Hosts must accept both; an unknown event type is still
+  relayed in order (INV-RUN-3).
 - Errors carry a stable `code`, a message and an optional hint (`core/errors.ts`).
+
+## Usage (PROP-0042)
+
+| Method | Input | Reply |
+|---|---|---|
+| `usage.summary` | `{ scope?: "session" \| "account" \| "project" \| "all", sessionId?, accountId?, projectId?, period?: "today" \| "7d" \| "30d" \| "all", timezoneOffsetMinutes? }` | `UsageSummary`: totals, cache hit rate, latency, day/model/provider/account/session breakdowns, unpriced count, ledger time |
+| `usage.limits` | `{ accountId?, refresh?: boolean }` | `UsageLimitsReport`: per account and provider, the reading source, reason, observed time and limits |
+| `usage.sync` | `{}` | `{ runs, indexed, lastIndexedAt }` |
+
+The methods are contributed by the built-in `usage` plugin module and read only derived or stored
+data; `refresh: true` is the only form that may contact a provider, once per due provider. The
+terminal reaches the same service through protected `terminal.usage.summary|limits`, whose scope
+comes from the terminal session, never from the request.
+
+## Commands and session controls (PROP-0040)
+
+`commands.list { cwd?, accountId?, agentId?, projectId? }` returns `ListedCommand[]`: `name`,
+optional `aliases`, `args`, `description`, `owner`, plus `group`, `source`
+(`core | plugin | extension | prompt | skill`) and optional core `kind` (`session | page | local`).
+Core metadata comes from `commands/registry.ts`; effective plugin contributions supply other routes.
+Namespace/collision rules are shared; discovery neither runs a command nor proves surface acceptance.
+
+For the methods below, `ref` means `{ sessionDir, sessionFile?, cwd? }`.
+
+| Method | Input | Reply |
+|---|---|---|
+| `sessions.tree` | `ref` | `SessionTree`: file, leaf, entries and user-message fork points |
+| `sessions.navigate` | `ref + { entryId }` | `{ leafId, editorText? }`; no summary/model request |
+| `sessions.fork` | `ref + { entryId, targetDir }` | `{ sessionFile, editorText }` |
+| `sessions.clone` | `ref + { targetDir }` | `{ sessionFile }` |
+| `sessions.rename` | `ref + { name }` | `{ name }` |
+| `sessions.lastReply` | `ref` | `{ text: string | null }` |
+| `sessions.export` | `ref + { path }` | `{ path }`; absolute `.jsonl` branch export |
+| `sessions.reload` | `{}` | `{ reloaded: true }`; reloads persistent hooks; structured turns load resources fresh |
+
+`sessions.run` also accepts `command` for compact, navigation with optional summary, or HTML
+export instead of prompt submission (page 02). These retain tracked run lifecycle and pins.
+Saved-history helpers currently validate file scope but do not themselves fence active work;
+host adapters must not infer concurrency safety from method availability.
 
 ## Invariants
 
@@ -129,6 +182,8 @@ from preparation, never from the request.
 | `terminal.browser.connections.appClients` | `{}` | Existing available application OAuth catalog IDs |
 | `terminal.browser.connections.save` | `{ input: ConnectionInput }` | Existing safe `Connection` record |
 | `terminal.browser.connections.test\|signIn\|signOut\|remove` | `{ id }` | Existing connection service result |
+| `terminal.usage.summary\|limits` | `{ scope, period, timezoneOffsetMinutes }` / `{ refresh? }` | Existing usage service result, scoped to this terminal's account and project |
+| `terminal.usage.headers` | `{ provider, status, headers }` | `{}`; only limit-bearing headers, throttled, stored as an account limit reading |
 
 Protected `plugins.install { source }` and `plugins.remove { pluginId }` delegate to the package
 service. Optional matching callbacks extend `PluginControl`; hosts without them receive a clear

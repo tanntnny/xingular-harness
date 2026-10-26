@@ -59,6 +59,20 @@ proposal is `Accepted`.
 | [PROP-0028](PROP-0028-normalize-question-wireframes.md) | Normalize high-confidence question wireframe borders in the terminal preview | Implemented; production PTY verification passed | INV-PAR-1/2, 11-terminal.md, 14-surfaces-and-parity.md, terminal-tui.md, parity, ADR-0029 | 2026-10-24 |
 | [PROP-0029](PROP-0029-agent-profiles.md) | Agent profiles that subagents start from | Accepted; implemented | INV-RUN-2, INV-VAR-4, INV-STO-3, INV-SRV-1, 02, 03, 04, 06, 10, 11, 12, 14, parity, ADR-0030 | 2026-10-24 |
 | [PROP-0030](PROP-0030-subagent-title.md) | A parent-set title for each subagent, shown in the roster | Accepted; implemented | 02, 07, 10, 11, terminal-tui.md, 14, parity | 2026-10-24 |
+| [PROP-0031](PROP-0031-plugin-command-owner-namespaces.md) | Namespace plugin commands by owner | Implemented; Harness and App checks passed | INV-TUI-7, 06, 11, 14, terminal-tui.md, README.md, ADR-0021, ADR-0031 | 2026-10-25 |
+| [PROP-0032](PROP-0032-planning-quality.md) | Evidence-grounded planning with read-only research delegation | Implemented; live model pilot pending authorization | INV-RUN-8, INV-GATE-3, INV-CAP-1, 02, 06, 07, 14, parity, ADR-0033 | 2026-10-25 |
+| [PROP-0033](PROP-0033-compaction-plan-checkpoints.md) | Rehydrate bounded run checkpoints after compaction | Accepted; implemented | INV-PRM-1/4/10, INV-RUN-8/12, 02, 04, 11, 14, ADR-0032 | 2026-10-25 |
+| [PROP-0034](PROP-0034-conversation-fast-mode.md) | Conversation-scoped provider fast mode | Proposed | INV-RUN-1/3, INV-PAR-1/2, 02, 09, 10, 11, 12, 14, parity, App thread runtime settings | 2026-10-25 |
+| [PROP-0035](PROP-0035-retain-subagent-status.md) | Retain terminal subagent status until the next run | Implemented; initial PTY failure resolved; full verifier passed at three sizes (2026-11-19) | 11-terminal.md, terminal-tui.md | 2026-10-25 |
+| [PROP-0036](PROP-0036-first-class-harness-commands.md) | First-class Harness terminal commands | Implemented | INV-PLG-10, INV-TUI-7, 06, 11, 14, terminal-tui.md, parity, ADR-0034 | 2026-10-25 |
+| [PROP-0037](PROP-0037-workspace-write-boundary.md) | Default filesystem writes to the active project workspace | Implemented | INV-GATE-1/3/8, INV-RUN-1, INV-TUI-8, 02, 04, 07, 10, 11, 12, 14, parity | 2026-11-19 |
+| [PROP-0038](PROP-0038-annotate-open-shadow-roots.md) | Annotate inside open shadow roots | Implemented | 13-world-tools.md, note target, PROP-0017, PROP-0018, parity | 2026-10-25 |
+| [PROP-0039](PROP-0039-workspace-boundary-hardening.md) | Harden workspace writes against inode escapes and unverified retries | Accepted; implementation validated on macOS, Linux validation pending | INV-GATE-3/8, INV-TUI-8, 02, 07, 11, 14, parity | 2026-10-26 |
+
+| [PROP-0040](PROP-0040-one-launch-path.md) | One launch path and command contract across front ends | Accepted; implementation in progress | 01–04, 06–07, 10–14, parity | 2026-11-19 |
+| [PROP-0041](PROP-0041-bounded-work-slices.md) | Bounded work slices, a durable checkpoint, and a stall guard for long replies | Implemented; terminal card, App presentation and /slices open (PAR-004) | INV-RUN-2/3/4/12, INV-PRM-1/2/4/5/10, INV-GATE-2, INV-STO-3, INV-PAR-1/2, 02, 04, 07, 10–12, 14, parity | 2026-10-26 |
+| [PROP-0042](PROP-0042-usage-and-provider-limits.md) | Usage analytics and provider limits as a built-in capability | Accepted; implemented | INV-MEM-5/6, INV-STO-2, INV-SRV-1, INV-PLG-10, INV-ACC-3, 02, 06, 08–12, 14, parity, ADR-0037 | 2026-10-26 |
+| [PROP-0043](PROP-0043-read-only-plan-bash.md) | Read-only Bash in plan mode, enforced by the OS sandbox | Accepted; implemented | INV-RUN-8, INV-GATE-3/8, 02, 07, 11, terminal-tui, parity, ADR-0038 | 2026-10-26 |
 
 Numbers are four digits, start at `0001`, and are never reused.
 

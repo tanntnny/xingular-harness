@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { afterEach, expect, it } from 'vitest'
 
 import { memorySecretStore } from '../accounts/secrets'
+import { resolveWorkspaceRoot } from '../core/workspace'
 import { createHarness, type Harness } from '../harness'
 import { writeFile } from '../../tests/helpers'
 import type { ExtensionNotice } from './extensionUi'
@@ -41,6 +42,7 @@ it('binds an extension in a session without a terminal: its start hook runs, its
   const params: TurnParams = {
     runId: 'r1',
     cwd: base,
+    workspaceRoot: resolveWorkspaceRoot(base),
     sessionDir: join(base, 'sessions'),
     historyFile: null,
     model: null,

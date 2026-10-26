@@ -56,7 +56,23 @@ export const MIGRATIONS: readonly string[] = [
      CREATE INDEX runs_agent ON runs (agent_id, started_at);
      CREATE INDEX runs_started ON runs (started_at);`,
   // 7: the per-account usage table goes
-  'DROP TABLE IF EXISTS usage;'
+  'DROP TABLE IF EXISTS usage;',
+  // 8: the usage ledger behind `/usage:analysis`, rebuilt from each run's `usage.updated` events
+  `CREATE TABLE usage_requests (run_id TEXT NOT NULL, sequence INTEGER NOT NULL, request_index INTEGER NOT NULL,
+        at TEXT NOT NULL, day TEXT NOT NULL, account_id TEXT, project_id TEXT, session_id TEXT NOT NULL,
+        agent_id TEXT, mode TEXT NOT NULL, trigger TEXT, provider TEXT, model TEXT,
+        input_tokens INTEGER NOT NULL DEFAULT 0, cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+        cache_write_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0,
+        reasoning_tokens INTEGER NOT NULL DEFAULT 0, cost_usd REAL, cost_source TEXT,
+        context_tokens INTEGER, context_window INTEGER, duration_ms INTEGER, ttft_ms INTEGER,
+        requests INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (run_id, sequence, request_index));
+     CREATE INDEX usage_at ON usage_requests (at);
+     CREATE INDEX usage_day ON usage_requests (day);
+     CREATE INDEX usage_account_day ON usage_requests (account_id, day);
+     CREATE INDEX usage_session_day ON usage_requests (session_id, day);
+     CREATE INDEX usage_model_day ON usage_requests (model, day);
+     CREATE TABLE usage_indexed (run_id TEXT PRIMARY KEY, indexed_at TEXT NOT NULL, rows INTEGER NOT NULL);`
 ]
 
 const connections = new Map<string, DatabaseSync>()

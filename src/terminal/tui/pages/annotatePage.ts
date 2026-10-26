@@ -1,5 +1,5 @@
 /**
- * The annotate pane (`/plugin:annotate`, PROP-0018): the person works in a browser window or an app's own
+ * The annotate pane (`/annotate:` and `/annotate:annotate`, PROP-0018): the person works in a browser window or an app's own
  * windows, and this page is the panel beside it. With the inspector on, hovering outlines a
  * component and a click opens a comment popover with three choices: keep it as a note, add it to
  * this session's queue, or send it to the agent now. The page lists the queue, what was sent and

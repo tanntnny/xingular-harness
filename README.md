@@ -161,7 +161,8 @@ working folder brings.
   and `editor` become the run's question events; `notify`, `setStatus` and `setWidget` become
   `extension.notice` run events. What needs a terminal (custom components, key handlers, themes)
   does nothing. A tool an extension registered is offered to the model and asks before every
-  call. A command it registered runs when a message starts with it.
+  call. A terminal command runs as `/<owner-prefix>:<command>`; package extensions use their
+  normalized package name, or an optional `harness.commandPrefix` from `package.json`.
 - **The gate runs last.** In an SDK session it is an inline extension, loaded after those on
   disk. A terminal retains its final prepared `--extension` bridge argument; the owned frontend
   loads that bridge as the final trusted inline factory. A plugin that changes a tool call's
@@ -304,29 +305,29 @@ worktree: a detached checkout under `<state dir>/worktrees/` that carries your u
 changes, copies ignored files named in `.worktreeinclude`, and runs the repository's
 `.xharness/worktree-setup` once you trust it (`xagent worktree trust-setup`). The 15 most recent
 managed worktrees per repository are kept; older ones are pruned, and unsaved work is kept as a
-snapshot you can restore. `/plugin:worktree` in a session, `xagent worktree <command>` in a shell, and
+snapshot you can restore. `/worktree` in a session, `xagent worktree <command>` in a shell, and
 the `worktrees.*` server methods offer the same actions: new, switch, create branch, hand off to
 or from the main checkout, remove, restore, prune and adopt. An application passes a worktree's id
 as `run.worktreeId` and the session works in it. See
 [PROP-0016](docs/architecture/proposals/PROP-0016-managed-worktrees.md).
 
-### Page notes
+### Web annotations
 
-`/plugin:annotate [url]` opens a visible capture browser (its own window and profile, separate from the
-agent's browser). Note the whole page, select a passage, or click an element there, then write the
-note in the terminal. `/plugin:notes` lists, edits, resolves, reveals and deletes notes. A note is private
+`/annotate:` (or `/annotate:annotate [url]`) opens a visible capture browser (its own window and profile, separate from the
+agent's browser). Annotate the whole page, select a passage, or click an element there, then write a
+comment in the terminal. `/annotate:notes` lists, edits, resolves, reveals and deletes annotations. An annotation is private
 until you share it with the session; its agent then reads it with `page_notes_list` and
-`page_notes_read`, with quoted page text marked untrusted. Notes live in `<data root>/annotations/`
+`page_notes_read`, with quoted page text marked untrusted. Annotations live in `<data root>/annotations/`
 and the `annotations.*` server methods give a host the same store. A host with its own web view
 runs the same page helper (`annotations.pageScript`). See
 [PROP-0017](docs/architecture/proposals/PROP-0017-page-annotations.md).
 
-`/plugin:annotate` turns this into an inspector:
+`/annotate:` opens the inspector:
 - Hover a component in the browser or an app window, click it, and write a comment in the popover.
 - Then keep it as a note, add it to the agent's queue, or send it now. The agent reports back with `page_notes_mark_fixed`.
 - App windows work two ways:
-  - **DevTools port:** start an Electron app with `--remote-debugging-port=9229` and run `/plugin:annotate --app 9229`.
-  - **Page bridge:** for a macOS web view such as Tauri, run `/plugin:annotate --bridge` and load the script tag it shows while developing the app. Allow `http://127.0.0.1:<port>` in the app's `script-src` and `connect-src`.
+  - **DevTools port:** start an Electron app with `--remote-debugging-port=9229` and run `/annotate:annotate --app 9229`.
+  - **Page bridge:** for a macOS web view such as Tauri, run `/annotate:annotate --bridge` and load the script tag it shows while developing the app. Allow `http://127.0.0.1:<port>` in the app's `script-src` and `connect-src`.
 - A host drives the same flow with `annotations.capture.*`, and sends to its own sessions with `annotations.compose` and `annotations.delivered`.
 
 See [PROP-0018](docs/architecture/proposals/PROP-0018-annotation-queue-and-app-targets.md).
@@ -346,9 +347,13 @@ Pi supplies the persistent execution runtime, native history and rich content co
 existing isolated account, compiled context, approval gate, telemetry and Wiki/socket commands
 remain behind the terminal. No Pi `InteractiveMode` is constructed.
 
-Core terminal commands stay unprefixed. Built-in and Pi extension plugin commands use
-`/plugin:<command>`; for example, annotate a page with `/plugin:annotate https://example.com`.
-Old unprefixed plugin command forms are no longer aliases.
+Harness terminal commands stay unprefixed: `/doctor`, `/worktree`, `/trajectory`, `/subagents`,
+`/agents`, and `/mcp`. `/history` continues to navigate session branches. These commands are
+registered independently of feature-plugin command metadata. Other plugin-owned commands use
+`/<owner-prefix>:<command>`; for example, annotate a page with `/annotate:annotate
+https://example.com`, or open the default annotation pane with `/annotate:`. Former owner-qualified
+and `/plugin:<command>` routes for promoted Harness commands remain hidden compatibility aliases for
+one release; help and completion show only canonical forms.
 
 `/resume` stays inside the prepared account history and working folder. Cancel an active response
 before changing or reloading a session. Full OMP visual parity is not established by the current
@@ -363,10 +368,10 @@ To keep an existing message and attachments, open Ctrl+K, choose Skills, then Us
 Variant inspection distinguishes the pinned session version from the latest saved version.
 Adding a library skill or rule creates a validated version for future sessions.
 
-`/accounts`, `/permissions`, `/settings`, `/plugin:trajectory` and `/log` retain their own centered pages.
+`/accounts`, `/permissions`, `/settings`, `/trajectory` and `/log` retain their own centered pages.
 `/permissions` reviews device-local Pi terminal grants and the Full Permission switch; tool grants
 apply across terminal sessions sharing this Harness state, and Full Permission requires confirmation.
-`/plugin:trajectory` opens recorded runs for the current native conversation,
+`/trajectory` opens recorded runs for the current native conversation,
 with event navigation and a detail inspector. `/log` shows a static, redacted snapshot of Harness
 diagnostics and run events for the current conversation; press Escape to close. See
 [terminal architecture and evidence](docs/terminal-tui.md),
@@ -496,24 +501,22 @@ omit this option retain the existing lifecycle and direct-write contract.
 
 ## Readiness diagnostics
 
-Use `/plugin:doctor` in the terminal for local readiness checks and explicitly selected live probes. The same
+Use `/doctor` in the terminal for local readiness checks and explicitly selected live probes. The same
 structured jobs are available through `harness.doctor` and `doctor.*` server methods. See
 [Doctor](docs/doctor.md) for coverage, consent, isolation, and provider callbacks.
 
-## Public 4.0.0 release candidate
+## Public package
 
-The public package is ESM: import from `@xingular/harness` or supported subpaths such as
+The package is ESM: import from `@xingular/harness` or supported subpaths such as
 `@xingular/harness/variant/seed`. JavaScript and declarations are shipped in `dist/sdk`; a
-TypeScript loader is not required. Node 22.19 or later is required. The interactive terminal
-also requires Bun (release builds use 1.4.2); the CLI reports its version with `xagent --version`.
+TypeScript loader is not required. Node 22.19 or later is required. The interactive terminal also
+requires Bun (release builds use 1.4.2); the CLI reports its version with `xagent --version`.
 Original project code is Apache-2.0. See LICENSE, NOTICE.md and THIRD_PARTY_LICENSES.md.
 
 A host providing its own browser tools sets `browser: false` on `createHarness` to disable the
 generic backend and prevent tool-name collisions. The desktop App uses this for shared tabs.
 The default standalone Harness keeps its isolated browser backend enabled.
 
-This additive release follows the published 1.0.0 baseline, which intentionally reset development
-numbering while preserving older published versions. See [4.0.0 release notes](docs/releases/4.0.0.md),
-[1.0.0 release notes](docs/releases/1.0.0.md), and the [release procedure](docs/releases/README.md).
-Publication requires registry verification, green CI on supported operating systems, and approval of
-the exact candidate and tag push.
+See the [1.2.0 release notes](docs/releases/1.2.0.md), [1.1.1 release notes](docs/releases/1.1.1.md),
+and the [release procedure](docs/releases/README.md). Publication requires pre-tag review of the exact candidate, two-OS CI, a separate protected
+`npm-publish` approval, registry verification, and npm provenance.

@@ -1,5 +1,5 @@
 import type { Theme } from '@earendil-works/pi-coding-agent'
-import { stripTerminalSequences, visibleWidth } from '@earendil-works/pi-tui'
+import { parseColor, stripTerminalSequences, visibleWidth } from '@earendil-works/pi-tui'
 import { describe, expect, it, vi } from 'vitest'
 
 import { FilterList, type ListRow } from './list'
@@ -33,6 +33,65 @@ describe('the shared filter list', () => {
     expect(list.selected?.id).toBe('r0')
     list.handleInput('\x1b[F')
     expect(list.selected?.id).toBe('r2')
+  })
+
+  it('renders optional muted subtitles as full-width second lines and maps pointer rows back to sessions', () => {
+    const onActivate = vi.fn()
+    const list = make([
+      { id: 'first', label: 'First session', subtitle: '3 minutes ago · project:main · 5.1MB' },
+      { id: 'second', label: 'Second session', subtitle: '1 hour ago · project:feature · 8.0KB' }
+    ], { search: 'never', onActivate })
+    const rendered = list.render(50, 4)
+
+    expect(list.height).toBe(4)
+    expect(rendered).toHaveLength(4)
+    expect(stripTerminalSequences(rendered[0]!)).toContain('❯ First session')
+    expect(stripTerminalSequences(rendered[1]!)).toContain('3 minutes ago · project:main · 5.1MB')
+    expect(rendered[0]).toContain(theme.getBgAnsi('selectedBg'))
+    expect(rendered[1]).toContain(theme.getBgAnsi('selectedBg'))
+    expect(rendered[3]).toContain(theme.fg('muted', '  1 hour ago · project:feature · 8.0KB'))
+    expect(list.handleMouse(mouse(3, 'click'))).toMatchObject({ handled: true, render: true })
+    expect(list.selected?.id).toBe('second')
+    expect(onActivate).toHaveBeenCalledWith(expect.objectContaining({ id: 'second' }))
+  })
+
+  it('adds row gaps without making spacer lines selectable or breaking click mapping', () => {
+    const onActivate = vi.fn()
+    const list = make([
+      { id: 'first', label: 'First session', subtitle: '3 minutes ago · project:main · 5.1MB' },
+      { id: 'second', label: 'Second session', subtitle: '1 hour ago · project:feature · 8.0KB' }
+    ], { search: 'never', rowGap: 1, onActivate })
+    const rendered = plain(list, 50, 5)
+
+    expect(list.height).toBe(5)
+    expect(rendered).toHaveLength(5)
+    expect(rendered[0]).toContain('First session')
+    expect(rendered[1]).toContain('3 minutes ago')
+    expect(rendered[2]).toBe('')
+    expect(rendered[3]).toContain('Second session')
+    expect(rendered[4]).toContain('1 hour ago')
+    expect(list.handleMouse(mouse(2, 'click'))).toBeUndefined()
+    expect(list.selected?.id).toBe('first')
+    expect(onActivate).not.toHaveBeenCalled()
+    expect(list.handleMouse(mouse(3, 'click'))).toMatchObject({ handled: true, render: true })
+    expect(list.selected?.id).toBe('second')
+    expect(onActivate).toHaveBeenCalledWith(expect.objectContaining({ id: 'second' }))
+  })
+
+  it('colors label spans while selected rows retain high-contrast text and truncation', () => {
+    const color = '#00ff88'
+    const list = make([
+      { id: 'selected', label: '✓ Agent  Title', labelParts: [{ text: '✓ ', tone: 'success' }, { text: 'Agent', color }, { text: '  Title' }] },
+      { id: 'other', label: '✓ Agent  A much longer title', labelParts: [{ text: '✓ ', tone: 'success' }, { text: 'Agent', color }, { text: '  A much longer title' }] }
+    ], { search: 'never' })
+    const rows = list.render(18)
+    const coloredAgent = theme.style('Agent', { fg: parseColor(color) })
+
+    expect(rows[0]).not.toContain(coloredAgent)
+    expect(rows[1]).toContain(coloredAgent)
+    for (let width = 1; width <= 40; width += 1) {
+      expect(visibleWidth(stripTerminalSequences(list.render(width)[1]!)), `width ${width}`).toBeLessThanOrEqual(width)
+    }
   })
 
   it('right-aligns a status and drops it before it crowds the label', () => {

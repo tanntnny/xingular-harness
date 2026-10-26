@@ -2,19 +2,30 @@
 // session does to the harness, asks before each tool call, takes instructions the harness
 // queues for it, and gives the session the harness's own tools. It runs in the `pi` process,
 // so everything it knows about the harness comes through the session socket.
-import type { AgentSession, ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent'
+import { createBashTool, createEditTool, createWriteTool, type AgentSession, type ExtensionAPI, type ExtensionContext } from '@earendil-works/pi-coding-agent'
 import { Type } from 'typebox'
 
-import { QUESTION_SKETCH_MAX_LENGTH, QUESTION_SKETCH_PATTERN, questionSketchError } from '../sessions/contracts'
 import { connectionFromEnv, socketCall, terminalCall } from './client'
 import { controlCall } from './control'
-import { SUBAGENT_OWNER, SUBAGENT_RECEIPT, SUBAGENT_RESULTS, subagentHistory, type SubagentReceipt } from '../sessions/subagents'
+import { SPAWN_SUBAGENT, SUBAGENT_OWNER, SUBAGENT_RECEIPT, SUBAGENT_RESULTS, subagentHistory, type SubagentReceipt } from '../sessions/subagents'
+import { PLAN_RESEARCH_TOOLS } from '../agents/planResearch'
 import { askUserTool } from '../tools/askUser'
 import { checklistTool } from '../tools/checklist'
+import { checkpointTool } from '../tools/checkpoint'
+import { createSliceState, parseWorkSlice, workSliceGuard } from '../sessions/workSlice'
+import { DEFAULT_COMMAND_TIMEOUT_SECONDS, withCommandBudget } from '../core/commandBudget'
 import { sessionNameTool } from '../tools/sessionName'
+import { CAPABILITY_DISCOVERY, describeCapabilities } from '../tools/getCapabilities'
 import type { QuestionAnswer } from '../sessions/registry'
 import { PLAN_INSTRUCTIONS, planRefusal } from '../sessions/planMode'
+import { compactionCheckpoint } from '../sessions/compactionCheckpoint'
 import { pruneToolImages } from '../world/images'
+import { parseInitialBashCommand } from '../sessions/initialBash'
+import { inspectWorkspaceWrite } from '../sessions/workspaceBoundary'
+import { withWorkspaceWriteScope } from '../core/workspaceBashTool'
+import { createWorkspaceBashOperations, runWithWorkspaceWriteScope } from '../core/workspaceSandbox'
+import { withWorkspaceWriteAuthorization, workspaceEditOperations, workspaceWriteOperations, type WorkspaceWriteAuthorization } from '../core/workspaceWriteOperations'
+import { BUDGET_GUARD, OUTPUT_TRIM, budgetGuard, outputTrim } from '../plugins/firstParty'
 
 interface SocketTool {
   name: string
@@ -26,6 +37,8 @@ interface SocketTool {
 export interface TerminalPlanRunState {
   active: boolean
   allowedTools: ReadonlySet<string>
+  connectors?: string[]
+  subagentProfiles?: { normal: string; plan: string }
 }
 
 /** How much text a tool handed back to the model. */
@@ -57,6 +70,8 @@ export default async function (pi: ExtensionAPI, planRun?: TerminalPlanRunState,
   let requestStartedAt: number | null = null
   const toolStartedAt = new Map<string, number>()
   const fileTools = new Map<string, string>()
+  const writeAuthorizations = new Map<string, WorkspaceWriteAuthorization>()
+  let workspaceRoot: string | null = null
 
   // The harness's own tools for this session (connected apps and what the application offers).
   let stage = 'Tool discovery'
@@ -78,8 +93,16 @@ export default async function (pi: ExtensionAPI, planRun?: TerminalPlanRunState,
         }
       })
     }
-    const native = await controlCall<{ tools: SocketTool[] }>('terminal.subagents.tools')
+    // The harness's own extensions a person switched on, as a structured session loads them inline.
+    const own = await socketCall<{ plugins: { id: string; settings: Record<string, unknown> }[] }>(connection, 'firstParty.list', {}, 15_000)
+      .then((reply) => reply?.plugins ?? [], () => [])
+    for (const plugin of own) {
+      if (plugin.id === OUTPUT_TRIM) outputTrim(plugin.settings)(pi as never)
+      if (plugin.id === BUDGET_GUARD) budgetGuard(plugin.settings)(pi as never)
+    }
+    const native = await controlCall<{ tools: SocketTool[]; profiles?: { normal: string; plan: string } }>('terminal.subagents.tools')
     nativeSubagents = native.tools.length > 0
+    if (planRun && native.profiles) planRun.subagentProfiles = native.profiles
     for (const tool of native.tools) pi.registerTool({
       name: tool.name, label: tool.label, description: tool.description, parameters: Type.Unsafe(tool.parameters),
       execute: async (_id, input, signal) => {
@@ -91,6 +114,49 @@ export default async function (pi: ExtensionAPI, planRun?: TerminalPlanRunState,
     await terminalCall('startupFailed', { reason: `${stage} failed: ${error instanceof Error ? error.message : 'Unavailable'}` }).catch(() => {})
     throw error
   }
+
+  pi.registerTool({
+    ...CAPABILITY_DISCOVERY,
+    parameters: Type.Unsafe(CAPABILITY_DISCOVERY.parameters),
+    async execute(_id, input) {
+      const active = pi.getActiveTools()
+      const tools = pi.getAllTools()
+      const selected = planRun?.active ? [...planRun.allowedTools] : active
+      const name = input && typeof input === 'object' && typeof (input as Record<string, unknown>).tool === 'string'
+        ? (input as Record<string, string>).tool
+        : undefined
+      const text = JSON.stringify(describeCapabilities({
+        capabilities: { version: 1, tools: selected, connectors: planRun?.connectors ?? [], contributions: [] },
+        active,
+        registered: tools
+      }, name))
+      return { content: [{ type: 'text' as const, text }], details: undefined }
+    }
+  })
+
+  const workspaceBash = createWorkspaceBashOperations(() => workspaceRoot, {
+    bypassWorkspaceBoundary: async (request) => {
+      const result = await controlCall<{ bypass: boolean }>('terminal.workspaceBoundaryBypass', { tool: 'bash', args: { command: request.command, cwd: request.cwd, workspaceRoot: request.workspaceRoot } })
+      return result.bypass
+    },
+    requestWorkspaceWriteScope: async (request) => {
+      const result = await controlCall<{ approved: boolean }>('terminal.workspaceEscape', { tool: 'bash', args: { command: request.command, workspaceWriteScope: 'outside' }, reason: request.reason })
+      return result.approved
+    },
+    workspaceWriteScope: () => planRun?.active ? 'read-only' : undefined
+  })
+  pi.registerTool(withWorkspaceWriteScope(createBashTool(process.cwd(), { operations: workspaceBash })))
+  pi.registerTool(withWorkspaceWriteAuthorization(createWriteTool(process.cwd(), { operations: workspaceWriteOperations }), writeAuthorizations))
+  pi.registerTool(withWorkspaceWriteAuthorization(createEditTool(process.cwd(), { operations: workspaceEditOperations }), writeAuthorizations))
+
+  compactionCheckpoint({ planInstructions: () => planRun?.active ? PLAN_INSTRUCTIONS : null })(pi)
+
+  // A terminal reply is bounded like any other (PROP-0041): a checkpoint at the boundary, then the
+  // person decides whether to continue.
+  const slicePolicy = parseWorkSlice(undefined)
+  const sliceState = createSliceState(slicePolicy)
+  // `XINGULAR_WORK_SLICE=off` at launch leaves terminal replies unbounded, as before PROP-0041.
+  if (slicePolicy.enabled) workSliceGuard({ policy: slicePolicy, state: sliceState })(pi)
 
   // Only the latest screenshots stay in what the model sees (world/images.ts).
   pi.on('context', (event) => {
@@ -130,31 +196,39 @@ export default async function (pi: ExtensionAPI, planRun?: TerminalPlanRunState,
     reasoningTokens = undefined
     costReported = false
     // A run a plugin starts with a custom message has no user prompt to record; it still begins a turn.
-    const begun = await terminalCall<{ runId: string }>('begin', { text: event.messageType === 'user' ? event.prompt : '' })
+    const begun = await terminalCall<{ runId: string; workspaceRoot: string }>('begin', { text: event.messageType === 'user' ? event.prompt : '' })
+    workspaceRoot = typeof begun.workspaceRoot === 'string' ? begun.workspaceRoot : null
+    if (!workspaceRoot) throw new Error('The active project workspace could not be resolved; the turn was not started.')
     if (nativeSubagents) {
       pi.appendEntry(SUBAGENT_OWNER, { runId: begun.runId })
-      await controlCall('terminal.subagents.register', { tools: pi.getActiveTools(), model: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : null, effort: pi.getThinkingLevel(), history: subagentHistory(ctx.sessionManager.getBranch()) })
+      const snapshot = await controlCall<{ connectors?: string[] }>('terminal.subagents.register', { tools: pi.getActiveTools(), model: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : null, effort: pi.getThinkingLevel(), plan: planRun?.active === true, history: subagentHistory(ctx.sessionManager.getBranch()) })
+      if (planRun && Array.isArray(snapshot.connectors)) planRun.connectors = snapshot.connectors
       subagentParent = true
     }
     if (planRun && event.messageType === 'user') {
       if (planRun.active) event.systemPromptOptions.sections.plan = PLAN_INSTRUCTIONS
       else delete event.systemPromptOptions.sections.plan
+      if (planRun.subagentProfiles) event.systemPromptOptions.sections.subagents = planRun.active ? planRun.subagentProfiles.plan : planRun.subagentProfiles.normal
     }
     const bang = event.messageType === 'user' ? /^\s*!\s*([\s\S]+)$/u.exec(event.prompt) : null
     if (!bang) return
-    const command = bang[1]!
+    const initial = parseInitialBashCommand(bang[1]!)
+    const command = initial.command
+    const args = { command, ...(initial.workspaceWriteScope === 'outside' ? { workspaceWriteScope: 'outside' } : {}) }
     const id = `initial-bash:${begun.runId}`
     const started = Date.now()
-    await terminalCall('tool', { phase: 'start', id, name: 'bash', summary: command.slice(0, 200), input: JSON.stringify({ command }) })
+    await terminalCall('tool', { phase: 'start', id, name: 'bash', summary: command.slice(0, 200), input: JSON.stringify(args) })
     let refusal: string | undefined
     let result: Awaited<ReturnType<AgentSession['executeBash']>> | undefined
-    if (planRun?.active) {
+    if (!command) {
+      refusal = 'Enter a Bash command after !outside.'
+    } else if (planRun?.active) {
       refusal = 'Bash commands are disabled while a plan request is running.'
     } else {
       try {
-        const policy = await terminalCall<{ allowed: boolean; reason?: string; requiresApproval?: boolean }>('policy', { tool: 'bash', args: { command } })
+        const policy = await terminalCall<{ allowed: boolean; reason?: string; requiresApproval?: boolean }>('policy', { tool: 'bash', args })
         if (policy.requiresApproval) {
-          const approval = await terminalCall<{ decision: string }>('approval', { requestId: id, tool: 'bash', args: { command } })
+          const approval = await terminalCall<{ decision: string }>('approval', { requestId: id, tool: 'bash', args })
           if (approval.decision !== 'approved') refusal = 'The user denied this Bash command.'
         } else if (!policy.allowed) {
           refusal = policy.reason ?? 'This Bash command is outside what the terminal allows.'
@@ -162,7 +236,7 @@ export default async function (pi: ExtensionAPI, planRun?: TerminalPlanRunState,
         if (!refusal) {
           const session = getSession?.()
           if (!session) refusal = 'The native session is unavailable.'
-          else result = await session.executeBash(command, undefined, { id })
+          else result = await runWithWorkspaceWriteScope(initial.workspaceWriteScope, () => withCommandBudget(() => session.executeBash(command, undefined, { id, operations: workspaceBash }), () => session.abortBash(), DEFAULT_COMMAND_TIMEOUT_SECONDS))
         }
       } catch (error) {
         refusal = error instanceof Error ? error.message : 'The Bash policy or command failed.'
@@ -236,19 +310,52 @@ export default async function (pi: ExtensionAPI, planRun?: TerminalPlanRunState,
   pi.on('turn_start', async () => {
     requestStartedAt = Date.now()
   })
-  pi.on('tool_call', async (event) => {
+  pi.on('tool_call', async (event, ctx) => {
     if (planRun?.active && !planRun.allowedTools.has(event.toolName)) {
-      const reason = planRefusal(event.toolName, new Set()) ?? `Plan mode is research-only: ${event.toolName} is not available in this session.`
+      const reason = planRefusal(event.toolName, new Set(), event.input) ?? `Plan mode is research-only: ${event.toolName} is not available in this session.`
       return { block: true, reason }
+    }
+    if (planRun?.active && event.toolName === SPAWN_SUBAGENT) {
+      try {
+        const eligibility = await controlCall<{ allowed: boolean; reason?: string }>('terminal.subagents.planSafe', { input: event.input })
+        if (!eligibility.allowed) return { block: true, reason: eligibility.reason ?? 'This profile is not eligible for plan-mode research.' }
+      } catch (error) {
+        return { block: true, reason: `Plan-mode research eligibility could not be verified: ${error instanceof Error ? error.message : 'controller unavailable'}` }
+      }
+    } else if (planRun?.active) {
+      const reason = planRefusal(event.toolName, new Set(PLAN_RESEARCH_TOOLS), event.input)
+      if (reason) return { block: true, reason }
+    }
+    let authorization: WorkspaceWriteAuthorization | undefined
+    if ((event.toolName === 'edit' || event.toolName === 'write') && typeof event.input.path === 'string') {
+      try {
+        if (!workspaceRoot) throw new Error('The active project workspace is unavailable.')
+        const inspection = inspectWorkspaceWrite(workspaceRoot, ctx.cwd, event.toolName, event.input)
+        Object.assign(event.input, inspection.input)
+        if (!inspection.path) throw new Error('The native file-write target could not be verified.')
+        authorization = {
+          workspaceRoot,
+          cwd: ctx.cwd,
+          path: inspection.path,
+          outside: inspection.outside,
+          authorized: false
+        }
+      } catch (error) {
+        return { block: true, reason: error instanceof Error ? error.message : 'The active project workspace could not be verified.' }
+      }
     }
     try {
       const policy = await controlCall<{ allowed: boolean; reason?: string; requiresApproval?: boolean }>('terminal.policy', { tool: event.toolName, args: event.input })
       if (policy.requiresApproval) {
         const approval = await controlCall<{ decision: string }>('terminal.approval', { requestId: event.toolCallId, tool: event.toolName, args: event.input })
-        if (approval.decision === 'approved') return
-        return { block: true, reason: 'The user denied this action. Ask how they would like to proceed.' }
+        if (approval.decision !== 'approved') return { block: true, reason: 'The user denied this action. Ask how they would like to proceed.' }
+      } else if (!policy.allowed) {
+        return { block: true, reason: policy.reason ?? 'Outside what this session may do.' }
       }
-      if (!policy.allowed) return { block: true, reason: policy.reason ?? 'Outside what this session may do.' }
+      if (authorization) {
+        authorization.authorized = true
+        writeAuthorizations.set(event.toolCallId, authorization)
+      }
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error)
       return { block: true, reason: `The terminal controller is unavailable: ${detail}` }
@@ -273,7 +380,10 @@ export default async function (pi: ExtensionAPI, planRun?: TerminalPlanRunState,
       try { await controlCall('terminal.subagents.verify', { history: subagentHistory(ctx.sessionManager.getBranch()) }, 2_147_483_647) } catch (error) { failure = error instanceof Error ? error.message : String(error) }
     }
     subagentParent = false
-    await terminalCall('settled', { error: failure, aborted: event.aborted })
+    // A reply that stopped at its work-slice boundary is not a completed task: the record says so,
+    // so a host can offer the continuation instead of treating it as done (PROP-0041).
+    const reason = sliceState.endedBy ? sliceState.endedBy === 'stuck' ? 'stalled' : 'slice_complete' : undefined
+    await terminalCall('settled', { error: failure, aborted: event.aborted, ...(reason ? { reason } : {}) })
   })
   pi.on('user_bash', async () => {
     throw new Error('Use the ! command composer so this action can be checked.')
@@ -311,6 +421,19 @@ export default async function (pi: ExtensionAPI, planRun?: TerminalPlanRunState,
       return { content: [{ type: 'text', text: typeof result === 'string' ? result : result.text }], details: undefined }
     }
   })
+  // A bounded reply records its handoff here; the terminal reply is its own slice.
+  let checkpointRecorded: Promise<unknown> = Promise.resolve()
+  const checkpoint = checkpointTool({ emit: (_type, payload) => { checkpointRecorded = terminalCall('checkpoint', payload as Record<string, unknown>) } }, 1)
+  pi.registerTool({
+    name: checkpoint.name, label: checkpoint.label, description: checkpoint.description,
+    parameters: Type.Unsafe(checkpoint.parameters(Type) as Record<string, unknown>),
+    async execute(_id, input) {
+      checkpointRecorded = Promise.resolve()
+      const result = await checkpoint.execute(input as Record<string, unknown>)
+      await checkpointRecorded
+      return { content: [{ type: 'text', text: typeof result === 'string' ? result : result.text }], details: undefined }
+    }
+  })
   const ask = askUserTool({ requestAnswers: questions => terminalCall<QuestionAnswer[]>('questions', { questions }, 1_230_000) })
   pi.registerTool({
     name: ask.name, label: ask.label, description: ask.description,
@@ -320,39 +443,6 @@ export default async function (pi: ExtensionAPI, planRun?: TerminalPlanRunState,
       return { content: [{ type: 'text', text: typeof result === 'string' ? result : result.text }], details: undefined }
     }
   })
-  pi.registerTool({
-    name: 'ask_user_question',
-    label: 'Ask a question',
-    description: 'Ask the user a question and wait for their answer. Include a concise 1–2 word summary label; if omitted, the terminal derives one from the question. Every question must include at least one choice and at least one choice must be recommended. Recommendations are visual only and never preselect answers; submitted choices keep their labels. Mark at most one choice recommended for single-choice questions or several when multiSelect is true. When a UI diagram helps compare choices, set uiSketch: true and include a detailed, bounded ASCII wireframe for every choice. Use ASCII tables and panel borders to show the affected element alongside relevant neighboring UI, with readable labels and spacing. Keep each panel’s outer `+` corners in fixed columns, include side edges at those same columns on every content row, and run horizontal borders corner to corner; if a title sits in a top border, leave at least two dashes on both sides. Keep framing consistent across alternatives and concentrate detail on what changes, not a symbolic logo or one-line illustration. The preview supplies its outer border; draw internal borders only for actual UI panels.',
-    parameters: Type.Object({
-      summary: Type.Optional(Type.String({ description: 'A concise label of one or two words' })),
-      question: Type.String(),
-      uiSketch: Type.Optional(Type.Literal(true, { description: 'Enable an ASCII sketch preview; when true, every choice must include a sketch.' })),
-      options: Type.Array(Type.Object({
-        label: Type.String(),
-        description: Type.Optional(Type.String()),
-        recommended: Type.Optional(Type.Boolean()),
-        sketch: Type.Optional(Type.String({ minLength: 1, maxLength: QUESTION_SKETCH_MAX_LENGTH, pattern: QUESTION_SKETCH_PATTERN, description: 'Literal ASCII UI wireframe: 1–24 LF-separated lines, at most 80 printable ASCII characters per line. Include the affected element and neighboring UI using structured table/panel borders with fixed, matching outer-edge columns on every row. Required for every choice when uiSketch is true.' }))
-      }), {
-        minItems: 1,
-        contains: Type.Object({ recommended: Type.Literal(true) })
-      }),
-      multiSelect: Type.Optional(Type.Boolean())
-    }),
-    async execute(id, input) {
-      if (!Array.isArray(input.options) || input.options.length === 0) throw new Error('Every question needs at least one choice.')
-      const recommendedCount = input.options.filter(option => option.recommended).length
-      if (recommendedCount === 0) throw new Error('Every question needs at least one recommended choice.')
-      if (!input.multiSelect && recommendedCount > 1) throw new Error('A single-choice question may recommend at most one option.')
-      const sketchError = questionSketchError(input.uiSketch, input.options)
-      if (sketchError) throw new Error(sketchError)
-      const summary = typeof input.summary === 'string' ? input.summary.trim() : ''
-      if (summary && (summary.length > 100 || summary.split(/\s+/u).filter(Boolean).length > 2)) {
-        throw new Error('The question summary must be a concise 1–2 word label of no more than 100 characters.')
-      }
-      const answer = await terminalCall('question', { requestId: id, ...input, ...(summary ? { summary } : {}) })
-      return { content: [{ type: 'text', text: JSON.stringify(answer) }], details: undefined }
-    }
-  })
+  // One question tool, as in every structured session: the terminal has no ask_user_question alias (PROP-0039).
   await terminalCall('startup', { phase: 'Pi hooks registered' })
 }

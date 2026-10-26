@@ -74,6 +74,22 @@ describe('independent terminal page overlays', () => {
     expect(rows.join('\n')).not.toContain('─')
   })
 
+  it('keeps Escape and section navigation visible in a compact page footer', () => {
+    const rows = setup({ columns: 40 }).plain(40)
+    expect(rows.at(-1)).toContain('Esc close')
+    expect(rows.at(-1)).toContain('Tab/⇧Tab')
+    expect(visibleWidth(rows.at(-1)!)).toBeLessThanOrEqual(40)
+  })
+
+  it('keeps the back/close Escape action visible in a compact page footer', () => {
+    const { page, plain } = setup({ columns: 40 })
+    page.ownsNavigation = true
+    const footer = plain(40).at(-1)!
+    expect(footer).toContain('↑/↓ select')
+    expect(footer).toContain('Esc back/close')
+    expect(visibleWidth(footer)).toBeLessThanOrEqual(40)
+  })
+
   it('keeps the full screen when the terminal is too small for a readable dialog', () => {
     const { plain } = setup({ columns: 30, rows: 20, centered: true })
     expect(plain(30)).toHaveLength(20)

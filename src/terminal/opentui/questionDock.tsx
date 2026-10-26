@@ -2,7 +2,7 @@ import { For, Show, createEffect, createMemo, createSignal, on, onCleanup } from
 import { RGBA, TextAttributes, type OptimizedBuffer, type BoxRenderable, type KeyBinding, type MouseEvent, type ScrollBoxRenderable, type TextareaRenderable } from '@opentui/core'
 import { useKeyboard, useTerminalDimensions } from '@opentui/solid'
 
-import { questionDockColumns, sketchBorder, sketchViewportHeight } from './questionDockLayout'
+import { questionDockAnswerWidth, questionDockBodyHeight, questionDockColumns, questionDockPreviewRevealDelta, sketchBorder, sketchViewportHeight } from './questionDockLayout'
 import { layoutSketchPanel } from './sketchPanel'
 
 import type { OpenTuiApplication } from './app'
@@ -70,17 +70,84 @@ export function QuestionDock(props: { app: OpenTuiApplication; view: QuestionDoc
   const primaryAction = () => props.view.actionLabel.startsWith('Continue')
   const dimensions = useTerminalDimensions()
   const [contentWidth, setContentWidth] = createSignal(Math.max(0, dimensions().width - 4))
+  const [bodyHeight, setBodyHeight] = createSignal(1)
   let dock: BoxRenderable | undefined
   let body: ScrollBoxRenderable | undefined
   let preview: ScrollBoxRenderable | undefined
   let previewFrame: BoxRenderable | undefined
-  const measure = () => { if (dock) setContentWidth(Math.max(0, dock.width - 2)) }
+  let bodyMeasureTimer: ReturnType<typeof setTimeout> | undefined
+  const maxDockHeight = () => Math.max(1, Math.floor(dimensions().height * 2 / 3))
+  const tabRows = () => {
+    const width = Math.max(1, contentWidth())
+    let rows = 1
+    let used = 0
+    for (const tab of props.view.tabs) {
+      const tabWidth = Array.from(tab.label).length + 2
+      if (used > 0 && used + tabWidth > width) { rows += 1; used = 0 }
+      const labelRows = Math.max(1, Math.ceil(tabWidth / width))
+      if (used === 0) rows += labelRows - 1
+      used += tabWidth
+    }
+    return rows
+  }
+  const answerRows = () => {
+    const width = questionDockAnswerWidth(contentWidth(), props.view.options.length, props.view.actionLabel)
+    const lines = props.view.text.split('\n')
+    const rows = lines.reduce((total, line) => total + Math.max(1, Math.ceil(Array.from(line).length / width)), 0)
+    return Math.min(4, Math.max(1, rows))
+  }
+  const chromeHeight = () => 3 + tabRows() + answerRows() + (contentWidth() < 60 ? 1 : 2)
+  const scheduleBodyMeasure = () => {
+    if (bodyMeasureTimer) clearTimeout(bodyMeasureTimer)
+    const activeIndex = props.view.activeIndex
+    bodyMeasureTimer = setTimeout(() => {
+      bodyMeasureTimer = undefined
+      if (!body || props.view.activeIndex !== activeIndex) return
+      const availableHeight = Math.max(1, maxDockHeight() - chromeHeight())
+      setBodyHeight(questionDockBodyHeight(body.content.y, body.getChildren(), availableHeight))
+    }, 0)
+  }
+  const measure = () => {
+    if (!dock) return
+    setContentWidth(Math.max(0, dock.width - 2))
+    scheduleBodyMeasure()
+  }
+  createEffect(() => {
+    const view = props.view
+    view.question
+    view.tabs.forEach(tab => tab.label)
+    view.options.forEach(option => {
+      option.label
+      option.description
+      option.recommended
+      option.note
+      option.noteOpen
+    })
+    view.sketchPreview?.sketch
+    view.text
+    view.allowText
+    dimensions().width
+    dimensions().height
+    scheduleBodyMeasure()
+  })
+  createEffect(on(() => props.view.activeIndex, () => {
+    // The new question must not inherit the previous tab's viewport as its content height.
+    setBodyHeight(1)
+    body?.scrollTo({ x: 0, y: 0 })
+    scheduleBodyMeasure()
+  }, { defer: true }))
+  onCleanup(() => { if (bodyMeasureTimer) clearTimeout(bodyMeasureTimer) })
   const columns = () => questionDockColumns(Math.max(0, contentWidth() - 2))
   const sketchLines = () => (props.view.sketchPreview?.sketch ?? '').split('\n')
   const sketchPanel = createMemo(() => layoutSketchPanel(props.view.sketchPreview?.sketch ?? '', Math.max(1, contentWidth() - 2)))
   // Both content bounds must be explicit: a Solid-created scrollbox retains a 100% max-width.
   const sketchWidth = () => sketchPanel().width
   const previewHeight = () => sketchViewportHeight(props.view.sketchPreview?.sketch ?? '', dimensions().height)
+  const revealPreview = (direction: -1 | 1) => {
+    if (!body || !previewFrame) return
+    const delta = questionDockPreviewRevealDelta(body.viewport.y, body.viewport.height, previewFrame.y, previewFrame.height, direction)
+    if (delta) body.scrollBy({ x: 0, y: delta })
+  }
 
   const drawDividerJunctions = (buffer: OptimizedBuffer) => {
     if (!preview || !previewFrame) return
@@ -99,6 +166,7 @@ export function QuestionDock(props: { app: OpenTuiApplication; view: QuestionDoc
     // Wait for Yoga to lay out wrapped rows before bringing the focused cell into view.
     const timer = setTimeout(() => {
       if (focus === 'options' || focus === 'note') body?.scrollChildIntoView(`question-${question}-option-${index}`)
+      if (focus === 'options' && index === 0) body?.scrollTo({ x: 0, y: 0 })
     }, 0)
     onCleanup(() => clearTimeout(timer))
   }))
@@ -111,6 +179,8 @@ export function QuestionDock(props: { app: OpenTuiApplication; view: QuestionDoc
     let handled = true
     if (key.shift && ['up', 'down', 'left', 'right'].includes(key.name) && props.view.sketchPreview && preview) {
       preview.scrollBy({ x: key.name === 'left' ? -4 : key.name === 'right' ? 4 : 0, y: key.name === 'up' ? -1 : key.name === 'down' ? 1 : 0 })
+      if (key.name === 'up') revealPreview(-1)
+      else if (key.name === 'down') revealPreview(1)
     } else if (key.name === 'pageup' || key.name === 'pagedown') {
       body?.scrollBy({ x: 0, y: (key.name === 'pageup' ? -1 : 1) * Math.max(1, (body?.viewport.height ?? 2) - 1) })
     } else if (key.ctrl && (key.name === 'home' || key.name === 'end')) {
@@ -123,7 +193,7 @@ export function QuestionDock(props: { app: OpenTuiApplication; view: QuestionDoc
     <box
       ref={value => { dock = value; measure() }}
       onSizeChange={measure}
-      maxHeight={Math.max(1, dimensions().height - 2)}
+      maxHeight={maxDockHeight()}
       width='100%'
       flexDirection='column'
       border={['top']}
@@ -159,8 +229,11 @@ export function QuestionDock(props: { app: OpenTuiApplication; view: QuestionDoc
         </For>
       </box>
       <scrollbox
-        ref={value => { body = value }}
+        ref={value => { body = value; scheduleBodyMeasure() }}
+        onSizeChange={scheduleBodyMeasure}
+        height={bodyHeight()}
         minHeight={1}
+        flexGrow={0}
         flexShrink={1}
         scrollY={true}
         scrollX={false}
@@ -196,7 +269,7 @@ export function QuestionDock(props: { app: OpenTuiApplication; view: QuestionDoc
                   wrapMode='none'
                 >
                   {props.view.multiSelect
-                    ? option.selected ? '☑ ' : '☐ '
+                    ? option.selected ? '✓ ' : '○ '
                     : `${index() + 1} `}
                 </text>
                 <box flexDirection='row' minWidth={0} flexShrink={0}>
@@ -265,10 +338,12 @@ export function QuestionDock(props: { app: OpenTuiApplication; view: QuestionDoc
             value={props.view.text}
             placeholder='Something else…'
             focused={props.view.focus === 'answer'}
+            width={questionDockAnswerWidth(contentWidth(), props.view.options.length, props.view.actionLabel)}
             onMouseDown={event => { if (event.button === 0) props.app.focusQuestionAnswer() }}
             onChange={value => props.app.setQuestionText(value)}
             onSubmit={() => props.app.activateQuestionAction()}
           />
+          <box flexGrow={1} minWidth={0} />
         </Show>
         <box
           paddingX={1}

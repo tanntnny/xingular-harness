@@ -1,6 +1,6 @@
 {
   "name": "@xingular/harness",
-  "version": "1.1.1",
+  "version": "1.2.0",
   "type": "module",
   "description": "Xingular Harness — a Pi agent harness built on recursive harnessing (Harness²): versioned eight-component variants, refinement from evidence, multi-account sessions, a compiled prompt, project notes, tools, and MCP",
   "repository": {
@@ -35,6 +35,7 @@
     "test": "vitest run",
     "profile:terminal-input": "node scripts/profile-terminal-input.mjs",
     "profile:terminal-latency": "python3 scripts/profile-terminal-latency.py",
+    "profile:session-runtime": "node scripts/profile-session-runtime.mjs",
     "prove": "npm run build && node scripts/prove-standalone.mjs",
     "build:sdk": "node scripts/build-sdk.mjs",
     "release:pack": "node scripts/release-pack.mjs",
@@ -42,8 +43,8 @@
     "release:preflight": "node scripts/release-preflight.mjs"
   },
   "dependencies": {
-    "@earendil-works/pi-coding-agent": "1.2.0",
-    "@earendil-works/pi-tui": "1.2.0",
+    "@earendil-works/pi-coding-agent": "1.4.0",
+    "@earendil-works/pi-tui": "1.4.0",
     "@modelcontextprotocol/client": "^2.2.0",
     "@modelcontextprotocol/server": "^2.2.0",
     "@opentui/core": "^0.6.6",

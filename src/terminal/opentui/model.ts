@@ -76,6 +76,7 @@ export interface BashItem {
   kind: 'bash'
   id: string
   command: string
+  timestamp: number
   output: string
   running: boolean
   exitCode?: number
@@ -324,7 +325,7 @@ export class TranscriptModel {
   private expanded = false
   private notices: AnchoredNotice[] = []
   private nextNotice = 0
-  private liveBash?: { command: string; id?: string; output: string; previousCount: number }
+  private liveBash?: { command: string; id?: string; output: string; timestamp: number; previousCount: number }
   private cachedView?: TranscriptView
   private readonly cachedItems = new Map<string, TranscriptItem>()
   /** What a compaction took out of Pi's message list, rebuilt from the session history on bind. */
@@ -354,6 +355,7 @@ export class TranscriptModel {
     this.liveBash = {
       command,
       output: '',
+      timestamp: Date.now(),
       previousCount: messages.filter(message => message.role === 'bashExecution').length
     }
     this.invalidate()
@@ -482,7 +484,7 @@ export class TranscriptModel {
     if (this.liveBash && bashExecutionCount === this.liveBash.previousCount) {
       items.push({
         kind: 'bash', id: `live-${this.liveBash.id ?? 'pending'}`, command: this.liveBash.command,
-        output: ansiPlain(this.liveBash.output), running: true, cancelled: false
+        timestamp: this.liveBash.timestamp, output: ansiPlain(this.liveBash.output), running: true, cancelled: false
       })
     }
     for (; noticeIndex < notices.length; noticeIndex += 1) items.push(notices[noticeIndex]!.notice.item)
@@ -584,7 +586,8 @@ export class TranscriptModel {
       const command = stringField(message, 'command') ?? ''
       if (!command) return items
       items.push({
-        kind: 'bash', id: `m${index}`, command, output: clip(ansiPlain(stringField(message, 'output') ?? '')),
+        kind: 'bash', id: `m${index}`, command, timestamp: numberField(message, 'timestamp') ?? 0,
+        output: clip(ansiPlain(stringField(message, 'output') ?? '')),
         running: false, exitCode: numberField(message, 'exitCode'), cancelled: message.cancelled === true
       })
       return items

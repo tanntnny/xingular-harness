@@ -1,0 +1,376 @@
+{
+  "metadata": {
+    "commit": "6f72a07",
+    "workingTreeDirty": true,
+    "dirtyPathCount": 81,
+    "platform": "macOS-27.0-arm64-arm-64bit",
+    "machine": "arm64",
+    "cpuCount": 8,
+    "python": "3.12.12",
+    "node": "v26.8.2",
+    "bun": "1.4.2",
+    "harnessVersion": "1.1.1",
+    "piVersion": "1.2.0",
+    "opencodeVersion": "opencode v2.1.4"
+  },
+  "interval": 0.035,
+  "length": 30,
+  "rounds": 2,
+  "repeats": 1,
+  "size": "80x24",
+  "warmIdleSeconds": 2.0,
+  "idleSeconds": 1.0,
+  "streamSeconds": 4.0,
+  "scenarios": [
+    "idle",
+    "stream",
+    "burst"
+  ],
+  "real": false,
+  "results": [
+    {
+      "target": "xingular",
+      "repeat": 1,
+      "command": "node",
+      "scenarios": {
+        "idle": {
+          "keys": 44,
+          "missed": 0,
+          "p50": 3.79,
+          "p95": 4.66,
+          "p99": 5.74,
+          "max": 5.74,
+          "cpuPercent": 9.9,
+          "rssBeforeKb": 388288,
+          "rssAfterKb": 385840,
+          "bytesPerKey": 83
+        },
+        "stream": {
+          "keys": 22,
+          "missed": 0,
+          "p50": 5.05,
+          "p95": 10.95,
+          "p99": 12.59,
+          "max": 12.59,
+          "cpuPercent": 18.4,
+          "rssBeforeKb": 436096,
+          "rssAfterKb": 446864,
+          "bytesPerKey": 7276
+        },
+        "burst": {
+          "keys": 22,
+          "missed": 0,
+          "p50": 2.87,
+          "p95": 8.65,
+          "p99": 19.93,
+          "max": 19.93,
+          "cpuPercent": 14.2,
+          "rssBeforeKb": 430096,
+          "rssAfterKb": 434080,
+          "bytesPerKey": 776
+        }
+      },
+      "startup": {
+        "launchToFirstOutputMs": 2106.42,
+        "launchToFirstVisibleMs": 2107.6,
+        "launchToQuietScreenMs": 3052.36,
+        "rssKb": 396416
+      },
+      "idleResourceUsage": {
+        "durationSeconds": 1.0,
+        "cpuPercent": 3.0,
+        "rssBeforeKb": 388800,
+        "rssAfterKb": 388288
+      }
+    },
+    {
+      "target": "pi",
+      "repeat": 1,
+      "command": "node",
+      "scenarios": {
+        "idle": {
+          "keys": 44,
+          "missed": 0,
+          "p50": 3.03,
+          "p95": 5.08,
+          "p99": 5.46,
+          "max": 5.46,
+          "cpuPercent": 4.3,
+          "rssBeforeKb": 144480,
+          "rssAfterKb": 148464,
+          "bytesPerKey": 144
+        },
+        "stream": {
+          "keys": 22,
+          "missed": 0,
+          "p50": 1.87,
+          "p95": 5.72,
+          "p99": 5.73,
+          "max": 5.73,
+          "cpuPercent": 16.6,
+          "rssBeforeKb": 164704,
+          "rssAfterKb": 165456,
+          "bytesPerKey": 2605
+        },
+        "burst": {
+          "keys": 22,
+          "missed": 0,
+          "p50": 2.81,
+          "p95": 4.61,
+          "p99": 5.71,
+          "max": 5.71,
+          "cpuPercent": 5.6,
+          "rssBeforeKb": 166448,
+          "rssAfterKb": 166832,
+          "bytesPerKey": 724
+        }
+      },
+      "startup": {
+        "launchToFirstOutputMs": 229.35,
+        "launchToFirstVisibleMs": 260.53,
+        "launchToQuietScreenMs": 1018.2,
+        "rssKb": 137344
+      },
+      "idleResourceUsage": {
+        "durationSeconds": 1.0,
+        "cpuPercent": 0.0,
+        "rssBeforeKb": 144480,
+        "rssAfterKb": 144480
+      }
+    },
+    {
+      "target": "opencode",
+      "repeat": 1,
+      "command": "opencode",
+      "scenarios": {
+        "idle": {
+          "keys": 44,
+          "missed": 0,
+          "p50": 6.2,
+          "p95": 8.11,
+          "p99": 8.91,
+          "max": 8.91,
+          "cpuPercent": 28.6,
+          "rssBeforeKb": 451040,
+          "rssAfterKb": 493488,
+          "bytesPerKey": 95
+        },
+        "stream": {
+          "keys": 22,
+          "missed": 0,
+          "p50": 11.37,
+          "p95": 18.61,
+          "p99": 19.75,
+          "max": 19.75,
+          "cpuPercent": 43.6,
+          "rssBeforeKb": 587360,
+          "rssAfterKb": 529664,
+          "bytesPerKey": 2694
+        },
+        "burst": {
+          "keys": 22,
+          "missed": 0,
+          "p50": 9.9,
+          "p95": 11.12,
+          "p99": 11.81,
+          "max": 11.81,
+          "cpuPercent": 35.0,
+          "rssBeforeKb": 515344,
+          "rssAfterKb": 495824,
+          "bytesPerKey": 1926
+        }
+      },
+      "startup": {
+        "launchToFirstOutputMs": 318.65,
+        "launchToFirstVisibleMs": 320.4,
+        "launchToQuietScreenMs": 1084.49,
+        "rssKb": 522352
+      },
+      "idleResourceUsage": {
+        "durationSeconds": 1.0,
+        "cpuPercent": 1.0,
+        "rssBeforeKb": 451024,
+        "rssAfterKb": 451024
+      }
+    }
+  ],
+  "summary": [
+    {
+      "target": "opencode",
+      "runs": 1,
+      "startup": {
+        "runs": 1,
+        "launchToFirstOutputMs": 318.65,
+        "launchToFirstVisibleMs": 320.4,
+        "launchToQuietScreenMs": 1084.49,
+        "rssKb": 522352
+      },
+      "idleResourceUsage": {
+        "runs": 1,
+        "cpuPercent": 1.0,
+        "durationSeconds": 1.0,
+        "rssAfterKb": 451024,
+        "rssBeforeKb": 451024
+      },
+      "scenarios": {
+        "burst": {
+          "runs": 1,
+          "bytesPerKey": 1926,
+          "cpuPercent": 35.0,
+          "keys": 22,
+          "max": 11.81,
+          "missed": 0,
+          "p50": 9.9,
+          "p95": 11.12,
+          "p99": 11.81,
+          "rssAfterKb": 495824,
+          "rssBeforeKb": 515344
+        },
+        "idle": {
+          "runs": 1,
+          "bytesPerKey": 95,
+          "cpuPercent": 28.6,
+          "keys": 44,
+          "max": 8.91,
+          "missed": 0,
+          "p50": 6.2,
+          "p95": 8.11,
+          "p99": 8.91,
+          "rssAfterKb": 493488,
+          "rssBeforeKb": 451040
+        },
+        "stream": {
+          "runs": 1,
+          "bytesPerKey": 2694,
+          "cpuPercent": 43.6,
+          "keys": 22,
+          "max": 19.75,
+          "missed": 0,
+          "p50": 11.37,
+          "p95": 18.61,
+          "p99": 19.75,
+          "rssAfterKb": 529664,
+          "rssBeforeKb": 587360
+        }
+      }
+    },
+    {
+      "target": "pi",
+      "runs": 1,
+      "startup": {
+        "runs": 1,
+        "launchToFirstOutputMs": 229.35,
+        "launchToFirstVisibleMs": 260.53,
+        "launchToQuietScreenMs": 1018.2,
+        "rssKb": 137344
+      },
+      "idleResourceUsage": {
+        "runs": 1,
+        "cpuPercent": 0.0,
+        "durationSeconds": 1.0,
+        "rssAfterKb": 144480,
+        "rssBeforeKb": 144480
+      },
+      "scenarios": {
+        "burst": {
+          "runs": 1,
+          "bytesPerKey": 724,
+          "cpuPercent": 5.6,
+          "keys": 22,
+          "max": 5.71,
+          "missed": 0,
+          "p50": 2.81,
+          "p95": 4.61,
+          "p99": 5.71,
+          "rssAfterKb": 166832,
+          "rssBeforeKb": 166448
+        },
+        "idle": {
+          "runs": 1,
+          "bytesPerKey": 144,
+          "cpuPercent": 4.3,
+          "keys": 44,
+          "max": 5.46,
+          "missed": 0,
+          "p50": 3.03,
+          "p95": 5.08,
+          "p99": 5.46,
+          "rssAfterKb": 148464,
+          "rssBeforeKb": 144480
+        },
+        "stream": {
+          "runs": 1,
+          "bytesPerKey": 2605,
+          "cpuPercent": 16.6,
+          "keys": 22,
+          "max": 5.73,
+          "missed": 0,
+          "p50": 1.87,
+          "p95": 5.72,
+          "p99": 5.73,
+          "rssAfterKb": 165456,
+          "rssBeforeKb": 164704
+        }
+      }
+    },
+    {
+      "target": "xingular",
+      "runs": 1,
+      "startup": {
+        "runs": 1,
+        "launchToFirstOutputMs": 2106.42,
+        "launchToFirstVisibleMs": 2107.6,
+        "launchToQuietScreenMs": 3052.36,
+        "rssKb": 396416
+      },
+      "idleResourceUsage": {
+        "runs": 1,
+        "cpuPercent": 3.0,
+        "durationSeconds": 1.0,
+        "rssAfterKb": 388288,
+        "rssBeforeKb": 388800
+      },
+      "scenarios": {
+        "burst": {
+          "runs": 1,
+          "bytesPerKey": 776,
+          "cpuPercent": 14.2,
+          "keys": 22,
+          "max": 19.93,
+          "missed": 0,
+          "p50": 2.87,
+          "p95": 8.65,
+          "p99": 19.93,
+          "rssAfterKb": 434080,
+          "rssBeforeKb": 430096
+        },
+        "idle": {
+          "runs": 1,
+          "bytesPerKey": 83,
+          "cpuPercent": 9.9,
+          "keys": 44,
+          "max": 5.74,
+          "missed": 0,
+          "p50": 3.79,
+          "p95": 4.66,
+          "p99": 5.74,
+          "rssAfterKb": 385840,
+          "rssBeforeKb": 388288
+        },
+        "stream": {
+          "runs": 1,
+          "bytesPerKey": 7276,
+          "cpuPercent": 18.4,
+          "keys": 22,
+          "max": 12.59,
+          "missed": 0,
+          "p50": 5.05,
+          "p95": 10.95,
+          "p99": 12.59,
+          "rssAfterKb": 446864,
+          "rssBeforeKb": 436096
+        }
+      }
+    }
+  ]
+}

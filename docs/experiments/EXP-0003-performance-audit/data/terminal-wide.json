@@ -1,0 +1,1036 @@
+{
+  "metadata": {
+    "commit": "6f72a07",
+    "workingTreeDirty": true,
+    "dirtyPathCount": 81,
+    "platform": "macOS-27.0-arm64-arm-64bit",
+    "machine": "arm64",
+    "cpuCount": 8,
+    "python": "3.12.12",
+    "node": "v26.8.2",
+    "bun": "1.4.2",
+    "harnessVersion": "1.1.1",
+    "piVersion": "1.2.0",
+    "opencodeVersion": "opencode v2.1.4"
+  },
+  "interval": 0.035,
+  "length": 30,
+  "rounds": 2,
+  "repeats": 5,
+  "size": "160x45",
+  "warmIdleSeconds": 2.0,
+  "idleSeconds": 2.0,
+  "streamSeconds": 4.0,
+  "scenarios": [
+    "idle",
+    "stream",
+    "burst"
+  ],
+  "real": false,
+  "results": [
+    {
+      "target": "xingular",
+      "repeat": 1,
+      "command": "node",
+      "scenarios": {
+        "idle": {
+          "keys": 44,
+          "missed": 0,
+          "p50": 5.28,
+          "p95": 9.98,
+          "p99": 10.3,
+          "max": 10.3,
+          "cpuPercent": 7.7,
+          "rssBeforeKb": 397456,
+          "rssAfterKb": 389136,
+          "bytesPerKey": 83
+        },
+        "stream": {
+          "keys": 22,
+          "missed": 0,
+          "p50": 12.35,
+          "p95": 20.25,
+          "p99": 20.44,
+          "max": 20.44,
+          "cpuPercent": 13.6,
+          "rssBeforeKb": 485744,
+          "rssAfterKb": 492320,
+          "bytesPerKey": 15459
+        },
+        "burst": {
+          "keys": 22,
+          "missed": 0,
+          "p50": 5.24,
+          "p95": 10.33,
+          "p99": 10.77,
+          "max": 10.77,
+          "cpuPercent": 12.3,
+          "rssBeforeKb": 403232,
+          "rssAfterKb": 399568,
+          "bytesPerKey": 1233
+        }
+      },
+      "startup": {
+        "launchToFirstOutputMs": 2378.03,
+        "launchToFirstVisibleMs": 2380.62,
+        "launchToQuietScreenMs": 3360.43,
+        "rssKb": 410368
+      },
+      "idleResourceUsage": {
+        "durationSeconds": 2.0,
+        "cpuPercent": 2.0,
+        "rssBeforeKb": 408240,
+        "rssAfterKb": 397456
+      }
+    },
+    {
+      "target": "pi",
+      "repeat": 1,
+      "command": "node",
+      "scenarios": {
+        "idle": {
+          "keys": 44,
+          "missed": 0,
+          "p50": 5.17,
+          "p95": 6.04,
+          "p99": 6.27,
+          "max": 6.27,
+          "cpuPercent": 2.8,
+          "rssBeforeKb": 148640,
+          "rssAfterKb": 154336,
+          "bytesPerKey": 227
+        },
+        "stream": {
+          "keys": 22,
+          "missed": 0,
+          "p50": 3.62,
+          "p95": 22.16,
+          "p99": 27.49,
+          "max": 27.49,
+          "cpuPercent": 9.9,
+          "rssBeforeKb": 167920,
+          "rssAfterKb": 169136,
+          "bytesPerKey": 7332
+        },
+        "burst": {
+          "keys": 22,
+          "missed": 0,
+          "p50": 4.43,
+          "p95": 6.09,
+          "p99": 19.04,
+          "max": 19.04,
+          "cpuPercent": 7.4,
+          "rssBeforeKb": 170288,
+          "rssAfterKb": 171280,
+          "bytesPerKey": 2025
+        }
+      },
+      "startup": {
+        "launchToFirstOutputMs": 232.43,
+        "launchToFirstVisibleMs": 261.62,
+        "launchToQuietScreenMs": 1059.6,
+        "rssKb": 138608
+      },
+      "idleResourceUsage": {
+        "durationSeconds": 2.01,
+        "cpuPercent": 1.0,
+        "rssBeforeKb": 148288,
+        "rssAfterKb": 148640
+      }
+    },
+    {
+      "target": "opencode",
+      "repeat": 1,
+      "command": "opencode",
+      "scenarios": {
+        "idle": {
+          "keys": 44,
+          "missed": 0,
+          "p50": 7.59,
+          "p95": 11.08,
+          "p99": 11.27,
+          "max": 11.27,
+          "cpuPercent": 27.0,
+          "rssBeforeKb": 434864,
+          "rssAfterKb": 489616,
+          "bytesPerKey": 95
+        },
+        "stream": {
+          "keys": 22,
+          "missed": 0,
+          "p50": 10.02,
+          "p95": 26.36,
+          "p99": 27.74,
+          "max": 27.74,
+          "cpuPercent": 43.1,
+          "rssBeforeKb": 570912,
+          "rssAfterKb": 585952,
+          "bytesPerKey": 4448
+        },
+        "burst": {
+          "keys": 22,
+          "missed": 0,
+          "p50": 10.42,
+          "p95": 21.85,
+          "p99": 29.63,
+          "max": 29.63,
+          "cpuPercent": 34.3,
+          "rssBeforeKb": 562848,
+          "rssAfterKb": 582560,
+          "bytesPerKey": 2567
+        }
+      },
+      "startup": {
+        "launchToFirstOutputMs": 300.4,
+        "launchToFirstVisibleMs": 304.07,
+        "launchToQuietScreenMs": 1115.38,
+        "rssKb": 505104
+      },
+      "idleResourceUsage": {
+        "durationSeconds": 2.0,
+        "cpuPercent": 1.0,
+        "rssBeforeKb": 460256,
+        "rssAfterKb": 434848
+      }
+    },
+    {
+      "target": "pi",
+      "repeat": 2,
+      "command": "node",
+      "scenarios": {
+        "idle": {
+          "keys": 44,
+          "missed": 0,
+          "p50": 5.33,
+          "p95": 6.26,
+          "p99": 9.91,
+          "max": 9.91,
+          "cpuPercent": 2.8,
+          "rssBeforeKb": 143424,
+          "rssAfterKb": 147824,
+          "bytesPerKey": 227
+        },
+        "stream": {
+          "keys": 22,
+          "missed": 0,
+          "p50": 3.4,
+          "p95": 23.38,
+          "p99": 24.73,
+          "max": 24.73,
+          "cpuPercent": 10.5,
+          "rssBeforeKb": 161472,
+          "rssAfterKb": 162992,
+          "bytesPerKey": 7313
+        },
+        "burst": {
+          "keys": 22,
+          "missed": 0,
+          "p50": 4.58,
+          "p95": 5.81,
+          "p99": 28.55,
+          "max": 28.55,
+          "cpuPercent": 5.5,
+          "rssBeforeKb": 164256,
+          "rssAfterKb": 164704,
+          "bytesPerKey": 2217
+        }
+      },
+      "startup": {
+        "launchToFirstOutputMs": 228.06,
+        "launchToFirstVisibleMs": 256.97,
+        "launchToQuietScreenMs": 1041.93,
+        "rssKb": 136640
+      },
+      "idleResourceUsage": {
+        "durationSeconds": 2.0,
+        "cpuPercent": 0.5,
+        "rssBeforeKb": 143344,
+        "rssAfterKb": 143424
+      }
+    },
+    {
+      "target": "opencode",
+      "repeat": 2,
+      "command": "opencode",
+      "scenarios": {
+        "idle": {
+          "keys": 44,
+          "missed": 0,
+          "p50": 8.0,
+          "p95": 10.86,
+          "p99": 11.37,
+          "max": 11.37,
+          "cpuPercent": 27.3,
+          "rssBeforeKb": 471360,
+          "rssAfterKb": 529232,
+          "bytesPerKey": 96
+        },
+        "stream": {
+          "keys": 22,
+          "missed": 0,
+          "p50": 15.34,
+          "p95": 26.17,
+          "p99": 26.94,
+          "max": 26.94,
+          "cpuPercent": 37.8,
+          "rssBeforeKb": 619888,
+          "rssAfterKb": 633584,
+          "bytesPerKey": 4235
+        },
+        "burst": {
+          "keys": 22,
+          "missed": 0,
+          "p50": 18.61,
+          "p95": 24.96,
+          "p99": 30.48,
+          "max": 30.48,
+          "cpuPercent": 35.0,
+          "rssBeforeKb": 566288,
+          "rssAfterKb": 535280,
+          "bytesPerKey": 2540
+        }
+      },
+      "startup": {
+        "launchToFirstOutputMs": 299.59,
+        "launchToFirstVisibleMs": 302.96,
+        "launchToQuietScreenMs": 1106.29,
+        "rssKb": 492080
+      },
+      "idleResourceUsage": {
+        "durationSeconds": 2.0,
+        "cpuPercent": 1.5,
+        "rssBeforeKb": 486848,
+        "rssAfterKb": 471328
+      }
+    },
+    {
+      "target": "xingular",
+      "repeat": 2,
+      "command": "node",
+      "scenarios": {
+        "idle": {
+          "keys": 44,
+          "missed": 0,
+          "p50": 5.11,
+          "p95": 9.75,
+          "p99": 10.52,
+          "max": 10.52,
+          "cpuPercent": 7.1,
+          "rssBeforeKb": 265232,
+          "rssAfterKb": 251248,
+          "bytesPerKey": 83
+        },
+        "stream": {
+          "keys": 22,
+          "missed": 0,
+          "p50": 8.23,
+          "p95": 20.02,
+          "p99": 23.41,
+          "max": 23.41,
+          "cpuPercent": 14.6,
+          "rssBeforeKb": 367120,
+          "rssAfterKb": 373936,
+          "bytesPerKey": 16503
+        },
+        "burst": {
+          "keys": 22,
+          "missed": 0,
+          "p50": 5.13,
+          "p95": 10.73,
+          "p99": 14.24,
+          "max": 14.24,
+          "cpuPercent": 11.0,
+          "rssBeforeKb": 384224,
+          "rssAfterKb": 386816,
+          "bytesPerKey": 1260
+        }
+      },
+      "startup": {
+        "launchToFirstOutputMs": 3411.17,
+        "launchToFirstVisibleMs": 3413.53,
+        "launchToQuietScreenMs": 4407.74,
+        "rssKb": 279440
+      },
+      "idleResourceUsage": {
+        "durationSeconds": 2.0,
+        "cpuPercent": 2.0,
+        "rssBeforeKb": 271552,
+        "rssAfterKb": 265232
+      }
+    },
+    {
+      "target": "opencode",
+      "repeat": 3,
+      "command": "opencode",
+      "scenarios": {
+        "idle": {
+          "keys": 44,
+          "missed": 0,
+          "p50": 7.17,
+          "p95": 9.77,
+          "p99": 11.47,
+          "max": 11.47,
+          "cpuPercent": 26.5,
+          "rssBeforeKb": 504560,
+          "rssAfterKb": 449424,
+          "bytesPerKey": 95
+        },
+        "stream": {
+          "keys": 22,
+          "missed": 0,
+          "p50": 9.29,
+          "p95": 24.46,
+          "p99": 26.31,
+          "max": 26.31,
+          "cpuPercent": 41.5,
+          "rssBeforeKb": 545856,
+          "rssAfterKb": 553648,
+          "bytesPerKey": 4333
+        },
+        "burst": {
+          "keys": 22,
+          "missed": 0,
+          "p50": 9.3,
+          "p95": 12.86,
+          "p99": 27.55,
+          "max": 27.55,
+          "cpuPercent": 31.9,
+          "rssBeforeKb": 526704,
+          "rssAfterKb": 521552,
+          "bytesPerKey": 2510
+        }
+      },
+      "startup": {
+        "launchToFirstOutputMs": 296.29,
+        "launchToFirstVisibleMs": 299.72,
+        "launchToQuietScreenMs": 1120.48,
+        "rssKb": 543088
+      },
+      "idleResourceUsage": {
+        "durationSeconds": 2.01,
+        "cpuPercent": 1.0,
+        "rssBeforeKb": 596736,
+        "rssAfterKb": 504544
+      }
+    },
+    {
+      "target": "xingular",
+      "repeat": 3,
+      "command": "node",
+      "scenarios": {
+        "idle": {
+          "keys": 44,
+          "missed": 0,
+          "p50": 4.67,
+          "p95": 10.12,
+          "p99": 11.12,
+          "max": 11.12,
+          "cpuPercent": 7.1,
+          "rssBeforeKb": 263664,
+          "rssAfterKb": 262992,
+          "bytesPerKey": 83
+        },
+        "stream": {
+          "keys": 22,
+          "missed": 0,
+          "p50": 8.42,
+          "p95": 18.32,
+          "p99": 30.26,
+          "max": 30.26,
+          "cpuPercent": 15.2,
+          "rssBeforeKb": 365680,
+          "rssAfterKb": 375104,
+          "bytesPerKey": 16523
+        },
+        "burst": {
+          "keys": 22,
+          "missed": 0,
+          "p50": 4.74,
+          "p95": 8.87,
+          "p99": 13.48,
+          "max": 13.48,
+          "cpuPercent": 12.3,
+          "rssBeforeKb": 381616,
+          "rssAfterKb": 375824,
+          "bytesPerKey": 1442
+        }
+      },
+      "startup": {
+        "launchToFirstOutputMs": 2811.04,
+        "launchToFirstVisibleMs": 2813.96,
+        "launchToQuietScreenMs": 3767.59,
+        "rssKb": 353856
+      },
+      "idleResourceUsage": {
+        "durationSeconds": 2.0,
+        "cpuPercent": 1.0,
+        "rssBeforeKb": 328224,
+        "rssAfterKb": 263664
+      }
+    },
+    {
+      "target": "pi",
+      "repeat": 3,
+      "command": "node",
+      "scenarios": {
+        "idle": {
+          "keys": 44,
+          "missed": 0,
+          "p50": 5.27,
+          "p95": 9.92,
+          "p99": 11.1,
+          "max": 11.1,
+          "cpuPercent": 3.1,
+          "rssBeforeKb": 146800,
+          "rssAfterKb": 151072,
+          "bytesPerKey": 227
+        },
+        "stream": {
+          "keys": 22,
+          "missed": 0,
+          "p50": 3.11,
+          "p95": 22.26,
+          "p99": 22.56,
+          "max": 22.56,
+          "cpuPercent": 9.9,
+          "rssBeforeKb": 165280,
+          "rssAfterKb": 166576,
+          "bytesPerKey": 7877
+        },
+        "burst": {
+          "keys": 22,
+          "missed": 0,
+          "p50": 5.11,
+          "p95": 6.31,
+          "p99": 47.47,
+          "max": 47.47,
+          "cpuPercent": 4.8,
+          "rssBeforeKb": 154432,
+          "rssAfterKb": 154928,
+          "bytesPerKey": 2497
+        }
+      },
+      "startup": {
+        "launchToFirstOutputMs": 239.24,
+        "launchToFirstVisibleMs": 253.5,
+        "launchToQuietScreenMs": 1029.82,
+        "rssKb": 139136
+      },
+      "idleResourceUsage": {
+        "durationSeconds": 2.0,
+        "cpuPercent": 0.5,
+        "rssBeforeKb": 146704,
+        "rssAfterKb": 146800
+      }
+    },
+    {
+      "target": "xingular",
+      "repeat": 4,
+      "command": "node",
+      "scenarios": {
+        "idle": {
+          "keys": 44,
+          "missed": 0,
+          "p50": 5.12,
+          "p95": 9.64,
+          "p99": 9.8,
+          "max": 9.8,
+          "cpuPercent": 8.0,
+          "rssBeforeKb": 376160,
+          "rssAfterKb": 236496,
+          "bytesPerKey": 83
+        },
+        "stream": {
+          "keys": 22,
+          "missed": 0,
+          "p50": 9.13,
+          "p95": 19.08,
+          "p99": 22.88,
+          "max": 22.88,
+          "cpuPercent": 14.2,
+          "rssBeforeKb": 402992,
+          "rssAfterKb": 322944,
+          "bytesPerKey": 15536
+        },
+        "burst": {
+          "keys": 22,
+          "missed": 0,
+          "p50": 5.01,
+          "p95": 12.08,
+          "p99": 12.74,
+          "max": 12.74,
+          "cpuPercent": 14.2,
+          "rssBeforeKb": 330176,
+          "rssAfterKb": 339312,
+          "bytesPerKey": 1230
+        }
+      },
+      "startup": {
+        "launchToFirstOutputMs": 2679.43,
+        "launchToFirstVisibleMs": 2681.94,
+        "launchToQuietScreenMs": 3633.78,
+        "rssKb": 401504
+      },
+      "idleResourceUsage": {
+        "durationSeconds": 2.0,
+        "cpuPercent": 2.0,
+        "rssBeforeKb": 389904,
+        "rssAfterKb": 376160
+      }
+    },
+    {
+      "target": "pi",
+      "repeat": 4,
+      "command": "node",
+      "scenarios": {
+        "idle": {
+          "keys": 44,
+          "missed": 0,
+          "p50": 5.32,
+          "p95": 6.39,
+          "p99": 10.75,
+          "max": 10.75,
+          "cpuPercent": 3.1,
+          "rssBeforeKb": 144464,
+          "rssAfterKb": 148816,
+          "bytesPerKey": 227
+        },
+        "stream": {
+          "keys": 22,
+          "missed": 0,
+          "p50": 3.18,
+          "p95": 22.02,
+          "p99": 22.51,
+          "max": 22.51,
+          "cpuPercent": 11.1,
+          "rssBeforeKb": 163344,
+          "rssAfterKb": 164208,
+          "bytesPerKey": 7878
+        },
+        "burst": {
+          "keys": 22,
+          "missed": 0,
+          "p50": 4.93,
+          "p95": 10.75,
+          "p99": 37.02,
+          "max": 37.02,
+          "cpuPercent": 5.6,
+          "rssBeforeKb": 165664,
+          "rssAfterKb": 159664,
+          "bytesPerKey": 2103
+        }
+      },
+      "startup": {
+        "launchToFirstOutputMs": 238.21,
+        "launchToFirstVisibleMs": 269.81,
+        "launchToQuietScreenMs": 1034.86,
+        "rssKb": 137264
+      },
+      "idleResourceUsage": {
+        "durationSeconds": 2.0,
+        "cpuPercent": 0.5,
+        "rssBeforeKb": 144352,
+        "rssAfterKb": 144464
+      }
+    },
+    {
+      "target": "opencode",
+      "repeat": 4,
+      "command": "opencode",
+      "scenarios": {
+        "idle": {
+          "keys": 44,
+          "missed": 0,
+          "p50": 6.99,
+          "p95": 9.58,
+          "p99": 10.74,
+          "max": 10.74,
+          "cpuPercent": 26.2,
+          "rssBeforeKb": 428864,
+          "rssAfterKb": 478928,
+          "bytesPerKey": 95
+        },
+        "stream": {
+          "keys": 22,
+          "missed": 0,
+          "p50": 12.52,
+          "p95": 19.0,
+          "p99": 26.53,
+          "max": 26.53,
+          "cpuPercent": 42.5,
+          "rssBeforeKb": 569776,
+          "rssAfterKb": 592496,
+          "bytesPerKey": 4288
+        },
+        "burst": {
+          "keys": 22,
+          "missed": 0,
+          "p50": 11.17,
+          "p95": 14.91,
+          "p99": 27.88,
+          "max": 27.88,
+          "cpuPercent": 33.2,
+          "rssBeforeKb": 553248,
+          "rssAfterKb": 571472,
+          "bytesPerKey": 2384
+        }
+      },
+      "startup": {
+        "launchToFirstOutputMs": 337.15,
+        "launchToFirstVisibleMs": 339.95,
+        "launchToQuietScreenMs": 1106.57,
+        "rssKb": 500544
+      },
+      "idleResourceUsage": {
+        "durationSeconds": 2.0,
+        "cpuPercent": 2.0,
+        "rssBeforeKb": 481136,
+        "rssAfterKb": 428848
+      }
+    },
+    {
+      "target": "pi",
+      "repeat": 5,
+      "command": "node",
+      "scenarios": {
+        "idle": {
+          "keys": 44,
+          "missed": 0,
+          "p50": 5.5,
+          "p95": 6.5,
+          "p99": 10.5,
+          "max": 10.5,
+          "cpuPercent": 4.3,
+          "rssBeforeKb": 143440,
+          "rssAfterKb": 148608,
+          "bytesPerKey": 227
+        },
+        "stream": {
+          "keys": 22,
+          "missed": 0,
+          "p50": 3.15,
+          "p95": 22.57,
+          "p99": 23.24,
+          "max": 23.24,
+          "cpuPercent": 11.1,
+          "rssBeforeKb": 164160,
+          "rssAfterKb": 164944,
+          "bytesPerKey": 8082
+        },
+        "burst": {
+          "keys": 22,
+          "missed": 0,
+          "p50": 4.72,
+          "p95": 33.23,
+          "p99": 51.74,
+          "max": 51.74,
+          "cpuPercent": 4.8,
+          "rssBeforeKb": 166544,
+          "rssAfterKb": 166896,
+          "bytesPerKey": 2500
+        }
+      },
+      "startup": {
+        "launchToFirstOutputMs": 228.82,
+        "launchToFirstVisibleMs": 261.28,
+        "launchToQuietScreenMs": 1024.15,
+        "rssKb": 137696
+      },
+      "idleResourceUsage": {
+        "durationSeconds": 2.0,
+        "cpuPercent": 0.5,
+        "rssBeforeKb": 143312,
+        "rssAfterKb": 143440
+      }
+    },
+    {
+      "target": "opencode",
+      "repeat": 5,
+      "command": "opencode",
+      "scenarios": {
+        "idle": {
+          "keys": 44,
+          "missed": 0,
+          "p50": 7.17,
+          "p95": 10.41,
+          "p99": 10.61,
+          "max": 10.61,
+          "cpuPercent": 24.9,
+          "rssBeforeKb": 475456,
+          "rssAfterKb": 522368,
+          "bytesPerKey": 95
+        },
+        "stream": {
+          "keys": 22,
+          "missed": 0,
+          "p50": 9.03,
+          "p95": 24.87,
+          "p99": 26.74,
+          "max": 26.74,
+          "cpuPercent": 38.8,
+          "rssBeforeKb": 618336,
+          "rssAfterKb": 622032,
+          "bytesPerKey": 4302
+        },
+        "burst": {
+          "keys": 22,
+          "missed": 0,
+          "p50": 9.38,
+          "p95": 26.0,
+          "p99": 28.57,
+          "max": 28.57,
+          "cpuPercent": 32.6,
+          "rssBeforeKb": 589792,
+          "rssAfterKb": 590976,
+          "bytesPerKey": 2578
+        }
+      },
+      "startup": {
+        "launchToFirstOutputMs": 307.49,
+        "launchToFirstVisibleMs": 310.28,
+        "launchToQuietScreenMs": 1071.04,
+        "rssKb": 449088
+      },
+      "idleResourceUsage": {
+        "durationSeconds": 2.0,
+        "cpuPercent": 1.5,
+        "rssBeforeKb": 480336,
+        "rssAfterKb": 475440
+      }
+    },
+    {
+      "target": "xingular",
+      "repeat": 5,
+      "command": "node",
+      "scenarios": {
+        "idle": {
+          "keys": 44,
+          "missed": 0,
+          "p50": 5.06,
+          "p95": 10.19,
+          "p99": 11.28,
+          "max": 11.28,
+          "cpuPercent": 8.0,
+          "rssBeforeKb": 369568,
+          "rssAfterKb": 356720,
+          "bytesPerKey": 83
+        },
+        "stream": {
+          "keys": 22,
+          "missed": 0,
+          "p50": 9.81,
+          "p95": 19.91,
+          "p99": 23.14,
+          "max": 23.14,
+          "cpuPercent": 14.1,
+          "rssBeforeKb": 369408,
+          "rssAfterKb": 374288,
+          "bytesPerKey": 16853
+        },
+        "burst": {
+          "keys": 22,
+          "missed": 0,
+          "p50": 4.45,
+          "p95": 10.8,
+          "p99": 13.65,
+          "max": 13.65,
+          "cpuPercent": 11.7,
+          "rssBeforeKb": 341760,
+          "rssAfterKb": 345776,
+          "bytesPerKey": 1232
+        }
+      },
+      "startup": {
+        "launchToFirstOutputMs": 3468.17,
+        "launchToFirstVisibleMs": 3470.53,
+        "launchToQuietScreenMs": 4420.35,
+        "rssKb": 403120
+      },
+      "idleResourceUsage": {
+        "durationSeconds": 2.0,
+        "cpuPercent": 2.0,
+        "rssBeforeKb": 369456,
+        "rssAfterKb": 369568
+      }
+    }
+  ],
+  "summary": [
+    {
+      "target": "opencode",
+      "runs": 5,
+      "startup": {
+        "runs": 5,
+        "launchToFirstOutputMs": 300.4,
+        "launchToFirstVisibleMs": 304.07,
+        "launchToQuietScreenMs": 1106.57,
+        "rssKb": 500544
+      },
+      "idleResourceUsage": {
+        "runs": 5,
+        "cpuPercent": 1.5,
+        "durationSeconds": 2.0,
+        "rssAfterKb": 471328,
+        "rssBeforeKb": 481136
+      },
+      "scenarios": {
+        "burst": {
+          "runs": 5,
+          "bytesPerKey": 2540,
+          "cpuPercent": 33.2,
+          "keys": 22,
+          "max": 28.57,
+          "missed": 0,
+          "p50": 10.42,
+          "p95": 21.85,
+          "p99": 28.57,
+          "rssAfterKb": 571472,
+          "rssBeforeKb": 562848
+        },
+        "idle": {
+          "runs": 5,
+          "bytesPerKey": 95,
+          "cpuPercent": 26.5,
+          "keys": 44,
+          "max": 11.27,
+          "missed": 0,
+          "p50": 7.17,
+          "p95": 10.41,
+          "p99": 11.27,
+          "rssAfterKb": 489616,
+          "rssBeforeKb": 471360
+        },
+        "stream": {
+          "runs": 5,
+          "bytesPerKey": 4302,
+          "cpuPercent": 41.5,
+          "keys": 22,
+          "max": 26.74,
+          "missed": 0,
+          "p50": 10.02,
+          "p95": 24.87,
+          "p99": 26.74,
+          "rssAfterKb": 592496,
+          "rssBeforeKb": 570912
+        }
+      }
+    },
+    {
+      "target": "pi",
+      "runs": 5,
+      "startup": {
+        "runs": 5,
+        "launchToFirstOutputMs": 232.43,
+        "launchToFirstVisibleMs": 261.28,
+        "launchToQuietScreenMs": 1034.86,
+        "rssKb": 137696
+      },
+      "idleResourceUsage": {
+        "runs": 5,
+        "cpuPercent": 0.5,
+        "durationSeconds": 2.0,
+        "rssAfterKb": 144464,
+        "rssBeforeKb": 144352
+      },
+      "scenarios": {
+        "burst": {
+          "runs": 5,
+          "bytesPerKey": 2217,
+          "cpuPercent": 5.5,
+          "keys": 22,
+          "max": 37.02,
+          "missed": 0,
+          "p50": 4.72,
+          "p95": 6.31,
+          "p99": 37.02,
+          "rssAfterKb": 164704,
+          "rssBeforeKb": 165664
+        },
+        "idle": {
+          "runs": 5,
+          "bytesPerKey": 227,
+          "cpuPercent": 3.1,
+          "keys": 44,
+          "max": 10.5,
+          "missed": 0,
+          "p50": 5.32,
+          "p95": 6.39,
+          "p99": 10.5,
+          "rssAfterKb": 148816,
+          "rssBeforeKb": 144464
+        },
+        "stream": {
+          "runs": 5,
+          "bytesPerKey": 7877,
+          "cpuPercent": 10.5,
+          "keys": 22,
+          "max": 23.24,
+          "missed": 0,
+          "p50": 3.18,
+          "p95": 22.26,
+          "p99": 23.24,
+          "rssAfterKb": 164944,
+          "rssBeforeKb": 164160
+        }
+      }
+    },
+    {
+      "target": "xingular",
+      "runs": 5,
+      "startup": {
+        "runs": 5,
+        "launchToFirstOutputMs": 2811.04,
+        "launchToFirstVisibleMs": 2813.96,
+        "launchToQuietScreenMs": 3767.59,
+        "rssKb": 401504
+      },
+      "idleResourceUsage": {
+        "runs": 5,
+        "cpuPercent": 2.0,
+        "durationSeconds": 2.0,
+        "rssAfterKb": 369568,
+        "rssBeforeKb": 369456
+      },
+      "scenarios": {
+        "burst": {
+          "runs": 5,
+          "bytesPerKey": 1233,
+          "cpuPercent": 12.3,
+          "keys": 22,
+          "max": 13.48,
+          "missed": 0,
+          "p50": 5.01,
+          "p95": 10.73,
+          "p99": 13.48,
+          "rssAfterKb": 375824,
+          "rssBeforeKb": 381616
+        },
+        "idle": {
+          "runs": 5,
+          "bytesPerKey": 83,
+          "cpuPercent": 7.7,
+          "keys": 44,
+          "max": 10.52,
+          "missed": 0,
+          "p50": 5.11,
+          "p95": 9.98,
+          "p99": 10.52,
+          "rssAfterKb": 262992,
+          "rssBeforeKb": 369568
+        },
+        "stream": {
+          "runs": 5,
+          "bytesPerKey": 16503,
+          "cpuPercent": 14.2,
+          "keys": 22,
+          "max": 23.14,
+          "missed": 0,
+          "p50": 9.13,
+          "p95": 19.91,
+          "p99": 23.14,
+          "rssAfterKb": 374288,
+          "rssBeforeKb": 369408
+        }
+      }
+    }
+  ]
+}

@@ -17,6 +17,12 @@ export interface ExpandedDraft {
   images: { type: 'image'; data: string; mimeType: string }[]
 }
 
+export interface ComposerAttachmentsSnapshot {
+  items: ComposerAttachment[]
+  placed: number[]
+  nextId: number
+}
+
 /** A paste longer than this collapses to a label; Claude Code uses a similar threshold. */
 export const LARGE_PASTE_LINES = 3
 export const LARGE_PASTE_CHARACTERS = 800
@@ -61,6 +67,16 @@ export class ComposerAttachments {
     return this.items.find(item => item.id === id)
   }
 
+  snapshot(): ComposerAttachmentsSnapshot {
+    return { items: this.items.map(item => ({ ...item })), placed: [...this.placed], nextId: this.nextId }
+  }
+
+  restore(snapshot: ComposerAttachmentsSnapshot): void {
+    this.items = snapshot.items.map(item => ({ ...item }))
+    this.placed = new Set(snapshot.placed)
+    this.nextId = snapshot.nextId
+  }
+
   addImage(data: string, mimeType: string): ComposerAttachment {
     const id = this.nextId++
     const item: ComposerAttachment = { kind: 'image', id, label: `[Image #${id}]`, data, mimeType }
@@ -92,6 +108,13 @@ export class ComposerAttachments {
     this.items = []
     this.placed.clear()
     this.nextId = 1
+  }
+
+  clearForDraft(draft: string): void {
+    const ids = [...draft.matchAll(/\[(?:Image|Pasted text) #(\d+)/gu)].map(match => Number(match[1]))
+    this.items = []
+    this.placed.clear()
+    this.nextId = Math.max(this.nextId, ...ids.map(id => id + 1))
   }
 
   /**

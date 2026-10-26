@@ -48,6 +48,29 @@ describe('SubagentMonitor', () => {
     expect(monitor.snapshot('parent')[0]?.checklist).toBeNull()
   })
 
+  it('projects only safe cumulative usage and volatile runtime metadata', () => {
+    const monitor = new SubagentMonitor()
+    monitor.begin('parent')
+    const child = run('child', 'parent', '2026-10-23T00:00:00.000Z', {
+      accountLabel: 'Main', model: 'openai/gpt-5', effort: 'low'
+    })
+    monitor.observe('parent', child, event('usage.updated', 1, {
+      provider: 'openai', model: 'gpt-5', inputTokens: 1_200, outputTokens: 300,
+      cacheReadTokens: 800, cacheWriteTokens: 40, reasoningTokens: 120,
+      costUsd: 0.004, costSource: 'estimate', requests: 2, contextTokens: 2_300, contextWindow: 128_000,
+      request: { index: 2, reasoningSummary: 'PRIVATE_REASONING_SUMMARY' }
+    }))
+
+    const row = monitor.snapshot('parent')[0]!
+    expect(row).toMatchObject({ accountLabel: 'Main', model: 'openai/gpt-5', effort: 'low' })
+    expect(row.usage).toEqual({
+      provider: 'openai', model: 'gpt-5', inputTokens: 1_200, outputTokens: 300,
+      cacheReadTokens: 800, cacheWriteTokens: 40, reasoningTokens: 120,
+      costUsd: 0.004, costSource: 'estimate', requests: 2, contextTokens: 2_300, contextWindow: 128_000
+    })
+    expect(JSON.stringify(row)).not.toContain('PRIVATE_REASONING_SUMMARY')
+  })
+
   it('retains the latest completed tool name across status updates between polls', () => {
     const monitor = new SubagentMonitor()
     monitor.begin('parent')

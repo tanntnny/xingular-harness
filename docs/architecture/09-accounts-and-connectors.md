@@ -67,7 +67,7 @@ skills, prompts, rules and Pi packages.
 ## Data
 
 ```text
-<state dir>/accounts/         registry, per-account Pi agent folders, _shared/pi/, audit log
+<state dir>/accounts/         registry, per-account Pi agent folders, _shared/pi/, audit log, per-account state (health, plan, limits)
 <state dir>/secrets.json      default SecretStore (owner-only)
 <state dir>/connections.json  connected apps, no secrets
 <state dir>/hub/catalog.json  catalog cache
@@ -88,6 +88,36 @@ labels this local readiness. A selected live model probe sends one synthetic req
 at 64 tokens, and records usage through the normal run writer. It never substitutes an account.
 MCP live diagnostics connect and list tools on the selected scoped connector, without calling
 connector tools or starting sign-in. Disposable grants and clients are closed afterwards.
+
+## Provider limits (PROP-0042)
+
+A limit reading says what a provider itself reported: a plan window, a credit balance, a rate
+limit, or a configured organization limit. Three sources are used, in order:
+
+1. **Response headers** on the account's own model requests. Each account runtime's providers are
+   wrapped so `onResponse` sees status and headers; a terminal session's own runtime forwards only
+   the limit-bearing headers to the parent over the control-key-protected session socket.
+   `usage/limits/normalize.ts` understands `anthropic-ratelimit-*`, Anthropic unified plan windows,
+   `x-codex-*` and `x-ratelimit-*`, plus `Retry-After` on a 429. Raw headers are never stored.
+2. **The provider's own usage endpoint**, read with `Models.getAuth(provider)` so OAuth refresh
+   stays in Pi's serialized credential path: OpenRouter `GET /api/v1/key`, DeepSeek
+   `GET /user/balance`, Anthropic's organization `rate_limits` for an admin API key (configured
+   limits, not usage), ChatGPT/Codex `GET https://chatgpt.com/backend-api/wham/usage`, and
+   OpenCode Go `GET https://opencode.ai/zen/go/v1/usage`. A Codex request carries the account id
+   from the access token's JWT claim; an OpenCode Go request carries the account's API key.
+   The request is a bounded HTTPS GET that refuses redirects, caps its body, and never puts a
+   credential in an error. An endpoint reading replaces every limit for that provider; a header
+   reading only merges the windows it saw.
+3. **Unavailable**, with a reason. No percentage is invented; local usage is shown instead.
+
+Undocumented endpoints require the usage plugin's `experimentalProbes` setting. Readings are
+cached for `refreshMinutes` (default 10) and refreshed on a page open or an explicit refresh, never
+by a background timer. They are stored in the account's existing state (`limits`,
+`providerLimits`), never in a new file, and no credential is written. A reading carries both `usedPercent` and the additive
+`remainingPercent`. The Limits page is a centered dialog: each window is a label and reset line
+above a quota-left bar, green at 50% or more left, amber from 20–49%, and red below 20%. It adds
+the local seven-day ledger without a label, so a provider's zero reading and this app's own use
+are not confused.
 
 ## Terminal connection setup
 

@@ -117,6 +117,13 @@ try {
   check('records a scripted session as a run with events (no credentials, so it fails cleanly)', run.status === 'failed' && events.some((event) => event.runId === 'proof-run'), `status ${run.status}; ${events.length} events relayed`)
   check('tells the host when state changes', ['accounts.changed', 'wiki.changed', 'variants.changed'].every((type) => notices.some((notice) => notice.type === type)))
 
+  // Usage is derived from the run's own recorded events; reading limits is a stored report unless
+  // a caller explicitly asks for a refresh, so this path never contacts a provider.
+  const usageSummary = await request('usage.summary', { scope: 'account', accountId: accounts[0].id, period: '7d' })
+  check('answers usage analytics from the derived ledger', usageSummary && usageSummary.totals.requests === 0 && Array.isArray(usageSummary.byModel) && usageSummary.scope === 'account', `scope ${usageSummary?.scope}; requests ${usageSummary?.totals?.requests}`)
+  const usageLimits = await request('usage.limits', { accountId: accounts[0].id })
+  check('reports provider limits as stored data unless a refresh is asked for', usageLimits && usageLimits.accounts.length === 1 && usageLimits.accounts.every((account) => Array.isArray(account.providers)), `${usageLimits?.accounts?.length} accounts`)
+
   // A plugin that extends the Wiki with a hook: installed from a folder, it hears nothing until it
   // is switched on and trusted, then every saved note; changed code is read again once trusted.
   const pluginDir = join(scratch, 'mirror')

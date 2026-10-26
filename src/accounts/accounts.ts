@@ -14,9 +14,9 @@ import { loadPi } from '../pi/runtime'
 import type { RunEvent, RunRecord } from '../sessions/contracts'
 import * as choices from './choices'
 import * as env from './env'
-import { secretKey, type SecretStore } from './secrets'
+import { secretKey, withCredentialLock, type CredentialLockOptions, type SecretStore } from './secrets'
 import * as store from './store'
-import type { Account, AccountsOverview, Issue, Limit } from './store'
+import type { Account, AccountsOverview, Issue, Limit, ProviderLimitState } from './store'
 
 export type IssueCategory = 'auth_expired' | 'rate_limited' | 'quota' | 'network' | 'unknown'
 
@@ -113,12 +113,14 @@ export interface AccountsOptions {
   dir: string
   secrets: SecretStore
   bus: Bus
+  credentialLock?: CredentialLockOptions
 }
 
 export class Accounts {
   readonly dir: string
   private readonly secrets: SecretStore
   private readonly bus: Bus
+  private readonly credentialLockOptions: CredentialLockOptions
   private readonly runtimes = new Map<string, Promise<ModelRuntime>>()
   private readonly logins = new Map<string, PendingLogin>()
   private readonly latestLogins = new Map<string, AccountLoginSnapshot>()
@@ -127,11 +129,17 @@ export class Accounts {
   /** The credentials this process wrote to, or found in, each account's auth.json when its first terminal began. */
   private readonly terminalSnapshots = new Map<string, Record<string, Credential>>()
   private installationDeviceIdPromise: Promise<string> | null = null
+  /**
+   * Lets the limits service observe each account runtime's provider responses. The Harness sets
+   * it once; with none, a runtime behaves exactly as before.
+   */
+  observeModels: ((models: unknown, accountId: string) => void) | null = null
 
   constructor(options: AccountsOptions) {
     this.dir = options.dir
     this.secrets = options.secrets
     this.bus = options.bus
+    this.credentialLockOptions = options.credentialLock ?? {}
   }
 
   private changed(payload: Record<string, unknown> = {}): void {
@@ -180,15 +188,39 @@ export class Accounts {
     }
   }
 
+  private credentialLock<T>(key: string, work: () => Promise<T>): Promise<T> {
+    return withCredentialLock(join(this.dir, '.credential-locks'), key, work, this.credentialLockOptions)
+  }
+
   /** Stores a provider's credential, or removes it when `credential` is `null`. */
   async writeCredential(accountId: string, provider: string, credential: Credential | null): Promise<void> {
     this.find(accountId)
     const name = validProvider(provider)
-    if (credential === null) await this.secrets.delete(secretKey(accountId, `pi-auth/${name}`))
-    else await this.secrets.set(secretKey(accountId, `pi-auth/${name}`), JSON.stringify(credential))
-    store.updateState(this.dir, accountId, (state) => {
-      state.piProviders = state.piProviders.filter((existing) => existing !== name)
-      if (credential !== null) state.piProviders = [...state.piProviders, name].sort()
+    await this.credentialLock(`provider/${accountId}/${name}`, () => this.persistCredential(accountId, name, credential))
+  }
+
+  /** The entire refresh read/modify/write is coordinated across services and processes. */
+  async modifyCredential(accountId: string, provider: string, change: (current: Credential | undefined) => Promise<Credential | undefined>): Promise<Credential | undefined> {
+    this.find(accountId)
+    const name = validProvider(provider)
+    return this.credentialLock(`provider/${accountId}/${name}`, async () => {
+      const current = (await this.readCredential(accountId, name)) ?? undefined
+      const updated = await change(current)
+      if (updated !== undefined) await this.persistCredential(accountId, name, updated)
+      return updated ?? current
+    })
+  }
+
+  private async persistCredential(accountId: string, name: string, credential: Credential | null): Promise<void> {
+    // Different providers still share the account's provider index. Keep its short commit serialized.
+    await this.credentialLock(`account/${accountId}`, async () => {
+      this.find(accountId)
+      if (credential === null) await this.secrets.delete(secretKey(accountId, `pi-auth/${name}`))
+      else await this.secrets.set(secretKey(accountId, `pi-auth/${name}`), JSON.stringify(credential))
+      store.updateState(this.dir, accountId, (state) => {
+        state.piProviders = state.piProviders.filter((existing) => existing !== name)
+        if (credential !== null) state.piProviders = [...state.piProviders, name].sort()
+      })
     })
   }
 
@@ -202,25 +234,13 @@ export class Accounts {
     return listed
   }
 
-  /** Pi's `CredentialStore` for one account. Writes are serialized, so a refresh never races another. */
+  /** Pi and explicit account edits share the same cross-process credential lock. */
   private credentialStore(accountId: string) {
-    let chain: Promise<unknown> = Promise.resolve()
-    const serialize = <T>(work: () => Promise<T>): Promise<T> => {
-      const next = chain.then(work)
-      chain = next.catch(() => undefined)
-      return next
-    }
     return {
       read: async (providerId: string) => (await this.readCredential(accountId, providerId)) ?? undefined,
       list: () => this.listCredentials(accountId),
-      modify: (providerId: string, change: (current: Credential | undefined) => Promise<Credential | undefined>) =>
-        serialize(async () => {
-          const current = (await this.readCredential(accountId, providerId)) ?? undefined
-          const updated = await change(current)
-          if (updated !== undefined) await this.writeCredential(accountId, providerId, updated)
-          return updated ?? current
-        }),
-      delete: (providerId: string) => serialize(() => this.writeCredential(accountId, providerId, null))
+      modify: (providerId: string, change: (current: Credential | undefined) => Promise<Credential | undefined>) => this.modifyCredential(accountId, providerId, change),
+      delete: (providerId: string) => this.writeCredential(accountId, providerId, null)
     }
   }
 
@@ -253,6 +273,11 @@ export class Accounts {
       const configDir = 'configDir' in account ? account.configDir : env.ensureHome(this.dir, account)
       runtime = loadPi()
         .then(({ ModelRuntime }) => ModelRuntime.create({ credentials: this.credentialStore(id) as never, modelsPath: join(configDir, 'models.json') }))
+        .then((created) => {
+          // Reading provider responses never changes what a request does; a broken observer is ignored.
+          try { this.observeModels?.(created, id) } catch { /* observation is best effort */ }
+          return created
+        })
         .catch((error: unknown) => {
           this.runtimes.delete(id)
           throw error
@@ -750,6 +775,46 @@ export class Accounts {
       })
       if (previous !== state.health) this.changed({ accountId, health: state.health, previous })
     }
+  }
+
+  /**
+   * Records what a provider reported about its limits. An endpoint reading replaces that provider's
+   * limits; a header reading merges by id. Windows whose reset has passed are dropped. No credential
+   * is stored here.
+   */
+  applyLimits(
+    accountId: string,
+    readouts: readonly {
+      provider: string
+      limits: Limit[]
+      source: 'headers' | 'provider' | 'estimate' | 'unavailable'
+      reason: string | null
+      observedAt: string
+      plan?: string | null
+    }[]
+  ): AccountsOverview {
+    this.find(accountId)
+    const expired = (limit: Limit): boolean => {
+      const time = limit.resetsAt ? Date.parse(limit.resetsAt) : Number.NaN
+      return !Number.isNaN(time) && time <= Date.now()
+    }
+    store.updateState(this.dir, accountId, (state) => {
+      for (const readout of readouts) {
+        // An endpoint read is the provider's whole answer; a header read only adds what it saw.
+        const kept = new Map(
+          (readout.source === 'provider' ? [] : state.limits.filter((limit) => limit.provider === readout.provider && !expired(limit)))
+            .map((limit) => [limit.id, limit])
+        )
+        for (const limit of readout.limits) kept.set(limit.id, limit)
+        state.limits = [...state.limits.filter((limit) => limit.provider !== readout.provider), ...kept.values()]
+        const entry: ProviderLimitState = { provider: readout.provider, source: readout.source, reason: readout.reason, observedAt: readout.observedAt }
+        state.providerLimits = [...state.providerLimits.filter((existing) => existing.provider !== readout.provider), entry]
+        if (readout.plan) state.plan = readout.plan
+      }
+      state.limits.sort((left, right) => (left.id < right.id ? -1 : left.id > right.id ? 1 : 0))
+    })
+    this.changed({ accountId })
+    return this.overview()
   }
 
   private applyStatus(event: RunEvent): void {

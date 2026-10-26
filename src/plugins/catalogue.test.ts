@@ -71,7 +71,7 @@ describe('the plugin list', () => {
       ['app-identity', 'application', ['instruction:Identity line:on']],
       ['app-tasks', 'application', ['tool:start_task:on']]
     ])
-    expect(plugins.filter((plugin) => plugin.source === 'builtin').map((plugin) => plugin.id)).toEqual(['ask-user', 'browser', 'budget-guard', 'checklist', 'connected-apps', 'doctor', 'history', 'hub', 'lessons', 'output-trim', 'annotations', 'refinement', 'side-questions', 'subagents', 'variant', 'web', 'wiki', 'worktrees'])
+    expect(plugins.filter((plugin) => plugin.source === 'builtin').map((plugin) => plugin.id)).toEqual(['ask-user', 'browser', 'budget-guard', 'capabilities', 'checklist', 'checkpoint', 'connected-apps', 'doctor', 'history', 'hub', 'lessons', 'output-trim', 'refinement', 'side-questions', 'subagents', 'usage', 'variant', 'web', 'annotations', 'wiki', 'worktrees'])
     // An application that still describes the web tools is ignored: they are the harness's own now.
     expect(plugins.find((plugin) => plugin.id === 'web')?.source).toBe('builtin')
 
@@ -167,11 +167,11 @@ describe('what reaches one caller', () => {
     ])
   })
 
-  it("lists the pi command's own extensions only for a terminal session", async () => {
+  it("lists the pi command's own extensions for no session, so the terminal and a host match", async () => {
     const { call } = setup()
     const names = async (context: Record<string, unknown>) => (await call<Inventory>('plugins.inventory', { context, launch })).items.filter((item) => item.kind === 'code' && item.pluginId === 'pi').map((item) => item.name)
     expect(await names({ agentId: 'a1' })).toEqual([])
-    expect(await names({ sessionId: 's1', actor: 'Code', surface: 'cli' })).toEqual(['mcp'])
+    expect(await names({ sessionId: 's1', actor: 'Code', surface: 'cli' })).toEqual([])
   })
 })
 

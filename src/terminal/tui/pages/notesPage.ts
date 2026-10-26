@@ -1,7 +1,7 @@
 /**
- * The Page notes page (`/plugin:notes`, `/plugin:annotate [url]`): notes a person keeps about web pages. A new note
+ * The Web annotations page (`/annotate:notes`, `/annotate:annotate [url]`): comments a person keeps about web pages. A new annotation
  * is captured in a visible browser window: the whole page, text the person selects, or an element
- * they click. A note is private until it is shared with this session, whose agent can then read it
+ * they click. An annotation is private until it is shared with this session, whose agent can then read it
  * with `page_notes_read` (PROP-0017).
  */
 import type { Theme } from '@earendil-works/pi-coding-agent'
@@ -19,18 +19,18 @@ export interface NotesPageOptions {
   call: MenuCall
   ui: MenuUi & { input(title: string, placeholder?: string): Promise<string | undefined> }
   changed(): void
-  /** Start a new note as soon as the page opens (`/plugin:annotate [url]`), on this address when given. */
+  /** Start a new annotation as soon as the page opens (`/annotate:annotate [url]`), on this address when given. */
   start?: { url?: string }
 }
 
 type Row = { kind: 'new' } | { kind: 'note'; note: Note }
 
-const TABS = [{ id: 'notes', title: 'Page notes' }] as const
+const TABS = [{ id: 'notes', title: 'Web annotations' }] as const
 
 export const NOTE_KINDS = { page: 'The whole page', text: 'Text I select in the window', element: 'An element I click in the window' } as const
 export const NOTE_ACTIONS = {
   reveal: 'Show it in the browser window',
-  edit: 'Edit the note',
+  edit: 'Edit the annotation',
   resolve: 'Mark resolved',
   reopen: 'Reopen',
   share: 'Let this session\'s agent read it',
@@ -57,7 +57,7 @@ export class NotesPage implements TerminalPage {
 
   constructor(private readonly options: NotesPageOptions) {
     this.list = new FilterList<Row>({
-      theme: options.theme, search: 'always', noun: ['note', 'notes'], empty: 'No page notes yet',
+      theme: options.theme, search: 'always', noun: ['annotation', 'annotations'], empty: 'No web annotations yet',
       onActivate: row => { if (row.data) void this.activateRow(row.data) }
     })
   }
@@ -94,10 +94,10 @@ export class NotesPage implements TerminalPage {
   }
 
   rows(): ListRow<Row>[] {
-    const rows: ListRow<Row>[] = [{ id: 'new', label: 'New note on a page…', group: 'Actions', detail: 'opens a browser window', tone: 'accent', data: { kind: 'new' } }]
+    const rows: ListRow<Row>[] = [{ id: 'new', label: 'New web annotation…', group: 'Actions', detail: 'opens a browser window', tone: 'accent', data: { kind: 'new' } }]
     for (const note of this.notes ?? []) {
       rows.push({
-        id: `note:${note.id}`, label: clip(note.body.replace(/\s+/g, ' '), 60), group: 'Notes',
+        id: `note:${note.id}`, label: clip(note.body.replace(/\s+/g, ' '), 60), group: 'Annotations',
         detail: `${describeTarget(note.target)} · ${note.status}${this.shared(note) ? ' · shared here' : ''}`,
         tone: note.status === 'resolved' ? 'dim' : this.shared(note) ? 'success' : 'muted',
         searchText: `${note.body} ${note.source.url} ${note.source.title} ${note.tags.join(' ')}`,
@@ -126,14 +126,14 @@ export class NotesPage implements TerminalPage {
     return this.noteMenu(row.note)
   }
 
-  /** Opens the capture window, takes what the person points at, and saves their note. */
+  /** Opens the capture window, takes what the person points at, and saves their annotation. */
   newNote(startUrl?: string): Promise<void> {
     const { call, ui } = this.options
     return this.attempt(async () => {
       const url = startUrl ?? await ui.input('Page address', 'https://')
       if (!url) return
       await call('terminal.annotations.open', { url })
-      const kind = await ui.select('What does the note point at?', Object.values(NOTE_KINDS))
+      const kind = await ui.select('What does the annotation point at?', Object.values(NOTE_KINDS))
       if (!kind) return
       let envelope: { url: string; title: string; documentId: string; target: NoteTarget } | null
       if (kind === NOTE_KINDS.page) {
@@ -145,17 +145,17 @@ export class NotesPage implements TerminalPage {
         const ready = await ui.confirm(element ? 'Click the element in the browser window' : 'Select the text in the browser window', 'When it is selected, choose Yes to capture it. Choose No to cancel.')
         if (!ready) { await call('terminal.annotations.cancel', { captureId }); return }
         envelope = await call('terminal.annotations.capture', { captureId })
-        if (!envelope) return 'Nothing was selected in the browser window, so no note was made.'
+        if (!envelope) return 'Nothing was selected in the browser window, so no annotation was made.'
       }
-      const body = await ui.input('Note', 'What should be remembered about it?')
-      if (!body?.trim()) return 'A note needs some text; nothing was saved.'
+      const body = await ui.input('Comment', 'What should change or be remembered?')
+      if (!body?.trim()) return 'An annotation needs a comment; nothing was saved.'
       const tags = (await ui.input('Tags (optional, comma separated)', '') ?? '').split(',').map(tag => tag.trim()).filter(Boolean)
-      const share = await ui.confirm('Share it with this session?', 'This session\'s agent can then read the note with page_notes_read. You can stop sharing it later.')
+      const share = await ui.confirm('Share it with this session?', 'This session\'s agent can then read the annotation with page_notes_read. You can stop sharing it later.')
       await call('terminal.annotations.create', {
         source: { url: envelope.url, title: envelope.title, capturedAt: new Date().toISOString(), surface: 'terminal', representationHint: envelope.documentId },
         target: envelope.target, body, tags, share
       })
-      return share ? 'Note saved and shared with this session.' : 'Note saved. It stays private until you share it.'
+      return share ? 'Annotation saved and shared with this session.' : 'Annotation saved. It stays private until you share it.'
     })
   }
 
@@ -178,19 +178,19 @@ export class NotesPage implements TerminalPage {
       const body = await ui.input('Note', note.body)
       if (!body?.trim() || body === note.body) return
       await call('terminal.annotations.update', { id, expectedVersion: note.version, patch: { body } })
-      return 'Note saved.'
+      return 'Annotation saved.'
     })
     if (choice === NOTE_ACTIONS.resolve || choice === NOTE_ACTIONS.reopen) return this.attempt(async () => {
       await call('terminal.annotations.update', { id, expectedVersion: note.version, patch: { status: choice === NOTE_ACTIONS.resolve ? 'resolved' : 'open' } })
     })
     if (choice === NOTE_ACTIONS.share || choice === NOTE_ACTIONS.unshare) return this.attempt(async () => {
       await call(choice === NOTE_ACTIONS.share ? 'terminal.annotations.share' : 'terminal.annotations.unshare', { id })
-      return choice === NOTE_ACTIONS.share ? 'This session\'s agent can read the note.' : 'The note is no longer shared with this session.'
+      return choice === NOTE_ACTIONS.share ? 'This session\'s agent can read the annotation.' : 'The annotation is no longer shared with this session.'
     })
     if (choice === NOTE_ACTIONS.delete) return this.attempt(async () => {
-      if (!await ui.confirm('Delete this note?', 'It cannot be restored.')) return
+      if (!await ui.confirm('Delete this annotation?', 'It cannot be restored.')) return
       await call('terminal.annotations.delete', { id, expectedVersion: note.version })
-      return 'Note deleted.'
+      return 'Annotation deleted.'
     })
   }
 
@@ -205,8 +205,8 @@ export class NotesPage implements TerminalPage {
   render(width: number, rows: number): string[] {
     const theme = this.options.theme()
     if (width < 1 || rows < 1) return []
-    if (this.error) return [theme.fg('error', `Could not read page notes: ${this.error}`)]
-    if (!this.notes) return [theme.fg('dim', 'Reading page notes…')]
+    if (this.error) return [theme.fg('error', `Could not read web annotations: ${this.error}`)]
+    if (!this.notes) return [theme.fg('dim', 'Reading web annotations…')]
     return this.list.render(width, rows).slice(0, rows).map(line => truncateToWidth(line, width, ''))
   }
 }

@@ -3,6 +3,7 @@
  * Enter opens what can be done with a row; nothing changes without a choice made here. A plugin
  * with settings has a Settings row that opens them as a subpage; Esc goes back to the list.
  */
+import { describePlugin, surfaceBadge } from '../../../plugins/surfaces'
 import type { Theme } from '@earendil-works/pi-coding-agent'
 import { matchesKey, truncateToWidth, wrapTextWithAnsi } from '@earendil-works/pi-tui'
 
@@ -144,7 +145,7 @@ export class PluginsPage implements TerminalPage {
     const kind = row.whole ? row.note : row.note.replace(/ in .*$/, '')
     return {
       id: this.key(row), group: safeText(row.plugin.title), label: row.whole ? 'Whole plugin' : safeText(row.name),
-      detail: `${row.on ? 'on' : 'off'}${kind ? ` · ${kind}` : ''}`, tone: row.on ? 'success' : 'dim',
+      detail: `${row.on ? 'on' : 'off'}${kind ? ` · ${kind}` : ''}${row.whole && surfaceBadge(row.plugin.surfaces) ? ` · ${surfaceBadge(row.plugin.surfaces)}` : ''}`, tone: row.on ? 'success' : 'dim',
       searchText: `${row.name} ${row.plugin.title} ${row.note}`
     }
   }
@@ -161,7 +162,7 @@ export class PluginsPage implements TerminalPage {
     if (!row || this.busy) return
     this.busy = true
     try {
-      const action = await this.options.ui.select(`${row.plugin.title}: ${row.plugin.description || 'No description.'}`, rowActions(row, this.projectId))
+      const action = await this.options.ui.select(`${row.plugin.title}: ${describePlugin(row.plugin)}`, rowActions(row, this.projectId))
       if (action && action !== BACK && await applyPluginAction(this.options.ui, this.options.call, row, action)) this.restart = true
     } finally { this.busy = false }
     await this.reload()
@@ -234,7 +235,7 @@ export class PluginsPage implements TerminalPage {
     const selected = selectedId?.startsWith(SETTINGS_ROW)
       ? this.plugins.find(candidate => `${SETTINGS_ROW}${candidate.id}` === selectedId)
       : this.menu().find(candidate => this.key(candidate) === selectedId)?.plugin
-    const detail = selected && rows >= 8 ? wrapTextWithAnsi(safeText(selected.description || 'No description.'), width).slice(0, 2) : []
+    const detail = selected && rows >= 8 ? wrapTextWithAnsi(safeText(describePlugin(selected)), width).slice(0, 3) : []
     const note = this.restart ? ['Saved. Changes apply when this session restarts.'] : []
     const extra = detail.length + note.length
     const lines = this.list.render(width, Math.max(2, rows - (extra ? extra + 1 : 0)))

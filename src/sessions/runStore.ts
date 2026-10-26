@@ -32,6 +32,7 @@ function ordered(record: RunRecord): RunRecord {
     sessionId: record.sessionId,
     nativeSessionId: record.nativeSessionId,
     workingDirectory: record.workingDirectory,
+    ...(record.workspaceRoot !== undefined ? { workspaceRoot: record.workspaceRoot } : {}),
     worktreeId: record.worktreeId,
     goal: record.goal,
     attachmentCount: record.attachmentCount,
@@ -253,6 +254,40 @@ export function markInterruptedRuns(root: string, reason = STOPPED): string[] {
     interrupted.push(record.id)
   }
   return interrupted
+}
+
+/** How long a live run may go without a heartbeat before it counts as wedged. */
+export const STALE_HEARTBEAT_MS = 5 * 60_000
+/** How long a run from before heartbeats existed may be silent before it counts as abandoned. */
+export const STALE_SILENT_MS = 30 * 60_000
+
+/**
+ * Settles runs this process still owns but is no longer driving. A reply that emitted `heartbeat`
+ * and stopped is wedged; one that never emitted any and has been silent since before heartbeats
+ * existed is abandoned. A live command keeps emitting heartbeats, so a long build is not mistaken
+ * for a hang. Model work is never restarted (INV-RUN-4).
+ */
+export function reconcileStaleRuns(root: string, at = Date.now(), options: { heartbeatMs?: number; silentMs?: number } = {}): string[] {
+  const heartbeatMs = options.heartbeatMs ?? STALE_HEARTBEAT_MS
+  const silentMs = options.silentMs ?? STALE_SILENT_MS
+  const stalled: string[] = []
+  for (const record of readAllRuns(root)) {
+    if (!isActiveStatus(record.status) || ownedElsewhere(root, record.id)) continue
+    const events = readEvents(root, record.id)
+    const lastHeartbeat = events.filter((event) => event.type === 'heartbeat').at(-1)
+    const last = events.at(-1)
+    const stamp = Date.parse(lastHeartbeat?.timestamp ?? last?.timestamp ?? '')
+    if (!Number.isFinite(stamp) || at - stamp <= (lastHeartbeat ? heartbeatMs : silentMs)) continue
+    const reason = lastHeartbeat ? 'stalled' : 'owner_gone'
+    record.status = 'interrupted'
+    record.terminalReason = reason
+    record.endedAt = now()
+    const sequence = events.reduce((highest, event) => Math.max(highest, event.sequence), -1) + 1
+    appendEvent(root, { id: newId(), runId: record.id, sessionId: record.sessionId, sequence, timestamp: now(), type: 'status.changed', payload: { status: 'interrupted', reason } })
+    write(root, record)
+    stalled.push(record.id)
+  }
+  return stalled
 }
 
 /** An approval or question a run asked for that nothing has answered yet. */

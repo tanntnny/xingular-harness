@@ -5,7 +5,7 @@ import { createStore, reconcile } from 'solid-js/store'
 import {
   RGBA, SyntaxStyle, TextAttributes, type KeyBinding, type KeyEvent, type MouseEvent, type OptimizedBuffer, type ScrollBoxRenderable, type TextareaRenderable
 } from '@opentui/core'
-import { useKeyboard, useRenderer, useSelectionHandler, useTerminalDimensions, type SpanProps } from '@opentui/solid'
+import { useKeyboard, usePaste, useRenderer, useSelectionHandler, useTerminalDimensions, type SpanProps } from '@opentui/solid'
 
 import { DEFAULT_PRODUCT_NAME } from '../../core/env'
 import { centeredRect } from '../tui/dialogGeometry'
@@ -287,10 +287,17 @@ function TranscriptItemView(props: { item: TranscriptItem; expanded: boolean; sy
         <box flexDirection='column' paddingLeft={2} flexShrink={0}>
           <For each={item.items}>
             {entry => (
-              <text wrapMode='word'>
-                <Span fg={checklistMarkColor(t, entry.status)}>{checklistMark(entry.status)}</Span>
-                <Span fg={entry.status === 'in_progress' ? t.text : t.muted} attributes={entry.status === 'in_progress' ? TextAttributes.BOLD : 0}> {entry.text}</Span>
-              </text>
+              <box width='100%' flexDirection='row' flexShrink={0}>
+                <box width={1} minWidth={1} flexShrink={0}>
+                  <text wrapMode='none'>
+                    <Span fg={checklistMarkColor(t, entry.status)}>{checklistMark(entry.status)}</Span>
+                  </text>
+                </box>
+                <box width={1} minWidth={1} flexShrink={0} />
+                <text flexGrow={1} minWidth={0} wrapMode='word'>
+                  <Span fg={entry.status === 'in_progress' ? t.text : t.muted} attributes={entry.status === 'in_progress' ? TextAttributes.BOLD : 0}>{entry.text}</Span>
+                </text>
+              </box>
             )}
           </For>
         </box>
@@ -1089,16 +1096,30 @@ export function OpenTuiRoot(props: { app: OpenTuiApplication }) {
     else prompt.focus()
   }))
 
-  const input = (key: KeyEvent) => ({
-    name: key.name,
-    sequence: key.sequence,
-    ctrl: key.ctrl,
-    meta: key.meta,
-    shift: key.shift,
-    option: key.option,
-    super: key.super,
-    repeated: key.repeated,
-    cursorOffset: prompt?.focused ? prompt.cursorOffset : undefined
+  const input = (key: KeyEvent) => {
+    const focusedPrompt = prompt?.focused ? prompt : undefined
+    const cursorRow = focusedPrompt ? focusedPrompt.visualCursor.visualRow + focusedPrompt.scrollY : undefined
+    const lastVisualRow = focusedPrompt ? focusedPrompt.virtualLineCount - 1 : undefined
+    return {
+      name: key.name,
+      sequence: key.sequence,
+      ctrl: key.ctrl,
+      meta: key.meta,
+      shift: key.shift,
+      option: key.option,
+      super: key.super,
+      repeated: key.repeated,
+      cursorOffset: focusedPrompt?.cursorOffset,
+      atFirstVisualLine: cursorRow === 0,
+      atLastVisualLine: cursorRow !== undefined && lastVisualRow !== undefined && cursorRow >= lastVisualRow
+    }
+  }
+
+  usePaste(event => {
+    if (!view().overlay) return
+    event.preventDefault()
+    event.stopPropagation()
+    props.app.paste(pastedText(event.bytes))
   })
 
   useKeyboard(key => {

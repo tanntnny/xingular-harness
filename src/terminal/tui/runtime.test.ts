@@ -13,6 +13,7 @@ vi.mock('../piExtension', () => ({ default: (pi: ExtensionAPI) => {
 import { sessionNameTool } from '../../tools/sessionName'
 import { assertTerminalSessionScope, createTerminalRuntime, parseTerminalArguments, type TerminalRuntime } from './runtime'
 import { assertPiAdapterVersion, loadPiAdapter, withBuiltInRenderers } from './piAdapter'
+import { PINNED_PI_VERSION } from '../../pi/runtime'
 
 const folders: string[] = []
 const runtimes: TerminalRuntime[] = []
@@ -95,8 +96,8 @@ describe('the persistent terminal SDK adapter', () => {
     const first = runtime.session
     const firstFile = first.sessionFile!
     expect(first.systemPrompt).toContain('Fixed Harness context.')
-    // Only the explicit plugin and the Harness's own inline extensions load: the bridge and the mode-choice recorder.
-    expect(first.extensionRunner.getExtensionPaths()).toEqual([args[5], '<inline:harness-terminal-bridge>', '<inline:harness-mode-choices>'])
+    // Only the explicit plugin and the Harness's own inline extensions load.
+    expect(first.extensionRunner.getExtensionPaths()).toEqual([args[5], '<inline:harness-terminal-bridge>', '<inline:harness-mode-choices>', '<inline:harness-run-capabilities>'])
     expect(first.sessionManager.getEntries().filter((entry) => entry.type === 'custom').map((entry) => entry.data)).toEqual([{ mode: 'tui' }, { mode: 'tui' }])
     const events: string[] = []
     runtime.subscribe((event) => events.push(event.type))
@@ -262,9 +263,9 @@ describe('the persistent terminal SDK adapter', () => {
   })
 
   it('loads the pinned rich renderers without opening a model or reading the clipboard', async () => {
-    expect(() => assertPiAdapterVersion('1.3.0')).toThrow('requires Pi 1.2.0')
+    expect(() => assertPiAdapterVersion('0.0.1')).toThrow(`requires Pi ${PINNED_PI_VERSION}`)
     const adapter = await loadPiAdapter()
-    expect(adapter.builtins.map((item) => typeof item === 'function' ? '' : item.name)).toEqual(['llama.cpp', 'codemode', 'tool-search', 'mcp'])
+    expect(adapter).not.toHaveProperty('builtins')
     for (const name of ['read', 'bash', 'edit', 'write']) {
       const renderers = withBuiltInRenderers(name, undefined)
       expect(renderers?.renderCall).toBeTypeOf('function')

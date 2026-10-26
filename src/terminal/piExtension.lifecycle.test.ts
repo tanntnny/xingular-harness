@@ -1,9 +1,10 @@
 import type { ExtensionAPI, ExtensionContext, ExtensionToolContext } from '@earendil-works/pi-coding-agent'
+import { resolve } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 const transport = vi.hoisted(() => ({
-  socket: vi.fn(async (_connection: unknown, call: string) => call === 'control.claim' ? { key: 'lexical-key' } : { tools: [] }),
-  telemetry: vi.fn(async (event: string) => event === 'poll' ? { command: null } : {})
+  socket: vi.fn(async (_connection: unknown, call: string, _params?: Record<string, unknown>): Promise<Record<string, unknown>> => call === 'control.claim' ? { key: 'lexical-key' } : { tools: [] }),
+  telemetry: vi.fn(async (event: string) => event === 'poll' ? { command: null } : event === 'begin' ? { runId: 'run-1', workspaceRoot: process.cwd() } : {})
 }))
 vi.mock('./client', () => ({
   connectionFromEnv: () => ({ socket: '/extension-test', token: 'lifecycle' }),
@@ -12,31 +13,66 @@ vi.mock('./client', () => ({
 }))
 
 import terminalExtension, { type TerminalPlanRunState } from './piExtension'
+import { resolveWritePath } from '../core/workspace'
 import { PLAN_INSTRUCTIONS } from '../sessions/planMode'
 
 function extension() {
   const handlers = new Map<string, (...args: unknown[]) => unknown>()
   const commands = new Map<string, unknown>()
   const api = {
-    on: (event: string, handler: (...args: unknown[]) => unknown) => handlers.set(event, handler),
+    on: (event: string, handler: (...args: unknown[]) => unknown) => {
+      const previous = handlers.get(event)
+      handlers.set(event, async (...args) => {
+        const priorResult = previous ? await previous(...args) : undefined
+        const effectiveArgs = event === 'context' && priorResult && typeof priorResult === 'object' && 'messages' in priorResult
+          ? [{ ...(args[0] as object), ...(priorResult as object) }, ...args.slice(1)]
+          : args
+        const result = await handler(...effectiveArgs)
+        return result ?? priorResult
+      })
+    },
     registerCommand: (name: string, command: unknown) => commands.set(name, command),
     registerTool: vi.fn()
   } as unknown as ExtensionAPI
-  const ctx = { sessionManager: { getSessionFile: () => '/history/session.jsonl' }, ui: { getEditorText: () => '' }, abort: vi.fn() } as unknown as ExtensionContext
+  const ctx = { cwd: process.cwd(), sessionManager: { getSessionFile: () => '/history/session.jsonl' }, ui: { getEditorText: () => '' }, abort: vi.fn() } as unknown as ExtensionContext
   return { api, ctx, handlers, commands }
 }
 
 afterEach(() => vi.useRealTimers())
 
 describe('terminal bridge lifecycle', () => {
-  it('gives single-question sketches explicit fixed-column border guidance', async () => {
+  it('registers one question tool with fixed-column sketch guidance, and no terminal-only alias', async () => {
     const { api } = extension()
     await terminalExtension(api)
-    const question = vi.mocked(api.registerTool).mock.calls.map(([tool]) => tool).find(tool => tool.name === 'ask_user_question')!
+    const tools = vi.mocked(api.registerTool).mock.calls.map(([tool]) => tool)
+    expect(tools.some(tool => tool.name === 'ask_user_question')).toBe(false)
+    const question = tools.find(tool => tool.name === 'ask_user')!
     expect(question.description).toContain('outer `+` corners in fixed columns')
     expect(question.description).toContain('same columns on every content row')
-    const sketch = (question.parameters as any).properties.options.items.properties.sketch
-    expect(sketch.description).toContain('fixed, matching outer-edge columns')
+  })
+
+  it('discovers the native active tool set outside plan mode and respects the plan allowlist', async () => {
+    const state: TerminalPlanRunState = { active: false, allowedTools: new Set(), connectors: ['connector-1'] }
+    const { api } = extension()
+    api.getActiveTools = () => ['read', 'get_capabilities']
+    api.getAllTools = () => [
+      { name: 'read', description: 'Read a file', parameters: { type: 'object' } },
+      { name: 'get_capabilities', description: 'Inspect tools', parameters: { type: 'object' } },
+      { name: 'bash', description: 'Run a command', parameters: { type: 'object' } }
+    ] as never
+    await terminalExtension(api, state)
+    const discovery = vi.mocked(api.registerTool).mock.calls.map(([tool]) => tool).find(tool => tool.name === 'get_capabilities')!
+    const ordinary = await discovery.execute('caps-1', {}, undefined, undefined, {} as ExtensionToolContext)
+    const ordinaryText = ordinary.content[0].type === 'text' ? ordinary.content[0].text : ''
+    const ordinaryInventory = JSON.parse(ordinaryText)
+    expect(ordinaryInventory.tools.map((tool: { name: string }) => tool.name)).toEqual(['read', 'get_capabilities'])
+    expect(ordinaryInventory.connectors).toEqual(['connector-1'])
+
+    state.active = true
+    state.allowedTools = new Set(['read'])
+    const planned = await discovery.execute('caps-2', {}, undefined, undefined, {} as ExtensionToolContext)
+    const plannedText = planned.content[0].type === 'text' ? planned.content[0].text : ''
+    expect(JSON.parse(plannedText).tools).toEqual([{ name: 'read', description: 'Read a file', state: 'callable' }])
   })
 
   it('registers the shared naming tool against Pi metadata', async () => {
@@ -66,19 +102,44 @@ describe('terminal bridge lifecycle', () => {
     expect(transport.telemetry).not.toHaveBeenCalledWith('checklist', expect.anything())
   })
 
-  it('adds plan instructions as a one-run context section and withdraws them on the next user request', async () => {
-    const state: TerminalPlanRunState = { active: true, allowedTools: new Set(['read']) }
+  it('rehydrates the current plan and checklist in context after compaction', async () => {
+    const state: TerminalPlanRunState = { active: true, allowedTools: new Set(['read', 'checklist_write']) }
+    const { api, ctx, handlers } = extension()
+    await terminalExtension(api, state)
+    await handlers.get('before_agent_start')!({ messageType: 'user', prompt: 'Plan the migration', systemPromptOptions: { sections: {} } }, ctx)
+    await handlers.get('context')!({ messages: [{ role: 'user', content: 'Plan the migration', timestamp: 1 }] }, ctx)
+    await handlers.get('tool_result')!({
+      toolName: 'checklist_write', isError: false,
+      input: { items: [{ text: 'Inspect compatibility', status: 'completed' }, { text: 'Resolve the API question', status: 'in_progress' }] },
+      content: []
+    }, ctx)
+
+    const compacted = { messages: [{ role: 'compactionSummary', summary: 'Earlier research.', tokensBefore: 50_000, timestamp: 2 }] }
+    const first = await handlers.get('context')!(compacted, ctx) as { messages: { content?: string }[] }
+    expect(first.messages.at(-1)?.content).toContain('Plan the migration')
+    expect(first.messages.at(-1)?.content).toContain('Resolve the API question')
+    expect(first.messages.at(-1)?.content).toContain('Plan mode is on for this request')
+    const next = await handlers.get('context')!(compacted, ctx) as { messages: { content?: string }[] }
+    expect(next.messages.at(-1)?.content).toContain('Resolve the API question')
+
+    state.active = false
+    await handlers.get('agent_settled')!({}, ctx)
+    expect(await handlers.get('context')!(compacted, ctx)).toBeUndefined()
+  })
+
+  it('adds plan instructions and eligible profiles for one request, then restores the normal profile list', async () => {
+    const state: TerminalPlanRunState = { active: true, allowedTools: new Set(['read']), subagentProfiles: { normal: 'All profiles', plan: 'Eligible research profiles only' } }
     const { api, ctx, handlers } = extension()
     await terminalExtension(api, state)
     const planned = { messageType: 'user', prompt: 'inspect this', systemPrompt: 'stable prefix', systemPromptOptions: { sections: { identity: 'identity' } } }
     await handlers.get('before_agent_start')!(planned, ctx)
-    expect(planned.systemPromptOptions.sections).toEqual({ identity: 'identity', plan: PLAN_INSTRUCTIONS })
+    expect(planned.systemPromptOptions.sections).toEqual({ identity: 'identity', plan: PLAN_INSTRUCTIONS, subagents: 'Eligible research profiles only' })
     expect(planned.systemPrompt).toBe('stable prefix')
 
     state.active = false
     const ordinary = { messageType: 'user', prompt: 'now implement', systemPrompt: 'stable prefix', systemPromptOptions: { sections: { identity: 'identity', plan: PLAN_INSTRUCTIONS } } }
     await handlers.get('before_agent_start')!(ordinary, ctx)
-    expect(ordinary.systemPromptOptions.sections).toEqual({ identity: 'identity' })
+    expect(ordinary.systemPromptOptions.sections).toEqual({ identity: 'identity', subagents: 'All profiles' })
     expect(ordinary.systemPrompt).toBe('stable prefix')
   })
 
@@ -90,6 +151,49 @@ describe('terminal bridge lifecycle', () => {
     const result = await handlers.get('tool_call')!({ toolName: 'bash', toolCallId: 'call-1', input: { command: 'touch unsafe' } }, ctx)
     expect(result).toMatchObject({ block: true, reason: expect.stringContaining('Plan mode is research-only') })
     expect(transport.socket.mock.calls.filter(([, call]) => call === 'terminal.policy')).toHaveLength(policyCalls)
+  })
+
+  it('checks plan-mode profile eligibility before consulting terminal policy', async () => {
+    const state: TerminalPlanRunState = { active: true, allowedTools: new Set(['spawn_subagent']) }
+    const { api, ctx, handlers } = extension()
+    await terminalExtension(api, state)
+    transport.socket.mockImplementation(async (_connection: unknown, call: string, params?: Record<string, unknown>) => {
+      const input = params?.input as Record<string, unknown> | undefined
+      if (call === 'terminal.subagents.planSafe') return { allowed: input?.agent === 'explorer', reason: 'Unsafe plan profile.' }
+      if (call === 'terminal.policy') return { allowed: true }
+      return call === 'control.claim' ? { key: 'lexical-key' } : { tools: [] }
+    })
+
+    const denied = await handlers.get('tool_call')!({ toolName: 'spawn_subagent', toolCallId: 'call-unsafe', input: { agent: 'worker' } }, ctx)
+    expect(denied).toEqual({ block: true, reason: 'Unsafe plan profile.' })
+    expect(transport.socket.mock.calls.filter(([, call]) => call === 'terminal.policy')).toHaveLength(0)
+
+    const allowed = await handlers.get('tool_call')!({ toolName: 'spawn_subagent', toolCallId: 'call-safe', input: { agent: 'explorer' } }, ctx)
+    expect(allowed).toBeUndefined()
+    const calls = transport.socket.mock.calls.map(([, call]) => call)
+    expect(calls.indexOf('terminal.subagents.planSafe')).toBeLessThan(calls.indexOf('terminal.policy'))
+  })
+
+  it('passes plan-mode Bash to policy only when it stays read-only', async () => {
+    const state: TerminalPlanRunState = { active: true, allowedTools: new Set(['read', 'bash']) }
+    const { api, ctx, handlers } = extension()
+    await terminalExtension(api, state)
+    transport.socket.mockImplementation(async (_connection: unknown, call: string) => {
+      if (call === 'terminal.policy') return { allowed: true }
+      return call === 'control.claim' ? { key: 'lexical-key' } : { tools: [] }
+    })
+
+    const policyCalls = () => transport.socket.mock.calls.filter(([, call]) => call === 'terminal.policy').length
+    const before = policyCalls()
+    const outside = await handlers.get('tool_call')!({ toolName: 'bash', toolCallId: 'call-outside', input: { command: 'ls', workspaceWriteScope: 'outside' } }, ctx)
+    expect(outside).toMatchObject({ block: true, reason: expect.stringContaining('Plan mode Bash is read-only') })
+    const denied = await handlers.get('tool_call')!({ toolName: 'bash', toolCallId: 'call-denied', input: { command: 'ls && osascript -e 1' } }, ctx)
+    expect(denied).toMatchObject({ block: true, reason: expect.stringContaining('osascript') })
+    expect(policyCalls()).toBe(before)
+
+    const allowed = await handlers.get('tool_call')!({ toolName: 'bash', toolCallId: 'call-read', input: { command: 'git log --oneline -3' } }, ctx)
+    expect(allowed).toBeUndefined()
+    expect(policyCalls()).toBe(before + 1)
   })
 
   it('names the cause when the harness cannot answer a tool call', async () => {
@@ -131,5 +235,28 @@ describe('terminal bridge lifecycle', () => {
     await next.handlers.get('session_shutdown')!({ type: 'session_shutdown', reason: 'quit' }, next.ctx)
     expect(transport.telemetry.mock.calls.filter(([event]) => event === 'shutdown')).toHaveLength(2)
     expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('canonicalizes native terminal write paths before policy and execution', async () => {
+    const original = transport.socket.getMockImplementation()
+    const callStart = transport.socket.mock.calls.length
+    transport.socket.mockImplementation(async (_connection: unknown, call: string) => {
+      if (call === 'terminal.policy') return { allowed: true }
+      return call === 'control.claim' ? { key: 'lexical-key' } : { tools: [] }
+    })
+    try {
+      const { api, ctx, handlers } = extension()
+      ctx.cwd = resolve(process.cwd(), 'src')
+      await terminalExtension(api)
+      await handlers.get('before_agent_start')!({ messageType: 'user', prompt: 'Write a file', systemPromptOptions: { sections: {} } }, ctx)
+      const input = { path: 'README.md', content: 'draft' }
+      expect(await handlers.get('tool_call')!({ toolName: 'write', toolCallId: 'call-write', input }, ctx)).toBeUndefined()
+      const canonicalPath = resolveWritePath('README.md', ctx.cwd)
+      expect(input.path).toBe(canonicalPath)
+      const policyCall = transport.socket.mock.calls.slice(callStart).find(([, call]) => call === 'terminal.policy')
+      expect(policyCall?.[2]).toMatchObject({ tool: 'write', args: { path: canonicalPath, content: 'draft' } })
+    } finally {
+      transport.socket.mockImplementation(original!)
+    }
   })
 })

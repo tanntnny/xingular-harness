@@ -8,7 +8,7 @@ import { expect, test } from 'vitest'
 import { now } from '../core/fs'
 import { closeIndex } from '../core/index'
 import { isActiveStatus, runEventPayloadSchemas, runRecordSchema, type RunEvent, type RunEventType } from './contracts'
-import { appendEvent, executionEvents, loadRun, markInterruptedRuns, pendingDecisions, persistEvent, readEvents, runDir, saveRun, updateRun } from './runStore'
+import { appendEvent, executionEvents, loadRun, markInterruptedRuns, pendingDecisions, persistEvent, readEvents, reconcileStaleRuns, runDir, saveRun, updateRun } from './runStore'
 
 const temp = () => mkdtempSync(join(tmpdir(), 'harness-runs-'))
 const valid = (type: RunEventType, payload: unknown): boolean => runEventPayloadSchemas[type].safeParse(payload).success
@@ -18,6 +18,15 @@ function fixtureRun(root: string, status: string) {
   saveRun(root, run)
   return run
 }
+
+test('persists the pinned workspace root in a run record', () => {
+  const root = temp()
+  const run = runRecordSchema.parse({ id: 'run-1', sessionId: 'agent-1', projectId: null, mode: 'chat', harness: 'pi', sessionType: 'structured', nativeSessionId: null, workingDirectory: '/project/subdir', workspaceRoot: '/project', worktreeId: null, goal: null, status: 'queued', startedAt: 'start', endedAt: null })
+  saveRun(root, run)
+  expect(JSON.parse(readFileSync(join(runDir(root, 'run-1'), 'run.json'), 'utf8')).workspaceRoot).toBe('/project')
+  expect(loadRun(root, 'run-1').workspaceRoot).toBe('/project')
+  closeIndex(root)
+})
 
 const fixtureEvent = (sequence: number, type: string, payload: unknown): RunEvent => ({ id: `e${sequence}`, runId: 'run-1', sessionId: 'agent-1', sequence, timestamp: `time-${sequence}`, type: type as RunEventType, payload })
 
@@ -183,4 +192,43 @@ test('event log skips torn lines', () => {
   appendEvent(root, { id: 'e', runId: 'run-1', sessionId: 's', sequence: 0, timestamp: now(), type: 'started', payload: {} })
   appendFileSync(join(runDir(root, 'run-1'), 'events.jsonl'), '{"id":"torn')
   expect(readEvents(root, 'run-1')).toHaveLength(1)
+})
+
+test('checkpoint and heartbeat payloads are validated by the contract', () => {
+  const checkpoint = { summary: 'Halfway', done: [], next: 'Run the suite', files: [], checks: [], decisions: [], slice: 1, reason: 'budget' }
+  expect(valid('checkpoint', checkpoint)).toBe(true)
+  expect(valid('checkpoint', { ...checkpoint, slice: 0 })).toBe(false)
+  expect(valid('checkpoint', { ...checkpoint, reason: 'because' })).toBe(false)
+  expect(valid('checkpoint', { ...checkpoint, checks: [{ command: 'npm test', ok: 'yes' }] })).toBe(false)
+  expect(valid('heartbeat', { steps: 3, elapsedMs: 1_000, lastTool: 'bash', compactions: 0, slice: 1, maxToolCalls: 40 })).toBe(true)
+  expect(valid('heartbeat', { steps: -1, elapsedMs: 1_000, lastTool: null, compactions: 0, slice: 1, maxToolCalls: 40 })).toBe(false)
+})
+
+test('a run that stopped heartbeating is settled instead of staying running', () => {
+  const root = temp()
+  fixtureRun(root, 'running')
+  appendEvent(root, fixtureEvent(0, 'started', {}))
+  appendEvent(root, { ...fixtureEvent(1, 'heartbeat', { steps: 2, elapsedMs: 1_000, lastTool: 'read', compactions: 0, slice: 1, maxToolCalls: 40 }), timestamp: new Date(Date.now() - 10 * 60_000).toISOString() })
+  expect(reconcileStaleRuns(root)).toEqual(['run-1'])
+  expect(loadRun(root, 'run-1')).toMatchObject({ status: 'interrupted', terminalReason: 'stalled' })
+  expect(readEvents(root, 'run-1').at(-1)).toMatchObject({ type: 'status.changed', payload: { status: 'interrupted', reason: 'stalled' } })
+  closeIndex(root)
+})
+
+test('a fresh heartbeat leaves a live run alone', () => {
+  const root = temp()
+  fixtureRun(root, 'running')
+  appendEvent(root, { ...fixtureEvent(0, 'heartbeat', { steps: 2, elapsedMs: 1_000, lastTool: 'read', compactions: 0, slice: 1, maxToolCalls: 40 }), timestamp: new Date().toISOString() })
+  expect(reconcileStaleRuns(root)).toEqual([])
+  expect(loadRun(root, 'run-1').status).toBe('running')
+  closeIndex(root)
+})
+
+test('a silent run from before heartbeats is settled as abandoned', () => {
+  const root = temp()
+  fixtureRun(root, 'running')
+  appendEvent(root, { ...fixtureEvent(0, 'started', {}), timestamp: new Date(Date.now() - 40 * 60_000).toISOString() })
+  expect(reconcileStaleRuns(root)).toEqual(['run-1'])
+  expect(loadRun(root, 'run-1').terminalReason).toBe('owner_gone')
+  closeIndex(root)
 })

@@ -1,0 +1,95 @@
+{
+  "metadata": {
+    "commit": "6f72a07",
+    "workingTreeDirty": true,
+    "dirtyPathCount": 81,
+    "platform": "macOS-27.0-arm64-arm-64bit",
+    "machine": "arm64",
+    "cpuCount": 8,
+    "python": "3.12.12",
+    "node": "v26.8.2",
+    "bun": "1.4.2",
+    "harnessVersion": "1.1.1",
+    "piVersion": "1.2.0",
+    "opencodeVersion": "opencode v2.1.4"
+  },
+  "interval": 0.035,
+  "length": 30,
+  "rounds": 2,
+  "repeats": 1,
+  "size": "160x45",
+  "idleSeconds": 1.0,
+  "streamSeconds": 3.0,
+  "scenarios": [
+    "question"
+  ],
+  "real": false,
+  "results": [
+    {
+      "target": "xingular",
+      "repeat": 1,
+      "command": "node",
+      "scenarios": {
+        "question": {
+          "keys": 44,
+          "missed": 0,
+          "p50": 5.03,
+          "p95": 9.53,
+          "p99": 9.78,
+          "max": 9.78,
+          "cpuPercent": 10.8,
+          "rssBeforeKb": 413232,
+          "rssAfterKb": 405024,
+          "bytesPerKey": 83
+        }
+      },
+      "startup": {
+        "launchToFirstOutputMs": 2472.05,
+        "launchToFirstVisibleMs": 2474.64,
+        "launchToQuietScreenMs": 3483.83,
+        "rssKb": 358272
+      },
+      "idleResourceUsage": {
+        "durationSeconds": 1.0,
+        "cpuPercent": 3.0,
+        "rssBeforeKb": 358272,
+        "rssAfterKb": 358576
+      }
+    }
+  ],
+  "summary": [
+    {
+      "target": "xingular",
+      "runs": 1,
+      "startup": {
+        "runs": 1,
+        "launchToFirstOutputMs": 2472.05,
+        "launchToFirstVisibleMs": 2474.64,
+        "launchToQuietScreenMs": 3483.83,
+        "rssKb": 358272
+      },
+      "idleResourceUsage": {
+        "runs": 1,
+        "cpuPercent": 3.0,
+        "durationSeconds": 1.0,
+        "rssAfterKb": 358576,
+        "rssBeforeKb": 358272
+      },
+      "scenarios": {
+        "question": {
+          "runs": 1,
+          "bytesPerKey": 83,
+          "cpuPercent": 10.8,
+          "keys": 44,
+          "max": 9.78,
+          "missed": 0,
+          "p50": 5.03,
+          "p95": 9.53,
+          "p99": 9.78,
+          "rssAfterKb": 405024,
+          "rssBeforeKb": 413232
+        }
+      }
+    }
+  ]
+}

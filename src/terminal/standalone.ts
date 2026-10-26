@@ -5,9 +5,13 @@ import { appendFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { isAbsolute, join, resolve } from 'node:path'
 
+import type { SecretStore } from '../accounts/secrets'
 import { setLogSink } from '../core/bus'
 import { DEFAULT_PRODUCT_NAME } from '../core/env'
+import { interactiveProfileSecretStore, resolveInteractiveProfile, type InteractiveProfile, type InteractiveProfileOverrides, type SecretBackendDescriptor } from '../core/interactiveProfile'
 import { createHarness, type Harness, type HarnessOptions } from '../harness'
+import { seedVariant } from '../variant/seed'
+import * as variantStore from '../variant/store'
 import type { TerminalLaunch } from './terminals'
 
 export interface StandalonePaths {
@@ -15,6 +19,8 @@ export interface StandalonePaths {
   stateDir: string
   /** `--worktree [name]`: start in a new managed worktree (true) or the named one. */
   worktree?: string | true | null
+  /** `--variant <scope>`: run on that scope's head, as a host's agent of that scope does. */
+  variant?: string | null
 }
 
 export interface StandaloneDependencies {
@@ -24,6 +30,7 @@ export interface StandaloneDependencies {
   stdoutIsTTY?: boolean
   createSessionId?: () => string
   createHarness?: (options: HarnessOptions) => Harness
+  hostSecretStore?: (descriptor: Extract<SecretBackendDescriptor, { kind: 'host' }>) => SecretStore | Promise<SecretStore>
   spawn?: typeof nodeSpawn
 }
 
@@ -33,28 +40,38 @@ export function standaloneArguments(argv: string[]): string[] | null {
   return command === 'terminal' ? argv.slice(1) : null
 }
 
-export function parseStandaloneOptions(argv: string[], home = homedir(), cwd = process.cwd()): StandalonePaths {
-  const root = join(home, '.xingular-harness')
-  const paths: StandalonePaths = {
-    dataRoot: join(root, 'data'),
-    stateDir: join(root, 'state')
-  }
+interface ResolvedStandaloneOptions {
+  paths: StandalonePaths
+  profile: InteractiveProfile
+}
 
+function resolveStandaloneOptions(argv: string[], home = homedir(), cwd = process.cwd()): ResolvedStandaloneOptions {
+  const overrides: InteractiveProfileOverrides = {}
   const given = new Set<string>()
+  let worktree: StandalonePaths['worktree']
+  let variant: StandalonePaths['variant']
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index]
     if (argument === '--worktree' || argument === '-w') {
       const name = argv[index + 1]
       if (name && !name.startsWith('-')) {
-        paths.worktree = name
+        worktree = name
         index += 1
-      } else paths.worktree = true
+      } else worktree = true
+      continue
+    }
+    if (argument === '--variant') {
+      const scope = argv[index + 1]
+      if (!scope || scope.startsWith('-')) throw new Error('--variant needs a variant scope.')
+      variant = scope
+      index += 1
       continue
     }
     if (argument !== '--data' && argument !== '--state') throw new Error(`Unknown standalone option: ${argument}`)
     const value = argv[index + 1]
     if (!value || value.startsWith('--')) throw new Error(`${argument} needs a directory path.`)
-    paths[argument === '--data' ? 'dataRoot' : 'stateDir'] = resolve(cwd, value)
+    if (argument === '--data') overrides.dataRoot = resolve(cwd, value)
+    else overrides.stateDir = resolve(cwd, value)
     given.add(argument)
     index += 1
   }
@@ -65,7 +82,50 @@ export function parseStandaloneOptions(argv: string[], home = homedir(), cwd = p
     throw new Error(`The home folder "${home}" is not an absolute path, so the default data and state folders cannot be placed. Set HOME to your home folder, or pass --data and --state with absolute folders.`)
   }
 
-  return paths
+  // `npm run dev` passes these roots explicitly. Keep its profile and credentials separate from
+  // the installed interactive profile, even when that production profile selects a host store.
+  const devRoot = isAbsolute(home) ? join(home, '.xingular-harness-dev') : null
+  const devData = devRoot ? join(devRoot, 'data') : null
+  const devState = devRoot ? join(devRoot, 'state') : null
+  const development = !!devRoot && (overrides.dataRoot === devData || overrides.stateDir === devState)
+  const resolvedProfile: InteractiveProfile = isAbsolute(home)
+    ? resolveInteractiveProfile({
+        home,
+        ...(development ? {
+          configPath: join(devRoot!, 'profile.json'),
+          legacyDefaults: {
+            dataRoot: devData!,
+            stateDir: devState!,
+            defaultVariantScope: 'default',
+            secretBackend: { kind: 'file', path: join(devState!, 'secrets.json') }
+          }
+        } : {}),
+        overrides
+      })
+    : {
+        version: 1,
+        dataRoot: overrides.dataRoot!,
+        stateDir: overrides.stateDir!,
+        defaultVariantScope: 'default',
+        secretBackend: { kind: 'file', path: join(overrides.stateDir!, 'secrets.json') }
+      }
+  // The standalone development launch has no host adapter and must not use the App's Keychain.
+  const profile: InteractiveProfile = development
+    ? { ...resolvedProfile, secretBackend: { kind: 'file', path: join(resolvedProfile.stateDir, 'secrets.json') } }
+    : resolvedProfile
+  return {
+    profile,
+    paths: {
+      dataRoot: profile.dataRoot,
+      stateDir: profile.stateDir,
+      ...(worktree !== undefined ? { worktree } : {}),
+      ...(variant !== undefined ? { variant } : {})
+    }
+  }
+}
+
+export function parseStandaloneOptions(argv: string[], home = homedir(), cwd = process.cwd()): StandalonePaths {
+  return resolveStandaloneOptions(argv, home, cwd).paths
 }
 
 function processEnvironment(overrides: Record<string, string | null>): NodeJS.ProcessEnv {
@@ -149,9 +209,10 @@ export async function runStandaloneTerminal(argv: string[], dependencies: Standa
   }
 
   let cwd = resolve(dependencies.cwd ?? process.cwd())
-  const paths = parseStandaloneOptions(argv, dependencies.home, cwd)
+  const { paths, profile } = resolveStandaloneOptions(argv, dependencies.home, cwd)
+  const secrets = await interactiveProfileSecretStore(profile, dependencies.hostSecretStore)
   const makeHarness = dependencies.createHarness ?? createHarness
-  const harness = makeHarness({ dataRoot: paths.dataRoot, stateDir: paths.stateDir, productName: DEFAULT_PRODUCT_NAME })
+  const harness = makeHarness({ dataRoot: paths.dataRoot, stateDir: paths.stateDir, productName: DEFAULT_PRODUCT_NAME, secrets })
   const newSessionId = dependencies.createSessionId ?? randomUUID
   let current = { sessionId: newSessionId(), accountId: null as string | null, nativeSessionId: null as string | null }
   // The frontend draws on this terminal, so the host's diagnostics go to a file the person can read instead.
@@ -166,6 +227,10 @@ export async function runStandaloneTerminal(argv: string[], dependencies: Standa
 
   try {
     await harness.ready
+    const variantScope = paths.variant ?? profile.defaultVariantScope
+    if (variantScope === profile.defaultVariantScope && !variantStore.head(paths.dataRoot, variantScope)) {
+      variantStore.seed(paths.dataRoot, variantScope, seedVariant(paths.dataRoot, {}), 'interactive profile default')
+    }
     if (harness.accounts.overview().accounts.length === 0) harness.accounts.create('Default', 'subscription')
 
     let worktreeId: string | null = null
@@ -176,7 +241,7 @@ export async function runStandaloneTerminal(argv: string[], dependencies: Standa
     }
     for (;;) {
       const sessionFolder = join(paths.dataRoot, 'sessions', 'terminal', createHash('sha256').update(cwd).digest('hex'))
-      const launch = await harness.terminals.prepare({ ...current, cwd, sessionFolder, ...(worktreeId ? { run: { worktreeId } } : {}) })
+      const launch = await harness.terminals.prepare({ ...current, cwd, sessionFolder, variant: { scope: variantScope }, ...(worktreeId ? { run: { worktreeId } } : {}) })
       const code = await spawnFrontend(launch, cwd, dependencies.spawn)
       // `/accounts` and `/worktree` ask for a switch and end the frontend. An account switch resumes
       // the conversation; a folder switch starts a new one there.

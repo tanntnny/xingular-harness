@@ -34,7 +34,7 @@ Keep `TerminalAssets` and `Terminals.prepare/send/state/input/dispose` compatibl
 socket/controller bridge and its final gate. Keep the private control claim in process memory
 across native session replacement, revalidate prepared resource trust before every load, and
 scope native resume/import to the terminal's original working folder. Put unavoidable Pi
-implementation imports in one adapter checked against the pinned 1.2.0 version.
+implementation imports in one adapter checked against the pinned Pi version.
 
 Use the shipped OMP 18.11.3 artifacts as the visual reference, with Harness identity and existing
 commands. [The living reference](../terminal-tui.md) records artifact digests, evidence and

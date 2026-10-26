@@ -1,12 +1,16 @@
 import { isAbsolute, relative, resolve } from 'node:path'
 import { SessionManager, type AgentSession, type ExtensionUIContext } from '@earendil-works/pi-coding-agent'
+import { CORE_COMMANDS, coreCommand } from '../../commands/registry'
+import { commandRoutes, promptCommandAvailable } from '../../commands/routes'
 import { BUILTIN_PLUGIN_REGISTRY } from '../../plugins/builtin'
+import { pluginCommandPrefix } from '../../plugins/commandPrefix'
 import { PageOverlay } from './pageOverlay'
 import { ModelPicker } from './modelPicker'
 import { TreePicker } from './treePicker'
 import type { AnnotateStart } from './pages/annotatePage'
 import { createCommandPage, type CommandPageId } from './commandPages'
 import { pageOverlayOptions } from './dialogGeometry'
+import { ResumeSessionsPage } from './sessionPicker'
 import { expandSkillInvocation, type SkillEntry } from './skillInvocation'
 import type { TerminalRuntime } from './runtime'
 import type { TerminalTrajectoryRun, TerminalTrajectorySnapshot } from '../trajectory'
@@ -25,6 +29,7 @@ export interface TerminalCommandHost {
   control: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
   ui: ExtensionUIContext
   cwd(): string
+  branch(): string | null
   sessionDirectory(): string
   refresh(): void
   changed(): void
@@ -47,41 +52,23 @@ export interface TerminalCommandHost {
   }
 }
 
-const BUILTINS: TerminalCommandCompletion[] = [
-  { name: 'help', description: 'List the commands', group: 'Core' },
-  { name: 'plan', description: 'Plan one request, read-only: /plan <brief>', group: 'Run' },
-  { name: 'btw', aliases: ['side'], description: 'Ask a side question without interrupting: /btw <question>', group: 'Run' },
-  { name: 'new', description: 'Start a new session', group: 'Session' },
-  { name: 'stop', description: 'Stop the current reply', group: 'Run' },
-  { name: 'session', aliases: ['resume'], description: 'Choose a saved session in this account and folder', group: 'Session' },
-  { name: 'history', aliases: ['tree'], description: 'Navigate branches in the current session', group: 'Session' },
-  { name: 'fork', description: 'Fork from an earlier message', group: 'Session' },
-  { name: 'clone', description: 'Clone this branch into a new session', group: 'Session' },
-  { name: 'model', description: 'Choose the model', group: 'Model' },
-  { name: 'effort', description: 'Choose the thinking effort', group: 'Model' },
-  { name: 'thinking', description: 'Toggle transcript thinking visibility: /thinking [show|hide]', group: 'Model' },
-  { name: 'name', description: 'Name this session', group: 'Session' },
-  { name: 'compact', description: 'Compact the context', group: 'Session' },
-  { name: 'copy', description: 'Copy the last reply', group: 'Inspect' },
-  { name: 'export', description: 'Export this branch to HTML or JSONL', group: 'Inspect' },
-  { name: 'reload', description: 'Reload trusted resources and keybindings', group: 'Harness' },
-  { name: 'accounts', description: 'Sign in, switch, check and remove Pi accounts', group: 'Harness' },
-  { name: 'permissions', description: 'Full Permission and per-tool approvals', group: 'Harness' },
-  { name: 'harness', description: 'Browse foundation, variant and all resources', group: 'Harness' },
-  { name: 'skills', description: 'View, inspect and use skills; discover more', group: 'Harness' },
-  { name: 'connections', description: 'Manage local and remote MCP connections', group: 'Harness' },
-  { name: 'mcp', description: 'Open Connections in the Harness browser', group: 'Harness' },
-  { name: 'tools', description: 'Inspect available tools, owners and approvals', group: 'Harness' },
-  { name: 'plugins', description: 'Switch plugins on or off and trust their code', group: 'Harness' },
-  { name: 'hub', description: 'Browse and install reviewed skills, plugins and documents', group: 'Harness' },
-  { name: 'components', description: 'Browse skills, prompts and rules for this Harness scope', group: 'Harness' },
-  { name: 'settings', description: 'Session, terminal and browser settings', group: 'Harness' },
-  { name: 'log', description: "Harness diagnostics and this conversation's run events", group: 'Inspect' },
-  { name: 'hotkeys', description: 'Keyboard controls', group: 'Core' },
-  { name: 'quit', description: 'Restore the terminal and exit', group: 'Core' }
-]
+const BUILTINS: TerminalCommandCompletion[] = CORE_COMMANDS.map((command) => ({
+  name: command.name,
+  ...('aliases' in command ? { aliases: [...command.aliases] } : {}),
+  description: command.description,
+  group: command.group
+}))
 
 const COMMAND_ALIASES = new Map(BUILTINS.flatMap(command => (command.aliases ?? []).map(alias => [alias, command.name] as const)))
+const CORE_PROMPT_NAMES = new Set([...BUILTINS.map(command => command.name), ...COMMAND_ALIASES.keys()])
+
+const LEGACY_BUILTIN_COMMAND_ALIASES = new Map<string, string>([
+  ['doctor:doctor', 'doctor'], ['plugin:doctor', 'doctor'],
+  ['worktrees:worktree', 'worktree'], ['plugin:worktree', 'worktree'],
+  ['history:trajectory', 'trajectory'], ['plugin:trajectory', 'trajectory'],
+  ['subagents:subagents', 'subagents'], ['plugin:subagents', 'subagents'],
+  ['subagents:agents', 'agents'], ['plugin:agents', 'agents']
+])
 
 export function createTerminalCommands(host: TerminalCommandHost) {
   const notify = (text: string) => host.ui.notify(text, 'info')
@@ -99,7 +86,7 @@ export function createTerminalCommands(host: TerminalCommandHost) {
   /** The text to send: a leading `$name` of a loaded skill becomes the `/skill:name` form Pi expands. */
   const expandSkill = (text: string): string => expandSkillInvocation(text, new Set(skills().map((skill) => skill.name)))
 
-  async function openPage(id: CommandPageId, options: { runId?: string; url?: string; annotate?: AnnotateStart } = {}) {
+  async function openPage(id: CommandPageId, options: { runId?: string; url?: string; annotate?: AnnotateStart; usageTab?: 'analysis' | 'limit'; usagePeriod?: 'today' | '7d' | '30d' | 'all' } = {}) {
     let close = () => {}
     const page = createCommandPage(host, id, { ...options, close: () => close() })
     await host.ui.custom<void>((tui, _theme, _keys, done) => {
@@ -110,66 +97,165 @@ export function createTerminalCommands(host: TerminalCommandHost) {
 
   const pluginHandlers = createBuiltinPluginCommandHandlers(host, openPage)
   const pluginCommands = BUILTIN_PLUGIN_REGISTRY.commands()
-  const coreNames = new Set([...BUILTINS.map(command => command.name), ...COMMAND_ALIASES.keys()])
-  for (const command of pluginCommands) {
-    if (command.namespace === 'unprefixed' && coreNames.has(command.name)) {
-      throw new Error(`Required plugin command collides with a core command: ${command.pluginId}:${command.name}`)
-    }
-  }
+  const builtinPrefixes = new Map(pluginCommands.map(command => [command.prefix, command.pluginId]))
+  const prefixCache = new WeakMap<object, string>()
+  type ExtensionCommand = ReturnType<AgentSession['extensionRunner']['getRegisteredCommands']>[number]
   const extensionCommands = () => {
-    const byName = new Map<string, ReturnType<AgentSession['extensionRunner']['getRegisteredCommands']>[number][]>()
-    for (const command of host.session().extensionRunner.getRegisteredCommands()) {
-      byName.set(command.name, [...(byName.get(command.name) ?? []), command])
-    }
-    const unique = new Map<string, ReturnType<AgentSession['extensionRunner']['getRegisteredCommands']>[number]>()
-    const duplicates = new Map<string, ReturnType<AgentSession['extensionRunner']['getRegisteredCommands']>[number][]>()
-    for (const [name, commands] of byName) {
-      if (commands.length === 1) unique.set(name, commands[0]!)
-      else duplicates.set(name, commands)
-    }
-    return { unique, duplicates }
+    return commandRoutes(host.session().extensionRunner.getRegisteredCommands().map(command => {
+      const source = command.sourceInfo
+      let prefix = prefixCache.get(source)
+      if (!prefix) {
+        prefix = pluginCommandPrefix(source)
+        prefixCache.set(source, prefix)
+      }
+      const owner = source.origin === 'package'
+        ? `package:${source.baseDir ?? source.source}`
+        : `extension:${source.path}`
+      return { ...command, prefix, owner, path: source.path }
+    }))
   }
-  const unprefixedCommandNames = (session: AgentSession): Set<string> => new Set([
+  const coreCommandNames = (session: AgentSession): Set<string> => new Set([
     ...BUILTINS.flatMap(command => [command.name, ...(command.aliases ?? [])]),
-    ...pluginCommands.filter(command => command.namespace === 'unprefixed').map(command => command.name),
     ...session.resourceLoader.getPrompts().prompts.map(prompt => prompt.name)
   ])
 
-  const runBuiltinPluginCommand = async (name: string, argument: string) => {
+  const runBuiltinPluginCommand = async (command: typeof pluginCommands[number], argument: string) => {
     try {
-      const handler = pluginHandlers.get(name)
-      if (!handler) throw new Error(`No terminal handler for built-in plugin command ${name}.`)
+      const handler = pluginHandlers.get(`${command.pluginId}:${command.name}`)
+      if (!handler) throw new Error(`No terminal handler for built-in plugin command ${command.pluginId}:${command.name}.`)
       await handler(argument)
       host.refresh()
     } catch (error) { host.ui.notify(error instanceof Error ? error.message : String(error), 'error') }
+  }
+
+  const runExtensionCommand = async (registered: ExtensionCommand, argument: string, route: string) => {
+    try {
+      const command = host.session().extensionRunner.getCommand(registered.invocationName)
+      if (!command) throw new Error(`Plugin command /${route} is no longer registered. Reload trusted resources.`)
+      await command.handler(argument, host.session().extensionRunner.createCommandContext())
+      host.refresh()
+    } catch (error) { host.ui.notify(error instanceof Error ? error.message : String(error), 'error') }
+  }
+
+  const runLegacyPluginCommand = async (name: string, argument: string): Promise<void> => {
+    const session = host.session()
+    if (coreCommandNames(session).has(name)) {
+      host.ui.notify(`Use /${name}; /plugin:${name} is unavailable because a core command or prompt already uses that name.`, 'error')
+      return
+    }
+    const builtins = BUILTIN_PLUGIN_REGISTRY.commandsNamed(name)
+    const extensions = extensionCommands()
+    if (builtins.length > 1) {
+      host.ui.notify(`Legacy plugin command /plugin:${name} is ambiguous. Use its owner-qualified command.`, 'error')
+      return
+    }
+    if (builtins.length === 1) {
+      const competitors = extensions.byName.get(name) ?? []
+      if (competitors.length) {
+        host.ui.notify(`Extension command /plugin:${name} from ${competitors.map(command => command.sourceInfo.path).join(', ')} is unavailable because the name belongs to the built-in ${builtins[0]!.pluginId} plugin.`, 'error')
+      }
+      await runBuiltinPluginCommand(builtins[0]!, argument)
+      return
+    }
+    const matches = extensions.byName.get(name) ?? []
+    if (matches.length > 1) {
+      host.ui.notify(`Legacy plugin command /plugin:${name} is ambiguous. Registered by: ${matches.map(command => command.sourceInfo.path).join(', ')}. Use its owner-qualified command.`, 'error')
+      return
+    }
+    if (matches.length === 1) {
+      if (extensions.conflictingPrefixes.has(matches[0]!.prefix)) {
+        host.ui.notify(`Plugin prefix /${matches[0]!.prefix}: is ambiguous or reserved. Owners: ${extensions.conflictingPrefixes.get(matches[0]!.prefix)!.join(', ')}.`, 'error')
+        return
+      }
+      await runExtensionCommand(matches[0]!, argument, `plugin:${name}`)
+      return
+    }
+    host.ui.notify(`Unknown plugin command: /plugin:${name}. Use /help to list the commands.`, 'error')
+  }
+
+  const runNamespacedCommand = async (typedName: string, argument: string): Promise<boolean> => {
+    const separator = typedName.indexOf(':')
+    if (separator < 1) return false
+    const prefix = typedName.slice(0, separator)
+    const name = typedName.slice(separator + 1)
+    if (prefix === 'plugin') {
+      await runLegacyPluginCommand(name, argument)
+      return true
+    }
+    const builtin = name ? BUILTIN_PLUGIN_REGISTRY.command(prefix, name) : BUILTIN_PLUGIN_REGISTRY.defaultCommand(prefix)
+    const extensions = extensionCommands()
+    const isBuiltinPrefix = builtinPrefixes.has(prefix)
+    const isExtensionPrefix = extensions.ownersByPrefix.has(prefix)
+    if (!builtin && !isBuiltinPrefix && !isExtensionPrefix) return false
+    if (builtin) {
+      const competitors = extensions.routes.get(`${prefix}:${builtin.name}`) ?? []
+      if (competitors.length) {
+        host.ui.notify(`Extension command /${prefix}:${builtin.name} from ${competitors.map(command => command.sourceInfo.path).join(', ')} is unavailable because the prefix belongs to built-in ${builtin.pluginId}.`, 'error')
+      }
+      await runBuiltinPluginCommand(builtin, argument)
+      return true
+    }
+    if (extensions.conflictingPrefixes.has(prefix)) {
+      host.ui.notify(`Plugin prefix /${prefix}: is ambiguous or reserved. Owners: ${extensions.conflictingPrefixes.get(prefix)!.join(', ')}.`, 'error')
+      return true
+    }
+    if (!name) {
+      host.ui.notify(`Plugin /${prefix}: has no default command. Use /help to list its commands.`, 'error')
+      return true
+    }
+    const matches = extensions.routes.get(`${prefix}:${name}`) ?? []
+    if (matches.length > 1) {
+      host.ui.notify(`Plugin command /${prefix}:${name} is ambiguous. Registered by: ${matches.map(command => command.sourceInfo.path).join(', ')}.`, 'error')
+      return true
+    }
+    if (matches.length === 1) {
+      await runExtensionCommand(matches[0]!, argument, `${prefix}:${name}`)
+      return true
+    }
+    host.ui.notify(`Unknown plugin command: /${typedName}. Use /help to list the commands.`, 'error')
+    return true
+  }
+
+  const legacyAliases = (): string[] => {
+    const session = host.session()
+    const coreNames = coreCommandNames(session)
+    const aliases = new Set<string>(LEGACY_BUILTIN_COMMAND_ALIASES.keys())
+    for (const command of pluginCommands) {
+      if (coreNames.has(command.name)) continue
+      aliases.add(`plugin:${command.name}`)
+      if (command.legacyBare) aliases.add(command.name)
+    }
+    for (const name of extensionCommands().byName.keys()) {
+      if (!coreNames.has(name)) aliases.add(`plugin:${name}`)
+    }
+    return [...aliases]
   }
 
   const completions = (): TerminalCommandCompletion[] => {
     const session = host.session()
     const prompts = session.resourceLoader.getPrompts().prompts
     const commands = new Map(BUILTINS.map(command => [command.name, command]))
-    const bareNames = unprefixedCommandNames(session)
-    const namespacedBuiltins = new Set<string>()
     for (const command of pluginCommands) {
-      if (command.namespace === 'unprefixed') {
-        commands.set(command.name, { name: command.name, description: command.description, group: 'Harness' })
-      } else {
-        namespacedBuiltins.add(command.name)
-        if (!bareNames.has(command.name)) {
-          const invocation = `plugin:${command.name}`
-          commands.set(invocation, { name: invocation, description: command.description, group: 'Plugins' })
-        }
+      const invocation = `${command.prefix}:${command.name}`
+      commands.set(invocation, { name: invocation, description: command.description, group: 'Plugins' })
+    }
+    for (const module of BUILTIN_PLUGIN_REGISTRY.modules) {
+      const defaultCommand = module.defaultCommand && BUILTIN_PLUGIN_REGISTRY.command(module.commandPrefix ?? module.descriptor.id, module.defaultCommand)
+      if (defaultCommand) {
+        const invocation = `${defaultCommand.prefix}:`
+        commands.set(invocation, { name: invocation, description: defaultCommand.description, group: 'Plugins' })
       }
     }
     const extensions = extensionCommands()
-    for (const [name, command] of extensions.unique) {
-      if (!bareNames.has(name) && !namespacedBuiltins.has(name)) {
-        const invocation = `plugin:${name}`
-        commands.set(invocation, { name: invocation, description: command.description, group: 'Plugins' })
-      }
+    for (const [route, matches] of extensions.routes) {
+      const prefix = route.slice(0, route.indexOf(':'))
+      if (matches.length !== 1 || extensions.conflictingPrefixes.has(prefix)) continue
+      if (BUILTIN_PLUGIN_REGISTRY.command(prefix, matches[0]!.name)) continue
+      commands.set(route, { name: route, description: matches[0]!.description, group: 'Plugins' })
     }
+    const extensionNames = new Set(extensions.byName.keys())
     for (const prompt of prompts) {
-      if (!commands.has(prompt.name) && !COMMAND_ALIASES.has(prompt.name)) commands.set(prompt.name, { name: prompt.name, description: prompt.description, group: 'Prompts' })
+      if (promptCommandAvailable(prompt.name, new Set([...commands.keys(), ...COMMAND_ALIASES.keys()]), extensionNames)) commands.set(prompt.name, { name: prompt.name, description: prompt.description, group: 'Prompts' })
     }
     return [...commands.values()]
   }
@@ -179,59 +265,31 @@ export function createTerminalCommands(host: TerminalCommandHost) {
     if (!match) return false
     const typedName = match[1]!
     const argument = match[2]?.trim() ?? ''
-    if (typedName.startsWith('plugin:')) {
-      const pluginName = typedName.slice('plugin:'.length)
-      const session = host.session()
-      if (unprefixedCommandNames(session).has(pluginName)) {
-        host.ui.notify(`Use /${pluginName}; /plugin:${pluginName} is unavailable because an unprefixed command already uses that name.`, 'error')
-        return true
-      }
-      const builtin = BUILTIN_PLUGIN_REGISTRY.command(pluginName)
-      const extensions = extensionCommands()
-      if (builtin?.namespace === 'plugin') {
-        const collisions = extensions.unique.get(pluginName) ? [extensions.unique.get(pluginName)!] : extensions.duplicates.get(pluginName) ?? []
-        if (collisions.length) {
-          const owners = collisions.map(command => command.sourceInfo.path).join(', ')
-          host.ui.notify(`Extension command /plugin:${pluginName} from ${owners} is unavailable because the name belongs to the built-in ${builtin.pluginId} plugin.`, 'error')
-        }
-        await runBuiltinPluginCommand(pluginName, argument)
-        return true
-      }
-      const duplicate = extensions.duplicates.get(pluginName)
-      if (duplicate) {
-        const owners = duplicate.map(command => command.sourceInfo.path).join(', ')
-        host.ui.notify(`Plugin command /plugin:${pluginName} is ambiguous. Registered by: ${owners}. Rename or remove one command.`, 'error')
-        return true
-      }
-      const registered = extensions.unique.get(pluginName)
-      if (registered) {
-        try {
-          const command = host.session().extensionRunner.getCommand(registered.invocationName)
-          if (!command) throw new Error(`Plugin command /plugin:${pluginName} is no longer registered. Reload trusted resources.`)
-          await command.handler(argument, host.session().extensionRunner.createCommandContext())
-          host.refresh()
-        } catch (error) { host.ui.notify(error instanceof Error ? error.message : String(error), 'error') }
-        return true
-      }
-      host.ui.notify(`Unknown plugin command: /${typedName}. Use /help to list the commands.`, 'error')
-      return true
-    }
-    const name = COMMAND_ALIASES.get(typedName) ?? typedName
+    const legacyBuiltin = LEGACY_BUILTIN_COMMAND_ALIASES.get(typedName)
+    if (!legacyBuiltin && await runNamespacedCommand(typedName, argument)) return true
+    const session = host.session()
+    const name = coreCommand(legacyBuiltin ?? typedName)?.name ?? legacyBuiltin ?? typedName
     const builtin = BUILTINS.find(item => item.name === name)
-    const requiredPluginCommand = BUILTIN_PLUGIN_REGISTRY.command(name)
-    if (!builtin && requiredPluginCommand?.namespace === 'unprefixed') {
-      await runBuiltinPluginCommand(name, argument)
-      return true
+    if (!builtin && !coreCommandNames(session).has(name)) {
+      const legacyBare = BUILTIN_PLUGIN_REGISTRY.commandsNamed(name).filter(command => command.legacyBare)
+      if (legacyBare.length > 1) {
+        host.ui.notify(`Legacy command /${name} is ambiguous. Use its owner-qualified command.`, 'error')
+        return true
+      }
+      if (legacyBare.length === 1) {
+        await runBuiltinPluginCommand(legacyBare[0]!, argument)
+        return true
+      }
     }
     if (!builtin) {
       // A skill is offered as $name; the typed /skill:name form still reaches the SDK, which expands it.
       if (skills().some(skill => `skill:${skill.name}` === name)) return false
-      if (host.session().resourceLoader.getPrompts().prompts.some(prompt => prompt.name === name)) return false
+      const prompt = session.resourceLoader.getPrompts().prompts.some(item => item.name === name)
+      if (prompt && promptCommandAvailable(name, CORE_PROMPT_NAMES, new Set(extensionCommands().byName.keys()))) return false
       host.ui.notify(`Unknown command: /${name}. Use /help to list commands.`, 'error')
       return true
     }
     try {
-      const session = host.session()
       switch (name) {
         case 'help': host.showHelp(groupTerminalCommands(completions())); break
         case 'plan': {
@@ -242,7 +300,7 @@ export function createTerminalCommands(host: TerminalCommandHost) {
         case 'quit': host.shutdown(); break
         case 'btw': await host.btw(argument); break
         case 'stop': {
-          if (!session.isStreaming) throw new Error('Nothing is running.')
+          if (session.isIdle) throw new Error('Nothing is running.')
           await host.runtime().interrupt()
           break
         }
@@ -250,10 +308,20 @@ export function createTerminalCommands(host: TerminalCommandHost) {
         case 'session': {
           let path = argument
           if (!path) {
-            const sessions = await SessionManager.list(host.cwd(), host.sessionDirectory())
-            const selected = await choose('Resume session', sessions, (item, index) => `${index + 1}. ${item.name ?? item.firstMessage ?? item.id}  ${item.modified.toLocaleString()}`)
+            const selected = await host.ui.custom<string | undefined>((tui, _theme, _keys, done) => {
+              const page = new ResumeSessionsPage({
+                theme: () => host.ui.theme,
+                cwd: () => host.cwd(),
+                branch: () => host.branch(),
+                listSessions: signal => SessionManager.list(host.cwd(), host.sessionDirectory(), undefined, signal),
+                select: done,
+                cancel: () => done(undefined),
+                changed: host.changed
+              })
+              return new PageOverlay({ page, tui, theme: () => host.ui.theme, close: () => done(undefined), changed: host.changed })
+            }, { overlay: true, overlayOptions: pageOverlayOptions('fullscreen') })
             if (!selected) break
-            path = selected.path
+            path = selected
           }
           const target = resolve(host.cwd(), path)
           const within = relative(host.sessionDirectory(), target)
@@ -328,6 +396,11 @@ export function createTerminalCommands(host: TerminalCommandHost) {
           break
         }
         case 'settings': await openPage('settings'); break
+        case 'doctor': await openPage('doctor'); break
+        case 'worktree': await openPage('worktree'); break
+        case 'trajectory': await openPage('trajectory', { runId: argument }); break
+        case 'subagents': await openPage('subagents'); break
+        case 'agents': await openPage('agents'); break
         case 'permissions': await openPage('permissions'); break
         case 'accounts': await openPage('accounts'); break
         case 'harness': await openPage('harness'); break
@@ -366,5 +439,5 @@ export function createTerminalCommands(host: TerminalCommandHost) {
     } catch (error) { host.ui.notify(error instanceof Error ? error.message : String(error), 'error') }
     return true
   }
-  return { execute, completions, skills, expandSkill }
+  return { execute, completions, skills, expandSkill, legacyAliases }
 }

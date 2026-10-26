@@ -17,7 +17,7 @@ callable result for one run.
 | `Plugins` (`loading`, `loaded`) | `plugins/plugins.ts` | Chooses the paths a session or terminal loads; records what each extension registered. |
 | discovery | `plugins/discover.ts` | Finds items with Pi's own resolver, which runs no extension code. |
 | attachments (`load`, `save`, `attached`, `decided`, `set`) | `plugins/attachments.ts` | The one store of what is switched on, per scope. |
-| `BuiltinPluginRegistry`, `BuiltinPluginModule` | `plugins/builtinRegistry.ts`, `plugins/builtin.ts` | Registers built-in modules and their descriptors, world parts, server handlers and terminal command metadata. |
+| `BuiltinPluginRegistry`, `BuiltinPluginModule` | `plugins/builtinRegistry.ts`, `plugins/builtin.ts` | Registers built-in modules and their descriptors, world parts, server handlers and plugin-owned terminal commands. Harness core commands live in `commands/registry.ts`, shared by both surfaces. |
 | `HARNESS_PLUGINS` | `plugins/builtin.ts` | Descriptor view of the registered Harness parts and feature plugins. |
 | `FIRST_PARTY_PLUGINS` | `plugins/firstParty.ts` | `output-trim`, `budget-guard`: inline extensions shipped switched off. `lessons`: switched off; its contribution turns on reflection after a run (page 08, PROP-0008) and loads no Pi code. |
 | `Hooks` | `plugins/hooks.ts` | Runs a package's hooks file after a write. |
@@ -29,14 +29,26 @@ callable result for one run.
 ## Contracts
 
 - **Loading.** `Plugins.loading({ cwd, agentDir, caller, contributions, install? })` returns
-  `extensionPaths`, `skillPaths`, `promptPaths`, `themePaths`, `builtins` (terminal only), `hooks`,
+  `extensionPaths`, `skillPaths`, `promptPaths`, `themePaths`, `builtins` (legacy shape; no Pi CLI built-ins selected), `hooks`,
   `found`, `detached`, `projectCode`, `packageCode`. A session opens Pi with its own discovery off
   and only these paths; a terminal receives them as `--extension`, `--skill`,
   `--prompt-template` and `--theme` after `--no-extensions --no-skills --no-prompt-templates
   --no-themes`. Pi still reads `AGENTS.md` and `SYSTEM.md` itself.
+- **Surface metadata (PROP-0040).** `PluginDescriptor.surfaces` and `Plugin.surfaces` optionally
+  carry `{ preferred: 'host', terminal: 'fallback' | 'unavailable', note: string }`.
+  `plugins/surfaces.ts` formats the note and badge. Inspection explains what the host adds and
+  what the terminal does instead; this is not a category, attachment switch or permission.
+- **Shared resources (PROP-0040).** Both surfaces load Harness-selected resources and enabled
+  first-party hooks, including output trim and budget guard. Terminal preparation exposes these
+  through its protected bridge. Pi CLI-only llama.cpp, codemode, tool-search and MCP built-ins are
+  not selected or advertised as extra terminal capabilities. This does not remove Harness MCP.
 - **Attachments.** `config/plugin-attachments.json` holds `global`, `agents`, `projects` (each
   `{ on, off }`) and `settings` per plugin. The narrowest scope that says something wins: agent,
   then project, then everywhere. With no entry an item keeps its default.
+- **Package metadata.** A Pi package may declare `"harness": { "extends": [...], "hooks": "./hooks.mjs", "commandPrefix": "my-tools" }`.
+  `commandPrefix` is optional; in the terminal, commands otherwise use a normalized package name as
+  their owner prefix. Prefixes use lowercase letters, digits and hyphens, starting with a letter;
+  `plugin` and `skill` are reserved. See page 11 for the command route and collision rules.
 - **Hooks.** A package declares `"harness": { "extends": [...], "hooks": "./hooks.mjs" }`. Events:
   `wiki.page.saved`, `history.run.ended`. A hook has 30 seconds; its errors are kept in
   `plugin-hooks.json`. `ctx.call(connection, tool, args)` reaches only a connected app that is on
@@ -48,7 +60,10 @@ callable result for one run.
   capability. Automatic or refinement-triggered continuations with it are rejected rather than
   weakening the frozen set. The `side-questions` descriptor owns the fixed instruction for the
   restricted side-question run; it has no tools, providers, connectors, subagents or variant code
-  (PROP-0019).
+  (PROP-0019). In plan mode, delegation is limited to research children: the resolved profile must
+  have explicit tool and plugin allowlists confined to the research set, and the child's frozen
+  capabilities are intersected with the parent and profile. A profile name or its instructions alone
+  never grants eligibility (INV-RUN-8).
 
 ## Invariants
 
@@ -78,9 +93,11 @@ callable result for one run.
   parts are required and refuse to be switched off; switching something on grants no permission.
   A side-question run also has no variant plugin code or tool guidance (PROP-0019).
 - **INV-PLG-10** Every Harness-managed built-in feature is registered by `BuiltinPluginRegistry`.
-  Its descriptor, world tools, server handlers and terminal command metadata share one owner. A
-  module's world part releases resources through the existing session and Harness lifecycle. This
-  registry does not load third-party Pi code or bypass its trust checks.
+  Its descriptor, world tools, server handlers and any plugin-owned terminal commands share one
+  owner. First-class Harness terminal commands are registered by the terminal command registry and
+  do not depend on a feature plugin's command metadata or attachment state. A module's world part
+  releases resources through the existing session and Harness lifecycle. This registry does not
+  load third-party Pi code or bypass its trust checks.
 - **INV-PLG-11** Built-in plugin categories are a documentation ownership taxonomy. They are not a
   `PluginDescriptor` field, a public response field or a second attachment scope.
 - **INV-CAP-1** A capability set only narrows. `intersect` never adds access; a run's set is
@@ -119,7 +136,7 @@ metadata or availability:
 | Memory | Wiki, history and trajectory | Storage and run records remain Foundation-owned services |
 | Automation | Subagents, ask-user, checklist, lessons and refinement | Run lifecycle, capability narrowing and approval gate remain Foundation-owned |
 | Integrations | Connected apps/MCP and Hub | Connector credentials and plugin installation remain behind Foundation services |
-| Operations | Doctor and worktrees | Diagnostics and repository operations remain Harness-managed services |
+| Operations | Doctor, worktrees and usage | Diagnostics, repository operations and usage analytics remain Harness-managed services |
 
 ## Terminal resource inspection
 

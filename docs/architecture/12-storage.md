@@ -25,10 +25,12 @@ index.
   plugins/<name>/      packages kept with the data   (06)
   trash/plugins/       removed packages   (06)
   hub/                 installed documents and provenance   (09)
-  runs/<id>/           run.json, events.jsonl, owner.json, subagents.json, context.json, caller.json, capabilities.json, mcp-context.json   (02)
+  runs/<id>/           run.json (including optional legacy-compatible workspaceRoot), events.jsonl, owner.json, subagents.json, context.json, caller.json, capabilities.json, mcp-context.json   (02)
+  # `checkpoint` and `heartbeat` are run events in the same events.jsonl; a bounded reply emits one
+  # heartbeat per 30 seconds (about 60 KB an hour) and no side file (PROP-0041).
   config/              plugin-attachments.json and settings the harness reads   (06)
   agents/<name>.md     a person's global agent profiles; agents/profiles.ts owns it   (02, PROP-0029)
-  index.sqlite         derived index (FTS5)   (08)
+  index.sqlite         derived index (FTS5, recall, usage ledger)   (08, PROP-0042)
   projects.json        read only: the application owns it
 
 <state dir>/
@@ -47,6 +49,25 @@ index.
   notes-bridge.json    the page bridge's port and token, kept so an app's script tag stays valid   (13, PROP-0018)
   harness.log          standalone terminal diagnostics
 ```
+
+The interactive profile is a credential-free, versioned selection file at
+`~/.xingular-harness/profile.json`, owned by `src/core/interactiveProfile.ts`. It selects the
+interactive defaults: data root, state directory, default variant scope, and a credential-backend
+descriptor. With no selected profile, the defaults are `~/.xingular-harness/data`,
+`~/.xingular-harness/state`, scope `default`, and the state directory's owner-only file secret
+store. A host may provide a stable host-backed secret adapter instead; the profile stores only its
+identifier, never credentials. If that adapter is unavailable, startup fails rather than falling
+back to a different store.
+
+Explicit roots or variant scopes take precedence over the selected profile; the selected profile
+precedes caller-supplied legacy defaults. Explicit adoption creates the profile file without
+replacing an existing selection and does not create, copy, merge, or migrate data roots or
+credentials. Existing account, variant, and session pins remain authoritative for their saved
+runs; the profile selects defaults for new interactive work. `scripts/dev.mjs` and a development
+interactive profile use `~/.xingular-harness-dev/{data,state}` and a separate profile file, not the
+production defaults. The standalone development launch always selects a file SecretStore under its
+resolved development state directory, even if that profile names a host backend; it does not use or
+alter host credentials.
 
 Side-question runs use the ordinary `runs/<id>/` records. Their temporary Pi native history is
 created under the operating system temporary directory and removed when the run ends; it is not
@@ -68,6 +89,13 @@ retained in the data root or state directory.
   as it was when a migration fails, and the failure is reported in `Recovery.migrationError`.
 - **INV-STO-6** Writes of shared JSON files are atomic (`core/fs.ts::atomicWrite`, `writeJson`).
 - **INV-STO-7** Files holding trust or secrets are owner-only (`0600`).
+- **INV-STO-8** `core/interactiveProfile.ts` owns the credential-free selection of interactive
+  roots, default variant scope, and credential-backend descriptor. Explicit roots/scopes win; a
+  selected profile wins over legacy defaults. Adoption never replaces a selection or merges roots,
+  and a missing host credential adapter never silently downgrades to a file store. The standalone
+  development launch explicitly selects its isolated file store; this is not a fallback for normal
+  interactive profiles. Profile defaults do not replace the account, variant, or other pins on saved
+  runs.
 
 ## Source map
 

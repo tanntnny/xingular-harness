@@ -1,16 +1,19 @@
 // Starting a session turn: the account, the run record, the compiled prompt, the tools and
 // their gate, then Pi. Everything before Pi answers is synchronous with the caller; the reply
 // itself streams as run events.
+import { randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync } from 'node:fs'
-import { join } from 'node:path'
+import { isAbsolute, join } from 'node:path'
 
 import type { Accounts } from '../accounts/accounts'
 import { log } from '../core/bus'
 import type { HarnessEnv } from '../core/env'
 import { HarnessError, invalid } from '../core/errors'
+import { formatBashCommandForApproval } from '../core/workspaceBashTool'
 import { capabilitySet as parseCapabilitySet, freezeRun } from '../capabilities/runSnapshot'
 import type { CapabilitySet } from '../capabilities/types'
 import { now, writeJson } from '../core/fs'
+import { resolveWorkspaceRoot, verifyWorkspaceRoot } from '../core/workspace'
 import { takeChars } from '../core/text'
 import type { CallerContext } from '../core/caller'
 import type { Plugins } from '../plugins/plugins'
@@ -23,20 +26,25 @@ import { materialise, type VariantChoice, type Materialised } from '../variant/m
 import type { VariantTrust } from '../variant/trust'
 import { ASK_USER } from '../tools/askUser'
 import { CHECKLIST_WRITE } from '../tools/checklist'
+import { CHECKPOINT_WRITE, checkpointOf } from '../tools/checkpoint'
 import { SESSION_NAME, sessionNameTool } from '../tools/sessionName'
 import { DEFAULT_TOOL_NAMES } from '../tools/definitions'
+import { GET_CAPABILITIES, getCapabilitiesTool } from '../tools/getCapabilities'
 import type { ToolProvider, ToolSession, ToolSpec } from '../tools/types'
 import type { DispatchEnv } from '../tools/dispatch'
-import type { RunRecord } from './contracts'
+import { isActiveStatus, type RunRecord } from './contracts'
 import { SPAWN_SUBAGENT, WAIT_SUBAGENTS, subagentDepth, subagentHistory, subagentNesting, type SubagentInput, type SubagentOptions } from './subagents'
 import type { Subagents } from './subagentService'
 import { selectHistory } from './history'
 import { runLineageJoin } from './lineageJoin'
+import { compactionCheckpoint, COMPACTION_CHECKPOINT_EXTENSION } from './compactionCheckpoint'
+import { createSliceState, parseWorkSlice, sliceOf, workSliceGuard, WorkSliceError, WORK_SLICE_EXTENSION, type SlicePolicy, type WorkSliceInput } from './workSlice'
 import type { ToolPolicy } from './policy'
 import type { ActiveRun, RunRegistry } from './registry'
-import { piSessionFactory, runTurn, summarize, type Effort, type PiSessionLike, type SessionFactory, type ToolGate, type TurnParams } from './runner'
-import { loadRun, runDir, saveRun, updateRun } from './runStore'
-import { planRefusal, planSection } from './planMode'
+import { piSessionFactory, runTurn, summarize, type Effort, type PiSessionLike, type SessionCommand, type SessionFactory, type ToolGate, type TurnParams } from './runner'
+import { loadRun, readEvents, runDir, saveRun, updateRun } from './runStore'
+import { combineWorkspaceScope, inspectRunWorkspaceWrite } from './workspaceBoundary'
+import { PLAN_INSTRUCTIONS, PLAN_RESEARCH_SUBAGENT_INSTRUCTIONS, planRefusal, planSection } from './planMode'
 import { CONTINUATION_SECTION_ID, continuationOf, continuationSection, type Continuation } from './continuation'
 import { deliveredSnapshot } from '../prompt/compile'
 import { profileSection } from '../agents/profiles'
@@ -103,9 +111,37 @@ export interface SessionRunInput {
   /**
    * Continue a run that stopped before it finished: the earlier run's id. The new run reopens its
    * native history and pins its account, variant version and capability set, and the model is told
-   * where it stopped. The harness never does this by itself; the application asks for it.
+   * where it stopped. A work-slice policy may also ask for it when a reply reaches its budget.
    */
   continueFrom?: string | null
+  /**
+   * Bound this reply (PROP-0041): a tool-call, minute and token budget, then a checkpoint and a
+   * continuation. Absent uses the foundation defaults; the policy is carried to the next slice.
+   */
+  workSlice?: WorkSliceInput
+  /**
+   * Run a session command instead of sending `text`: compact the context, navigate the history
+   * with a summary of the branch left behind, or export it to HTML. It pins the account like a turn.
+   */
+  command?: SessionCommand
+}
+
+/** A session command acts on a saved conversation and is never combined with a request of its own. */
+function checkCommand(command: SessionCommand, historyFile: string | null, input: SessionRunInput): void {
+  if (!historyFile) throw invalid('There is no saved conversation for this command yet.')
+  if (input.plan || input.continueFrom || input.automatic || input.initialBashCommand != null || input.images?.length) {
+    throw invalid('A session command runs on its own, without plan mode, a continuation, Bash or images.')
+  }
+  switch (command?.name) {
+    case 'compact': return
+    case 'navigate':
+      if (typeof command.entryId !== 'string' || !command.entryId) throw invalid('navigate needs the entry to go to.')
+      return
+    case 'export':
+      if (typeof command.path !== 'string' || !isAbsolute(command.path) || !command.path.endsWith('.html')) throw invalid('export needs an absolute .html path.')
+      return
+    default: throw invalid('Unknown session command.')
+  }
 }
 
 const CONTINUE_TEXT = 'Continue from where you stopped.'
@@ -152,6 +188,8 @@ export interface SessionsOptions {
   plugins?: Plugins
   /** Resolves the caller's capability set from the harness's stores. */
   resolveCapabilities?: (caller: CallerContext, tools: readonly string[], cwd: string) => Promise<CapabilitySet>
+  /** Whether the run's explicit Full Permission switch is enabled (remembered tool grants do not count). */
+  fullPermission?: (run: RunRecord) => boolean | Promise<boolean>
   factory?: SessionFactory
   /** Which plugin code in variants a person trusted. */
   trust?: VariantTrust | null
@@ -205,16 +243,25 @@ export class Sessions {
     return this.gate(run, caller, new Set(), true)
   }
 
-  private gate(run: ActiveRun, caller: CallerContext, gated: Set<string>, diagnostic = false): ToolGate {
+  private gate(run: ActiveRun, caller: CallerContext, gated: Set<string>, diagnostic = false, automatic = false): ToolGate {
     const { policy } = this.options
     return {
       ask: (names) => {
         for (const name of names) gated.add(name)
       },
       check: async (tool, args) => {
-        const call = { run: loadRun(this.env.root, run.runId), caller, tool, args }
-        const scope = (await policy.scope?.(call)) ?? { allowed: true }
-        if (!scope.allowed && (scope.automatic || !scope.requiresApproval)) return scope.reason ?? 'Outside the approved work scope.'
+        let record: RunRecord
+        let inspection
+        try {
+          record = loadRun(this.env.root, run.runId)
+          inspection = inspectRunWorkspaceWrite(record, tool, args)
+        } catch (error) {
+          return error instanceof Error ? error.message : 'The active project workspace could not be verified.'
+        }
+        const call = { run: record, caller, tool, args: inspection.input }
+        const hostScope = (await policy.scope?.(call)) ?? { allowed: true }
+        const scope = combineWorkspaceScope(hostScope, inspection)
+        if (!scope.allowed && (scope.automatic || (automatic && inspection.outside) || !scope.requiresApproval)) return scope.reason ?? 'Outside the approved work scope.'
         try {
           await policy.authorize?.(call)
         } catch (error) {
@@ -225,11 +272,11 @@ export class Sessions {
         // Refinement and reflection runs have nobody to ask: what would need a person is refused, never queued.
         if (call.run.trigger === 'probe' || call.run.trigger === 'improver') return scope.reason ? `Refused in a refinement run: ${scope.reason}` : 'Refused in a refinement run: this call needs a person to approve it.'
         if (call.run.trigger === 'reflection') return scope.reason ? `Refused in a reflection run: ${scope.reason}` : 'Refused in a reflection run: this call needs a person to approve it.'
-        // A call outside the scope is approved one at a time; a gated tool may be remembered, unless only a person may decide it.
+        const boundaryAction = inspection.outside ? `${inspection.reason} ${summarize(call.args, tool)}` : summarize(call.args)
         const decision = await run.requestApproval({
           target: tool,
-          action: summarize(args),
-          operation: { tool, args: (args && typeof args === 'object' ? args : {}) as Record<string, unknown> },
+          action: boundaryAction,
+          operation: { tool, args: (call.args && typeof call.args === 'object' ? call.args : {}) as Record<string, unknown> },
           rememberable: scope.allowed && !scope.humanOnly,
           standing: scope.humanOnly ? (scope.allowGlobalApproval ? 'switch' : 'none') : undefined
         })
@@ -240,6 +287,55 @@ export class Sessions {
           return error instanceof Error ? error.message : 'Tool was disabled while waiting.'
         }
         return null
+      },
+      workspaceBoundaryBypass: async (tool, args) => {
+        if (diagnostic || automatic || tool.toLowerCase() !== 'bash') return false
+        const record = loadRun(this.env.root, run.runId)
+        if (record.trigger != null && record.trigger !== 'user') return false
+        if (!await this.options.fullPermission?.(record)) return false
+        const call = { run: record, caller, tool, args }
+        const scope = (await policy.scope?.(call)) ?? { allowed: true }
+        if (scope.automatic || (!scope.allowed && !scope.requiresApproval) || (scope.humanOnly && !scope.allowGlobalApproval)) return false
+        try {
+          await policy.authorize?.(call)
+          return true
+        } catch {
+          return false
+        }
+      },
+      requestWorkspaceWriteScope: async (tool, args, reason) => {
+        if (diagnostic || automatic || tool.toLowerCase() !== 'bash') return false
+        const record = loadRun(this.env.root, run.runId)
+        if (!isActiveStatus(record.status) || (record.trigger != null && record.trigger !== 'user')) return false
+        const operationArgs = (args && typeof args === 'object' && !Array.isArray(args) ? args : {}) as Record<string, unknown>
+        if (operationArgs.workspaceWriteScope !== 'outside' || typeof operationArgs.command !== 'string' || !operationArgs.command) return false
+        const call = { run: record, caller, tool, args: operationArgs }
+        const scope = (await policy.scope?.(call)) ?? { allowed: true }
+        if (scope.automatic || (!scope.allowed && !scope.requiresApproval)) return false
+        try {
+          await policy.authorize?.(call)
+        } catch {
+          return false
+        }
+        const decision = await run.requestApproval({
+          target: 'workspace-write',
+          action: `${reason}\n\nCommand to be run once after approval:\n${formatBashCommandForApproval(operationArgs.command)}`,
+          operation: { tool, args: operationArgs },
+          rememberable: false,
+          standing: 'none'
+        })
+        if (decision !== 'approved') return false
+        const currentRecord = loadRun(this.env.root, run.runId)
+        if (!isActiveStatus(currentRecord.status) || (currentRecord.trigger != null && currentRecord.trigger !== 'user')) return false
+        const currentCall = { run: currentRecord, caller, tool, args: operationArgs }
+        const currentScope = (await policy.scope?.(currentCall)) ?? { allowed: true }
+        if (currentScope.automatic || (!currentScope.allowed && !currentScope.requiresApproval)) return false
+        try {
+          await policy.authorize?.(currentCall)
+          return true
+        } catch {
+          return false
+        }
       }
     }
   }
@@ -293,6 +389,44 @@ export class Sessions {
     return { release }
   }
 
+  /**
+   * Starts the next slice when a reply stopped at its work-slice boundary (PROP-0041). Never for
+   * unattended, plan, subagent, command or worktree runs, after a blocked or fruitless slice, or
+   * past the policy's slice cap. The earlier record is never reopened; this is a new run with the
+   * same pins, exactly as an application-asked continuation.
+   */
+  private async continueSlice(input: { root: string; runId: string; source: SessionRunInput; policy: SlicePolicy }): Promise<void> {
+    const { root, runId, source, policy } = input
+    if (!policy.enabled || !policy.continue || policy.maxSlices <= 0) return
+    if (source.automatic || source.plan || source.command || source.run.relation || source.run.worktreeId) return
+    if ((source.depth ?? 0) > 0) return
+    const record = loadRun(root, runId)
+    if (record.terminalReason !== 'slice_complete') return
+    const events = readEvents(root, runId)
+    const checkpoint = checkpointOf(events)
+    if (checkpoint?.blocked) return
+    const progressed = events.some((event) => event.type === 'file.changed')
+      || events.some((event) => {
+        const payload = event.payload as { name?: unknown; ok?: unknown }
+        return event.type === 'tool.completed' && payload.name === 'bash' && payload.ok === true
+      })
+      || (checkpoint?.done.length ?? 0) > 0
+    if (!progressed) return
+    if (sliceOf(root, runId) >= policy.maxSlices) return
+    const next: SessionRunInput = {
+      ...source,
+      run: { ...source.run, id: randomUUID(), resumedFromRunId: null, parentRunId: null, relation: null },
+      continueFrom: runId,
+      text: CONTINUE_TEXT
+    }
+    next.initialBashCommand = undefined
+    next.initialBashContext = undefined
+    next.images = undefined
+    next.resume = null
+    next.command = undefined
+    await this.run(next).catch((error) => log(`the next work slice did not start: ${error instanceof Error ? error.message : String(error)}`))
+  }
+
   private async start(input: SessionRunInput): Promise<{ runId: string; nativeSessionId: string | null }> {
     const { root } = this.env
     if ((input.initialBashCommand !== undefined && input.initialBashCommand !== null) || (input.initialBashContext !== undefined && input.initialBashContext !== null)) {
@@ -320,8 +454,20 @@ export class Sessions {
         throw invalid('An initial Bash command is available only for a new interactive user turn.')
       }
     }
+    let slicePolicy: SlicePolicy
+    try {
+      slicePolicy = parseWorkSlice(input.workSlice)
+    } catch (error) {
+      if (error instanceof WorkSliceError) throw invalid(error.message)
+      throw error
+    }
     const continuation = input.continueFrom ? continueInput(root, input) : null
+    const previousRun = continuation ? loadRun(root, continuation.runId) : null
+    const workspaceRoot = previousRun?.workspaceRoot
+      ? verifyWorkspaceRoot(previousRun.workspaceRoot)
+      : resolveWorkspaceRoot(previousRun?.workingDirectory ?? input.cwd)
     const historyFile = selectHistory({ sessionDir: input.sessionDir, resume: input.resume })
+    if (input.command) checkCommand(input.command, historyFile, input)
     const account = this.options.accounts.resolve(input.accountId, input.poolId)
     const context = this.options.accounts.context(account)
     const runId = input.run.id
@@ -337,7 +483,7 @@ export class Sessions {
     const canAskUser = pinnedAskUser || (interactivePlan && harnessToolsEnabled)
     const requestedTools = [...new Set([
       ...input.tools.allow.filter((name) => name !== SPAWN_SUBAGENT && name !== WAIT_SUBAGENTS && (name !== ASK_USER || canAskUser)),
-      ...(harnessToolsEnabled ? [...(canAskUser ? [ASK_USER] : []), CHECKLIST_WRITE, SESSION_NAME, ...DEFAULT_TOOL_NAMES] : []),
+      ...(harnessToolsEnabled ? [...(canAskUser ? [ASK_USER] : []), CHECKLIST_WRITE, CHECKPOINT_WRITE, SESSION_NAME, GET_CAPABILITIES, ...DEFAULT_TOOL_NAMES] : []),
       ...(broker?.toolNames ?? []),
       ...(canSpawn ? [SPAWN_SUBAGENT, WAIT_SUBAGENTS] : [])
     ])]
@@ -376,6 +522,7 @@ export class Sessions {
       sessionId: input.run.sessionId,
       nativeSessionId: null,
       workingDirectory: input.cwd,
+      workspaceRoot,
       worktreeId: input.run.worktreeId ?? null,
       goal: input.run.goal ?? takeChars(input.text, 4000),
       attachmentCount: input.run.attachmentCount ?? 0,
@@ -411,11 +558,11 @@ export class Sessions {
     try {
       if (!existsSync(input.sessionDir)) mkdirSync(input.sessionDir, { recursive: true })
       const launch = input.launch ?? {}
-      const plan = planSection(input.plan === true, historyFile)
+      const plan = planSection(input.plan === true, historyFile, input.run.relation === 'subagent')
       const delivered = historyFile ? deliveredSnapshot(historyFile) : null
       const resumed = continuationSection(continuation, delivered?.some((entry) => entry.id === CONTINUATION_SECTION_ID) ?? false)
       // The profiles replace the variant's own subagent list, which they include.
-      const profiles = capabilities.tools.includes(SPAWN_SUBAGENT) ? profileSection(root, input.cwd, variant?.dir ?? null) : null
+      const profiles = capabilities.tools.includes(SPAWN_SUBAGENT) ? profileSection(root, input.cwd, variant?.dir ?? null, input.plan === true) : null
       if (profiles && variant) variant = { ...variant, sections: variant.sections.filter((section) => section.id !== profiles.id) }
       const own = [plan, resumed, profiles].filter((section): section is NonNullable<typeof section> => section !== null)
       const effectiveLaunch = {
@@ -431,6 +578,9 @@ export class Sessions {
       throw error
     }
 
+    // A reply is bounded only when its checkpoint tool is part of the frozen capability set.
+    const sliceEnabled = slicePolicy.enabled && capabilities.tools.includes(CHECKPOINT_WRITE)
+    const sliceState = createSliceState(slicePolicy, sliceOf(root, runId))
     const run = this.options.runs.start(input.run.sessionId, runId)
     if (run.finished) return { runId, nativeSessionId: null }
     if (variant?.untrustedPlugins.length) {
@@ -452,6 +602,11 @@ export class Sessions {
     })
     try {
       const tools: ToolSpec[] = [
+        ...(harnessToolsEnabled && allow.includes(GET_CAPABILITIES) ? [getCapabilitiesTool(() => ({
+          capabilities,
+          active: pi?.getActiveToolNames?.() ?? [],
+          registered: pi?.getAllTools?.() ?? []
+        }))] : []),
         ...BUILTIN_PLUGIN_REGISTRY.tools({
           env: this.options.env,
           caller,
@@ -477,10 +632,13 @@ export class Sessions {
         }
       }
       const readOnly = new Set(tools.filter((tool) => tool.readOnly).map((tool) => tool.name))
+      const checkpointPlanInstructions = input.plan
+        ? () => input.run.relation === 'subagent' ? PLAN_RESEARCH_SUBAGENT_INSTRUCTIONS : PLAN_INSTRUCTIONS
+        : undefined
       const planModeSafety = new Map<string, NonNullable<ToolSpec['planModeSafe']>>()
       for (const tool of tools) if (tool.planModeSafe) planModeSafety.set(tool.name, tool.planModeSafe)
       const gate = (() => {
-        const baseGate = this.gate(run, caller, new Set((input.tools.gated ?? []).filter((name) => capabilities.tools.includes(name))))
+        const baseGate = this.gate(run, caller, new Set((input.tools.gated ?? []).filter((name) => capabilities.tools.includes(name))), false, input.automatic === true)
         return {
           ...baseGate,
           check: (name: string, args: unknown) => {
@@ -496,7 +654,9 @@ export class Sessions {
         ...(input.initialBashContext !== undefined && input.initialBashContext !== null ? { initialBashContext: input.initialBashContext } : {}),
         gate,
         restrictTools: input.run.relation === 'subagent',
+        ...(input.plan ? { plan: true } : {}),
         cwd: input.cwd,
+        workspaceRoot,
         sessionDir: input.sessionDir,
         historyFile,
         model: input.model ?? null,
@@ -509,10 +669,20 @@ export class Sessions {
         account: context,
         resources: { ids: [], skillPaths: variant?.skillPaths ?? [], promptPaths: [] },
         variantExtensions: variant?.extensionPaths ?? [],
-        inline: [...firstPartyFor(root, capabilities.contributions), runLineageJoin(root, runId), this.options.subagents.extension(runId), { name: 'image-pruning', factory: imagePruning() }],
+        inline: [
+          ...firstPartyFor(root, capabilities.contributions),
+          runLineageJoin(root, runId),
+          this.options.subagents.extension(runId),
+          { name: 'image-pruning', factory: imagePruning() },
+          { name: COMPACTION_CHECKPOINT_EXTENSION, factory: compactionCheckpoint({ initialChecklist: continuation?.checklist, planInstructions: checkpointPlanInstructions }) },
+          ...(sliceEnabled ? [{ name: WORK_SLICE_EXTENSION, factory: workSliceGuard({ policy: slicePolicy, state: sliceState }) }] : [])
+        ],
         ...(plugins ? { plugins: { loading: () => plugins.loading({ cwd: input.cwd, agentDir: context.configDir, install: true, caller: { agentId: caller.agentId ?? null, projectId: caller.projectId ?? null }, contributions: capabilities.contributions }), loaded: (extensions) => plugins.loaded(extensions) } } : {}),
         system,
-        update
+        ...(sliceEnabled ? { slice: { state: sliceState, maxToolCalls: slicePolicy.maxToolCalls } } : {}),
+        // A command sends no request of its own, so the context update waits for the next turn.
+        update: input.command ? null : update,
+        ...(input.command ? { command: input.command } : {})
       }
       pi = await this.factory({
         params,
@@ -539,7 +709,7 @@ export class Sessions {
       this.options.subagents.register(input, account.id, capabilities, Boolean(pi.sessionManager))
       if (pi.model?.id && pi.model.provider) this.options.subagents.resolvedModel(runId, `${pi.model.provider}/${pi.model.id}`, pi.thinkingLevel)
       params.settle = () => this.options.subagents.verify(runId, opened.sessionManager ? subagentHistory(opened.sessionManager.getBranch()) : undefined)
-      void runTurn(run, pi, params)
+      void runTurn(run, pi, params).then(() => (sliceEnabled && !input.command ? this.continueSlice({ root, runId, source: input, policy: slicePolicy }) : undefined))
       return { runId, nativeSessionId: pi.sessionId }
     } catch (error) {
       pi?.dispose()

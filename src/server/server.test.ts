@@ -83,7 +83,7 @@ describe('the harness served to a host', () => {
     serve(harness, transport)
     const cwd = mkdtempSync(join(tmpdir(), 'hs-project-'))
     const listed = await request<{ profiles: { name: string; source: string }[] }>('agents.list', { cwd })
-    expect(listed.profiles.map((profile) => profile.name)).toEqual(['explorer', 'worker'])
+    expect(listed.profiles.map((profile) => profile.name)).toEqual(['explorer', 'researcher', 'worker'])
     const made = await request<{ name: string; source: string; path: string }>('agents.create', { cwd, name: 'scout', scope: 'project', from: 'explorer' })
     expect(made).toMatchObject({ name: 'scout', source: 'project', path: join(cwd, '.xingular', 'agents', 'scout.md') })
     expect(await request('agents.get', { cwd, name: 'scout' })).toMatchObject({ name: 'scout', color: 'cyan' })

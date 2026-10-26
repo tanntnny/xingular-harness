@@ -3,12 +3,13 @@ import { describe, expect, it } from 'vitest'
 import { leadingSlashCommandRange, splitUserMessageText } from './slashCommandHighlight'
 
 describe('slash command highlighting', () => {
-  const names = ['help', 'side', 'plugin:notes', 'review', 'skill:diagnose']
+  const names = ['help', 'side', 'annotate:', 'annotate:notes', 'annotate:annotate', 'review', 'skill:diagnose']
 
   it('recognizes a registered leading token after whitespace and excludes its arguments', () => {
-    expect(leadingSlashCommandRange('  /plugin:notes inspect this', names)).toEqual({
-      start: 2, end: 15, name: 'plugin:notes'
+    expect(leadingSlashCommandRange('  /annotate:notes inspect this', names)).toEqual({
+      start: 2, end: 17, name: 'annotate:notes'
     })
+    expect(leadingSlashCommandRange('/annotate:', names)).toEqual({ start: 0, end: 10, name: 'annotate:' })
   })
 
   it('keeps unknown, partial and non-leading slash tokens unrecognized', () => {

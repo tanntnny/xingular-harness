@@ -7,8 +7,11 @@ import type { ChildProcess, spawn as nodeSpawn } from 'node:child_process'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { memorySecretStore } from '../accounts/secrets'
+import { adoptInteractiveProfile, interactiveProfilePath, type InteractiveProfile } from '../core/interactiveProfile'
 import { createHarness, type Harness, type HarnessOptions } from '../harness'
-import { defaultAssets } from './terminals'
+import * as variantStore from '../variant/store'
+import { seedVariant } from '../variant/seed'
+import { defaultAssets, type TerminalPrepareInput } from './terminals'
 import { parseStandaloneOptions, runStandaloneTerminal, standaloneArguments } from './standalone'
 import { socketPath } from './socket'
 import { SOCKET_ENV, TOKEN_ENV, socketCall } from './client'
@@ -42,9 +45,24 @@ function fakeSpawn(onSpawn: (program: string, args: string[], options: { cwd?: s
 }
 
 function harnessFactory(options: HarnessOptions): Harness {
-  const harness = createHarness({ ...options, secrets: memorySecretStore() })
+  const harness = createHarness({ ...options, secrets: options.secrets ?? memorySecretStore() })
   harnesses.push(harness)
   return harness
+}
+
+function makeProfile(home: string, overrides: Partial<InteractiveProfile> = {}): InteractiveProfile {
+  return {
+    version: 1,
+    dataRoot: join(home, 'profile-data'),
+    stateDir: join(home, 'profile-state'),
+    defaultVariantScope: 'profile-default',
+    secretBackend: { kind: 'file', path: join(home, 'selected-secrets', 'credentials.json') },
+    ...overrides
+  }
+}
+
+function saveProfile(home: string, profile: InteractiveProfile): void {
+  adoptInteractiveProfile(profile, { home })
 }
 
 describe('standalone terminal startup', () => {
@@ -66,6 +84,156 @@ describe('standalone terminal startup', () => {
     })
     expect(() => parseStandaloneOptions(['--data'])).toThrow('--data needs a directory path.')
     expect(() => parseStandaloneOptions(['--model', 'unknown'])).toThrow('Unknown standalone option: --model')
+  })
+
+  it('resolves profile roots while letting explicit data and state roots win independently', () => {
+    const home = temporaryDirectory('harness-profile-roots-')
+    const cwd = temporaryDirectory('harness-profile-cwd-')
+    const profile = makeProfile(home)
+    saveProfile(home, profile)
+
+    expect(existsSync(interactiveProfilePath(home))).toBe(true)
+    expect(parseStandaloneOptions([], home, cwd)).toEqual({ dataRoot: profile.dataRoot, stateDir: profile.stateDir })
+    expect(parseStandaloneOptions(['--data', './explicit-data'], home, cwd)).toEqual({ dataRoot: join(cwd, 'explicit-data'), stateDir: profile.stateDir })
+    expect(parseStandaloneOptions(['--state', './explicit-state'], home, cwd)).toEqual({ dataRoot: profile.dataRoot, stateDir: join(cwd, 'explicit-state') })
+  })
+
+  it('keeps npm run dev roots, scope and credentials isolated from the installed profile', async () => {
+    const home = temporaryDirectory('harness-profile-dev-')
+    const cwd = temporaryDirectory('harness-profile-dev-cwd-')
+    const installed = makeProfile(home, { secretBackend: { kind: 'host', id: 'installed-only' } })
+    saveProfile(home, installed)
+    const devRoot = join(home, '.xingular-harness-dev')
+    const dataRoot = join(devRoot, 'data')
+    const stateDir = join(devRoot, 'state')
+    const developmentProfile = makeProfile(home, {
+      defaultVariantScope: 'default',
+      secretBackend: { kind: 'host', id: 'dev-host-only' }
+    })
+    adoptInteractiveProfile(developmentProfile, { configPath: join(devRoot, 'profile.json') })
+    let received: HarnessOptions | undefined
+    let prepared: TerminalPrepareInput | undefined
+    const createHarness = (options: HarnessOptions): Harness => {
+      received = options
+      const harness = harnessFactory(options)
+      const prepare = harness.terminals.prepare.bind(harness.terminals)
+      vi.spyOn(harness.terminals, 'prepare').mockImplementation(async input => {
+        prepared = structuredClone(input)
+        return prepare(input)
+      })
+      return harness
+    }
+
+    await runStandaloneTerminal(['--data', dataRoot, '--state', stateDir], {
+      home, cwd, stdinIsTTY: true, stdoutIsTTY: true, createHarness, spawn: fakeSpawn(() => undefined)
+    })
+    await received!.secrets!.set('fake-account/test', 'fake-credential')
+
+    expect(received).toMatchObject({ dataRoot, stateDir })
+    expect(prepared?.variant).toEqual({ scope: 'default' })
+    expect(variantStore.head(dataRoot, 'default')).not.toBeNull()
+    expect(variantStore.head(dataRoot, installed.defaultVariantScope)).toBeNull()
+    expect(existsSync(join(stateDir, 'secrets.json'))).toBe(true)
+    expect(existsSync(join(developmentProfile.stateDir, 'secrets.json'))).toBe(false)
+    expect(installed.secretBackend).toEqual({ kind: 'host', id: 'installed-only' })
+    expect(developmentProfile.secretBackend).toEqual({ kind: 'host', id: 'dev-host-only' })
+    expect(existsSync(join(installed.stateDir, 'secrets.json'))).toBe(false)
+  })
+
+  it('runs on the profile default scope unless --variant selects another scope', async () => {
+    const home = temporaryDirectory('harness-profile-variant-')
+    const cwd = temporaryDirectory('harness-profile-variant-cwd-')
+    const profile = makeProfile(home)
+    saveProfile(home, profile)
+    const explicitData = join(cwd, 'explicit-data')
+    const explicitScope = 'manual-scope'
+    variantStore.seed(profile.dataRoot, explicitScope, seedVariant(profile.dataRoot, {}))
+
+    const harnessOptions: HarnessOptions[] = []
+    const prepared: TerminalPrepareInput[] = []
+    const createHarness = (options: HarnessOptions): Harness => {
+      harnessOptions.push(options)
+      const harness = harnessFactory(options)
+      const prepare = harness.terminals.prepare.bind(harness.terminals)
+      vi.spyOn(harness.terminals, 'prepare').mockImplementation(async input => {
+        prepared.push(structuredClone(input))
+        return prepare(input)
+      })
+      return harness
+    }
+    const spawn = fakeSpawn(() => undefined)
+
+    await runStandaloneTerminal(['--data', explicitData], { home, cwd, stdinIsTTY: true, stdoutIsTTY: true, createSessionId: () => 'profile-default', createHarness, spawn })
+    await runStandaloneTerminal(['--state', './explicit-state', '--variant', explicitScope], { home, cwd, stdinIsTTY: true, stdoutIsTTY: true, createSessionId: () => 'profile-explicit', createHarness, spawn })
+
+    expect(harnessOptions[0]).toMatchObject({ dataRoot: explicitData, stateDir: profile.stateDir })
+    expect(prepared[0]?.variant).toEqual({ scope: profile.defaultVariantScope })
+    expect(variantStore.head(explicitData, profile.defaultVariantScope)).not.toBeNull()
+    expect(harnessOptions[1]).toMatchObject({ dataRoot: profile.dataRoot, stateDir: join(cwd, 'explicit-state') })
+    expect(prepared[1]?.variant).toEqual({ scope: explicitScope })
+    expect(variantStore.head(profile.dataRoot, profile.defaultVariantScope)).toBeNull()
+  })
+
+  it('uses the selected profile file path for credentials', async () => {
+    const home = temporaryDirectory('harness-profile-secrets-')
+    const cwd = temporaryDirectory('harness-profile-secrets-cwd-')
+    const profile = makeProfile(home)
+    saveProfile(home, profile)
+    let received: HarnessOptions | undefined
+    const createHarness = (options: HarnessOptions): Harness => {
+      received = options
+      return harnessFactory(options)
+    }
+
+    await runStandaloneTerminal([], { home, cwd, stdinIsTTY: true, stdoutIsTTY: true, createHarness, spawn: fakeSpawn(() => undefined) })
+    await received!.secrets!.set('fake-account/test', 'fake-credential')
+
+    expect(existsSync(profile.secretBackend.kind === 'file' ? profile.secretBackend.path : '')).toBe(true)
+    expect(existsSync(join(profile.stateDir, 'secrets.json'))).toBe(false)
+  })
+
+  it('fails closed before startup when a selected host credential backend has no adapter', async () => {
+    const home = temporaryDirectory('harness-profile-host-secrets-')
+    const cwd = temporaryDirectory('harness-profile-host-secrets-cwd-')
+    const profile = makeProfile(home, { secretBackend: { kind: 'host', id: 'missing-adapter' } })
+    saveProfile(home, profile)
+    const createHarness = vi.fn(harnessFactory)
+
+    await expect(runStandaloneTerminal([], { home, cwd, stdinIsTTY: true, stdoutIsTTY: true, createHarness, spawn: fakeSpawn(() => undefined) }))
+      .rejects.toThrow('selected credential backend is unavailable')
+    expect(createHarness).not.toHaveBeenCalled()
+    expect(existsSync(profile.stateDir)).toBe(false)
+  })
+
+  it('seeds the profile scope only once and leaves a later head untouched', async () => {
+    const home = temporaryDirectory('harness-profile-seed-')
+    const cwd = temporaryDirectory('harness-profile-seed-cwd-')
+    const profile = makeProfile(home)
+    saveProfile(home, profile)
+    const run = (id: string): Promise<number> => runStandaloneTerminal([], {
+      home, cwd, stdinIsTTY: true, stdoutIsTTY: true, createSessionId: () => id,
+      createHarness: harnessFactory, spawn: fakeSpawn(() => undefined)
+    })
+
+    await run('seed-first')
+    const first = variantStore.head(profile.dataRoot, profile.defaultVariantScope)!
+    expect(variantStore.lineage(profile.dataRoot, profile.defaultVariantScope)).toHaveLength(1)
+    await run('seed-repeat')
+    expect(variantStore.head(profile.dataRoot, profile.defaultVariantScope)?.fingerprint).toBe(first.fingerprint)
+    expect(variantStore.lineage(profile.dataRoot, profile.defaultVariantScope)).toHaveLength(1)
+
+    const existing = variantStore.headVariant(profile.dataRoot, profile.defaultVariantScope)!.variant
+    const changed = { ...existing, 'systemprompt.md': 'An existing pinned profile head.\n' }
+    const saved = variantStore.commit(profile.dataRoot, profile.defaultVariantScope, changed, { kind: 'edit', note: 'test existing head' })
+    await run('seed-preserve-head')
+    expect(variantStore.head(profile.dataRoot, profile.defaultVariantScope)?.fingerprint).toBe(saved.fingerprint)
+    expect(variantStore.exists(profile.dataRoot, profile.defaultVariantScope, first.fingerprint)).toBe(true)
+    expect(variantStore.lineage(profile.dataRoot, profile.defaultVariantScope)).toHaveLength(2)
+  })
+
+  it('runs on a named variant scope with --variant, as a host agent of that scope does', () => {
+    expect(parseStandaloneOptions(['--variant', 'assistant', '--data', '/d'], '/home/test', '/work/project')).toMatchObject({ variant: 'assistant', dataRoot: '/d' })
+    expect(() => parseStandaloneOptions(['--variant'])).toThrow('--variant needs a variant scope.')
   })
 
   it('starts in a managed worktree with --worktree or -w, optionally named', () => {

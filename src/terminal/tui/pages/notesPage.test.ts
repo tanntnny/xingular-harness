@@ -42,13 +42,14 @@ function setup(notes: Note[], answers: { select?: string[]; confirm?: boolean[];
   return { page, options, calls }
 }
 
-describe('the Page notes page', () => {
+describe('the Web annotations page', () => {
   it('lists notes with what they point at and whether this session can read them', async () => {
     const { page } = setup([note('n1', { grants: [{ principal: { sessionId: 's1' }, grantedAt: '' }] }), note('n2', { status: 'resolved', target: { kind: 'page' } })])
     page.activate()
     await vi.waitFor(() => expect(page.rows()).toHaveLength(3))
     const text = page.render(110, 20).map(stripTerminalSequences).join('\n')
-    expect(text).toContain('New note on a page')
+    expect(text).toContain('New web annotation')
+    expect(page.tabs()).toEqual([{ id: 'notes', title: 'Web annotations' }])
     expect(text).toContain('“quick brown” · open · shared here')
     expect(text).toContain('whole page · resolved')
   })

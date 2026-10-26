@@ -59,7 +59,6 @@ describe('a native SDK runtime on the actual Harness terminal socket', () => {
     const { runtime } = await setup()
     const session = runtime.session
     expect(session.getActiveToolNames()).not.toContain('ask_user')
-    expect(session.getActiveToolNames()).not.toContain('ask_user_question')
     let planTools: string[] = []
     let failPlan = false
     const prompt = vi.spyOn(session, 'prompt').mockImplementation(async () => {
@@ -70,14 +69,14 @@ describe('a native SDK runtime on the actual Harness terminal socket', () => {
     await runtime.submitPlan('Decide which option to choose')
 
     expect(planTools).toContain('ask_user')
-    expect(planTools).toContain('ask_user_question')
+    expect(planTools).toContain('spawn_subagent')
+    expect(planTools).toContain('wait_subagents')
+    expect(session.getActiveToolNames()).toContain('spawn_subagent')
     expect(session.getActiveToolNames()).not.toContain('ask_user')
-    expect(session.getActiveToolNames()).not.toContain('ask_user_question')
 
     failPlan = true
     await expect(runtime.submitPlan('Try again and fail')).rejects.toThrow('Plan failed')
     expect(session.getActiveToolNames()).not.toContain('ask_user')
-    expect(session.getActiveToolNames()).not.toContain('ask_user_question')
 
     let rejectPlan!: (error: Error) => void
     prompt.mockImplementation(() => new Promise((_, reject) => { rejectPlan = reject }))
@@ -88,7 +87,37 @@ describe('a native SDK runtime on the actual Harness terminal socket', () => {
     rejectPlan(new Error('Interrupted'))
     await settled
     expect(session.getActiveToolNames()).not.toContain('ask_user')
-    expect(session.getActiveToolNames()).not.toContain('ask_user_question')
+  })
+
+  it('does not activate research delegation when the terminal disables subagents', async () => {
+    const { runtime } = await setup({ subagents: null })
+    const session = runtime.session
+    let planTools: string[] = []
+    vi.spyOn(session, 'prompt').mockImplementation(async () => { planTools = session.getActiveToolNames() })
+    await runtime.submitPlan('Inspect this without delegation')
+    expect(planTools).not.toContain('spawn_subagent')
+    expect(planTools).not.toContain('wait_subagents')
+    expect(session.getActiveToolNames()).not.toContain('spawn_subagent')
+  })
+
+  it('freezes actual callable tools even when delegation is disabled, without Pi CLI builtins', async () => {
+    const { harness, runtime } = await setup({ subagents: null, connections: false })
+    const ai = await import('@earendil-works/pi-ai')
+    const faux = ai.fauxProvider()
+    runtime.services.modelRuntime.registerNativeProvider(faux.provider)
+    await runtime.session.setModel(faux.getModel())
+    faux.setResponses([ai.fauxAssistantMessage('Offline normal'), ai.fauxAssistantMessage('Offline plan')])
+    const { loadRun } = await import('../../capabilities/runSnapshot')
+    expect(runtime.session.extensionRunner.getExtensionPaths().some(path => /inline:(llama.cpp|codemode|tool-search|mcp)>/.test(path))).toBe(false)
+    await runtime.submit('Normal without delegation')
+    const normal = readAllRuns(harness.env.root).find(run => run.goal === 'Normal without delegation')!
+    expect(loadRun(harness.env.root, normal.id)?.tools).toEqual(runtime.session.getActiveToolNames())
+    expect(loadRun(harness.env.root, normal.id)?.tools).not.toContain('ask_user')
+    await runtime.submitPlan('Plan without delegation')
+    const plan = readAllRuns(harness.env.root).find(run => run.goal === 'Plan without delegation')!
+    expect(loadRun(harness.env.root, plan.id)?.tools).toContain('ask_user')
+    expect(loadRun(harness.env.root, plan.id)?.tools).not.toContain('spawn_subagent')
+    expect(runtime.session.getActiveToolNames()).not.toContain('ask_user')
   })
 
   it('runs asynchronous children through the protected bridge and joins their results before settling', async () => {
@@ -121,8 +150,8 @@ describe('a native SDK runtime on the actual Harness terminal socket', () => {
     expect(harness.terminals.state('offline-sdk').active).toBe(false)
   })
 
-  it('exposes only the active parent run’s flat child activity through the private monitor call', async () => {
-    const { harness, runtime } = await setup()
+  it('retains the latest parent’s flat child activity until the next run', async () => {
+    const { harness } = await setup()
     await terminalCall('begin', { text: 'Observe child work' })
     const parentId = harness.runs.activeForSession('offline-sdk')!.runId
     const { loadRun, saveRun } = await import('../../sessions/runStore')
@@ -161,7 +190,21 @@ describe('a native SDK runtime on the actual Harness terminal socket', () => {
     child.finish('completed')
     nested.finish('completed')
     unrelated.finish('completed')
-    await runtime.interrupt()
+    await terminalCall('settled', { aborted: false })
+
+    const settled = await controlCall<{ children: Array<{ id: string; status: string; activity: string }> }>('terminal.subagents.monitor')
+    expect(settled.children).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'observed-child', status: 'completed', activity: 'Completed' }),
+      expect.objectContaining({ id: 'observed-nested', status: 'completed', activity: 'Completed' })
+    ]))
+    expect(settled.children.map(item => item.id)).not.toContain('unrelated-child')
+
+    await terminalCall('ready', { nativeSessionId: '/history/replaced-session.jsonl' })
+    await expect(controlCall('terminal.subagents.monitor')).resolves.toEqual({ children: [] })
+
+    await terminalCall('begin', { text: 'Next parent run' })
+    await expect(controlCall('terminal.subagents.monitor')).resolves.toEqual({ children: [] })
+    await terminalCall('settled', { aborted: true })
   })
 
   it('routes a child approval to its original run through the terminal decision controls', async () => {
@@ -194,10 +237,30 @@ describe('a native SDK runtime on the actual Harness terminal socket', () => {
     await runtime.interrupt()
   })
 
+  it('lists only eligible research profiles to plan runs and checks terminal delegation before policy', async () => {
+    const { harness, runtime } = await setup()
+    const { profiles } = await controlCall<{ profiles: { normal: string; plan: string } }>('terminal.subagents.tools')
+    expect(profiles.plan).toContain('- explorer —')
+    expect(profiles.plan).toContain('- researcher —')
+    expect(profiles.plan).not.toContain('- worker —')
+
+    await terminalCall('begin', { text: 'Plan research' })
+    const parentRunId = harness.runs.activeForSession('offline-sdk')!.runId
+    await controlCall('terminal.subagents.register', {
+      tools: ['read', 'edit', 'bash', 'spawn_subagent', 'wait_subagents'], plan: true,
+      history: { owners: [], receipts: [] }
+    })
+    await expect(controlCall<{ allowed: boolean }>('terminal.subagents.planSafe', { input: { agent: 'explorer', brief: 'Trace the login route' } })).resolves.toEqual({ allowed: true })
+    const unsafe = await controlCall<{ allowed: boolean; reason: string }>('terminal.subagents.planSafe', { input: { agent: 'worker', brief: 'Change the login route' } })
+    expect(unsafe).toMatchObject({ allowed: false, reason: expect.stringContaining('not eligible') })
+    expect(harness.runs.activeForSession('offline-sdk')!.runId).toBe(parentRunId)
+    await runtime.interrupt()
+  })
+
   it('keeps the same account and readiness after new/reload without duplicate page commands', async () => {
     const { harness, runtime } = await setup()
     expect(harness.terminals.state('offline-sdk')).toEqual({ ready: true, dirty: false, active: false })
-    expect(runtime.session.extensionRunner.getExtensionPaths()).toEqual(['<inline:harness-terminal-bridge>', '<inline:harness-mode-choices>'])
+    expect(runtime.session.extensionRunner.getExtensionPaths()).toEqual(['<inline:harness-terminal-bridge>', '<inline:harness-mode-choices>', '<inline:harness-run-capabilities>'])
     expect(runtime.services.agentDir).toContain(harness.accounts.dir)
     for (const command of ['accounts', 'plugins', 'hub']) expect(runtime.session.extensionRunner.getCommand(command)).toBeUndefined()
     await runtime.newSession()
@@ -237,23 +300,6 @@ describe('a native SDK runtime on the actual Harness terminal socket', () => {
     await expect(controlCall('terminal.pending')).resolves.toEqual({ requests: [] })
   })
 
-  it('requires choices and a recommendation for the single-question terminal tool', async () => {
-    const { runtime } = await setup()
-    try {
-      const tool = runtime.session.getToolDefinition('ask_user_question')!
-      const context = runtime.session.extensionRunner.createToolContext('invalid-question', undefined)
-      await expect(tool.execute('invalid-question', { question: 'Choose?', options: [] }, undefined, undefined, context))
-        .rejects.toThrow('Every question needs at least one choice.')
-      await expect(tool.execute('invalid-question', { question: 'Choose?', options: [{ label: 'A' }] }, undefined, undefined, context))
-        .rejects.toThrow('Every question needs at least one recommended choice.')
-      await expect(tool.execute('invalid-question', {
-        summary: 'Too many words', question: 'Choose?', options: [{ label: 'A', recommended: true }]
-      }, undefined, undefined, context)).rejects.toThrow('1–2 word label')
-    } finally {
-      await runtime.dispose()
-    }
-  })
-
   it('settles an actual socket-backed pending question before disposing the native session', async () => {
     const { harness, runtime } = await setup()
     await terminalCall('begin', { text: 'Offline question bridge fixture' })
@@ -265,16 +311,16 @@ describe('a native SDK runtime on the actual Harness terminal socket', () => {
       requestPayload = event.payload
       questionReached()
     })
-    const tool = runtime.session.getToolDefinition('ask_user_question')!
-    const answer = tool.execute('offline-question', {
+    const tool = runtime.session.getToolDefinition('ask_user')!
+    const answer = tool.execute('offline-question', { questions: [{
       summary: 'Continue', question: 'Continue?', uiSketch: true,
-      options: [{ label: 'Continue', recommended: true, sketch: '+--+\n| Y|\n+--+' }]
-    }, undefined, undefined, runtime.session.extensionRunner.createToolContext('offline-question', undefined))
+      options: [{ label: 'Continue', description: 'Go on with the work.', recommended: true, sketch: '+--+\n| Y|\n+--+' }]
+    }] }, undefined, undefined, runtime.session.extensionRunner.createToolContext('offline-question', undefined))
     await reached
     expect(requestPayload).toMatchObject({ uiSketch: true, options: [{ sketch: '+--+\n| Y|\n+--+' }] })
     await expect(controlCall<{ requests: unknown[] }>('terminal.pending')).resolves.toMatchObject({ requests: [{ summary: 'Continue', uiSketch: true, options: [{ sketch: '+--+\n| Y|\n+--+' }] }] })
     await runtime.dispose()
-    await expect(answer).resolves.toMatchObject({ content: [{ type: 'text', text: '{"selected":[]}' }] })
+    await expect(answer).resolves.toMatchObject({ content: [{ type: 'text' }] })
     expect(harness.terminals.state('offline-sdk')).toEqual({ ready: false, dirty: false, active: false })
   })
 })

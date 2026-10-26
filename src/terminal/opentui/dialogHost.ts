@@ -203,6 +203,12 @@ export class PiDialogHost {
     return true
   }
 
+  /** Routes pasted text through Pi's bracketed-paste input protocol. */
+  sendPasteToOverlay(text: string): boolean {
+    if (!text) return false
+    return this.sendToOverlay(`\x1b[200~${text}\x1b[201~`)
+  }
+
   sendMouseToOverlay(event: OpenTuiMouseInput): boolean {
     const entry = this.top()
     if (!entry) return false

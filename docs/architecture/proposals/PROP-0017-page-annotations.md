@@ -3,7 +3,7 @@ id: PROP-0017
 title: Page annotations as a Harness capability, captured in the headed browser or a host's web view
 status: Implemented
 created: 2026-10-23
-updated: 2026-10-23
+updated: 2026-10-25
 affects: [INV-STO-3, INV-SRV-1, 07-tools-and-gate.md, 10-server-protocol.md, 11-terminal.md, 12-storage.md, 13-world-tools.md, 14-surfaces-and-parity.md]
 ---
 
@@ -41,7 +41,11 @@ grants, history }`, the format of the App store, so existing notes import unchan
 - `source`: `{ url, title, capturedAt }` plus an optional opaque `surface` string from the capturing
   front end.
 - `target`: `page`, `text { exact, prefix, suffix, start, end }` (Unicode code points over
-  normalised page text), or `element { tag, role, name, text, context, selector }`.
+  normalised page text), or `element { tag, role, name, text, context, selector }`. Element capture
+  prefers role/name/text; when an otherwise empty visual element has no semantic label, it may use
+  a specific CSS selector (ID, test ID, classes, and a structural path when needed), never a bare
+  tag. Resolution uses that selector only when it identifies one allowed element and the captured
+  semantics/context still agree; stale or duplicate targets remain unresolved or ambiguous.
 - `status`: `open` or `resolved`. `version` increases on every change; update and delete name the
   version they expect (compare-and-swap). The last 100 change receipts are kept, without earlier
   bodies. At most 10,000 notes.

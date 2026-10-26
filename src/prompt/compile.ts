@@ -9,15 +9,18 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 
-import { isSession, projectOf, usesCli, type CallerContext } from '../core/caller'
+import { isSession, projectOf, type CallerContext } from '../core/caller'
 import type { HarnessEnv } from '../core/env'
 import { isDir, now, readJson, safeId, writeJson } from '../core/fs'
 import { charCount, compareText, lines, takeChars } from '../core/text'
 import type { Materialised } from '../variant/materialise'
 import * as notes from '../wiki/notes'
 import { isWorldTool, WORLD_GUIDANCE } from '../world/untrusted'
-import { CHECKLIST_WRITE } from '../tools/checklist'
+import { CHECKLIST_WRITE, describeChecklist } from '../tools/checklist'
+import { CHECKPOINT_WRITE } from '../tools/checkpoint'
+import type { ChecklistItem } from '../sessions/contracts'
 import { SESSION_NAME } from '../tools/sessionName'
+import { ANNOTATIONS_GUIDANCE, STANDARD_CONNECTIONS, standardSections, type StandardSession } from './standard'
 
 const IDENTITY_BUDGET = 1000
 const WIKI_BUDGET = 2500
@@ -117,6 +120,11 @@ export interface Launch {
   toolsPointer?: string
   /** Suppresses tool guidance for a run that deliberately has no callable tools. */
   hideToolGuidance?: boolean
+  /**
+   * A person's own interactive session: adds the standard role, working folder and connections
+   * paragraph (prompt/standard.ts), so the terminal and every host word them alike.
+   */
+  standard?: StandardSession | null
   /** Recorded with the pack: the application's name for who it is for. Defaults to `agent` or `session`. */
   profile?: string
 }
@@ -139,7 +147,8 @@ export const HISTORY_GROUP = ['history_search', 'history_read', 'trajectory_sear
 export const WIKI_GROUP = ['wiki_search', 'wiki_read', 'wiki_list', 'wiki_write']
 export const NATIVE_GROUP = ['read', 'grep', 'find', 'ls', 'edit', 'write', 'bash']
 export const CONNECTION_TOOLS = ['mcp_list_tools', 'mcp_call_tool']
-const GROUP_ORDER = { History: 10, Wiki: 20, Native: 60, World: 65, Connections: 70, placeholder: 90 } as const
+export const ANNOTATION_TOOLS = ['page_notes_list', 'page_notes_read', 'page_notes_mark_fixed']
+const GROUP_ORDER = { History: 10, Wiki: 20, Native: 60, World: 65, Annotations: 67, Connections: 70, placeholder: 90 } as const
 
 /** Cuts `text` to `budget` characters at a paragraph (or line) boundary and appends `pointer`. */
 export function fit(text: string, budget: number, pointer: string): { body: string; cut: boolean } {
@@ -163,6 +172,27 @@ function section(id: string, title: string, text: string, budget: number, pointe
 /** At most `limit` characters, with an ellipsis when it was cut. */
 export function clip(text: string, limit: number): string {
   return charCount(text) <= limit ? text : `${takeChars(text, limit)}…`
+}
+
+/** A bounded, request-scoped checkpoint reintroduced after context compaction. */
+export function renderCompactionCheckpoint(input: { goal: string; checklist: readonly ChecklistItem[]; planInstructions?: string | null }): string | null {
+  if (!input.checklist.length && !input.planInstructions) return null
+  const parts = [
+    'This is current state from the active run after context compaction, not a new user request. Continue the same request. Do not infer that omitted details or decisions were settled.',
+    input.goal.trim() ? `## Current request\n\n${clip(input.goal.trim(), 1_000)}` : '',
+    input.planInstructions ? `## Active plan instructions\n\n${clip(input.planInstructions, 4_000)}` : ''
+  ].filter(Boolean)
+  if (input.checklist.length) {
+    const active = input.checklist.filter((item) => item.status !== 'completed')
+    const completed = input.checklist.filter((item) => item.status === 'completed')
+    const checklist = [
+      active.length ? `### In progress and pending\n${clip(describeChecklist(active), 2_500)}` : '',
+      completed.length ? `### Completed (${completed.length})\n${clip(describeChecklist(completed), 500)}` : ''
+    ].filter(Boolean).join('\n\n')
+    parts.push(`## Current checklist\n\n${checklist}`)
+  }
+  const body = clip(parts.join('\n\n'), 8_000)
+  return `[Harness context update — not a user message]\n\n## Compaction checkpoint\n\n${body}`
 }
 
 /** The Wiki pointer: the current project's notes, and how to read the rest. */
@@ -203,44 +233,39 @@ export interface OrderedGroup extends ToolGroup {
 export function toolGroups(context: CallerContext, launch: Launch, dataRoot?: string): OrderedGroup[] {
   const enabled = launch.tools ?? []
   const session = isSession(context)
-  const cli = usesCli(context)
   const native = NATIVE_GROUP.filter((name) => enabled.includes(name))
   const wikiTools = WIKI_GROUP.filter((name) => name !== 'wiki_write' || enabled.includes(name))
-  const readGuidance = `Read-only file tools accept absolute paths and paths beginning with ~ anywhere this process has operating-system read access. The working folder is a default location, not a repository boundary.${dataRoot ? ` The Harness data root is ${dataRoot}.` : ''}`
+  const readGuidance = `Read-only file tools accept absolute paths and paths beginning with ~ anywhere this process has operating-system read access. The working folder is a default location, not a read boundary.${dataRoot ? ` The Harness data root is ${dataRoot}.` : ''}`
+  const writeGuidance = 'Keep native file writes and Bash filesystem effects inside the active project workspace. Outside file targets require one-call approval; remembered tool grants do not satisfy it. Bash, including an initial ! command, may read as before but writes are sandboxed to the workspace unless the explicit Full Permission switch is on. Keep task outputs in the project, following an existing artifacts/ or outputs/ convention when present.'
+  // One wording for every front end: the terminal and a host give the same tools the same words (INV-PAR-1).
+  const nativeGuidance = `Files and shell: ${readGuidance} ${writeGuidance} Edits and commands still pass through the Harness gate.`
   const groups: OrderedGroup[] = [
     {
       group: 'History',
       tools: HISTORY_GROUP,
       order: GROUP_ORDER.History,
-      guidance: cli
-        ? 'History: `xagent-wiki history <query>` searches earlier conversations and runs; `xagent-wiki history-read <run id>` returns one.'
-        : 'History: history_search finds what was said and done in earlier conversations and runs, including a chat that was cleared; history_read returns one run. trajectory_search and trajectory_read show the recorded events of a run.'
+      guidance: 'History: history_search finds what was said and done in earlier conversations and runs, including a chat that was cleared; history_read returns one run. trajectory_search and trajectory_read show the recorded events of a run.'
     },
     {
       group: 'Wiki',
       tools: [...wikiTools, 'skill_load'],
       order: GROUP_ORDER.Wiki,
-      guidance: cli
-        ? 'Wiki: `xagent-wiki search <query>`, `xagent-wiki read <path>` and `xagent-wiki list [project]` read project notes; `xagent-wiki skill <name>` loads one of your skills.'
-        : `Wiki: wiki_search, wiki_read and wiki_list read project notes${wikiTools.includes('wiki_write') ? '; wiki_write saves one' : ''}. skill_load loads one of your skills by name.`
+      guidance: `Wiki: wiki_search, wiki_read and wiki_list read project notes${wikiTools.includes('wiki_write') ? '; wiki_write saves one' : ''}. skill_load loads one of your skills by name.`
     },
-    {
-      group: 'Native',
-      tools: native,
-      order: GROUP_ORDER.Native,
-      guidance: session
-        ? `Files and shell: ${readGuidance} Edits and commands still pass through the Harness gate.`
-        : `Files (${native.join(', ')}): ${readGuidance} Edits and commands still pass through the current gate.`
-    },
+    { group: 'Native', tools: native, order: GROUP_ORDER.Native, guidance: nativeGuidance },
     // Web, browser and computer tools: the harness's own, and their results are untrusted (world/untrusted.ts).
     { group: 'World', tools: enabled.filter((name) => isWorldTool(name) && !(launch.toolGroups ?? []).some((group) => group.tools.includes(name))), order: GROUP_ORDER.World, guidance: `Web, browser and screen: ${WORLD_GUIDANCE}` },
     ...(launch.toolGroups ?? []).map((group) => ({ group: group.group, tools: group.tools, order: group.order, guidance: group.guidance }))
   ]
-  if (enabled.includes(CHECKLIST_WRITE)) {
-    groups.push({
-      group: 'Progress', tools: [CHECKLIST_WRITE], order: 87,
-      guidance: 'Progress: for work with several steps, write a checklist early with checklist_write and keep it current. The user follows your work from it, and a subagent\'s checklist shows as its progress in the user\'s list of subagents.'
-    })
+  const progressTools = [CHECKLIST_WRITE, CHECKPOINT_WRITE].filter((name) => enabled.includes(name))
+  if (progressTools.length) {
+    const checklist = enabled.includes(CHECKLIST_WRITE)
+      ? 'for work with several steps, write a checklist early with checklist_write and keep it current. Before your final reply, write one final update marking every fully completed step completed; leave unfinished or blocked steps accurate. The user follows your work from it, and a subagent\'s checklist shows as its progress in the user\'s list of subagents.'
+      : ''
+    const checkpoint = enabled.includes(CHECKPOINT_WRITE)
+      ? 'a reply has a work-slice budget; when it is reached the harness asks for a handoff, and checkpoint_write records what is done, the next step, anything blocking, the files touched and the checks that matter, so the next slice starts from it instead of re-reading everything.'
+      : ''
+    groups.push({ group: 'Progress', tools: progressTools, order: 87, guidance: `Progress: ${[checklist, checkpoint].filter(Boolean).join(' ')}` })
   }
   if (enabled.includes(SESSION_NAME)) {
     groups.push({
@@ -248,13 +273,19 @@ export function toolGroups(context: CallerContext, launch: Launch, dataRoot?: st
       guidance: 'Session: use session_name to name meaningful work early with a short imperative sentence of at most six words. Revise when the overall objective changes, including a manually assigned name. Greetings alone need no name.'
     })
   }
-  if (launch.connections?.trim()) {
-    groups.push({ group: 'Connections', tools: launch.connectionTools ?? CONNECTION_TOOLS, order: GROUP_ORDER.Connections, guidance: `App tools and connected apps: ${launch.connections.trim()}` })
+  const annotations = ANNOTATION_TOOLS.filter((name) => enabled.includes(name) && !(launch.toolGroups ?? []).some((group) => group.tools.includes(name)))
+  if (annotations.length) groups.push({ group: 'Annotations', tools: annotations, order: GROUP_ORDER.Annotations, guidance: ANNOTATIONS_GUIDANCE })
+  const connections = launch.connections?.trim()
+    || (launch.standard && CONNECTION_TOOLS.some((name) => enabled.includes(name)) ? STANDARD_CONNECTIONS : '')
+  if (connections) {
+    const named = launch.connectionTools?.length ? launch.connectionTools : null
+    groups.push({ group: 'Connections', tools: named ?? (launch.standard ? CONNECTION_TOOLS.filter((name) => enabled.includes(name)) : launch.connectionTools ?? CONNECTION_TOOLS), order: GROUP_ORDER.Connections, guidance: `App tools and connected apps: ${connections}` })
   }
   const present = groups.filter((group) => group.tools.length)
-  // A session's file and shell tools are Pi's own, whatever the switches say.
-  if (session && !present.some((group) => group.group === 'Native')) {
-    present.push({ group: 'Native', tools: ['harness file and shell tools'], order: GROUP_ORDER.placeholder, guidance: `Files and shell: ${readGuidance} Edits and commands still pass through the Harness gate.` })
+  // A session's file and shell tools are Pi's own, whatever the switches say; a standard session
+  // is one whichever front end runs it.
+  if ((session || launch.standard) && !present.some((group) => group.group === 'Native')) {
+    present.push({ group: 'Native', tools: ['harness file and shell tools'], order: GROUP_ORDER.placeholder, guidance: nativeGuidance })
   }
   if (launch.hideToolGuidance) return []
   return present.map((group, index) => ({ group, index })).sort((left, right) => left.group.order - right.group.order || left.index - right.index).map(({ group }) => group)
@@ -311,6 +342,15 @@ function hostSection(host: HostSection): Section | null {
   return section(host.id, host.title, own ? `${host.pinned.text}\n${own.body}` : host.pinned.text, host.budget, host.pinned.pointer ?? host.pointer ?? '', [])
 }
 
+function projectName(root: string, context: CallerContext): { name: string } | null {
+  try {
+    const project = projectOf(root, context)
+    return project ? { name: project.name } : null
+  } catch {
+    return null
+  }
+}
+
 /** Compiles the pack for a caller. It only reads the data root. */
 export function compile(env: HarnessEnv, context: CallerContext, launch: Launch = {}, variant: Materialised | null = null): ContextPack {
   const { root } = env
@@ -326,6 +366,7 @@ export function compile(env: HarnessEnv, context: CallerContext, launch: Launch 
     { order: SECTION_ORDER.wiki, section: wiki(root, context) },
     { order: SECTION_ORDER.tools, section: launch.hideToolGuidance ? null : tools(groups, variant?.toolGuidance ?? '', launch.toolsPointer ?? '') },
     { order: SECTION_ORDER.reporting, section: section('reporting', 'Reporting your work', REPORTING_GUIDANCE, REPORTING_BUDGET, '', []) },
+    ...(launch.standard ? standardSections({ ...launch.standard, project: launch.standard.project ?? projectName(root, context) }, launch.tools ?? []).filter((own) => !(launch.sections ?? []).some((host) => host.id === own.id)) : []).map((own) => ({ order: own.order, section: hostSection(own) })),
     ...(launch.sections ?? []).map((host) => ({ order: host.order, section: hostSection(host) }))
   ].map((entry, index) => ({ ...entry, index }))
   const sections = built.sort((left, right) => left.order - right.order || left.index - right.index).flatMap((entry) => entry.section ?? [])

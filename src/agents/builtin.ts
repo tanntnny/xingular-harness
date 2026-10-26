@@ -1,5 +1,6 @@
 // The profiles every session has. A person's own file of the same name replaces one.
 import type { ProfileDefinition } from './profiles'
+import { PLAN_RESEARCH_PLUGINS } from './planResearch'
 
 const RECALL = ['history_search', 'history_read', 'trajectory_search', 'trajectory_read', 'wiki_search', 'wiki_read', 'wiki_list', 'skill_load']
 const PROGRESS = ['checklist_write', 'session_name']
@@ -33,6 +34,19 @@ export const BUILTIN_PROFILES: readonly ProfileDefinition[] = [
       '- Return conclusions, not file dumps: what you found, where, and how sure you are.'
     ].join('\n'),
     tools: ['read', 'grep', 'find', 'ls', ...PROGRESS, ...RECALL, ...WEB],
-    plugins: null, variant: null, model: null, effort: null
+    plugins: [...PLAN_RESEARCH_PLUGINS], variant: null, model: null, effort: null
+  },
+  {
+    name: 'researcher',
+    description: 'Researches code, history and public sources without changing anything.',
+    color: 'purple',
+    instructions: [
+      'You investigate the bounded research question in your brief and return concise, evidence-backed findings to the parent.',
+      '- Use read-only repository and public-web sources. Never modify files, run commands, call connected apps, or ask the user.',
+      '- Prefer primary sources. Cite repository claims as path:line and external claims with source URLs.',
+      '- Separate observed facts from inference, state uncertainty, and return only findings relevant to the brief; do not implement.'
+    ].join('\n'),
+    tools: ['read', 'grep', 'find', 'ls', ...PROGRESS, ...RECALL, ...WEB],
+    plugins: [...PLAN_RESEARCH_PLUGINS], variant: null, model: null, effort: null
   }
 ]

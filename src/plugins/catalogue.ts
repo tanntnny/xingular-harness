@@ -73,6 +73,7 @@ function fromDescriptor(descriptor: PluginDescriptor, source: PluginSource, atta
     settings: (descriptor.settings ?? []).map((setting) => ({ ...setting, value: settingValue(setting, attachments?.settings[descriptor.id]) })),
     connectorTemplates: descriptor.connectorTemplates ?? [],
     attachment: switchable ? describe(attachments!, descriptor.id, switchable.on) : null,
+    surfaces: descriptor.surfaces ?? null,
     contributions: [
       ...(descriptor.code ?? []).map((code) => contribution(descriptor.id, 'code', code.name, { description: code.description, state: on ? 'on' : 'off' })),
       ...(descriptor.sections ?? []).map((section) => contribution(descriptor.id, 'instruction', section.name, { description: section.description ?? '' })),
@@ -134,7 +135,7 @@ function foundContribution(plugin: string, item: Found, trusted: Trusted, input:
   const on = item.kind === 'hook' ? attached(input.attachments, [plugin], {}, true) : !attachment || attached(input.attachments, [id, plugin], input.caller, true)
   const state = !item.enabled || !on ? 'off' : loads(item, trusted) ? 'on' : 'untrusted'
   const rest = { state, attachment, scope: attachment ? scopeWords(attachment, projects) : null } as const
-  if (item.path.startsWith(BUILTIN_PREFIX)) return contribution(plugin, kind, name, { ...rest, description: 'Built into the pi command. A terminal session loads it; other sessions do not have it.' })
+  if (item.path.startsWith(BUILTIN_PREFIX)) return contribution(plugin, kind, name, { ...rest, description: 'Built into the pi command. Xingular sessions do not load it, in the terminal or in a host, so both offer the same tools.' })
   if (item.kind === 'extension') {
     const observed = input.registered[item.path]
     const hash = input.loading ? registrationHash(input.loading, item.path) : null

@@ -1,13 +1,16 @@
+import { spawn } from 'node:child_process'
+import { createHash, randomUUID } from 'node:crypto'
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { build } from 'esbuild'
 import { expect, test } from 'vitest'
 import type { ModelRuntime } from '@earendil-works/pi-coding-agent'
 
 import { Bus, type Notice } from '../core/bus'
 import { Accounts, classifyMessage } from './accounts'
 import { assertIsolated, configDir, ensureHome, ensureSharedDir, launchEnv, nativeConfig, sharedDir } from './env'
-import { fileSecretStore, memorySecretStore } from './secrets'
+import { fileSecretStore, memorySecretStore, secretKey, withCredentialLock } from './secrets'
 import { addAccount, audit, deriveHealth, emptyState, loadRegistry, loadState, resolve, saveRegistry, updateState, type Issue } from './store'
 
 const temp = () => mkdtempSync(join(tmpdir(), 'harness-accounts-'))
@@ -58,6 +61,28 @@ async function waitFor(predicate: () => boolean): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 5))
   }
   throw new Error('Timed out waiting for the account operation.')
+}
+
+async function waitForLong(predicate: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 2000; attempt++) {
+    if (predicate()) return
+    await new Promise((resolve) => setTimeout(resolve, 5))
+  }
+  throw new Error('Timed out waiting for child processes.')
+}
+
+function runChild(source: string, env: NodeJS.ProcessEnv): { child: ReturnType<typeof spawn>; done: Promise<void> } {
+  const child = spawn(process.execPath, ['--input-type=module', '-e', source], { env, stdio: ['ignore', 'ignore', 'pipe'] })
+  let stderr = ''
+  child.stderr.setEncoding('utf8').on('data', (chunk: string) => { stderr += chunk })
+  const done = new Promise<void>((resolve, reject) => {
+    child.once('error', reject)
+    child.once('close', (code, signal) => {
+      if (code === 0) resolve()
+      else reject(new Error(`Credential-lock child failed (${signal ?? code}): ${stderr}`))
+    })
+  })
+  return { child, done }
 }
 
 test('OpenAI login uses one persisted Harness installation device ID across accounts', async () => {
@@ -416,4 +441,114 @@ test('a file secret store keeps secrets owner-only', async () => {
   expect(statSync(path).mode & 0o777).toBe(0o600)
   await secrets.delete('a/b')
   expect(await secrets.get('a/b')).toBeNull()
+})
+
+test('provider credential modifications serialize across Harness processes', async () => {
+  const dir = temp()
+  const account = addAccount(dir, 'Cross-process test', 'apiKey')
+  const secretPath = join(dir, 'test-secrets.json')
+  const secrets = fileSecretStore(secretPath)
+  await secrets.set(secretKey(account.id, 'pi-auth/test-provider'), JSON.stringify({ type: 'oauth', history: [], count: 0 }))
+
+  const bundlePath = join(dir, 'accounts-lock-test.mjs')
+  const bundled = await build({
+    stdin: {
+      contents: "export { Accounts } from './src/accounts/accounts.ts'\nexport { fileSecretStore } from './src/accounts/secrets.ts'",
+      resolveDir: process.cwd(),
+      sourcefile: 'accounts-lock-test.ts',
+      loader: 'ts'
+    },
+    bundle: true,
+    platform: 'node',
+    format: 'esm',
+    packages: 'external',
+    write: false,
+    outfile: bundlePath
+  })
+  writeFileSync(bundlePath, bundled.outputFiles[0]!.contents, { mode: 0o600 })
+
+  const syncDir = join(dir, 'sync')
+  mkdirSync(syncDir)
+  const source = `
+    import { existsSync, writeFileSync } from 'node:fs'
+    import { join } from 'node:path'
+    import { setTimeout as delay } from 'node:timers/promises'
+    import { pathToFileURL } from 'node:url'
+    const { Accounts, fileSecretStore } = await import(pathToFileURL(process.env.TEST_BUNDLE).href)
+    const accounts = new Accounts({
+      dir: process.env.TEST_ACCOUNTS_DIR,
+      secrets: fileSecretStore(process.env.TEST_SECRET_PATH),
+      bus: { emit() {} },
+      credentialLock: { timeoutMs: 5000, pollMs: 2 }
+    })
+    const tag = process.env.TEST_TAG
+    const sync = process.env.TEST_SYNC_DIR
+    const wait = async path => { while (!existsSync(path)) await delay(5) }
+    writeFileSync(join(sync, tag + '.ready'), 'ready')
+    await wait(join(sync, 'start'))
+    writeFileSync(join(sync, tag + '.attempt'), 'attempt')
+    await accounts.modifyCredential(process.env.TEST_ACCOUNT_ID, 'test-provider', async current => {
+      writeFileSync(join(sync, tag + '.entered'), 'entered')
+      await wait(join(sync, 'release'))
+      const history = Array.isArray(current?.history) ? current.history : []
+      return { type: 'oauth', history: [...history, tag], count: Number(current?.count ?? 0) + 1 }
+    })
+  `
+  const baseEnv: NodeJS.ProcessEnv = {
+    PATH: process.env.PATH,
+    HOME: process.env.HOME,
+    TEST_BUNDLE: bundlePath,
+    TEST_ACCOUNTS_DIR: dir,
+    TEST_SECRET_PATH: secretPath,
+    TEST_ACCOUNT_ID: account.id,
+    TEST_SYNC_DIR: syncDir
+  }
+  const tags = ['left', 'right']
+  const workers = tags.map(tag => runChild(source, { ...baseEnv, TEST_TAG: tag }))
+
+  try {
+    await waitForLong(() => tags.every(tag => existsSync(join(syncDir, `${tag}.ready`))))
+    writeFileSync(join(syncDir, 'start'), 'go')
+    await waitForLong(() => tags.every(tag => existsSync(join(syncDir, `${tag}.attempt`))))
+    await waitForLong(() => tags.some(tag => existsSync(join(syncDir, `${tag}.entered`))))
+    await new Promise(resolve => setTimeout(resolve, 100))
+  } finally {
+    if (!existsSync(join(syncDir, 'start'))) writeFileSync(join(syncDir, 'start'), 'go')
+    if (!existsSync(join(syncDir, 'release'))) writeFileSync(join(syncDir, 'release'), 'go')
+    await Promise.allSettled(workers.map(worker => worker.done))
+  }
+  await Promise.all(workers.map(worker => worker.done))
+
+  const saved = JSON.parse((await secrets.get(secretKey(account.id, 'pi-auth/test-provider'))) ?? 'null')
+  expect(saved).toMatchObject({ type: 'oauth', count: 2 })
+  expect(saved.history.sort()).toEqual(tags)
+  expect(loadState(dir, account.id).piProviders).toEqual(['test-provider'])
+})
+
+test('credential locks recover dead participants and bound waiting without writing', async () => {
+  const { dir, accounts } = service()
+  const account = addAccount(dir, 'Lock test', 'apiKey')
+  const lockKey = `provider/${account.id}/test-provider`
+  const lockFolder = join(dir, '.credential-locks', createHash('sha256').update(lockKey).digest('hex'))
+  const stale = join(lockFolder, `2147483646-${randomUUID()}`)
+  mkdirSync(stale, { recursive: true })
+
+  await accounts.writeCredential(account.id, 'test-provider', { type: 'api_key', key: 'fake-test-key' })
+  expect(existsSync(stale)).toBe(false)
+
+  const heldKey = `provider/${account.id}/blocked-provider`
+  let release!: () => void
+  let entered!: () => void
+  const acquired = new Promise<void>(resolve => { entered = resolve })
+  const holder = withCredentialLock(join(dir, '.credential-locks'), heldKey, () => new Promise<void>(resolve => {
+    release = resolve
+    entered()
+  }), { timeoutMs: 1000, pollMs: 1 })
+  await acquired
+
+  const blocked = new Accounts({ dir, secrets: memorySecretStore(), bus: new Bus(), credentialLock: { timeoutMs: 20, pollMs: 1 } })
+  await expect(blocked.writeCredential(account.id, 'blocked-provider', { type: 'api_key', key: 'must-not-write' })).rejects.toThrow('Timed out waiting for credential modification')
+  expect(await blocked.readCredential(account.id, 'blocked-provider')).toBeNull()
+  release()
+  await holder
 })

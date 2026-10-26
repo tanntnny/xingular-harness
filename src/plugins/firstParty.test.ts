@@ -99,12 +99,13 @@ describe('Output trim', () => {
 describe('Budget guard', () => {
   it('refuses tool calls past the limit, gives the agent one request to wrap up, then ends the reply', async () => {
     const { base, model, call, reply } = await setup()
-    writeFile(join(base, 'a.txt'), 'A file.')
+    writeFile(join(base, 'a.txt'), 'line\n'.repeat(40))
     await call('plugins.attach', { id: 'budget-guard' })
     await call('plugins.configure', { pluginId: 'budget-guard', settings: { maxRequests: 5 } })
-    const again = model.calls(['read', { path: join(base, 'a.txt') }])
-    // A model that never stops by itself: every reply asks for another read.
-    model.script(Array.from({ length: 40 }, () => again))
+    // A model that never stops by itself: every reply asks for another read. The reads differ so
+    // the work-slice stall guard is not what stops this reply; the budget guard is.
+    const again = (step: number) => model.calls(['read', { path: join(base, 'a.txt'), offset: step, limit: 1 }])
+    model.script(Array.from({ length: 40 }, (_, step) => again(step)))
     const events = await reply('a1')
     const tools = events.filter((event) => event.type === 'tool.completed').map((event) => (event.payload as { ok: boolean }).ok)
     // Four reads run. The fifth request's read is refused and the agent is told to wrap up; it asks
@@ -117,11 +118,11 @@ describe('Budget guard', () => {
 
   it('lets a reply that wraps up when told finish in its own words', async () => {
     const { base, model, call, reply } = await setup()
-    writeFile(join(base, 'a.txt'), 'A file.')
+    writeFile(join(base, 'a.txt'), 'line\n'.repeat(40))
     await call('plugins.attach', { id: 'budget-guard' })
     await call('plugins.configure', { pluginId: 'budget-guard', settings: { maxRequests: 5 } })
-    const again = model.calls(['read', { path: join(base, 'a.txt') }])
-    model.script([again, again, again, again, again, model.says('I read the file four times; one more read is left.')])
+    const again = (step: number) => model.calls(['read', { path: join(base, 'a.txt'), offset: step, limit: 1 }])
+    model.script([again(0), again(1), again(2), again(3), again(4), model.says('I read the file four times; one more read is left.')])
     const events = await reply('a1')
     expect(model.requests()).toBe(6)
     expect(events.filter((event) => event.type === 'message.completed').map((event) => (event.payload as { text: string }).text).at(-1)).toBe('I read the file four times; one more read is left.')
@@ -129,9 +130,9 @@ describe('Budget guard', () => {
 
   it('does nothing while it is switched off, and takes only numbers inside its range', async () => {
     const { base, model, call, reply } = await setup()
-    writeFile(join(base, 'a.txt'), 'A file.')
-    const again = model.calls(['read', { path: join(base, 'a.txt') }])
-    model.script([...Array.from({ length: 8 }, () => again), model.says('Done.')])
+    writeFile(join(base, 'a.txt'), 'line\n'.repeat(40))
+    const again = (step: number) => model.calls(['read', { path: join(base, 'a.txt'), offset: step, limit: 1 }])
+    model.script([...Array.from({ length: 8 }, (_, step) => again(step)), model.says('Done.')])
     const events = await reply('a1')
     expect(events.filter((event) => event.type === 'tool.completed').every((event) => (event.payload as { ok: boolean }).ok)).toBe(true)
     await expect(call('plugins.configure', { pluginId: 'budget-guard', settings: { maxRequests: 1 } })).rejects.toThrow('must be a number from 5 to 2000')

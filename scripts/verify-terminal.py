@@ -20,6 +20,7 @@ from pathlib import Path
 import pty
 import re
 import select
+import shlex
 import signal
 import struct
 import subprocess
@@ -153,10 +154,18 @@ class LocalProvider(http.server.BaseHTTPRequestHandler):
         results = [item for item in messages[user_index + 1:] if item.get('role') == 'tool']
         index = len(results)
         sequence = []
-        if 'verify-flow' in user:
+        if 'verify-checklist' in user:
+            sequence = [('checklist_write', {'items': [
+                {'text': 'CHECK_DONE: Completed row ' + 'wrapping word ' * 13 + 'CHECK_WRAP_TAIL', 'status': 'completed'},
+                {'text': 'CHECK_ACTIVE: Active row', 'status': 'in_progress'},
+                {'text': 'CHECK_PENDING: Pending row', 'status': 'pending'}
+            ]})]
+        elif 'verify-flow' in user:
+            outside_write = LocalProvider.root.parent / f'approved-write-{LocalProvider.root.name}.txt'
+            bash_command = f"printf 'LOCAL_BASH_EXECUTED\\n' | tee {shlex.quote(str(outside_write))}"
             sequence = [
                 ('read', {'path': str(LocalProvider.root / 'fixture.txt')}),
-                ('bash', {'command': "printf 'LOCAL_BASH_EXECUTED\\n'"})]
+                ('bash', {'command': bash_command, 'workspaceWriteScope': 'outside'})]
         elif 'verify-wireframe' in user:
             sequence = [('ask_user', {'questions': [{
                 'summary': 'UI layout', 'question': 'Compare contextual layouts', 'uiSketch': True,
@@ -165,17 +174,34 @@ class LocalProvider(http.server.BaseHTTPRequestHandler):
                     {'label': 'LongMastheadLabelWithoutSpaces', 'description': 'DESC_B retains neighboring panels.', 'sketch': wireframe_fixture('B')}
                 ]
             }]})]
+        elif 'verify-question-layout' in user:
+            sequence = [('ask_user', {'questions': [{
+                'summary': 'Dock layout', 'question': 'LAYOUT_QUESTION_TITLE: Choose a configuration for this test.',
+                'options': [
+                    {'label': 'Tool gate', 'description': 'Check approvals, denials, or standing permissions for every tool call.', 'recommended': True},
+                    {'label': 'Sessions and runs', 'description': 'Check run creation, state, event handling, or recovery behavior.'},
+                    {'label': 'Terminal', 'description': 'Check the xagent user interface, commands, or interaction flow.'},
+                    {'label': 'Other', 'description': 'Describe another Harness area or test scenario, including the surrounding workflow and relevant constraints; LAYOUT_DESC_4_END.'}
+                ]
+            }]})]
         elif 'verify-batch' in user:
             sequence = [('ask_user', {'questions': [
                 {'summary': 'Batch choice', 'question': 'LOCAL_BATCH_CHOICE', 'uiSketch': True, 'options': [{'label': 'Batch A', 'description': 'First batch answer', 'recommended': True, 'sketch': '+----------+\n|A_SKETCH  |\n+----------+'}, {'label': 'Batch B', 'description': 'Second batch answer', 'sketch': '+----------+\n|B_SKETCH  |\n+----------+'}], 'multiSelect': True},
-                {'summary': 'Batch reason', 'question': 'LOCAL_BATCH_REASON', 'options': [{'label': 'A listed reason', 'description': 'Choose this reason or enter another.', 'recommended': True}]}]})]
+                {'summary': 'Batch reason', 'question': 'LOCAL_BATCH_REASON', 'options': [
+                    {'label': 'Reason A', 'description': 'Use reason A.', 'recommended': True},
+                    {'label': 'Reason B', 'description': 'Use reason B.'},
+                    {'label': 'Reason C', 'description': 'Use reason C.'}
+                ]}]})]
         elif 'verify-plan' in user and 'revise' not in user:
             sequence = [('ask_user', {'questions': [
                 {'summary': 'Plan choice', 'question': 'LOCAL_PLAN_QUESTION', 'options': [{'label': 'Research first', 'description': 'Use the safe research path.', 'recommended': True}]}]})]
         elif 'verify-deny' in user or 'verify-approval-cancel' in user:
-            sequence = [('bash', {'command': "printf 'blocked' > decision-must-not-execute.txt"})]
+            decision = 'denied' if 'verify-deny' in user else 'cancelled'
+            outside_write = LocalProvider.root.parent / f'{decision}-write-{LocalProvider.root.name}.txt'
+            bash_command = f"printf 'blocked\\n' > {shlex.quote(str(outside_write))}"
+            sequence = [('bash', {'command': bash_command, 'workspaceWriteScope': 'outside'})]
         elif 'verify-question-cancel' in user:
-            sequence = [('ask_user_question', {'summary': 'Cancel check', 'question': 'LOCAL_CANCEL_QUESTION', 'options': [{'label': 'Continue', 'recommended': True}]})]
+            sequence = [('ask_user', {'questions': [{'summary': 'Cancel check', 'question': 'LOCAL_CANCEL_QUESTION', 'options': [{'label': 'Continue', 'description': 'Continue with the test.', 'recommended': True}]}]})]
         offered = [tool.get('function', {}).get('name') for tool in request.get('tools', [])]
         parts = messages[user_index].get('content') if user_index >= 0 else None
         images = sum(1 for part in parts if isinstance(part, dict) and part.get('type') == 'image_url') if isinstance(parts, list) else 0
@@ -525,6 +551,8 @@ def main():
     parser.add_argument('--composer-only', action='store_true', help='Verify slash-command colors, composer modes, and multiline gutters in an isolated PTY')
     parser.add_argument('--file-completion-only', action='store_true', help='Verify file and folder completion in an isolated PTY')
     parser.add_argument('--history-only', action='store_true', help='Verify active-session prompt history in an isolated PTY')
+    parser.add_argument('--resume-only', action='store_true', help='Verify the full-screen, searchable two-line saved-session picker in an isolated PTY')
+    parser.add_argument('--checklist-only', action='store_true', help='Verify checklist status and item-text alignment in an isolated PTY')
     parser.add_argument('--questions-only', action='store_true', help='Verify question choices, bounded sketch previews and focus changes in an isolated PTY')
     parser.add_argument('--jump-latest-only', action='store_true', help='Verify the transcript jump-to-latest badge and click behavior in an isolated PTY (screen assertions use optional pyte)')
     parser.add_argument('--help-only', action='store_true', help='Verify grouped, wrapping /help output in an isolated PTY')
@@ -532,8 +560,10 @@ def main():
     parser.add_argument('--accounts-only', action='store_true', help='Verify responsive account details, actions and navigation without model requests')
     parser.add_argument('--trajectory-only', action='store_true', help='Verify the full-screen searchable trajectory page in an isolated PTY')
     parser.add_argument('--palette-only', action='store_true', help='Verify two-column slash-command wrapping and selection in an isolated PTY')
+    parser.add_argument('--command-completion-only', action='store_true', help='Verify Tab inserts a slash command and places the cursor at its end')
     parser.add_argument('--markdown-only', action='store_true', help='Verify streamed Markdown rendering in an isolated PTY')
     parser.add_argument('--attachments-only', action='store_true', help='Verify pasted images, collapsed large pastes, whole-label deletion and image delivery in an isolated PTY')
+    parser.add_argument('--dialog-paste-only', action='store_true', help='Verify bracketed paste into a centered dialog input in an isolated PTY')
     parser.add_argument('--thinking-only', action='store_true', help='Verify /thinking show, hide, and toggle in an isolated PTY')
     parser.add_argument('--compaction-only', action='store_true', help='Verify the persisted compaction history: earlier chat, rules, shown summary, click to hide and Ctrl+O to show')
     parser.add_argument('--cli', type=Path, default=REPOSITORY / 'dist' / 'cli.js', help='Actual bundled Harness CLI to exercise (including an embedding sidecar CLI)')
@@ -556,11 +586,13 @@ def main():
         sizes = args.sizes.split(',') if args.sizes else ['40x20', '80x24', '120x40']
         if not args.sizes and args.palette_only:
             sizes = ['40x20', '80x24']
+        elif not args.sizes and args.command_completion_only:
+            sizes = ['80x24']
         elif not args.sizes and (args.help_only or args.trajectory_only):
             sizes = ['40x20', '80x24', '120x40']
         elif not args.sizes and args.accounts_only:
             sizes = ['80x24', '120x40']
-        elif not args.sizes and (args.attachments_only or args.composer_only or args.file_completion_only or args.history_only or args.questions_only or args.jump_latest_only or args.thinking_only or args.compaction_only):
+        elif not args.sizes and (args.attachments_only or args.dialog_paste_only or args.composer_only or args.file_completion_only or args.history_only or args.checklist_only or args.questions_only or args.jump_latest_only or args.thinking_only or args.compaction_only):
             sizes = ['80x24']
         elif not args.sizes and args.markdown_only:
             sizes = ['120x40']
@@ -607,6 +639,10 @@ def main():
                 ctx.ui.setTheme('harness-titanium');
                 ctx.ui.notify('PLUGIN_CUSTOM_DONE: ' + result);
               }});
+              pi.registerCommand('verify-dialog-input', { description: 'Centered dialog paste fixture', handler: async (_args, ctx) => {
+                const value = await ctx.ui.input('Dialog paste test', 'Paste the test value');
+                ctx.ui.notify('PASTE_RESULT: ' + (value ?? '<cancelled>'));
+              }});
               pi.registerCommand('verify-plugin-fatal', { description: 'Disposable fatal cleanup fixture', handler: async () => {
                 setTimeout(() => { throw new Error('PLUGIN_FATAL_FIXTURE') }, 50);
                 setTimeout(() => { throw new Error('PLUGIN_SECOND_FATAL_FIXTURE') }, 80);
@@ -634,6 +670,28 @@ def main():
                   console.log(session.getSessionFile())
                 """
                 compaction_session = os.path.realpath(subprocess.check_output(
+                    ['node', '--input-type=module', '-e', fixture, cwd, str(history_dir)],
+                    cwd=REPOSITORY, text=True
+                ).strip())
+            resume_session = None
+            if args.resume_only:
+                cwd = str(root.resolve())
+                history_dir = root / 'data' / 'sessions' / 'terminal' / hashlib.sha256(cwd.encode()).hexdigest() / 'pi'
+                history_dir.mkdir(parents=True, exist_ok=True)
+                subprocess.run(['git', 'init', '-q'], cwd=root, check=True)
+                subprocess.run(['git', 'symbolic-ref', 'HEAD', 'refs/heads/resume-fixture'], cwd=root, check=True)
+                fixture = """
+                  import { SessionManager } from '@earendil-works/pi-coding-agent'
+                  const [cwd, sessionDir] = process.argv.slice(1)
+                  const recent = SessionManager.create(cwd, sessionDir, { id: 'resume-picker-recent' })
+                  recent.appendMessage({ role: 'user', content: 'RESUME_PICKER_MESSAGE', timestamp: Date.now() - 180_000 })
+                  recent.appendSessionInfo('RESUME_PICKER_TITLE')
+                  const older = SessionManager.create(cwd, sessionDir, { id: 'resume-picker-older' })
+                  older.appendMessage({ role: 'user', content: 'OTHER_SESSION_MESSAGE', timestamp: Date.now() - 300_000 })
+                  older.appendSessionInfo('OTHER_SESSION_TITLE')
+                  console.log(recent.getSessionFile())
+                """
+                resume_session = os.path.realpath(subprocess.check_output(
                     ['node', '--input-type=module', '-e', fixture, cwd, str(history_dir)],
                     cwd=REPOSITORY, text=True
                 ).strip())
@@ -690,6 +748,105 @@ def main():
                     terminal.send('/quit\r')
                     print(f'PASS {dimensions}: welcome identity and /help transition', flush=True)
                     continue
+                if args.dialog_paste_only:
+                    requests_before = len(LocalProvider.requests)
+                    start = len(terminal.data)
+                    terminal.send('/verify-dialog-input\r')
+                    terminal.wait('Dialog paste test', start, timeout=15)
+                    terminal.snapshot('centered-dialog-input-before-paste')
+                    terminal.send('\x1b[200~PASTE_OK\x1b[201~')
+                    terminal.wait('PASTE_OK', start, timeout=10)
+                    terminal.snapshot('centered-dialog-input-after-paste')
+                    terminal.send('\r')
+                    terminal.wait('PASTE_RESULT: PASTE_OK', start, timeout=10)
+                    assert len(LocalProvider.requests) == requests_before, 'The dialog paste fixture sent a model request'
+                    profile['checks'].append('bracketed paste reaches the active centered dialog input and returns its exact value')
+                    terminal.send('/quit\r')
+                    print(f'PASS {dimensions}: centered dialog paste', flush=True)
+                    continue
+                if args.resume_only:
+                    start = len(terminal.data)
+                    terminal.send('/session\r')
+                    terminal.wait('RESUME_PICKER_TITLE', start, timeout=20)
+                    terminal.snapshot('resume-picker-fullscreen')
+                    if terminal.screen is not None:
+                        visible = '\n'.join(terminal.screen.display)
+                        assert 'Resume session' in terminal.screen.display[0], f'Resume picker did not use the full-screen page header: {terminal.screen.display!r}'
+                        title_x, title_y = terminal.locate('RESUME_PICKER_TITLE')
+                        title_line = terminal.screen.display[title_y - 1]
+                        assert title_line.index('❯') < title_x - 1, f'Resume title did not use the selection marker: {title_line!r}'
+                        assert not title_line.lstrip().startswith('1.'), f'Resume title retained a numeric list prefix: {title_line!r}'
+                        metadata = terminal.screen.display[title_y]
+                        assert '3 minutes ago' in metadata, f'Relative activity time was not on the second row: {terminal.screen.display!r}'
+                        title_color = terminal.screen.buffer[title_y - 1][title_x - 1].fg
+                        time_x = metadata.index('3 minutes ago')
+                        metadata_color = terminal.screen.buffer[title_y][time_x].fg
+                        assert title_color != metadata_color, f'Title and metadata did not use distinct text colors: {terminal.screen.display!r}'
+                        if width >= 80:
+                            assert 'resume-fixture' in metadata and 'KB' in metadata, f'Project branch and file size were not shown in the metadata row: {metadata!r}'
+                        assert 'OTHER_SESSION_TITLE' in visible, f'The unfiltered list did not show both sessions: {terminal.screen.display!r}'
+                        _, other_title_y = terminal.locate('OTHER_SESSION_TITLE')
+                        assert other_title_y == title_y + 3, f'Sessions were not separated by exactly one blank row: {terminal.screen.display!r}'
+                        assert not terminal.screen.display[title_y + 1].strip(), f'The session separator row was not blank: {terminal.screen.display!r}'
+                    search_start = len(terminal.data)
+                    terminal.send('RESUME_PICKER_TITLE')
+                    terminal.wait('1 of 2', search_start, timeout=10)
+                    if terminal.screen is not None:
+                        visible = '\n'.join(terminal.screen.display)
+                        assert 'RESUME_PICKER_TITLE' in visible and 'OTHER_SESSION_TITLE' not in visible, f'Search did not filter saved sessions: {terminal.screen.display!r}'
+                    terminal.send('\r')
+                    terminal.wait('RESUME_PICKER_MESSAGE', start, timeout=20)
+                    profile['checks'].append(f'full-screen resume page, unnumbered two-line rows with one blank separator, semantic time, project branch, size, search and selection at {dimensions}')
+                    terminal.send('/quit\r')
+                    print(f'PASS {dimensions}: full-screen saved-session picker', flush=True)
+                    continue
+                if args.checklist_only:
+                    start = len(terminal.data)
+                    terminal.send('verify-checklist\r')
+                    terminal.wait('CHECK_DONE:', start, timeout=50)
+                    terminal.wait('LOCAL_FINAL:', start, timeout=50)
+                    record = wait_for_goal(terminal, root, 'verify-checklist')
+                    assert record.get('status') == 'completed', 'The checklist fixture run did not complete'
+                    terminal.read(0.3)
+                    if terminal.screen is None:
+                        raise AssertionError('Checklist alignment verification requires pyte')
+                    positions = {
+                        'CHECK_DONE:': ('✓', terminal.locate('CHECK_DONE:')),
+                        'CHECK_ACTIVE:': ('●', terminal.locate('CHECK_ACTIVE:')),
+                        'CHECK_PENDING:': ('○', terminal.locate('CHECK_PENDING:'))
+                    }
+                    text_columns = set()
+                    for label, (glyph, (text_column, row)) in positions.items():
+                        line = terminal.screen.display[row - 1]
+                        glyph_column = line.index(glyph) + 1
+                        assert text_column == glyph_column + 2, f'{label} did not keep one cell after its status glyph: {terminal.screen.display!r}'
+                        text_columns.add(text_column)
+                    assert len(text_columns) == 1, f'Checklist item text columns did not align: {terminal.screen.display!r}'
+                    done_column, done_row = positions['CHECK_DONE:'][1]
+                    tail_column, tail_row = terminal.locate('CHECK_WRAP_TAIL')
+                    assert tail_row > done_row and tail_column == done_column, f'Wrapped checklist text did not align under its item text: {terminal.screen.display!r}'
+                    terminal.snapshot('checklist-aligned-rows')
+                    profile['checks'].append('checklist status glyphs have a fixed one-cell gap before aligned text; wrapped item text stays in the same column')
+                    terminal.send('/quit\r')
+                    print(f'PASS {dimensions}: checklist row alignment', flush=True)
+                    continue
+                if args.command_completion_only:
+                    start = len(terminal.data)
+                    terminal.send('/setti')
+                    terminal.wait('/settings', start, timeout=10)
+                    terminal.send('\t')
+                    terminal.read(0.3)
+                    if terminal.screen is None:
+                        raise AssertionError('Command completion verification requires pyte')
+                    command_x, command_y = terminal.locate('/settings')
+                    cursor = terminal.screen.cursor
+                    expected_cursor_x = command_x - 1 + len('/settings ')
+                    assert cursor.y + 1 == command_y and cursor.x == expected_cursor_x, f'Tab completion did not leave the cursor after the command: cursor={cursor!r}; screen={terminal.screen.display!r}'
+                    terminal.snapshot('command-completion-cursor')
+                    profile['checks'].append('Tab inserts the selected slash command and leaves the composer cursor after it')
+                    terminal.send('/quit\r')
+                    print(f'PASS {dimensions}: slash command completion cursor', flush=True)
+                    continue
                 if args.accounts_only:
                     start = len(terminal.data)
                     terminal.send('/accounts\r')
@@ -728,7 +885,7 @@ def main():
                     terminal.wait('LOCAL_FINAL:', start, timeout=50)
                     record = wait_for_goal(terminal, root, 'verify-trajectory')
                     assert record.get('status') == 'completed', 'The trajectory fixture run did not complete'
-                    terminal.send('/plugin:trajectory')
+                    terminal.send('/trajectory')
                     terminal.send('\r')
                     terminal.wait('Type to search', start, timeout=15)
                     terminal.snapshot('trajectory-runs-fullscreen')
@@ -932,7 +1089,8 @@ def main():
 
                         # The documented groups are Core, Run, Model, Session, Inspect, Harness, Plugins and Prompts (terminal-tui.md).
                         wrapped_name = 'that-wraps' if width >= 80 else 'that-wr'
-                        wanted = ['Run', 'Model', 'Session', 'Inspect', 'Harness', 'Plugins', 'SHORT_DESC_START', 'SHORT_DESC_END', 'LONG_DESC_START', 'LONG_DESC_END', wrapped_name]
+                        first_class_commands = ['/doctor', '/worktree', '/trajectory', '/subagents', '/agents', '/mcp']
+                        wanted = ['Run', 'Model', 'Session', 'Inspect', 'Harness', 'Plugins', *first_class_commands, 'SHORT_DESC_START', 'SHORT_DESC_END', 'LONG_DESC_START', 'LONG_DESC_END', wrapped_name]
                         pages = [top]
                         for _ in range(120):
                             if all(item in '\n'.join(pages) for item in wanted):
@@ -943,8 +1101,8 @@ def main():
                         rendered = '\n'.join(pages)
                         for group in ['Run', 'Model', 'Session', 'Inspect', 'Harness', 'Plugins']:
                             assert group in rendered, f'/help did not render the {group} group while scrolling: {pages!r}'
-                        for marker in ['SHORT_DESC_START', 'SHORT_DESC_END', 'LONG_DESC_START', 'LONG_DESC_END', wrapped_name]:
-                            assert marker in rendered, f'/help did not render wrapped command content {marker!r}'
+                        for marker in ['SHORT_DESC_START', 'SHORT_DESC_END', 'LONG_DESC_START', 'LONG_DESC_END', wrapped_name, *first_class_commands]:
+                            assert marker in rendered, f'/help did not render expected command content {marker!r}'
                         if width >= 80:
                             aligned_page = next((page.splitlines() for page in pages if 'SHORT_DESC_START' in page and 'LONG_DESC_START' in page), None)
                             assert aligned_page is not None, f'Could not inspect both extension descriptions in one view: {pages!r}'
@@ -1169,26 +1327,65 @@ def main():
                     if terminal.screen is not None:
                         visible = '\n'.join(terminal.screen.display)
                         assert 'Batch reason' in visible and 'LOCAL_BATCH_CHOICE' in visible, f'Question labels or title were not rendered: {terminal.screen.display!r}'
-                        assert 'Sketch ·' not in visible and 'A_SKETCH' in visible, f'The focused choice sketch was not rendered literally: {terminal.screen.display!r}'
+                        batch_a_x, batch_a_y = terminal.locate('Batch A')
+                        batch_a_line = terminal.screen.display[batch_a_y - 1]
+                        assert '○' in batch_a_line[:batch_a_x - 1], f'An unselected multi-select choice did not use the empty-circle marker: {terminal.screen.display!r}'
+                        assert 'Sketch ·' not in visible, 'The sketch caption returned'
                         assert 'Reply…' not in visible and 'Or reply directly to this question…' not in visible, 'The chat composer remained visible during a question'
                         assert 'Verifier First' not in visible and 'terminal-verifier' not in visible, 'The lower context status bar remained visible during a question'
                         assert 'Tab reopen' not in visible and '1 of 2' not in visible and '×' not in visible, 'The question pager or collapse controls remained visible'
                         terminal.assert_blank_line_after('Batch choice', 'Question tabs')
                         terminal.assert_blank_line_after('LOCAL_BATCH_CHOICE', 'Question title')
+                    terminal.send('\x1b[6~')  # Scroll the compact question body to its focused sketch preview.
+                    terminal.wait('A_SKETCH', start)
+                    if terminal.screen is not None:
+                        assert 'Sketch ·' not in '\n'.join(terminal.screen.display) and 'A_SKETCH' in '\n'.join(terminal.screen.display), f'The focused choice sketch was not rendered literally: {terminal.screen.display!r}'
                     terminal.send('\x1b[B')
+                    terminal.send('\x1b[6~')  # Keep the preview in view after changing choice focus.
                     terminal.wait('B_SKETCH', start)
                     if terminal.screen is not None:
                         visible = '\n'.join(terminal.screen.display)
                         assert 'Sketch ·' not in visible and 'B_SKETCH' in visible, f'Choice focus did not update the shared sketch preview: {terminal.screen.display!r}'
                     terminal.send('\x1b[A')
                     terminal.wait('A_SKETCH', start)
+                    terminal.read(0.2)
+                    terminal.send('\x1b[C')  # Switch from the sketch-heavy tab to a compact question.
+                    terminal.read(0.3)
+                    if terminal.screen is not None:
+                        visible = '\n'.join(terminal.screen.display)
+                        assert 'LOCAL_BATCH_REASON' in visible, f'Right did not select the compact question tab: {terminal.screen.display!r}'
+                        reason_b_row = terminal.locate('Reason B')[1]
+                        reason_c_row = terminal.locate('Reason C')[1]
+                        assert reason_c_row == reason_b_row + 1, f'The compact tab inherited a gap between its last choices: {terminal.screen.display!r}'
+                        terminal.assert_blank_rows_before('Something else…', 1, 'compact tab has one intentional row before Something else')
+                    terminal.send('\x1b[D')  # Return to the sketch tab and make sure it can expand again.
+                    terminal.read(0.2)
+                    terminal.send('\x1b[6~')
+                    terminal.read(0.2)
+                    if terminal.screen is not None:
+                        assert 'A_SKETCH' in '\n'.join(terminal.screen.display), f'Returning to the sketch tab did not restore its preview: {terminal.screen.display!r}'
+                    terminal.send('\x1b[1;5H')
+                    terminal.read(0.2)
                     color_start = len(terminal.data)
                     terminal.send('\r')
                     terminal.read(0.2)
                     color_output = bytes(terminal.data[color_start:])
                     assert has_truecolor_background(color_output, QUESTION_SELECTED_BG), 'Selected question choice did not emit the dark-green row background'
                     assert has_truecolor_background(color_output, QUESTION_ACTION_BG), 'Continue action did not emit its green button background'
+                    if terminal.screen is not None:
+                        batch_a_x, batch_a_y = terminal.locate('Batch A')
+                        batch_a_line = terminal.screen.display[batch_a_y - 1]
+                        assert '✓' in batch_a_line[:batch_a_x - 1], f'A selected multi-select choice did not use the checklist checkmark: {terminal.screen.display!r}'
                     terminal.snapshot('question-selected')
+                    if terminal.screen is not None:
+                        terminal.send('\x1b[B')
+                        terminal.read(0.2)
+                        batch_b_x, batch_b_y = terminal.locate('Batch B')
+                        batch_b_line = terminal.screen.display[batch_b_y - 1]
+                        assert '○' in batch_b_line[:batch_b_x - 1], f'An unselected choice next to a selected choice did not use the empty-circle marker: {terminal.screen.display!r}'
+                        terminal.send('\x1b[A')
+                        terminal.read(0.2)
+                    profile['checks'].append('multi-select choices use checklist glyphs: checkmark when selected and empty circle when unselected')
                     long_note = 'A choice note wraps across several terminal rows while keeping every word fully editable.'
                     long_text = 'A free-text answer wraps across terminal rows while keeping the original response intact.'
                     note_text = long_note if width >= 80 else 'why'
@@ -1204,7 +1401,7 @@ def main():
                     terminal.send(note_text)
                     if width >= 80:
                         terminal.send('\t')
-                        terminal.wait('Something else…', start)
+                        terminal.wait('Tab action · Enter', start)
                         terminal.send(long_text)
                         terminal.snapshot('question-wrapped-inputs')
                         if terminal.screen is not None:
@@ -1245,6 +1442,43 @@ def main():
                         if width < 80 else
                         'choice sketch preview follows keyboard focus; labeled tabs replace pager controls; composer/status bar are hidden; n opens wrapped choice notes; wrapped Something else text and batch answers persist'
                     )
+                    # A plain single question reproduces the reported gap without sketch height affecting the layout.
+                    start = len(terminal.data)
+                    terminal.send('verify-question-layout\r')
+                    terminal.wait('Approve ask_user?', start)
+                    terminal.send('\r')
+                    terminal.wait('LAYOUT_QUESTION_TITLE', start)
+                    terminal.wait('Something else…', start)
+                    terminal.read(0.3)
+                    if terminal.screen is None:
+                        raise AssertionError('Question layout verification requires pyte')
+                    visible = '\n'.join(terminal.screen.display)
+                    assert 'Reply…' not in visible and 'Verifier First' not in visible, 'The chat composer or status bar remained visible during a question'
+                    transcript_row = terminal.locate('LOCAL_STAGE_0')[1]
+                    question_row = terminal.locate('LAYOUT_QUESTION_TITLE')[1]
+                    assert transcript_row < question_row, f'The chat transcript was not visible above the question dock: {terminal.screen.display!r}'
+                    if width >= 80:
+                        for _ in range(3):
+                            terminal.send('\x1b[B')
+                    else:
+                        terminal.send('\x1b[1;5F')  # Ctrl+End reveals the final choice in the compact viewport.
+                    terminal.read(0.2)
+                    answer_row = terminal.locate('Something else…')[1]
+                    description_row = terminal.locate('LAYOUT_DESC_4_END')[1]
+                    assert description_row < answer_row, f'The final choice was not above Something else: {terminal.screen.display!r}'
+                    terminal.assert_blank_rows_before('Something else…', 1, 'one intentional row between the final choice and Something else')
+                    if width < 80:
+                        terminal.send('\x1b[1;5H')  # Ctrl+Home restores the initial choice before submitting.
+                        terminal.read(0.2)
+                    terminal.snapshot('question-compact-chat-transcript')
+                    terminal.send('\r')
+                    terminal.send('\r')
+                    terminal.wait('LOCAL_FINAL', start)
+                    layout_record = wait_for_goal(terminal, root, 'verify-question-layout')
+                    layout_answers = [event['payload'] for event in layout_record['_events'] if event['type'] == 'question.answered']
+                    expected_layout_answer = ['Other'] if width >= 80 else ['Tool gate']
+                    assert len(layout_answers) == 1 and layout_answers[0]['selected'] == expected_layout_answer, 'The compact question layout changed its staged answer'
+                    profile['checks'].append('single-question dock fits its content, keeps the transcript above, and leaves only one row before Something else')
                     # Use the production path again with deliberately uneven rows and a large diagram.
                     start = len(terminal.data)
                     terminal.send('verify-wireframe\r')
@@ -1260,19 +1494,14 @@ def main():
                     assert terminal.locate('Short')[0] < ax, 'Choice label was stacked above its description'
                     assert 'Sketch ·' not in '\n'.join(terminal.screen.display), 'Sketch caption returned'
                     terminal.snapshot('question-aligned-columns')
-                    terminal.send('\x1b[6~')  # PageDown: dock body, not transcript.
+                    if 'A_FOCUS' not in '\n'.join(terminal.screen.display):
+                        terminal.send('\x1b[6~')  # PageDown: dock body, not transcript.
                     terminal.read(0.2)
                     visible = '\n'.join(terminal.screen.display)
                     assert 'A_FOCUS' in visible, f'Question scrolling did not reveal the contextual sketch: {terminal.screen.display!r}'
-                    tops = [line for line in terminal.screen.display if re.fullmatch(r'\s*┌─+┐\s*', line)]
-                    bottoms = [line for line in terminal.screen.display if re.fullmatch(r'\s*└─+┘\s*', line)]
-                    assert len(tops) == 1 and any(len(top.strip()) == len(bottom.strip()) for top in tops for bottom in bottoms), f'Connected preview frame missing: {terminal.screen.display!r}'
-                    dividers = [line for line in terminal.screen.display if re.fullmatch(r'\s*├─+┤\s*', line)]
-                    assert dividers and len(dividers[0].strip()) == len(tops[0].strip()), f'Short divider did not join both panel edges: {terminal.screen.display!r}'
-                    assert dividers[0].index('├') == tops[0].index('┌'), 'Divider does not meet the left panel edge'
-                    assert dividers[0].index('┤') == tops[0].index('┐'), 'Divider does not meet the right panel edge'
-                    assert re.search(r'┌─+┬', visible), 'Nested table corners and column junctions were not connected'
                     if width >= 80:
+                        assert re.search(r'┌─+┬', visible), 'Nested table corners and column junctions were not connected'
+                        assert any(re.fullmatch(r'\s*├─+┤\s*', line) for line in terminal.screen.display), 'Connected sketch divider was not visible'
                         _, title_row = terminal.locate('Empty welcome')
                         rendered_title = terminal.screen.display[title_row - 1]
                         title_match = re.search(r'┌─+ Empty welcome ─+┐', rendered_title)
@@ -1298,6 +1527,7 @@ def main():
                             terminal.send('\x1b[1;2D')
                     for _ in range(20):
                         terminal.send('\x1b[1;2B')
+                    terminal.send('\x1b[1;5F')  # Ctrl+End reveals the lower preview rows in the compact dock.
                     assert 'A_BOTTOM' in '\n'.join(terminal.screen.display), f'Vertical sketch panning failed: {terminal.screen.display!r}'
                     terminal.snapshot('question-panned-sketch')
                     # Resize with a staged answer, then submit that exact choice.
@@ -1338,6 +1568,21 @@ def main():
                             terminal.read(0.1)
                         raise AssertionError(f'{count} completed history runs for {goal!r} were not recorded in session {native_session_id!r}')
 
+                    def wait_for_bash_command(native_session_id, command):
+                        session_path = Path(native_session_id)
+                        deadline = time.monotonic() + 20
+                        while time.monotonic() < deadline:
+                            if session_path.is_file():
+                                for line in session_path.read_text().splitlines():
+                                    try:
+                                        message = json.loads(line).get('message', {})
+                                    except json.JSONDecodeError:
+                                        continue
+                                    if message.get('role') == 'bashExecution' and message.get('command') == command:
+                                        return message
+                            terminal.read(0.1)
+                        raise AssertionError(f'Bash command {command!r} was not recorded in session {native_session_id!r}')
+
                     first_goal = 'verify-history-first-session'
                     terminal.send(first_goal)
                     terminal.send('\r')
@@ -1348,14 +1593,56 @@ def main():
 
                     terminal.send('/new\r')
                     terminal.read(0.8)
-                    second_goal = 'verify-history-second-session'
                     terminal.send('\x1b[A')
+                    terminal.read(0.2)
+                    if terminal.screen is not None:
+                        composer = '\n'.join(terminal.screen.display[-8:])
+                        assert '/new' in composer, 'Up did not recall the slash command used to create the session'
+                    terminal.send('\x03')
+                    terminal.read(0.2)
+                    second_goal = 'verify-history-second-session'
                     terminal.send(second_goal)
                     terminal.send('\r')
                     second_record = wait_for_goal(terminal, root, second_goal)
                     assert second_record.get('status') == 'completed', 'The new session did not accept a fresh prompt after Up'
                     second_session = second_record.get('nativeSessionId')
                     assert second_session and second_session != first_session, 'The new prompt was not recorded in a distinct native session'
+
+                    terminal.send('scratch-draft')
+                    history_start = len(terminal.data)
+                    terminal.send('\x1b[A')
+                    terminal.wait(second_goal, history_start, timeout=10)
+                    terminal.snapshot('history-recalled-from-draft-end')
+                    if terminal.screen is not None:
+                        composer = '\n'.join(terminal.screen.display[-8:])
+                        assert second_goal in composer and 'scratch-draft' not in composer, 'Up at the draft end did not recall older history'
+                    terminal.send('\x1b[D' * len(second_goal))
+                    terminal.read(0.2)
+                    history_start = len(terminal.data)
+                    terminal.send('\x1b[A')
+                    terminal.wait('/new', history_start, timeout=10)
+                    terminal.snapshot('history-recalled-from-draft-start')
+                    if terminal.screen is not None:
+                        composer = '\n'.join(terminal.screen.display[-8:])
+                        assert '/new' in composer and second_goal not in composer, 'Up at the draft start did not recall older history'
+                    history_start = len(terminal.data)
+                    terminal.send('\x1b[B')
+                    terminal.wait(second_goal, history_start, timeout=10)
+                    if terminal.screen is not None:
+                        composer = '\n'.join(terminal.screen.display[-8:])
+                        assert second_goal in composer, 'Down at the draft end did not recall newer history'
+                    terminal.send('\x1b[D' * len(second_goal))
+                    terminal.read(0.2)
+                    restore_start = len(terminal.data)
+                    terminal.send('\x1b[B')
+                    terminal.wait('scratch-draft', restore_start, timeout=10)
+                    terminal.snapshot('history-restored-scratch-draft')
+                    if terminal.screen is not None:
+                        composer = '\n'.join(terminal.screen.display[-8:])
+                        assert 'scratch-draft' in composer, 'Down at the draft start did not restore the working draft after newest history'
+                    profile['checks'].append('plain Up/Down browse older/newer history at both draft endpoints and restore the working draft')
+                    terminal.send('\x03')
+                    terminal.read(0.2)
 
                     terminal.read(0.3)
                     terminal.send('\x1b[A')
@@ -1365,9 +1652,29 @@ def main():
                     terminal.send(f'/resume {first_session}\r')
                     terminal.read(1)
                     terminal.send('\x1b[A')
+                    terminal.read(0.2)
+                    if terminal.screen is not None:
+                        composer = '\n'.join(terminal.screen.display[-8:])
+                        visible = ''.join(composer.split())
+                        assert ''.join(f'/resume {first_session}'.split()) in visible, 'Up did not recall the slash command used to resume the session'
+                    profile['checks'].append('Up recalls executed slash commands after /new and /resume; saved prompt history remains session-scoped')
+                    terminal.send('\x03')
+                    terminal.read(0.2)
+
+                    bash_start = len(terminal.data)
+                    bash_command = 'printf USER_COMMAND_VERIFIED'
+                    terminal.send(f'!{bash_command}\r')
+                    terminal.wait('Approve Action?', bash_start, timeout=10)
                     terminal.send('\r')
-                    wait_for_history_runs(first_goal, 2, first_session)
-                    profile['checks'].append('empty-composer Up recalls only the active session prompt across /new and /resume; session history is persisted natively')
+                    wait_for_bash_command(first_session, bash_command)
+                    terminal.send('\x1b[A')
+                    terminal.read(0.2)
+                    if terminal.screen is not None:
+                        composer = '\n'.join(terminal.screen.display[-8:])
+                        assert 'printf USER_COMMAND_VERIFIED' in composer, 'History did not recall the user-entered Bash command into the composer'
+                    profile['checks'].append('user-entered Bash commands are recalled in the composer')
+                    terminal.send('\x03')
+                    terminal.read(0.2)
                     terminal.send('/quit')
                     terminal.send('\r')
                     continue
@@ -1627,7 +1934,9 @@ def main():
                         cursor = len(terminal.data)
                 flow_record = wait_for_goal(terminal, root, 'verify-flow Unicode 知識 🧠')
                 terminal.read(0.5)
-                assert approval_count >= 1, 'No real approval dialog was exercised'
+                assert approval_count >= 1, 'No one-shot workspace-escape approval dialog was exercised'
+                approved_write = root.parent / f'approved-write-{root.name}.txt'
+                assert approved_write.read_text() == 'LOCAL_BASH_EXECUTED\n', 'Approved shell escape did not write its marker outside the workspace'
                 terminal.snapshot('completed-transcript')
                 start = len(terminal.data)
                 terminal.click(max(1, width - 2), click_y)
@@ -1665,7 +1974,7 @@ def main():
                 terminal.send('verify-plan Unicode 知識\r')
                 terminal.wait('Approve ask_user?', start)
                 terminal.send('\r')
-                terminal.wait('1 of 1', start)
+                terminal.wait('Something else…', start)
                 terminal.send('\r')
                 terminal.send('\r')
                 terminal.wait('Plan ready', start)
@@ -1712,10 +2021,13 @@ def main():
                 terminal.send('verify-batch\r')
                 terminal.wait('Approve ask_user?', start)
                 terminal.send('\r')
-                terminal.wait('1 of 2', start)
-                terminal.send('\r')
-                terminal.send('\r')
                 terminal.wait('Something else…', start)
+                next_question_start = len(terminal.data)
+                terminal.send('\r')
+                terminal.send('\t')
+                terminal.send('\t')
+                terminal.send('\r')
+                terminal.wait('LOCAL_BATCH_REASON', next_question_start)
                 terminal.snapshot('question-batch')
                 if terminal.screen is not None:
                     terminal.click_text('Something else…')
@@ -1734,22 +2046,24 @@ def main():
                 profile['checks'].append('grouped question progress and atomic choice/text answers through real registry')
                 terminal.send('\x1b[Z')
                 terminal.read(0.2)
-                for scenario, decision in [('verify-deny', '\x1b[B\x1b[B\r'), ('verify-approval-cancel', '\x1b')]:
+                for scenario, decision in [('verify-deny', '\x1b[B\r'), ('verify-approval-cancel', '\x1b')]:
                     start = len(terminal.data)
                     terminal.send(scenario + '\r')
-                    terminal.wait('Approve bash?', start)
+                    terminal.wait('Approve workspace-write?', start)
                     terminal.send(decision)
                     terminal.wait('LOCAL_FINAL', start)
                     terminal.read(0.4)
                     denied = next(item for item in records(root) if item.get('goal') == scenario)
                     assert any(event['type'] == 'approval.resolved' and event['payload'].get('decision') == 'denied' for event in denied['_events']), 'Denial was not persisted'
-                    assert not (root / 'decision-must-not-execute.txt').exists(), 'A denied tool executed'
+                    decision_name = 'denied' if scenario == 'verify-deny' else 'cancelled'
+                    denied_marker = root.parent / f'{decision_name}-write-{root.name}.txt'
+                    assert not denied_marker.exists(), 'A denied or cancelled tool executed'
                 profile['checks'].append('approval deny and Escape cancellation prevent actual tool execution')
                 terminal.send('\x1b[Z')
                 terminal.read(0.2)
                 start = len(terminal.data)
                 terminal.send('verify-question-cancel\r')
-                terminal.wait('Approve ask_user_question?', start)
+                terminal.wait('Approve ask_user?', start)
                 terminal.send('\r')
                 terminal.wait('Cancel check', start)
                 terminal.wait('LOCAL_CANCEL_QUESTION', start)

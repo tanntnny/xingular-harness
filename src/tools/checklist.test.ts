@@ -23,6 +23,7 @@ describe('the checklist', () => {
     const emitted: unknown[] = []
     const tool = checklistTool({ emit: (_type, payload) => void emitted.push(payload) })
     expect(tool.readOnly).toBe(true)
+    expect(tool.description).toContain('Before your final response, write one final checklist update')
     expect(await tool.execute({ items: 'nope' })).toContain('whole checklist')
     expect(await tool.execute({ items: [{ text: 'x'.repeat(501), status: 'pending' }] })).toContain('Every step needs text')
     expect(await tool.execute({ items: [{ text: '  Ship it  ', status: 'pending' }] })).toBe('[ ] Ship it')

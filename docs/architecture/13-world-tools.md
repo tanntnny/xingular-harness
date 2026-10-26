@@ -18,6 +18,21 @@ synthetic page. Their input runs only after live-check confirmation, and their r
 released on completion, timeout or cancellation. Computer interaction needs a host-provided
 isolated surface; without one it is blocked.
 
+## Shared browser contract and native WebKit limits (PROP-0040)
+
+`browser/contracts.ts` owns the backend-neutral names and input schemas for `browser_*` tools;
+providers adapt those definitions rather than inventing host-specific selectors. The isolated Harness
+backend supports accessibility snapshots and snapshot-scoped refs. A native WebKit host backend
+currently supports navigation, tab management, visible-text reads and page-level scrolling without a
+ref. It does not support accessibility snapshots, snapshot refs or ref-based click/type/select/scroll,
+browser screenshots, browser waits or keyboard presses.
+
+For an unsupported operation the native provider returns an explicit `browser_unsupported` refusal
+with “Nothing was done”; it never treats a snapshot ref as a selector and never silently switches to
+the isolated browser. The isolated Harness browser is an independent backend, not an automatic
+fallback for the native provider. A host plugin's `surfaces` description labels that fallback and its
+limits; it does not assert full browser parity.
+
 Plugin ownership and the Foundation boundary are recorded in PROP-0012, ADR-0014 and PROP-0020.
 World providers are assembled through `BuiltinPluginRegistry`; no eighth extension point is added.
 
@@ -39,7 +54,13 @@ terminal, or in a host's own web view running the same page helper (`annotations
   - A queued note is shared with its session.
   - `annotations/delivery.ts` sends a batch as one instruction, and sends notes the person asked for while the session was busy when its run ends.
   - The agent reports a fix with `page_notes_mark_fixed`, the only page-note tool that writes. It never resolves a note or changes grants.
-- **Targets.** Besides the browser window, capture can use an app's own windows:
+- **Targets.** Element targets prefer semantic role/name/text. A visually empty element may still be
+  annotated when it has a specific CSS selector (ID, test ID, classes, and a structural path when
+  needed); bare tag selectors are not enough. Reveal checks for one live match and preserves any
+  captured semantic/context evidence, otherwise reporting ambiguous or unresolved. Text annotations
+  continue to use quote plus context, not screen coordinates.
+- Besides the browser window, capture can use an app's own windows:
   - **DevTools port:** an app started with a DevTools port, on a loopback address only. It uses the app's existing windows, routes nothing, and never closes the app.
   - **Page bridge:** a loopback server whose script an app loads while it is developed (`annotations/bridge.ts`), for web views without a DevTools port.
+- **Web components (PROP-0038).** The helper walks the composed tree: open shadow roots and slotted content can be picked, selected and revealed, and such targets carry `tree: 'composed'`. Targets without it resolve by the document-only rules as before. Closed shadow roots and frames stay out of reach, and the inspector says why it refuses something.
 - **Trust.** In Chromium targets the helper runs in an isolated script world, so the page cannot forge a comment. A send from the bridge, or from a host web view without isolation, waits for the person to confirm it.

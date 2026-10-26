@@ -55,7 +55,9 @@ rebuildable SQLite index.
     lessons; nothing is evicted.
   - The `wiki` pointer section says how many lessons there are when there are any.
 - **Index.** Every finished run is indexed when it ends; `open` and `rebuildIndex()` sync from
-  `runs/`.
+  `runs/`. The same pass writes the **usage ledger**: one `usage_requests` row per model request
+  from the run's `usage.updated` events, and one `usage_indexed` marker per run (PROP-0042).
+  `/usage:analysis` queries only that ledger; it is derived and rebuilt from run events.
 
 ## Invariants
 
@@ -84,7 +86,7 @@ rebuildable SQLite index.
 <data root>/wiki/            home.md, library/, projects/<slug>/
 <data root>/wiki-history/    earlier versions of notes
 <data root>/legacy/          an earlier Wiki's memory blocks, facts, revisions, Inbox (moved once)
-<data root>/index.sqlite     derived: pages, links, runs, recall passages (FTS5)
+<data root>/index.sqlite     derived: pages, links, runs, recall passages (FTS5), usage rows
 <data root>/projects.json    read only: the application owns it
 ```
 

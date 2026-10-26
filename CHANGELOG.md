@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.2.0 — workspace safety and terminal capabilities
+
+- Scope model-controlled file writes and Bash to the active project workspace by default; reject the filesystem root as a workspace. Native writes use revalidated atomic replacement; Bash fails closed on incomplete hard-link scans or unavailable sandboxing (macOS also blocks workspace-local hard links). Explicit outside-scope Bash requires approval before one execution, showing the complete escaped command; output never triggers approval or retry.
+- Let plan mode run Bash in a read-only OS sandbox (no writes except a discarded temp folder, no network, nothing that widens it), so plans can check claims with commands such as `git log` (PROP-0043).
+- Make plan mode evidence-grounded and allow bounded read-only research delegation. Rehydrate the active checklist and plan instructions after compaction, and retain the latest subagent status until the next run.
+- Give plugin-owned terminal commands stable owner namespaces and make Harness-owned routes first-class core commands. Prior command forms remain hidden compatibility aliases for one release; update scripts and keybindings to canonical routes.
+- Extend page annotations into open shadow roots while preserving existing document-only annotation targets. Closed shadow roots and frames remain unsupported.
+- Record each run's resolved workspace root as an additive run-record field; older records remain readable.
+- Add a searchable saved-session picker and composer history for user prompts, Bash commands and executed slash commands, restoring the draft, cursor, mode and attachments while browsing. Fix compact question-dock sizing/scrolling and narrow-page footer rendering.
+- Add reproducible PTY and session-runtime profiling plus [EXP-0003's baseline report](docs/experiments/EXP-0003-performance-audit/results.md); it measures 1.1.1 on a dirty worktree, not 1.2.0.
+- Update the pinned Pi runtime to 1.4.0, with the terminal adapter's private hooks and HTTP dispatcher chunk rechecked against it.
+- Fix the work-slice stall guard reporting a reply's own checklist updates as repeated work. A call's identity is its name and every argument, hashed, instead of six fixed field names that made every `checklist_write` look alike; the counts and the nudge start fresh in each reply, so a terminal session no longer carries a repeat from one reply into the next. Three identical calls are still named once, and a repeat after that still ends the slice.
+
 ## 1.1.1 — agent profiles and named subagents
 
 The first published release of the 1.1 line, and npm `latest`. It follows the 1.0.0 baseline; earlier 2.x–4.x numbers keep their existing meaning and are not reused. The 1.1.0 tag was pushed, but its release run stopped before publishing, so nothing was published under 1.1.0. This release carries the same changes, plus the release-pipeline fixes below.

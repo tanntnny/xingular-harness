@@ -12,7 +12,7 @@ import { materialise } from '../variant/materialise'
 import * as store from '../variant/store'
 import type { Variant } from '../variant/surface'
 import * as notes from '../wiki/notes'
-import { compile, fit, load, render, REPORTING_GUIDANCE, sessionFile, sessionLaunch, SECTION_ORDER, type ContextUpdate, type HostSection, type Launch } from './compile'
+import { compile, fit, load, render, renderCompactionCheckpoint, REPORTING_GUIDANCE, sessionFile, sessionLaunch, SECTION_ORDER, type ContextUpdate, type HostSection, type Launch } from './compile'
 
 const roots: string[] = []
 afterEach(() => roots.splice(0).forEach(closeIndex))
@@ -53,6 +53,27 @@ test('cuts at a paragraph and points to the rest', () => {
   const cut = fit(`${'a'.repeat(40)}\n\n${'b'.repeat(40)}\n\n${'c'.repeat(40)}`, 100, '(more)')
   expect(cut.cut).toBe(true)
   expect(cut.body).toBe(`${'a'.repeat(40)}\n\n${'b'.repeat(40)}\n\n(more)`)
+})
+
+test('a compaction checkpoint carries the request, active plan instructions, and current checklist within a bound', () => {
+  const checkpoint = renderCompactionCheckpoint({
+    goal: 'Finish the migration',
+    checklist: [
+      { text: 'Inspect the current flow', status: 'completed' },
+      { text: 'Preserve the open question about retries', status: 'in_progress' },
+      { text: 'Verify the fallback path', status: 'pending' }
+    ],
+    planInstructions: 'Plan mode remains read-only.'
+  })!
+  expect(checkpoint).toContain('not a new user request')
+  expect(checkpoint).toContain('Finish the migration')
+  expect(checkpoint).toContain('Plan mode remains read-only.')
+  expect(checkpoint).toContain('[~] Preserve the open question about retries')
+  expect(checkpoint).toContain('[ ] Verify the fallback path')
+  expect(checkpoint).toContain('[x] Inspect the current flow')
+  expect(checkpoint.indexOf('In progress and pending')).toBeLessThan(checkpoint.indexOf('Completed (1)'))
+  expect(Array.from(checkpoint).length).toBeLessThanOrEqual(8_100)
+  expect(renderCompactionCheckpoint({ goal: 'A completed request', checklist: [] })).toBeNull()
 })
 
 test('the variant supplies the instructions, guardrails, memory, subagents, scripts and tool guidance, in order', () => {
@@ -97,9 +118,9 @@ test('read-only file guidance names absolute and home paths plus the configured 
   const tools = compile(env, agent(), hosted()).sections.find((entry) => entry.id === 'tools')!.body
   expect(tools).toContain('absolute paths')
   expect(tools).toContain('paths beginning with ~')
-  expect(tools).toContain('not a repository boundary')
+  expect(tools).toContain('not a read boundary')
   expect(tools).toContain(`The Harness data root is ${env.root}`)
-  expect(tools).toContain('Edits and commands still pass through the current gate')
+  expect(tools).toContain('Edits and commands still pass through the Harness gate')
   expect(tools).not.toContain('within this session\'s working folder')
 })
 
@@ -224,4 +245,5 @@ test('asks for a checklist the user can follow when checklist_write is available
   const withChecklist = compile(env, agent(), hosted({ tools: ['read', 'checklist_write'] }))
   expect(withChecklist.toolGroups).toContainEqual({ group: 'Progress', tools: ['checklist_write'] })
   expect(render(env, withChecklist)).toContain('The user follows your work from it')
+  expect(render(env, withChecklist)).toContain('Before your final reply, write one final update')
 })

@@ -2,6 +2,8 @@
 import { CONNECTION_TOOLS, NATIVE_GROUP } from '../prompt/compile'
 import { ASK_USER, askUserTool } from '../tools/askUser'
 import { CHECKLIST_WRITE, checklistTool } from '../tools/checklist'
+import { CHECKPOINT_WRITE, checkpointTool } from '../tools/checkpoint'
+import { sliceOf } from '../sessions/workSlice'
 import { SPAWN_SUBAGENT, WAIT_SUBAGENTS } from '../sessions/subagents'
 import { subagentTools } from '../tools/spawnSubagent'
 import { SESSION_NAME } from '../tools/sessionName'
@@ -25,6 +27,9 @@ import { subagentServerMethods } from '../sessions/subagentServerMethods'
 import { sideQuestionServerMethods } from '../sessions/sideQuestionServerMethods'
 import { connectedAppServerMethods } from '../mcp/serverMethods'
 import { harnessTools } from '../tools/harnessTools'
+import { GET_CAPABILITIES } from '../tools/getCapabilities'
+import { USAGE_SETTINGS } from '../usage/settings'
+import { usageServerMethods } from '../usage/serverMethods'
 import type { PluginDescriptor } from './types'
 import { createBuiltinPluginRegistry } from './builtinRegistry'
 
@@ -80,6 +85,7 @@ const WIKI_PLUGIN: PluginDescriptor = {
 const HISTORY_PLUGIN: PluginDescriptor = { id: 'history', title: 'History', description: 'Search earlier conversations and inspect recorded run trajectories.', required: 'Earlier runs are how an agent picks up where work stopped.', tools: tools([...RECALL_TOOLS, ...TRAJECTORY_TOOLS]), toolGroups: ['History'] }
 const ASK_USER_PLUGIN: PluginDescriptor = { id: 'ask-user', title: 'Ask the user', description: 'Lets the agent stop and ask a question with choices.', required: 'An agent must be able to stop and ask you.', tools: [{ name: ASK_USER }] }
 const CHECKLIST_PLUGIN: PluginDescriptor = { id: 'checklist', title: 'Checklist', description: 'Lets the agent keep a checklist of the steps of its work, recorded with the run so progress can be shown and picked up again.', required: 'Progress of longer work is kept through it.', tools: [{ name: CHECKLIST_WRITE, description: 'Write the checklist' }] }
+const CHECKPOINT_PLUGIN: PluginDescriptor = { id: 'checkpoint', title: 'Checkpoint', description: 'Lets a bounded reply record a handoff at a work-slice boundary so the next slice starts from it.', required: 'A reply that stops at its budget leaves the state the next one resumes from.', tools: [{ name: CHECKPOINT_WRITE, description: 'Write the handoff checkpoint' }] }
 const CONNECTED_APPS_PLUGIN: PluginDescriptor = {
     id: 'connected-apps',
     title: 'Connected apps',
@@ -93,6 +99,14 @@ const DOCTOR_PLUGIN: PluginDescriptor = { id: 'doctor', title: 'Doctor', descrip
 const WORKTREES_PLUGIN: PluginDescriptor = { id: 'worktrees', title: 'Worktrees', description: 'Create and manage isolated git worktrees, move changes between them, and restore removed worktrees.', required: 'Managed worktrees are available to every local terminal.' }
 const HUB_PLUGIN: PluginDescriptor = { id: 'hub', title: 'Hub', description: 'Browse and install reviewed skills, plugins and documents from configured registries.', required: 'Reviewed Harness resources are available to every host.' }
 const REFINEMENT_PLUGIN: PluginDescriptor = { id: 'refinement', title: 'Refinement', description: 'Improve variants from recorded evidence through isolated refinement runs and reviewed candidates.', required: 'Variant refinement is available to every host.' }
+const CAPABILITIES_PLUGIN: PluginDescriptor = { id: 'capabilities', title: 'Capability discovery', description: 'Inspect the callable tools of the current run, including their input schemas. Discovery never grants access.', required: 'Every interactive session can inspect its own registered capabilities.', tools: [{ name: GET_CAPABILITIES, description: 'Inspect current capabilities' }] }
+const USAGE_PLUGIN: PluginDescriptor = {
+  id: 'usage',
+  title: 'Usage',
+  description: 'Token, cost and latency totals from recorded runs, and the plan windows, balances or rate limits each provider reports.',
+  settings: [...USAGE_SETTINGS]
+}
+
 const SIDE_QUESTIONS_PLUGIN: PluginDescriptor = {
   id: 'side-questions',
   title: 'Side questions',
@@ -113,7 +127,6 @@ export const BUILTIN_PLUGIN_REGISTRY = createBuiltinPluginRegistry([
     tools: context => context.allowedTools.includes(SPAWN_SUBAGENT)
       ? subagentTools(context.subagents, context.runId).filter(tool => context.allowedTools.includes(tool.name))
       : [],
-    commands: [{ name: 'subagents', description: 'Watch current subagent tasks and activity' }, { name: 'agents', description: 'Browse and edit agent profiles' }],
     serverMethods: subagentServerMethods
   },
   { descriptor: VARIANT_PLUGIN, ...toolContribution(SKILL_TOOLS, 30) },
@@ -121,11 +134,11 @@ export const BUILTIN_PLUGIN_REGISTRY = createBuiltinPluginRegistry([
   {
     descriptor: HISTORY_PLUGIN,
     ...toolContribution([...RECALL_TOOLS, ...TRAJECTORY_TOOLS], 10),
-    commands: [{ name: 'trajectory', description: 'Inspect the recorded runs of this session' }],
     serverMethods: historyServerMethods
   },
   { descriptor: ASK_USER_PLUGIN, toolOrder: 40, tools: context => context.harnessTools && context.allowedTools.includes(ASK_USER) ? [askUserTool(context.run)] : [] },
   { descriptor: CHECKLIST_PLUGIN, toolOrder: 50, tools: context => context.harnessTools ? [checklistTool(context.run)] : [] },
+  { descriptor: CHECKPOINT_PLUGIN, toolOrder: 51, tools: context => context.harnessTools && context.allowedTools.includes(CHECKPOINT_WRITE) ? [checkpointTool(context.run, () => sliceOf(context.env.root, context.runId))] : [] },
   {
     descriptor: CONNECTED_APPS_PLUGIN,
     toolOrder: 0,
@@ -147,23 +160,28 @@ export const BUILTIN_PLUGIN_REGISTRY = createBuiltinPluginRegistry([
   },
   {
     descriptor: ANNOTATIONS_PLUGIN,
+    commandPrefix: 'annotate',
+    defaultCommand: 'annotate',
     commands: [
-      { name: 'notes', description: 'Page notes: keep notes on web pages and share them with this session' },
-      { name: 'annotate', description: 'Inspect a page or app, comment on components, send fixes to the agent: /plugin:annotate [url | --app <devtools address> | --bridge]' }
+      { name: 'notes', description: 'Review web annotations saved from pages and apps' },
+      { name: 'annotate', description: 'Inspect a page or app, comment on components, and send fixes: /annotate:annotate [url | --app <devtools address> | --bridge]' }
     ],
     createWorldPart: ({ options }) => annotationsPart({ root: options.root, changed: options.notesChanged }),
     serverMethods: annotationServerMethods
   },
+  { descriptor: CAPABILITIES_PLUGIN },
   {
-    descriptor: DOCTOR_PLUGIN,
-    commands: [{ name: 'doctor', description: 'Check account, model, tools and runtime readiness' }],
-    serverMethods: doctorServerMethods
+    descriptor: USAGE_PLUGIN,
+    commandPrefix: 'usage',
+    defaultCommand: 'analysis',
+    commands: [
+      { name: 'analysis', description: 'Token, cost and latency totals: /usage:analysis [today | 7d | 30d | all]' },
+      { name: 'limit', description: 'Provider plan windows, balances and rate limits: /usage:limit' }
+    ],
+    serverMethods: usageServerMethods
   },
-  {
-    descriptor: WORKTREES_PLUGIN,
-    commands: [{ name: 'worktree', description: 'Work in a managed git worktree: new, switch, hand off, remove' }],
-    serverMethods: worktreeServerMethods
-  },
+  { descriptor: DOCTOR_PLUGIN, serverMethods: doctorServerMethods },
+  { descriptor: WORKTREES_PLUGIN, serverMethods: worktreeServerMethods },
   ...FIRST_PARTY_PLUGINS.map(descriptor => ({ descriptor }))
 ])
 

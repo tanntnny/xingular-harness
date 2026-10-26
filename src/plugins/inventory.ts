@@ -103,13 +103,14 @@ export function inventory(input: InventoryInput): Inventory {
     }
   }
 
-  // What the harness found on disk and lets load. Pi's command's own extensions exist only in a terminal.
+  // What the harness found on disk and lets load. The pi command's own extensions load in no
+  // Xingular session, so a terminal and a host have the same (PROP-0039).
   const delivered: Record<Contribution['kind'], InventoryItem['delivery']> = { code: 'code', skill: 'on-demand', command: 'on-demand', instruction: 'system', theme: 'code', tool: 'tool', connection: 'tool' }
   const terminal = context.surface === 'cli'
   for (const plugin of input.plugins) {
-    if (!['project', 'package', 'shared', 'home', 'pi'].includes(plugin.source)) continue
+    if (!['project', 'package', 'shared', 'home'].includes(plugin.source)) continue
     for (const found of plugin.contributions) {
-      if (found.state !== 'on' || (plugin.source === 'pi' && (found.kind !== 'code' || !terminal)) || (found.kind === 'theme' && !terminal)) continue
+      if (found.state !== 'on' || (found.kind === 'theme' && !terminal)) continue
       item(plugin.id, found.kind, found.name, found.background ? 'background' : delivered[found.kind], ['instruction', 'skill', 'command'].includes(found.kind) ? size(found.path) : null, { contributionId: found.id })
     }
   }

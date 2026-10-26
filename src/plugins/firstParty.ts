@@ -11,7 +11,7 @@ import type { PluginDescriptor, PluginSetting } from './types'
 interface Api {
   on(event: 'tool_result', handler: (event: ToolResult) => unknown): void
   on(event: 'tool_call', handler: (event: { toolName: string }) => unknown): void
-  on(event: 'turn_start', handler: () => unknown): void
+  on(event: 'turn_start' | 'agent_start', handler: () => unknown): void
   on(event: 'message_end', handler: (event: { message: { role: string; usage?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number } } }) => unknown): void
 }
 
@@ -47,7 +47,7 @@ export const FIRST_PARTY_PLUGINS: readonly PluginDescriptor[] = [
     description: 'Cuts a very long tool result to its beginning and its end before the model reads it, and says how much was cut.',
     switchable: { on: false },
     settings: OUTPUT_TRIM_SETTINGS,
-    code: [{ name: 'Trim long tool results', description: 'Runs after every tool call, in conversations, task threads and unattended work. Not in terminal sessions yet.' }]
+    code: [{ name: 'Trim long tool results', description: 'Runs after every tool call, in conversations, terminal sessions, task threads and unattended work.' }]
   },
   {
     id: BUDGET_GUARD,
@@ -55,7 +55,7 @@ export const FIRST_PARTY_PLUGINS: readonly PluginDescriptor[] = [
     description: 'Stops a reply that keeps going: past a limit of model requests or tokens, further tool calls are refused and the agent is told to wrap up.',
     switchable: { on: false },
     settings: BUDGET_GUARD_SETTINGS,
-    code: [{ name: 'Refuse tool calls past the limit', description: 'Counts model requests and tokens in one reply, in conversations, task threads and unattended work. Not in terminal sessions yet.' }]
+    code: [{ name: 'Refuse tool calls past the limit', description: 'Counts model requests and tokens in one reply, in conversations, terminal sessions, task threads and unattended work.' }]
   },
   {
     id: LESSONS,
@@ -104,6 +104,12 @@ export function budgetGuard(saved: Record<string, unknown> | undefined): (pi: Ap
     let requests = 0
     let tokens = 0
     let refusedInRequest = 0
+    // A terminal session keeps one Pi session for many replies; each reply starts its own count.
+    pi.on('agent_start', () => {
+      requests = 0
+      tokens = 0
+      refusedInRequest = 0
+    })
     pi.on('turn_start', () => {
       requests += 1
     })

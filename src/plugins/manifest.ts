@@ -1,5 +1,5 @@
 // What a package says about itself in its `package.json`: Pi's own fields, and under `harness`
-// which part of the harness it extends and the file of hooks the harness runs for it.
+// which part of the harness it extends, its command namespace and the file of hooks it runs.
 import { basename, join } from 'node:path'
 import { z } from 'zod'
 
@@ -12,6 +12,8 @@ export interface PackageManifest {
   version: string | null
   /** The parts it adds to, by id: `memory`, `wiki`, `history`. */
   extends: string[]
+  /** Stable terminal command namespace, or `null` to use the normalized package name. */
+  commandPrefix: string | null
   /** The hooks file, inside the package, or `null` when it has none. */
   hooks: string | null
   /** Data-only remote connector forms. Invalid templates are ignored; none can carry credentials. */
@@ -61,12 +63,13 @@ function inside(path: unknown): string | null {
 
 export function packageManifest(packageRoot: string): PackageManifest {
   const manifest = readJsonOr<Raw>(join(packageRoot, 'package.json'), {})
-  const own = (manifest.harness && typeof manifest.harness === 'object' && !Array.isArray(manifest.harness) ? manifest.harness : {}) as { extends?: unknown; hooks?: unknown; connectors?: unknown }
+  const own = (manifest.harness && typeof manifest.harness === 'object' && !Array.isArray(manifest.harness) ? manifest.harness : {}) as { extends?: unknown; hooks?: unknown; connectors?: unknown; commandPrefix?: unknown }
   return {
     name: typeof manifest.name === 'string' && manifest.name ? manifest.name : basename(packageRoot),
     description: typeof manifest.description === 'string' ? manifest.description : '',
     version: typeof manifest.version === 'string' ? manifest.version : null,
     extends: (Array.isArray(own.extends) ? own.extends : typeof own.extends === 'string' ? [own.extends] : []).filter((id): id is string => typeof id === 'string' && !!id),
+    commandPrefix: typeof own.commandPrefix === 'string' && /^[a-z][a-z0-9-]*$/i.test(own.commandPrefix) && !['plugin', 'skill'].includes(own.commandPrefix.toLowerCase()) ? own.commandPrefix.toLowerCase() : null,
     hooks: inside(own.hooks),
     connectorTemplates: (Array.isArray(own.connectors) ? own.connectors : []).flatMap((value) => {
       const parsed = connectorTemplateSchema.safeParse(value)

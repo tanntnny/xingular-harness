@@ -27,6 +27,12 @@ jobs:
           bun-version: '1.4.2'
       - run: npm ci
       - run: npx --no-install playwright-core install --with-deps chromium
+      - name: Install bubblewrap for Linux sandbox verification
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes bubblewrap
+          test -x /usr/bin/bwrap
       - run: npm run ci
       - run: npm run release:pack -- outputs/ci-candidate
       - name: Smoke-test the packaged release

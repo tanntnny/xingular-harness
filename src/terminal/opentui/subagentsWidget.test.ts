@@ -7,7 +7,7 @@ function child(index: number, extra: Partial<TerminalSubagentActivity> = {}): Te
   return {
     id: `run-${index}`, parentRunId: 'parent', relation: 'subagent', goal: `Task ${index}`, status: 'completed',
     startedAt: `2026-10-23T00:00:0${index}.000Z`, endedAt: '2026-10-23T00:00:09.000Z', activity: 'Completed',
-    title: `Task ${index}`, checklist: null, ...extra
+    title: `Task ${index}`, checklist: null, usage: null, ...extra
   }
 }
 

@@ -27,11 +27,12 @@ export function subagentTools(service: Subagents, parentRunId: string): ToolSpec
   return [{
     name: SPAWN_SUBAGENT,
     label: 'Start a subagent',
-    description: 'Start a fresh child run for independent work: a copy of yourself, or an agent profile from your Subagents list when you name it in agent (for example worker to make changes, explorer to find and explain). Give a short title, which the user sees in the roster, and a complete brief: the child has no conversation history and no more capabilities than you. Returns its run ID immediately by default so you can continue working. Results arrive automatically before you finish. Use wait_subagents to join selected children, or wait: true for an inline result. Stopping you stops your children.',
+    description: 'Start a fresh child run for independent work. Delegate substantial, bounded tasks that benefit from a separate context, not simple lookups, tiny edits or tightly coupled steps. Prefer a named specialist profile; omit agent only when no profile fits. Plan mode permits only eligible read-only research profiles. Give a short title and a self-contained brief: the child has no conversation history and no more capabilities than you. Returns its run ID immediately by default so you can continue other useful work. Results arrive automatically before you finish. Use wait_subagents when you need results before proceeding, or wait: true for an inline result. Avoid overlapping write assignments. Stopping you stops your children.',
+    planModeSafe: input => service.planSpawnRefusal(parentRunId, input) === null,
     parameters: (Type) => Type.Object({
       title: Type.String({ description: `A short imperative title for the roster, at most ${MAX_SUBAGENT_TITLE_WORDS} words, such as "Map the auth flow"` }),
-      brief: Type.String(),
-      agent: Type.Optional(Type.String({ description: 'The name of an agent profile from your Subagents list; omit for a copy of yourself' })),
+      brief: Type.String({ description: 'A self-contained task: goal, relevant context or paths, non-goals, expected result, and acceptance or verification. The child cannot see this conversation.' }),
+      agent: Type.Optional(Type.String({ description: 'The name of a specialist profile from your Subagents list; omit only when no listed profile fits (omitting starts an unprofiled copy)' })),
       tools: Type.Optional(Type.Array(Type.String())),
       wait: Type.Optional(Type.Boolean({ description: 'Wait for the child and return its result; default false' }))
     }),

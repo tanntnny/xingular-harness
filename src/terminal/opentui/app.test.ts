@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { copyToClipboard } from '@earendil-works/pi-coding-agent'
 import type { AgentSession, AgentSessionEvent, Theme } from '@earendil-works/pi-coding-agent'
+import type { Component } from '@earendil-works/pi-tui'
 
 vi.mock('@earendil-works/pi-coding-agent', async importOriginal => {
   const actual = await importOriginal<typeof import('@earendil-works/pi-coding-agent')>()
@@ -11,6 +12,8 @@ vi.mock('@earendil-works/pi-coding-agent', async importOriginal => {
 })
 
 import { OpenTuiApplication, type KeyInput } from './app'
+import { PiDialogHost } from './dialogHost'
+import type { ComposerAttachments } from './attachments'
 import { TranscriptModel } from './model'
 import { QuestionDockState, type QuestionDockQuestion } from './questionDockState'
 import { workingLineText } from './workingLine'
@@ -82,18 +85,20 @@ describe('OpenTuiApplication', () => {
 
   it('publishes and refreshes the active slash-command vocabulary', async () => {
     const app = new OpenTuiApplication([])
-    let completions = [{ name: 'help', aliases: ['h'] }, { name: 'plugin:notes' }, { name: 'review' }]
+    let completions = [{ name: 'help', aliases: ['h'] }, { name: 'annotate:notes' }, { name: 'review' }]
+    let legacyAliases = ['plugin:notes', 'notes']
     const internals = app as unknown as {
-      commands: { completions(): typeof completions; skills(): { name: string }[] }
+      commands: { completions(): typeof completions; skills(): { name: string }[]; legacyAliases(): string[] }
       refresh(): void
     }
-    internals.commands = { completions: () => completions, skills: () => [{ name: 'diagnose' }] }
+    internals.commands = { completions: () => completions, skills: () => [{ name: 'diagnose' }], legacyAliases: () => legacyAliases }
 
-    expect(app.view().slashCommandNames).toEqual(['help', 'h', 'plugin:notes', 'review', 'skill:diagnose'])
+    expect(app.view().slashCommandNames).toEqual(['help', 'h', 'annotate:notes', 'review', 'skill:diagnose', 'plugin:notes', 'notes'])
 
     completions = [{ name: 'plan' }]
+    legacyAliases = ['plugin:doctor', 'doctor']
     internals.refresh()
-    expect(app.view().slashCommandNames).toEqual(['plan', 'skill:diagnose'])
+    expect(app.view().slashCommandNames).toEqual(['plan', 'skill:diagnose', 'plugin:doctor', 'doctor'])
     await app.shutdown()
   })
 
@@ -309,20 +314,71 @@ describe('OpenTuiApplication', () => {
     }
   })
 
-  it('gives the live subagent rows their own place instead of the widgets above the composer', async () => {
+  it('renders subagent rows separately and retains the final status until the next run', async () => {
     const app = new OpenTuiApplication([])
-    const internals = app as unknown as { subagents: TerminalSubagentActivity[]; themeValue: Theme }
+    const internals = app as unknown as {
+      subagents: TerminalSubagentActivity[]
+      themeValue: Theme
+      accept(event: AgentSessionEvent): void
+    }
     internals.themeValue = createHarnessTheme({ getColorMode: () => 'truecolor' } as Theme)
     internals.subagents = [{
       id: 'child', parentRunId: 'parent', relation: 'subagent', goal: 'Inspect auth flow', status: 'running',
       startedAt: new Date(Date.now() - 3000).toISOString(), endedAt: null, activity: 'read',
-      profile: { name: 'explorer', color: 'cyan' }, title: 'Map the auth flow', checklist: { done: 1, total: 3 }
+      profile: { name: 'explorer', color: 'cyan' }, title: 'Map the auth flow', checklist: { done: 1, total: 3 }, usage: null
     }]
 
     expect(app.view().widgets.above).toEqual([])
     expect(app.view().subagents?.rows).toEqual([expect.objectContaining({ mark: expect.stringMatching(/^[·✢✳✶✻✽]$/u), profile: 'explorer', color: 'cyan', title: 'Map the auth flow', tasks: '1 of 3 tasks' })])
-    internals.subagents = []
+    internals.subagents = [{
+      ...internals.subagents[0]!, status: 'completed', endedAt: new Date().toISOString(), activity: 'Completed'
+    }]
+    internals.accept({ type: 'agent_settled' } as AgentSessionEvent)
+    expect(app.view().subagents?.rows).toEqual([expect.objectContaining({ mark: '✓', title: 'Map the auth flow' })])
+
+    internals.accept({ type: 'agent_start' } as AgentSessionEvent)
     expect(app.view().subagents).toBeNull()
+    await app.shutdown()
+  })
+
+  it('refreshes final child statuses without applying an older in-flight poll', async () => {
+    const app = new OpenTuiApplication([])
+    let resolvePoll!: (value: { children: TerminalSubagentActivity[] }) => void
+    let resolveFinal!: (value: { children: TerminalSubagentActivity[] }) => void
+    const poll = new Promise<{ children: TerminalSubagentActivity[] }>(resolve => { resolvePoll = resolve })
+    const final = new Promise<{ children: TerminalSubagentActivity[] }>(resolve => { resolveFinal = resolve })
+    const running: TerminalSubagentActivity = {
+      id: 'child', parentRunId: 'parent', relation: 'subagent', goal: 'Inspect auth flow', status: 'running',
+      startedAt: new Date(Date.now() - 3000).toISOString(), endedAt: null, activity: 'read',
+      profile: { name: 'explorer', color: 'cyan' }, title: 'Map the auth flow', checklist: null, usage: null
+    }
+    const completed: TerminalSubagentActivity = {
+      ...running, status: 'completed', endedAt: new Date().toISOString(), activity: 'Completed'
+    }
+    const internals = app as unknown as {
+      startedAt: number | null
+      runtime?: TerminalRuntime
+      accept(event: AgentSessionEvent): void
+      refreshSubagents(settled?: boolean): Promise<void>
+      readSubagentMonitor(): Promise<{ children: TerminalSubagentActivity[] }>
+    }
+    internals.runtime = {
+      session: { getActiveToolNames: () => ['spawn_subagent'], messages: [], state: {} },
+      snapshot: () => undefined,
+      dispose: async () => {}
+    } as unknown as TerminalRuntime
+    internals.startedAt = Date.now()
+    let readCount = 0
+    internals.readSubagentMonitor = () => ++readCount === 1 ? poll : final
+
+    const inFlight = internals.refreshSubagents()
+    internals.accept({ type: 'agent_settled' } as AgentSessionEvent)
+    resolvePoll({ children: [running] })
+    await inFlight
+    expect(app.view().subagents).toBeNull()
+
+    resolveFinal({ children: [completed] })
+    await vi.waitFor(() => expect(app.view().subagents?.rows).toEqual([expect.objectContaining({ mark: '✓', title: 'Map the auth flow' })]))
     await app.shutdown()
   })
 
@@ -348,7 +404,7 @@ describe('OpenTuiApplication', () => {
     }
   })
 
-  it('recalls active-session user prompts only from an empty composer', async () => {
+  it('browses active-session prompts at composer edges and restores the working draft', async () => {
     const app = new OpenTuiApplication([])
     const setThinkingLevel = vi.fn()
     const makeSession = (prompts: string[]) => ({
@@ -374,6 +430,10 @@ describe('OpenTuiApplication', () => {
       runtime?: TerminalRuntime
       keybindings?: { matches(data: string, action: string): boolean; getResolvedBindings(): object }
     }
+    const edge = (name: 'up' | 'down', first: boolean, last: boolean, cursorOffset?: number) => ({
+      ...key(name, name === 'up' ? '\x1b[A' : '\x1b[B'),
+      atFirstVisualLine: first, atLastVisualLine: last, cursorOffset
+    })
     internals.syncDraft = () => {}
     internals.runtime = runtime as unknown as TerminalRuntime
     internals.transcript.bind(activeSession)
@@ -385,21 +445,48 @@ describe('OpenTuiApplication', () => {
     try {
       expect(app.handleKey(key('up', '\x1b[A'))).toBe(true)
       expect(app.view().draft).toBe('third prompt')
-      expect(app.handleKey(key('up', '\x1b[A'))).toBe(false)
-      expect(app.handleKey(key('down', '\x1b[B'))).toBe(false)
+      expect(app.handleKey(edge('up', false, true, 12))).toBe(true)
+      expect(app.view().draft).toBe('second prompt')
+      expect(app.handleKey(edge('up', true, false, 0))).toBe(true)
+      expect(app.view().draft).toBe('first prompt')
+      expect(app.handleKey(edge('down', true, false, 0))).toBe(true)
+      expect(app.view().draft).toBe('second prompt')
+      expect(app.handleKey(edge('down', false, true, 13))).toBe(true)
       expect(app.view().draft).toBe('third prompt')
+      expect(app.handleKey(edge('down', false, true, 12))).toBe(true)
+      expect(app.view().draft).toBe('')
 
       app.setDraft('unfinished draft')
-      expect(app.handleKey(key('up', '\x1b[A'))).toBe(false)
-      expect(app.view().draft).toBe('unfinished draft')
+      expect(app.handleKey(edge('down', true, true, 4))).toBe(true)
+      expect(app.view()).toMatchObject({ draft: 'unfinished draft', draftCursorOffset: 'unfinished draft'.length })
+      expect(app.handleKey(edge('up', true, true, 'unfinished draft'.length))).toBe(true)
+      expect(app.view()).toMatchObject({ draft: 'third prompt', draftCursorOffset: 'third prompt'.length })
+      expect(app.handleKey(edge('down', true, true, 0))).toBe(true)
+      expect(app.view()).toMatchObject({ draft: 'unfinished draft', draftCursorOffset: 'unfinished draft'.length })
+
+      app.setDraft('scratch first\nscratch second')
+      expect(app.handleKey(edge('up', false, true, 25))).toBe(false)
+      expect(app.view().draft).toBe('scratch first\nscratch second')
+      expect(app.handleKey(edge('up', true, false, 12))).toBe(true)
+      expect(app.view()).toMatchObject({ draft: 'scratch first\nscratch second', draftCursorOffset: 0 })
+      expect(app.handleKey(edge('up', true, false, 0))).toBe(true)
+      expect(app.view().draft).toBe('third prompt')
+      expect(app.handleKey(edge('down', false, true, 12))).toBe(true)
+      expect(app.view().draft).toBe('scratch first\nscratch second')
+      expect(app.view().draftCursorOffset).toBe(0)
 
       expect(app.handleKey({ ...key('up', '\x1b[1;5A'), ctrl: true })).toBe(true)
       expect(app.view().draft).toBe('third prompt')
       expect(app.handleKey({ ...key('up', '\x1b[1;5A'), ctrl: true })).toBe(true)
       expect(app.view().draft).toBe('second prompt')
+      expect(app.handleKey({ ...key('down', '\x1b[1;5B'), ctrl: true })).toBe(true)
+      expect(app.view().draft).toBe('third prompt')
+      expect(app.handleKey({ ...key('down', '\x1b[1;5B'), ctrl: true })).toBe(true)
+      expect(app.view().draft).toBe('scratch first\nscratch second')
       expect(app.handleKey(key('up', '\x1b[1;2A', true))).toBe(true)
       expect(setThinkingLevel).toHaveBeenCalledWith('high')
-      expect(app.view().draft).toBe('second prompt')
+      expect(app.view().draft).toBe('scratch first\nscratch second')
+
       internals.clearDraft()
       expect(app.handleKey(key('up', '\x1b[A'))).toBe(true)
       expect(app.view().draft).toBe('third prompt')
@@ -410,6 +497,125 @@ describe('OpenTuiApplication', () => {
       internals.transcript.bind(activeSession)
       expect(app.handleKey(key('up', '\x1b[A'))).toBe(true)
       expect(app.view().draft).toBe('other third')
+    } finally {
+      await app.shutdown()
+    }
+  })
+
+  it('recalls user-entered Bash commands into the composer in Bash mode', async () => {
+    const app = new OpenTuiApplication([])
+    const session = {
+      messages: [
+        { role: 'user', content: 'older request', timestamp: 100 },
+        { role: 'bashExecution', command: 'git status --short', output: '', timestamp: 200 },
+        { role: 'user', content: 'newer request', timestamp: 300 }
+      ],
+      state: {},
+      getSessionStats: () => ({ tokens: { input: 0, output: 0 } })
+    } as unknown as AgentSession
+    const internals = app as unknown as { transcript: TranscriptModel; runtime?: TerminalRuntime }
+    internals.runtime = { session, snapshot: () => undefined, dispose: async () => {} } as unknown as TerminalRuntime
+    internals.transcript.bind(session)
+
+    try {
+      expect(app.handleKey(key('up', '\x1b[A'))).toBe(true)
+      expect(app.view().draft).toBe('newer request')
+      expect(app.handleKey({ ...key('up', '\x1b[A'), atFirstVisualLine: true, cursorOffset: 6 })).toBe(true)
+      expect(app.view()).toMatchObject({ draft: 'newer request', draftCursorOffset: 0, bashMode: false })
+      expect(app.handleKey({ ...key('up', '\x1b[A'), atFirstVisualLine: true, cursorOffset: 0 })).toBe(true)
+      expect(app.view()).toMatchObject({ draft: 'git status --short', bashMode: true })
+      expect(app.handleKey({ ...key('up', '\x1b[A'), atFirstVisualLine: true, cursorOffset: 18 })).toBe(true)
+      expect(app.view()).toMatchObject({ draft: 'older request', bashMode: false })
+      expect(app.handleKey({ ...key('down', '\x1b[B'), atFirstVisualLine: true, cursorOffset: 0 })).toBe(true)
+      expect(app.view()).toMatchObject({ draft: 'git status --short', bashMode: true })
+    } finally {
+      await app.shutdown()
+    }
+  })
+
+  it('recalls executed slash commands alongside session prompts', async () => {
+    const app = new OpenTuiApplication([])
+    const session = {
+      messages: [{ role: 'user', content: 'saved request', timestamp: 100 }],
+      state: {},
+      getSessionStats: () => ({ tokens: { input: 0, output: 0 } })
+    } as unknown as AgentSession
+    const execute = vi.fn(async (_text: string) => true)
+    const internals = app as unknown as {
+      transcript: TranscriptModel
+      runtime?: TerminalRuntime
+      commands?: {
+        execute(text: string): Promise<boolean>
+        expandSkill(text: string): string
+        completions(): { name: string }[]
+        skills(): { name: string }[]
+        legacyAliases(): string[]
+      }
+      slashCommandHistory: { text: string; timestamp: number }[]
+      syncDraft(text: string): void
+      initialized: boolean
+    }
+    internals.runtime = { session, snapshot: () => undefined, dispose: async () => {} } as unknown as TerminalRuntime
+    internals.commands = {
+      execute, expandSkill: text => text,
+      completions: () => [{ name: 'plugin:annotate' }], skills: () => [], legacyAliases: () => []
+    }
+    internals.syncDraft = () => {}
+    internals.initialized = true
+    internals.transcript.bind(session)
+
+    try {
+      app.setDraft('/plugin:annotate')
+      app.submitPrompt()
+      await vi.waitFor(() => expect(internals.slashCommandHistory).toHaveLength(1))
+      expect(execute).toHaveBeenCalledWith('/plugin:annotate')
+      expect(app.handleKey(key('up', '\x1b[A'))).toBe(true)
+      expect(app.view().draft).toBe('/plugin:annotate')
+      expect(app.view().palette?.items).toMatchObject([{ name: 'plugin:annotate' }])
+      expect(app.handleKey({ ...key('up', '\x1b[A'), atFirstVisualLine: true, cursorOffset: 16 })).toBe(true)
+      expect(app.view().draft).toBe('saved request')
+      expect(app.handleKey({ ...key('down', '\x1b[B'), atFirstVisualLine: true, cursorOffset: 0 })).toBe(true)
+      expect(app.view().draft).toBe('/plugin:annotate')
+    } finally {
+      await app.shutdown()
+    }
+  })
+
+  it('keeps draft attachment payloads while history temporarily replaces the composer', async () => {
+    const app = new OpenTuiApplication([])
+    const oldPrompt = 'Earlier [Image #1] [Pasted text #2 +4 lines]'
+    const session = {
+      messages: [{ role: 'user', content: oldPrompt }], state: {},
+      getSessionStats: () => ({ tokens: {} })
+    } as unknown as AgentSession
+    const internals = app as unknown as {
+      attachments: ComposerAttachments
+      transcript: TranscriptModel
+      runtime?: TerminalRuntime
+      syncDraft(text: string): void
+    }
+    internals.runtime = { session, snapshot: () => undefined, dispose: async () => {} } as unknown as TerminalRuntime
+    internals.transcript.bind(session)
+    internals.syncDraft = () => {}
+    const image = internals.attachments.addImage('image-data', 'image/png')
+    const paste = internals.attachments.addText('one\ntwo\nthree\nfour')
+    const scratch = `Review ${image.label} ${paste.label}`
+    app.setDraft(scratch)
+
+    try {
+      expect(app.handleKey({ ...key('up', '\x1b[A'), atFirstVisualLine: true, cursorOffset: 0 })).toBe(true)
+      expect(app.view().draft).toBe(oldPrompt)
+      expect(app.view().attachments).toEqual([])
+      expect(internals.attachments.expand(oldPrompt)).toEqual({ text: oldPrompt, images: [] })
+      expect(app.handleKey({ ...key('down', '\x1b[B'), atLastVisualLine: true, cursorOffset: oldPrompt.length })).toBe(true)
+      expect(app.view().draft).toBe(scratch)
+      expect(app.view().attachments).toEqual([
+        expect.objectContaining({ label: image.label }), expect.objectContaining({ label: paste.label })
+      ])
+      expect(internals.attachments.expand(scratch)).toEqual({
+        text: 'Review [Image #1] one\ntwo\nthree\nfour',
+        images: [{ type: 'image', data: 'image-data', mimeType: 'image/png' }]
+      })
     } finally {
       await app.shutdown()
     }
@@ -537,6 +743,52 @@ describe('OpenTuiApplication', () => {
       expect(setMode).toHaveBeenNthCalledWith(2, 'normal')
       expect(setMode).toHaveBeenNthCalledWith(3, 'plan')
       expect(setMode).toHaveBeenNthCalledWith(4, 'normal')
+    } finally {
+      await app.shutdown()
+    }
+  })
+
+  it('routes pasted text into an active dialog without changing the composer draft', async () => {
+    const app = new OpenTuiApplication([])
+    const inputs: string[] = []
+    const internals = app as unknown as { host: PiDialogHost }
+    internals.host.showOverlay({
+      render: () => ['dialog'],
+      handleInput: (data: string) => inputs.push(data),
+      invalidate: () => {}
+    } as unknown as Component)
+
+    try {
+      app.paste('annotation note\r\ncontinued')
+      await vi.waitFor(() => expect(inputs).toEqual(['\x1b[200~annotation note\ncontinued\x1b[201~']))
+      expect(app.view().draft).toBe('')
+    } finally {
+      await app.shutdown()
+    }
+  })
+
+  it('routes the clipboard shortcut to an active dialog as text', async () => {
+    const app = new OpenTuiApplication([])
+    const inputs: string[] = []
+    const internals = app as unknown as {
+      host: PiDialogHost
+      keybindings: { matches(data: string, action: string): boolean }
+      readClipboardText(): Promise<string | null>
+    }
+    internals.host.showOverlay({
+      render: () => ['dialog'],
+      handleInput: (data: string) => inputs.push(data),
+      invalidate: () => {}
+    } as unknown as Component)
+    internals.keybindings = {
+      matches: (data, action) => data === '\x16' && action === 'app.clipboard.pasteImage'
+    }
+    internals.readClipboardText = async () => 'API_KEY_FROM_CLIPBOARD'
+
+    try {
+      expect(app.handleKey({ ...key('v', '\x16'), ctrl: true })).toBe(true)
+      await vi.waitFor(() => expect(inputs).toEqual(['\x1b[200~API_KEY_FROM_CLIPBOARD\x1b[201~']))
+      expect(app.view().draft).toBe('')
     } finally {
       await app.shutdown()
     }
@@ -774,6 +1026,25 @@ describe('OpenTuiApplication', () => {
     await app.shutdown()
   })
 
+  it('places the cursor after a slash command inserted with Tab', async () => {
+    const app = new OpenTuiApplication([])
+    const internals = app as unknown as {
+      commands: { completions(): { name: string; description?: string }[] }
+      syncDraft(text: string): void
+    }
+    internals.commands = { completions: () => [{ name: 'plan', description: 'Plan mode' }] }
+    internals.syncDraft = () => {}
+
+    try {
+      app.setDraft('/pla')
+      expect(app.view().palette?.items).toMatchObject([{ name: 'plan' }])
+      expect(app.handleKey(key('tab', '\t'))).toBe(true)
+      expect(app.view()).toMatchObject({ draft: '/plan ', draftCursorOffset: '/plan '.length, palette: null })
+    } finally {
+      await app.shutdown()
+    }
+  })
+
   it('preserves an existing draft and attachments while filtering and opening the resource browser', async () => {
     const app = new OpenTuiApplication([])
     const internals = app as unknown as {
@@ -818,6 +1089,7 @@ describe('OpenTuiApplication', () => {
     expect(app.view().palette?.items).toEqual([{ name: 'review', description: 'Inspect changes', prefix: '$' }])
     expect(app.activatePaletteItem(0)).toBe(true)
     expect(app.view().draft).toBe('$review ')
+    expect(app.view().draftCursorOffset).toBe('$review '.length)
     expect(internals.submit).not.toHaveBeenCalled()
     expect(app.view().palette).toBeNull()
     await app.shutdown()

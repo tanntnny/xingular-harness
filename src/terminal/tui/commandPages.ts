@@ -12,15 +12,18 @@ import { NotesPage } from './pages/notesPage'
 import { AnnotatePage, type AnnotateStart } from './pages/annotatePage'
 import { SubagentsPage } from './pages/subagentsPage'
 import { AgentsPage } from './pages/agentsPage'
+import { UsagePage } from './pages/usagePage'
 import { createSettingsModel } from './settingsModel'
 
-export type CommandPageId = 'doctor' | 'accounts' | 'permissions' | 'plugins' | 'hub' | 'components' | 'settings' | 'trajectory' | 'log' | 'harness' | 'skills' | 'connections' | 'tools' | 'worktree' | 'notes' | 'annotate' | 'subagents' | 'agents'
+export type CommandPageId = 'doctor' | 'accounts' | 'permissions' | 'plugins' | 'hub' | 'components' | 'settings' | 'trajectory' | 'log' | 'harness' | 'skills' | 'connections' | 'tools' | 'worktree' | 'notes' | 'annotate' | 'subagents' | 'agents' | 'usage'
 
 /** Construct one independent full-screen page for a slash command. */
-export function createCommandPage(host: TerminalCommandHost, id: CommandPageId, options: { runId?: string; url?: string; annotate?: AnnotateStart; close?(): void } = {}): TerminalPage {
+export function createCommandPage(host: TerminalCommandHost, id: CommandPageId, options: { runId?: string; url?: string; annotate?: AnnotateStart; usageTab?: 'analysis' | 'limit'; usagePeriod?: 'today' | '7d' | '30d' | 'all'; close?(): void } = {}): TerminalPage {
   const theme = () => host.ui.theme
   const notify = (message: string, type?: string) => host.ui.notify(message, type === 'error' || type === 'warning' ? type : 'info')
   switch (id) {
+    case 'usage':
+      return new UsagePage({ theme, call: host.control, changed: host.changed, initialTab: options.usageTab === 'limit' ? 'limits' : 'analysis', ...(options.usagePeriod ? { initialPeriod: options.usagePeriod } : {}) })
     case 'doctor':
       return new DoctorPage({ theme, call: host.control, confirm: host.ui.confirm.bind(host.ui), select: host.ui.select.bind(host.ui), changed: host.changed,
         selection: () => {

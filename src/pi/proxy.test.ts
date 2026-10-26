@@ -3,6 +3,8 @@ import { createServer } from 'node:http'
 import { promisify } from 'node:util'
 import { afterEach, expect, it } from 'vitest'
 
+import { HTTP_DISPATCHER_CHUNK } from './runtime'
+
 const execFileAsync = promisify(execFile)
 const servers: ReturnType<typeof createServer>[] = []
 afterEach(async () => {
@@ -45,7 +47,7 @@ it('routes Pi HTTP requests through the process proxy environment', async () => 
     import { pathToFileURL } from 'node:url'
 
     const pi = await import('@earendil-works/pi-coding-agent')
-    const dispatcherUrl = pathToFileURL(join(pi.getPackageDir(), 'dist/bundle/chunks/chunk-TJXZSVTD.js')).href
+    const dispatcherUrl = pathToFileURL(join(pi.getPackageDir(), ${JSON.stringify(HTTP_DISPATCHER_CHUNK)})).href
     const { configureHttpDispatcher } = await import(dispatcherUrl)
     configureHttpDispatcher()
     const response = await fetch('http://127.0.0.2/dispatcher-check')

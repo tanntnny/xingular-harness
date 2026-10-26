@@ -1,4 +1,5 @@
 import { constants, closeSync, fstatSync, lstatSync, openSync, readFileSync, readdirSync, realpathSync } from 'node:fs'
+import { describePlugin } from '../plugins/surfaces'
 import * as path from 'node:path'
 import { basename, dirname, join, relative, resolve } from 'node:path'
 
@@ -61,7 +62,7 @@ export class BrowserControl {
       ['surface', 'Variant surface', 'Defines c1–c8, validation and immutable versions. Only a validated variant version may change.']
     ]) add({ id: `foundation:${id}`, section: 'foundation', name: name!, description: description!, owner: 'Foundation', origin: 'Built-in', status: 'Read-only' })
     for (const plugin of plugins) {
-      add({ id: `plugin:${plugin.id}`, section: 'plugins', name: plugin.title, description: plugin.description,
+      add({ id: `plugin:${plugin.id}`, section: 'plugins', name: plugin.title, description: describePlugin(plugin),
         owner: plugin.title, origin: plugin.source, status: plugin.required ? 'Required' : plugin.trust === 'untrusted' ? 'Needs trust' : 'Saved configuration',
         pluginId: plugin.id, path: plugin.path ?? undefined, required: plugin.required })
       for (const entry of plugin.contributions) {

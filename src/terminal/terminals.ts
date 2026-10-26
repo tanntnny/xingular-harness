@@ -23,11 +23,13 @@ import { log } from '../core/bus'
 import type { HarnessEnv } from '../core/env'
 import { HarnessError, invalid } from '../core/errors'
 import { newId, now } from '../core/fs'
+import { formatBashCommandForApproval } from '../core/workspaceBashTool'
+import { resolveWorkspaceRoot } from '../core/workspace'
 import { prependSearchPath, searchPath } from '../core/path'
 import type { BrokerSession, ConnectedApps } from '../mcp/service'
 import type { CallerContext } from '../core/caller'
 import { dispatch } from '../tools/dispatch'
-import { materialise, type VariantChoice } from '../variant/materialise'
+import { materialise, type Materialised, type VariantChoice } from '../variant/materialise'
 import * as componentLibrary from '../variant/components'
 import * as variantStore from '../variant/store'
 import type { VariantTrust } from '../variant/trust'
@@ -41,8 +43,14 @@ import { isActiveStatus } from '../sessions/contracts'
 import type { ToolPolicy } from '../sessions/policy'
 import type { ActiveRun, RunRegistry } from '../sessions/registry'
 import { findRun, loadRun, saveRun, updateRun } from '../sessions/runStore'
+import { combineWorkspaceScope, inspectRunWorkspaceWrite } from '../sessions/workspaceBoundary'
 import type { ToolSpec } from '../tools/types'
 import { CHECKLIST_WRITE } from '../tools/checklist'
+import { DEFAULT_TOOL_NAMES } from '../tools/definitions'
+import { harnessTools } from '../tools/harnessTools'
+import { HARNESS_PLUGINS } from '../plugins/builtin'
+import * as attachments from '../plugins/attachments'
+import { FIRST_PARTY_PLUGINS } from '../plugins/firstParty'
 import { createProfile, listProfiles, profileDirs, profileSection, removeProfile, resolveProfile, type ProfileScope } from '../agents/profiles'
 import type { TerminalSubagentProfile } from './subagentMonitor'
 import { SESSION_NAME } from '../tools/sessionName'
@@ -52,6 +60,8 @@ import type { Worktrees } from '../worktrees/service'
 import { setupScript } from '../worktrees/setup'
 import type { AnnotationCapture, CaptureTargetSpec } from '../annotations/capture'
 import type { NoteDeliveries } from '../annotations/delivery'
+import type { Usage } from '../usage/service'
+import type { UsageLimits } from '../usage/limits/service'
 import { inspectStep } from '../annotations/inspect'
 import * as pageNotes from '../annotations/store'
 import { APPS_COMMAND, WIKI_COMMAND } from './cli'
@@ -145,6 +155,7 @@ interface Live {
   token: string
   broker: BrokerSession | null
   caller: CallerContext
+  variant: Materialised | null
 }
 
 export interface TerminalsOptions {
@@ -177,6 +188,10 @@ export interface TerminalsOptions {
   noteCapture?: AnnotationCapture
   /** Page notes on their way to a session (PROP-0018). */
   pageNotes?: NoteDeliveries
+  /** Usage analytics over the derived ledger (`/usage:analysis`). */
+  usage?: Usage
+  /** Provider plan windows, balances and rate limits (`/usage:limit`). */
+  usageLimits?: UsageLimits
 }
 
 /** What `/plugins` in a terminal can do. Each takes the session's folder, account and project. */
@@ -237,7 +252,12 @@ export class Terminals {
         const owner = this.sessions.get(parent.sessionId)
         if (owner?.controller.activeRun?.runId === parent.id) {
           owner.controller.observe(event, true)
-          owner.controller.observeSubagent(parent.id, record, event, this.subagentProfile(record))
+          const settings = options.subagents?.runtimeSettings(record.id)
+          owner.controller.observeSubagent(parent.id, record, event, this.subagentProfile(record), {
+            accountLabel: owner.account.label,
+            model: settings?.model ?? null,
+            effort: settings?.effort ?? null
+          })
           break
         }
         parentId = parent.parentRunId
@@ -281,19 +301,42 @@ export class Terminals {
     return bin
   }
 
-  /** The broker's tools, then the world tools whose plugins are on for this session. */
+  /**
+   * The harness's own History, Wiki and skill tools, then the broker's, then the world tools whose
+   * plugins are on for this session: the same tools a structured session has (INV-PAR-1).
+   */
   private async tools(session: BrokerSession, listing: boolean): Promise<ToolSpec[]> {
     const brokered = this.options.apps.brokerTools(session)
     const live = this.sessions.get(session.sessionId)
+    if (!live) return brokered
+    const own = await this.ownTools(live, listing)
     const { world } = this.options
-    if (!world || !live) return brokered
+    if (!world) return [...own, ...brokered]
     const context = { run: live.controller.activeRun, caller: live.caller, attended: true, subagent: false, sessionKey: session.sessionId, cwd: live.input.cwd }
-    if (!listing) return [...brokered, ...world.tools(context, (_plugin, tool) => this.worldNames.get(session.sessionId)?.has(tool) ?? false)]
+    if (!listing) return [...own, ...brokered, ...world.tools(context, (_plugin, tool) => this.worldNames.get(session.sessionId)?.has(tool) ?? false)]
     const on = await this.worldOn(live)
     const tools = world.tools(context, (plugin, tool) => on(plugin, tool))
     this.worldNames.set(session.sessionId, new Set(tools.map((tool) => tool.name)))
     for (const tool of tools) if (tool.readOnly) this.worldReadOnly.add(tool.name)
-    return [...brokered, ...tools]
+    return [...own, ...brokered, ...tools]
+  }
+
+  private readonly ownNames = new Map<string, Set<string>>()
+
+  private async ownTools(live: Live, listing: boolean): Promise<ToolSpec[]> {
+    const sessionId = live.caller.sessionId!
+    const all = harnessTools(this.options.env, live.caller, { variantDir: this.variantDirs.get(sessionId) ?? null })
+      .filter((tool) => DEFAULT_TOOL_NAMES.includes(tool.name))
+    if (!listing) return all.filter((tool) => this.ownNames.get(sessionId)?.has(tool.name) ?? false)
+    const on = await this.worldOn(live)
+    const owner = (tool: string): string | null => HARNESS_PLUGINS.find((plugin) => plugin.tools?.some((entry) => entry.name === tool))?.id ?? null
+    const tools = all.filter((tool) => {
+      const plugin = owner(tool.name)
+      return !plugin || on(plugin, tool.name)
+    })
+    this.ownNames.set(sessionId, new Set(tools.map((tool) => tool.name)))
+    for (const tool of tools) if (tool.readOnly) this.worldReadOnly.add(tool.name)
+    return tools
   }
 
   /** The world tools a new session will have, named in its instructions. */
@@ -304,6 +347,17 @@ export class Terminals {
     const plugins = list ? await list({ cwd: input.cwd, accountId: account.id, projectId: input.projectId ?? null }) : null
     const on = plugins ? new Set(plugins.flatMap((plugin) => plugin.contributions.filter((item) => item.state === 'on').map((item) => item.id))) : null
     return world.plugins.flatMap((plugin) => (plugin.tools ?? []).map((tool) => tool.name).filter((name) => !on || on.has(contributionId(plugin.id, 'tool', name))))
+  }
+
+  /** The harness's own History, Wiki and skill tools a new session will have. */
+  private async ownToolNames(input: TerminalPrepareInput, account: Account): Promise<string[]> {
+    const list = this.options.pluginControl?.list
+    const plugins = list ? await list({ cwd: input.cwd, accountId: account.id, projectId: input.projectId ?? null }) : null
+    const on = plugins ? new Set(plugins.flatMap((plugin) => plugin.contributions.filter((item) => item.state === 'on').map((item) => item.id))) : null
+    return DEFAULT_TOOL_NAMES.filter((name) => {
+      const plugin = HARNESS_PLUGINS.find((entry) => entry.tools?.some((tool) => tool.name === name))
+      return !on || !plugin || on.has(contributionId(plugin.id, 'tool', name))
+    })
   }
 
   /** Whether a world tool's plugin is switched on for a session's folder, account and project. */
@@ -327,6 +381,16 @@ export class Terminals {
       case 'tools.list': {
         const { Type } = await import('typebox')
         return { tools: (await this.tools(session, true)).map((tool) => ({ name: tool.name, label: tool.label, description: tool.description, parameters: tool.parameters(Type) })) }
+      }
+      case 'firstParty.list': {
+        // The harness's own extensions switched on for this session, with their settings.
+        const live = this.sessions.get(session.sessionId)
+        const list = this.options.pluginControl?.list
+        if (!live || !list) return { plugins: [] }
+        const plugins = await list({ cwd: live.input.cwd, accountId: live.account.id, projectId: live.input.projectId ?? null })
+        const on = new Set(plugins.flatMap((plugin) => plugin.contributions.filter((item) => item.state === 'on').map((item) => item.id)))
+        const settings = attachments.load(this.options.env.root).settings
+        return { plugins: FIRST_PARTY_PLUGINS.filter((plugin) => plugin.code?.some((code) => on.has(`${plugin.id}/code/${code.name}`))).map((plugin) => ({ id: plugin.id, settings: settings[plugin.id] ?? {} })) }
       }
       case 'tools.call': {
         const tool = (await this.tools(session, false)).find((candidate) => candidate.name === params.name)
@@ -552,7 +616,41 @@ export class Terminals {
     }
   }
 
-  /** `/plugin:notes` and `/plugin:annotate`: the page notes a person keeps, and the visible browser they capture them in. */
+  /** `/usage:analysis` and `/usage:limit`: usage for this session's own account, project or session. */
+  private async usageCall(live: Live, call: string, params: Record<string, unknown>): Promise<unknown> {
+    const usage = this.options.usage
+    const limits = this.options.usageLimits
+    if (!usage || !limits) throw invalid('Usage is unavailable in this host.')
+    if (call === 'terminal.usage.summary') {
+      const scope = params.scope === 'session' || params.scope === 'project' || params.scope === 'all' ? params.scope : 'account'
+      if (scope === 'project' && !live.input.projectId) throw invalid('This session has no project to report usage for.')
+      const period = params.period === 'today' || params.period === '30d' || params.period === 'all' ? params.period : '7d'
+      return usage.summary({
+        scope,
+        sessionId: live.input.sessionId,
+        accountId: live.account.id,
+        projectId: live.input.projectId ?? null,
+        period,
+        timezoneOffsetMinutes: typeof params.timezoneOffsetMinutes === 'number' ? params.timezoneOffsetMinutes : 0
+      })
+    }
+    if (call === 'terminal.usage.limits') {
+      return params.refresh === true ? limits.refresh(live.account.id, { force: true }) : limits.read(live.account.id)
+    }
+    if (call === 'terminal.usage.headers') {
+      if (typeof params.provider !== 'string' || !params.provider) throw invalid('A provider is required.')
+      if (typeof params.status !== 'number' || !Number.isFinite(params.status)) throw invalid('A response status is required.')
+      const headers = params.headers && typeof params.headers === 'object' && !Array.isArray(params.headers)
+        ? Object.fromEntries(Object.entries(params.headers as Record<string, unknown>).filter((entry): entry is [string, string] => typeof entry[1] === 'string'))
+        : {}
+      if (!Object.keys(headers).length) return {}
+      limits.recordHeaders(live.account.id, params.provider, { status: params.status, headers })
+      return {}
+    }
+    throw invalid('Unknown usage operation.')
+  }
+
+  /** `/annotate:notes` and `/annotate:`: Web annotations and their visible capture browser. */
   private async annotationsCall(live: Live, call: string, params: Record<string, unknown>): Promise<unknown> {
     const root = this.options.env.root
     const sessionId = live.input.sessionId
@@ -668,6 +766,7 @@ export class Terminals {
       sessionId: input.sessionId,
       nativeSessionId: live.controller.nativeSessionId,
       workingDirectory: input.cwd,
+      workspaceRoot: resolveWorkspaceRoot(input.cwd),
       worktreeId: input.run?.worktreeId ?? null,
       goal: text,
       attachmentCount: 0,
@@ -676,7 +775,9 @@ export class Terminals {
       status: 'queued',
       exitCode: null,
       handoffId: null,
-      accountId: live.account.id
+      accountId: live.account.id,
+      variantScope: live.variant?.scope ?? null,
+      variantVersion: live.variant?.fingerprint ?? null
     }
   }
 
@@ -700,49 +801,131 @@ export class Terminals {
   private async decide(live: Live, run: ActiveRun, tool: string, args: unknown): Promise<PolicyReply> {
     const record = loadRun(this.options.env.root, run.runId)
     if (!isActiveStatus(record.status)) throw invalid(`The run is no longer active (its status is ${record.status}).`)
-    const call = { run: record, caller: { ...live.caller, runId: run.runId }, tool, args }
+    const name = tool.toLowerCase()
+    const workspaceRoot = record.workspaceRoot ?? resolveWorkspaceRoot(record.workingDirectory ?? live.input.cwd)
+    if (live.input.readOnly && ['bash', 'edit', 'write'].includes(name)) return { allowed: false, reason: 'This session is read-only.', workspaceRoot }
+
+    let inspection: ReturnType<typeof inspectRunWorkspaceWrite>
+    try {
+      inspection = inspectRunWorkspaceWrite(record, tool, args)
+    } catch (error) {
+      return { allowed: false, reason: error instanceof Error ? error.message : 'The active project workspace could not be verified.', workspaceRoot }
+    }
+    const call = { run: record, caller: { ...live.caller, runId: run.runId }, tool, args: inspection.input }
     const { policy } = this.options
     if (policy.scope) {
-      const scope = await policy.scope(call)
-      if (!scope.allowed && (scope.automatic || !scope.requiresApproval)) return { allowed: false, reason: scope.reason ?? 'Outside what this session may do.' }
+      const scope = combineWorkspaceScope(await policy.scope(call), inspection)
+      if (!scope.allowed && (scope.automatic || !scope.requiresApproval)) return { allowed: false, reason: scope.reason ?? 'Outside what this session may do.', workspaceRoot }
       try {
         await policy.authorize?.(call)
       } catch (error) {
-        return { allowed: false, reason: error instanceof Error ? error.message : 'Tool unavailable in the settings.' }
+        return { allowed: false, reason: error instanceof Error ? error.message : 'Tool unavailable in the settings.', workspaceRoot }
       }
       const requiresApproval = !!scope.requiresApproval || (scope.allowed && !!scope.humanOnly)
       return {
         allowed: scope.allowed,
         requiresApproval,
         reason: scope.reason ?? null,
+        workspaceRoot,
         rememberable: scope.allowed && !scope.humanOnly,
         ...(scope.humanOnly ? { standing: scope.allowGlobalApproval ? 'switch' as const : 'none' as const } : {})
       }
     }
-    // With no application policy: reads run, a read-only session refuses the rest, and anything else asks.
-    const name = tool.toLowerCase()
-    if (name === SESSION_NAME || name === CHECKLIST_WRITE || name === SPAWN_SUBAGENT || name === WAIT_SUBAGENTS || READ_ONLY_TOOLS.has(name) || this.worldReadOnly.has(name) || this.options.apps.toolNames.includes(name as never)) return { allowed: true }
-    if (live.input.readOnly) return { allowed: false, reason: 'This session is read-only.' }
-    return { allowed: false, requiresApproval: true, rememberable: true, reason: 'This native action requires approval.' }
+    if (inspection.outside) return { allowed: false, requiresApproval: true, rememberable: false, standing: 'switch', reason: inspection.reason, workspaceRoot }
+    if (name === SESSION_NAME || name === CHECKLIST_WRITE || name === SPAWN_SUBAGENT || name === WAIT_SUBAGENTS || READ_ONLY_TOOLS.has(name) || this.worldReadOnly.has(name) || this.options.apps.toolNames.includes(name as never) || ['bash', 'edit', 'write'].includes(name)) {
+      return { allowed: true, workspaceRoot }
+    }
+    return { allowed: false, requiresApproval: true, rememberable: true, reason: 'This native action requires approval.', workspaceRoot }
+  }
+
+  private async workspaceEscape(live: Live, run: ActiveRun, tool: string, args: unknown, reason: string): Promise<boolean> {
+    if (tool !== 'bash' || live.input.readOnly) return false
+    const record = loadRun(this.options.env.root, run.runId)
+    if (!isActiveStatus(record.status) || (record.trigger != null && record.trigger !== 'user')) return false
+    const call = { run: record, caller: { ...live.caller, runId: run.runId }, tool, args }
+    const scope = (await this.options.policy.scope?.(call)) ?? { allowed: true }
+    if (scope.automatic || (!scope.allowed && !scope.requiresApproval)) return false
+    try {
+      await this.options.policy.authorize?.(call)
+    } catch {
+      return false
+    }
+    const operationArgs = (args && typeof args === 'object' && !Array.isArray(args) ? args : {}) as Record<string, unknown>
+    const command = typeof operationArgs.command === 'string' ? operationArgs.command : ''
+    if (operationArgs.workspaceWriteScope !== 'outside' || !command) return false
+    const workspaceRoot = record.workspaceRoot ?? resolveWorkspaceRoot(record.workingDirectory ?? live.input.cwd)
+    const decision = await run.requestApproval({
+      target: 'workspace-write',
+      action: `${reason} Workspace: ${workspaceRoot}. This exact command will run once with broader filesystem access.\n\nCommand:\n${formatBashCommandForApproval(command)}`,
+      operation: { tool, args: operationArgs },
+      rememberable: false,
+      standing: 'none'
+    })
+    if (decision !== 'approved') return false
+    const currentRecord = loadRun(this.options.env.root, run.runId)
+    if (!isActiveStatus(currentRecord.status) || (currentRecord.trigger != null && currentRecord.trigger !== 'user')) return false
+    const currentCall = { run: currentRecord, caller: { ...live.caller, runId: run.runId }, tool, args: operationArgs }
+    const currentScope = (await this.options.policy.scope?.(currentCall)) ?? { allowed: true }
+    if (currentScope.automatic || (!currentScope.allowed && !currentScope.requiresApproval)) return false
+    try {
+      await this.options.policy.authorize?.(currentCall)
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  private async workspaceBoundaryBypass(live: Live, run: ActiveRun, tool: string, args: unknown): Promise<boolean> {
+    if (tool !== 'bash' || live.input.readOnly || !this.options.approvals.isAuto('pi')) return false
+    const record = loadRun(this.options.env.root, run.runId)
+    if (!isActiveStatus(record.status) || (record.trigger != null && record.trigger !== 'user')) return false
+    const operationArgs = (args && typeof args === 'object' && !Array.isArray(args) ? args : {}) as Record<string, unknown>
+    if (typeof operationArgs.command !== 'string' || !operationArgs.command) return false
+    const call = { run: record, caller: { ...live.caller, runId: run.runId }, tool, args: operationArgs }
+    try {
+      const scope = (await this.options.policy.scope?.(call)) ?? { allowed: true }
+      if (scope.automatic || (!scope.allowed && !scope.requiresApproval) || (scope.humanOnly && !scope.allowGlobalApproval)) return false
+      await this.options.policy.authorize?.(call)
+      return true
+    } catch {
+      return false
+    }
   }
 
   private async subagentsCall(live: Live, call: string, params: Record<string, any>): Promise<unknown> {
     if (call === 'terminal.subagents.monitor') return { children: live.controller.subagentSnapshot() }
     const service = this.options.subagents
-    if (!service || live.input.subagents === null) {
+    if ((!service || live.input.subagents === null) && call !== 'terminal.subagents.register') {
       if (call === 'terminal.subagents.tools') return { tools: [] }
       throw invalid('Subagents are disabled for this terminal.')
     }
-    if (call === 'terminal.subagents.tools') return { tools: subagentTools(service, '').map(tool => ({ name: tool.name, label: tool.label, description: tool.description, parameters: tool.parameters(Type) })) }
+    if (call === 'terminal.subagents.tools') {
+      const variantDir = this.variantDirs.get(live.input.sessionId) ?? null
+      return {
+        tools: subagentTools(service!, '').map(tool => ({ name: tool.name, label: tool.label, description: tool.description, parameters: tool.parameters(Type) })),
+        profiles: {
+          normal: profileSection(this.options.env.root, live.input.cwd, variantDir).body,
+          plan: profileSection(this.options.env.root, live.input.cwd, variantDir, true).body
+        }
+      }
+    }
     const run = live.controller.activeRun
     if (!run) throw new HarnessError('run_not_active', 'This terminal has no active parent run.')
+    if (call === 'terminal.subagents.planSafe') {
+      const reason = service!.planSpawnRefusal(run.runId, params.input)
+      return { allowed: reason === null, ...(reason ? { reason } : {}) }
+    }
     if (call === 'terminal.subagents.register') {
       if (!Array.isArray(params.tools) || params.tools.some((name: unknown) => typeof name !== 'string')) throw invalid('Native tool names are required.')
+      if (params.plan !== undefined && typeof params.plan !== 'boolean') throw invalid('plan must be a boolean.')
       const readOnly = live.input.readOnly === true
       const readTools = new Set([...READ_ONLY_TOOLS, SESSION_NAME, CHECKLIST_WRITE, SPAWN_SUBAGENT, WAIT_SUBAGENTS, 'ask_user', 'mcp_list_tools', 'mcp_call_tool', 'history_search', 'history_read', 'wiki_search', 'wiki_read', 'wiki_list', 'memory_facts', 'skill_load'])
-      const tools = params.tools.filter((name: string) => !readOnly || readTools.has(name)) as string[]
-      const capabilities = this.options.resolveCapabilities ? await this.options.resolveCapabilities(live.caller, tools, live.input.cwd) : { version: 1 as const, tools, connectors: [], contributions: [] }
-      freezeRun(this.options.env.root, run.runId, live.caller, capabilities)
+      const tools = [...new Set(params.tools as string[])].filter(name =>
+        (!readOnly || readTools.has(name)) && (params.plan === true || (name !== 'ask_user' && name !== 'ask_user_question')))
+      const caller = { ...live.caller, runId: run.runId }
+      const capabilities = this.options.resolveCapabilities ? await this.options.resolveCapabilities(caller, tools, live.input.cwd) : { version: 1 as const, tools, connectors: [], contributions: [] }
+      freezeRun(this.options.env.root, run.runId, caller, capabilities)
+      if (!service || live.input.subagents === null) return { runId: run.runId, connectors: capabilities.connectors }
       service.register({
         run: { id: run.runId, sessionId: live.input.sessionId, mode: live.input.run?.mode ?? 'code', projectId: live.input.projectId, worktreeId: live.input.run?.worktreeId },
         cwd: live.input.cwd, sessionDir: this.historyDir(live.input), text: '', caller: live.caller,
@@ -750,16 +933,17 @@ export class Terminals {
         effort: typeof params.effort === 'string' ? params.effort as Effort : null,
         launch: live.input.launch, tools: { allow: capabilities.tools, gated: capabilities.tools.filter(name => !readTools.has(name)) },
         connections: live.input.connections === false ? false : { readOnly }, subagents: live.input.subagents,
-        variant: this.variantDirs.has(live.input.sessionId) ? { dir: this.variantDirs.get(live.input.sessionId)!, scope: live.input.variant && 'scope' in live.input.variant ? live.input.variant.scope ?? null : null } : null,
+        plan: params.plan === true,
+        variant: live.variant ? { dir: live.variant.dir, scope: live.variant.scope } : null,
         capabilities
       }, live.account.id, capabilities)
       service.restore(run.runId, params.history ?? { owners: [], receipts: [] })
-      return { runId: run.runId }
+      return { runId: run.runId, connectors: capabilities.connectors }
     }
-    if (call === 'terminal.subagents.verify') { await service.verify(run.runId, params.history); return {} }
-    if (call === 'terminal.subagents.delivery') return service.delivery(run.runId, params.history, params.settle === true)
+    if (call === 'terminal.subagents.verify') { await service!.verify(run.runId, params.history); return {} }
+    if (call === 'terminal.subagents.delivery') return service!.delivery(run.runId, params.history, params.settle === true)
     if (call === 'terminal.subagents.call') {
-      const tool = subagentTools(service, run.runId).find(tool => tool.name === params.name)
+      const tool = subagentTools(service!, run.runId).find(tool => tool.name === params.name)
       if (!tool) throw invalid('Unknown subagent tool.')
       const reason = await this.decide(live, run, tool.name, params.input ?? {})
       if (!reason.allowed) throw new HarnessError('tool_denied', reason.reason ?? 'Subagents are unavailable.')
@@ -902,17 +1086,21 @@ export class Terminals {
         plugins: () => this.options.pluginControl?.list({ cwd: input.cwd, accountId: preparedAccount.id, projectId: input.projectId ?? null }) ?? Promise.resolve([]) })
       if (variant) this.variantDirs.set(sessionId, variant.dir)
       const worldTools = await this.worldToolNames(input, preparedAccount)
-      const launchTools = [...new Set([...(input.launch?.tools ?? []), CHECKLIST_WRITE, SESSION_NAME, ...worldTools])]
+      const ownTools = await this.ownToolNames(input, preparedAccount)
+      const launchTools = [...new Set([...(input.launch?.tools ?? []), CHECKLIST_WRITE, SESSION_NAME, ...ownTools, ...(broker ? apps.toolNames : []), ...worldTools])]
       // The profiles replace the variant's own subagent list, which they include.
       const profiles = this.options.subagents && input.subagents !== null ? profileSection(root, input.cwd, variant?.dir ?? null) : null
       const launchSections = profiles ? [...(input.launch?.sections ?? []).filter((section) => section.id !== profiles.id), profiles] : input.launch?.sections
-      const pack = compile(env, caller, { ...input.launch, sections: launchSections, tools: launchTools }, variant && profiles ? { ...variant, sections: variant.sections.filter((section) => section.id !== profiles.id) } : variant)
+      // A terminal is a person's own session: the same standard sections a host's session has.
+      const standard = input.launch?.standard === null ? null : input.launch?.standard ?? { cwd: input.cwd }
+      const pack = compile(env, caller, { ...input.launch, standard, sections: launchSections, tools: launchTools }, variant && profiles ? { ...variant, sections: variant.sections.filter((section) => section.id !== profiles.id) } : variant)
       record(root, pack)
       mkdirSync(this.historyDir(input), { recursive: true })
       saveForSession(input.sessionFolder, pack)
 
       const live: Live = {
         input,
+        variant,
         account: preparedAccount,
         broker,
         caller,
@@ -922,6 +1110,12 @@ export class Terminals {
           nativeSessionId: input.nativeSessionId ?? null,
           begin: ({ reservedRunId, text }) => this.begin(live, reservedRunId, text),
           policy: (run, tool, args) => this.decide(live, run, tool, args),
+          workspaceRoot: run => {
+            const record = loadRun(this.options.env.root, run.runId)
+            return record.workspaceRoot ?? resolveWorkspaceRoot(record.workingDirectory ?? live.input.cwd)
+          },
+          workspaceEscape: (run, tool, args, reason) => this.workspaceEscape(live, run, tool, args, reason),
+          workspaceBoundaryBypass: (run, tool, args) => this.workspaceBoundaryBypass(live, run, tool, args),
           allowToolGlobally: target => { this.options.approvals.allowTool('pi', target) },
           native: (nativeSessionId) => bus.emit({ type: 'terminal.native', sessionId, nativeSessionId }),
           telemetry: (event) => bus.emit({ type: 'terminal.telemetry', sessionId, event }),
@@ -1025,9 +1219,13 @@ export class Terminals {
               : this.options.approvals.revokeTool('pi', params.tool)
             return { globalTools: policy.globalTools.pi ?? [] }
           }
+          if (call.startsWith('terminal.usage.')) return this.usageCall(live, call, params)
           if (call !== 'terminal.resources') return live.controller.control(call, params)
           const current = await this.options.plugins?.loading({ cwd: input.cwd, agentDir: configDir(accounts.dir, preparedAccount), install: false, caller: { projectId: input.projectId ?? null } }) ?? null
-          if (resourceIdentity(current) !== resourceIdentity(loading)) throw new HarnessError('terminal_resources_changed', 'Trusted resources changed since this terminal was prepared. Review /plugins and reopen the terminal to load the new selection.')
+          const currentVariant = variant ? materialise(root, { dir: variant.dir, scope: variant.scope }, { trust: this.options.trust ?? null }) : null
+          if (resourceIdentity(current) !== resourceIdentity(loading) || (variant && (currentVariant?.fingerprint !== variant.fingerprint || JSON.stringify(currentVariant.extensionPaths) !== JSON.stringify(variant.extensionPaths)))) {
+            throw new HarnessError('terminal_resources_changed', 'Trusted resources changed since this terminal was prepared. Review /plugins and reopen the terminal to load the new selection.')
+          }
           return {}
         } }
       })
@@ -1036,13 +1234,14 @@ export class Terminals {
 
       const args = [...command.argsPrefix, '--append-system-prompt', render(env, pack)]
       if (input.model) args.push('--model', input.model)
-      if (loading) {
+      {
         // Pi's own discovery is off: the terminal loads what the harness found and nothing else.
         args.push('--no-extensions', '--no-skills', '--no-prompt-templates', '--no-themes')
-        for (const path of [...loading.extensionPaths, ...loading.builtins, ...(variant?.extensionPaths ?? [])]) args.push('--extension', path)
-        for (const path of [...(variant?.skillPaths ?? []), ...loading.skillPaths]) args.push('--skill', path)
-        for (const path of loading.promptPaths) args.push('--prompt-template', path)
-        for (const path of loading.themePaths) args.push('--theme', path)
+        // The pi command's own extensions are not loaded: a host's session cannot have them (PROP-0039).
+        for (const path of [...(loading?.extensionPaths ?? []), ...(variant?.extensionPaths ?? [])]) args.push('--extension', path)
+        for (const path of [...(variant?.skillPaths ?? []), ...(loading?.skillPaths ?? [])]) args.push('--skill', path)
+        for (const path of loading?.promptPaths ?? []) args.push('--prompt-template', path)
+        for (const path of loading?.themePaths ?? []) args.push('--theme', path)
       }
       // Last, so its gate sees a tool call as every other extension left it.
       args.push('--extension', this.assets.piExtension, '--session-dir', this.historyDir(input))

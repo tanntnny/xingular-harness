@@ -11,6 +11,7 @@ import { parse, serialize } from '../core/frontmatter'
 import { atomicWrite } from '../core/fs'
 import { subagentOf } from '../variant/materialise'
 import { BUILTIN_PROFILES } from './builtin'
+import { planResearchProfile } from './planResearch'
 
 export const PROFILE_NAME = /^[a-z0-9][a-z0-9_-]*$/
 export const PROFILE_COLORS = ['blue', 'green', 'yellow', 'red', 'magenta', 'cyan', 'orange', 'purple'] as const
@@ -226,16 +227,20 @@ export function removeProfile(root: string, cwd: string | null | undefined, inpu
 export const PROFILE_SECTION_ORDER = 64
 
 /** The prompt section that lists the profiles a run can start subagents from. */
-export function profileSection(root: string, cwd: string | null | undefined, variantDir?: string | null): { id: string; title: string; body: string; budget: number; order: number } {
+export function profileSection(root: string, cwd: string | null | undefined, variantDir?: string | null, planResearchOnly = false): { id: string; title: string; body: string; budget: number; order: number; dynamic: true } {
   const { profiles } = listProfiles(root, cwd, variantDir)
+  const listed = planResearchOnly ? profiles.filter(planResearchProfile) : profiles
   return {
     id: 'subagents',
     title: 'Subagents',
     body: [
-      'Start one with spawn_subagent and agent set to a profile name, or omit agent for a copy of yourself. Each works in its own context with a complete brief from you, keeps its own checklist the user can follow, and returns text. A profile can only narrow your tools.',
-      ...profiles.map((profile) => `- ${profile.name} — ${profile.description}`)
+      planResearchOnly
+        ? 'Plan mode may start only a named profile listed here, for read-only research. Do not omit agent or use a profile not listed.'
+        : 'Delegate when it meaningfully reduces work: choose a substantial, bounded task that can proceed independently, such as unfamiliar cross-file research likely to take several searches or a self-contained implementation. Do a known-file lookup, one or two simple tool calls, a tiny edit or tightly coupled work yourself. Prefer a named profile: explorer for repository research, researcher for public-source research, and worker for a defined change it can own end to end; omit agent only when no profile fits. Each child starts without this conversation, so give it the goal, relevant context or paths, non-goals, expected result and acceptance or verification; use its own checklist for multi-step work. Prefer context-heavy research with concise evidence-backed findings. Parallelize only independent tasks and never assign overlapping edits. Return without waiting only when useful independent work remains; otherwise wait. You own integration, verification and the user-facing report. A profile can only narrow your tools.',
+      ...(listed.length ? listed.map((profile) => `- ${profile.name} — ${profile.description}`) : ['- No eligible read-only research profiles are configured.'])
     ].join('\n'),
     budget: 6_000,
-    order: PROFILE_SECTION_ORDER
+    order: PROFILE_SECTION_ORDER,
+    dynamic: true
   }
 }

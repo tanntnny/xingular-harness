@@ -10,6 +10,8 @@ import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import terminalExtension, { type TerminalPlanRunState } from '../piExtension'
 import { normalModeTools, planModeTools, QUESTION_TOOL_NAMES } from './planMode'
 import { claimTerminalControl, controlCall } from '../control'
+import { observeProviderResponses } from '../../usage/limits/capture'
+import { limitHeaders } from '../../usage/limits/normalize'
 import { loadPiAdapter } from './piAdapter'
 import { loadPi } from '../../pi/runtime'
 import type { SessionAccount } from '../accountsMenu'
@@ -190,8 +192,15 @@ export async function createTerminalRuntime(args: string[], host: TerminalRuntim
   const identity = await controlCall<SessionAccount>('accounts.session').catch(() => null)
   const account = identity && typeof identity.accountId === 'string' && typeof identity.label === 'string'
     ? Object.freeze({ accountId: identity.accountId, label: identity.label }) : null
-  const adapter = await loadPiAdapter()
+  await loadPiAdapter()
   const modelRuntime = await ModelRuntime.create({ authPath: join(agentDir, 'auth.json'), modelsPath: join(agentDir, 'models.json') })
+  // This process makes the model requests, so it is where response headers are seen. Only the
+  // limit-bearing headers cross the socket, and the parent throttles what it stores.
+  observeProviderResponses(modelRuntime, (provider, response) => {
+    const headers = limitHeaders(response.headers)
+    if (!Object.keys(headers).length) return
+    void controlCall('terminal.usage.headers', { provider, status: response.status, headers }).catch(() => undefined)
+  })
   const listeners = new Set<AgentSessionEventListener>()
   const changes = new Set<SessionChangeListener>()
   const beforeChanges = new Set<() => void>()
@@ -246,10 +255,19 @@ export async function createTerminalRuntime(args: string[], host: TerminalRuntim
       additionalSkillPaths: prepared.skills, additionalPromptTemplatePaths: prepared.prompts,
       additionalThemePaths: prepared.themes,
       extensionFactories: [
-        ...adapter.builtins,
         { name: 'harness-terminal-bridge', factory: pi => terminalExtension(pi, planRun, () => native.session), hidden: true },
         // A model picked in the terminal reaches Pi as this event. A restore is not a pick.
-        { name: 'harness-mode-choices', factory: pi => { pi.on('model_select', event => { if (event.source !== 'restore') void modeChoices.record(recordingMode(), { model: `${event.model.provider}/${event.model.id}` }) }) }, hidden: true }
+        { name: 'harness-mode-choices', factory: pi => { pi.on('model_select', event => { if (event.source !== 'restore') void modeChoices.record(recordingMode(), { model: `${event.model.provider}/${event.model.id}` }) }) }, hidden: true },
+        // The bridge registers parent capabilities when delegation is available. Runs without
+        // delegation still need the same frozen snapshot, after the bridge has begun the run.
+        { name: 'harness-run-capabilities', factory: pi => {
+          pi.on('before_agent_start', async () => {
+            if (!pi.getAllTools().some(tool => tool.name === 'spawn_subagent')) {
+              const snapshot = await controlCall<{ connectors?: string[] }>('terminal.subagents.register', { tools: pi.getActiveTools(), plan: planRun.active })
+              if (Array.isArray(snapshot.connectors)) planRun.connectors = snapshot.connectors
+            }
+          })
+        }, hidden: true }
       ],
       appendSystemPromptOverride: (base) => [...base, ...prepared.appendSystemPrompt]
     })

@@ -44,6 +44,27 @@ describe('composer attachments', () => {
     expect(attachments.expand('hi [Image #1]').images).toEqual([])
   })
 
+  it('restores scratch attachments after browsing history without attaching them to recalled labels', () => {
+    const attachments = new ComposerAttachments()
+    const image = attachments.addImage('IMG', 'image/png')
+    const pasted = attachments.addText('one\ntwo\nthree\nfour')
+    const scratch = `Review ${image.label} ${pasted.label}`
+    attachments.retain(scratch)
+    const snapshot = attachments.snapshot()
+
+    const history = 'Earlier [Image #1] [Pasted text #8 +8 lines]'
+    attachments.clearForDraft(history)
+    expect(attachments.expand(history)).toEqual({ text: history, images: [] })
+    expect(attachments.addImage('NEW', 'image/png').label).toBe('[Image #9]')
+
+    attachments.restore(snapshot)
+    expect(attachments.labels().map(item => item.label)).toEqual([image.label, pasted.label])
+    expect(attachments.expand(scratch)).toEqual({
+      text: 'Review [Image #1] one\ntwo\nthree\nfour',
+      images: [{ type: 'image', data: 'IMG', mimeType: 'image/png' }]
+    })
+  })
+
   it('restarts numbering when cleared', () => {
     const attachments = new ComposerAttachments()
     attachments.addImage('A', 'image/png')

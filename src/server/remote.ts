@@ -6,7 +6,9 @@ import { findingSchema } from '../doctor/types'
 import type { SecretStore } from '../accounts/secrets'
 import type { Directory } from '../core/env'
 import type { ToolPolicy } from '../sessions/policy'
-import type { ToolProvider, ToolSpec } from '../tools/types'
+import type { ToolProvider, ToolResult, ToolSpec } from '../tools/types'
+import { browserBackendTools } from '../browser/backend'
+import { BROWSER_TOOLS, type BrowserToolName } from '../browser/contracts'
 import type { RpcPeer } from './rpc'
 
 /** `secrets.get`, `secrets.set`, `secrets.delete` on the host. */
@@ -67,21 +69,38 @@ export function remoteTools(peer: RpcPeer): ToolProvider {
     registered = Array.isArray(params.tools) ? params.tools : []
     return { registered: registered.map((tool) => tool.name) }
   })
-  const provider: ToolProvider = (session) =>
-    registered
-      .filter((tool) => session.allow.includes(tool.name))
-      .map(
-        (tool): ToolSpec => ({
-          name: tool.name,
-          label: tool.label ?? tool.name,
-          description: tool.description,
-          parameters: (Type) => Type.Unsafe(tool.parameters),
-          execute: async (input) => {
-            const result = await peer.callHost<unknown>('tools.call', { name: tool.name, input, runId: session.run.runId, sessionId: session.run.sessionId, caller: session.caller, depth: session.depth, cwd: session.cwd }, 1_230_000)
-            return typeof result === 'string' ? result : JSON.stringify(result)
-          }
-        })
-      )
+  const provider: ToolProvider = (session) => {
+    const unique: HostTool[] = []
+    const names = new Set<string>()
+    for (const tool of registered) {
+      if (!session.allow.includes(tool.name) || names.has(tool.name)) continue
+      names.add(tool.name)
+      unique.push(tool)
+    }
+    const browserNames = unique.filter(tool => BROWSER_TOOLS.some(definition => definition.name === tool.name)).map(tool => tool.name as BrowserToolName)
+    const browser = new Map(browserBackendTools({
+      id: 'remote host',
+      // Registering a canonical browser tool means the host implements it; the backend contract
+      // documents the freshness, tab isolation and approval rules that implementation must keep.
+      unsupported: () => null,
+      execute: async (name, input) => {
+        const result = await peer.callHost<unknown>('tools.call', { name, input, runId: session.run.runId, sessionId: session.run.sessionId, caller: session.caller, depth: session.depth, cwd: session.cwd }, 1_230_000)
+        if (typeof result === 'string') return result
+        if (result && typeof result === 'object' && !Array.isArray(result) && typeof (result as { text?: unknown }).text === 'string') return result as ToolResult
+        return JSON.stringify(result) ?? String(result)
+      }
+    }, browserNames).map(tool => [tool.name, tool]))
+    return unique.map((tool): ToolSpec => browser.get(tool.name) ?? ({
+      name: tool.name,
+      label: tool.label ?? tool.name,
+      description: tool.description,
+      parameters: (Type) => Type.Unsafe(tool.parameters),
+      execute: async (input) => {
+        const result = await peer.callHost<unknown>('tools.call', { name: tool.name, input, runId: session.run.runId, sessionId: session.run.sessionId, caller: session.caller, depth: session.depth, cwd: session.cwd }, 1_230_000)
+        return typeof result === 'string' ? result : JSON.stringify(result)
+      }
+    }))
+  }
   provider.diagnostics = context => diagnostics.map(check => ({
     id: `host.${check.id}`, category: check.category, title: check.title, tools: check.tools,
     local: async signal => {

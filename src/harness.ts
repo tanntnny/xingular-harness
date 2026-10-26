@@ -42,12 +42,15 @@ import type { PluginDescriptor } from './plugins/types'
 import { approvalKey, Approvals } from './sessions/approvals'
 import type { ToolPolicy } from './sessions/policy'
 import { RunRegistry } from './sessions/registry'
-import { loadRun, markInterruptedRuns } from './sessions/runStore'
+import { loadRun, markInterruptedRuns, reconcileStaleRuns } from './sessions/runStore'
 import type { SessionFactory } from './sessions/runner'
 import { Sessions } from './sessions/sessions'
 import { SideQuestions } from './sessions/sideQuestions'
 import { Terminals, type TerminalAssets } from './terminal/terminals'
 import { Worktrees } from './worktrees/service'
+import { Usage } from './usage/service'
+import { UsageLimits } from './usage/limits/service'
+import { indexRunUsage, syncUsage } from './usage/ledger'
 import { AnnotationCapture } from './annotations/capture'
 import { NoteDeliveries } from './annotations/delivery'
 import type { WorktreesOptions } from './worktrees/types'
@@ -128,6 +131,8 @@ class Env implements HarnessEnv {
 }
 
 export class Harness {
+  /** The periodic liveness check, started once with recovery (PROP-0041). */
+  private staleRuns?: NodeJS.Timeout
   private readonly browserEnabled: boolean
   readonly hub: Hub
   readonly bus = new Bus()
@@ -159,6 +164,9 @@ export class Harness {
   refineHost: RefineHost | null
   readonly terminals: Terminals
   readonly doctor: Doctor
+  /** Usage analytics over the derived ledger, and the provider limits last reported. */
+  readonly usage: Usage
+  readonly usageLimits: UsageLimits
   /** Managed git worktrees sessions can work in (PROP-0016). */
   readonly worktrees: Worktrees
   /** The terminal's visible browser for capturing page notes (PROP-0017). */
@@ -184,6 +192,10 @@ export class Harness {
     const secrets = options.secrets ?? fileSecretStore(join(this.stateDir, 'secrets.json'))
     this.accounts = new Accounts({ dir: join(this.stateDir, 'accounts'), secrets, bus: this.bus })
     this.approvals = new Approvals(this.stateDir, this.bus)
+    this.usageLimits = new UsageLimits({ accounts: this.accounts, root: () => this.env.dataRoot })
+    // Response headers are the free, always-fresh limit signal; the account runtime reports them here.
+    this.accounts.observeModels = (models, accountId) => this.usageLimits.observeModels(models, accountId)
+    this.usage = new Usage({ root: () => this.env.root, accounts: this.accounts })
     this.runs = new RunRegistry({
       root: () => this.env.root,
       automatic: async (run, target, operation, standing) => {
@@ -235,6 +247,7 @@ export class Harness {
       broker: this.apps,
       plugins: this.plugins,
       resolveCapabilities: (caller, tools, cwd) => capabilities.resolve(this, { agentId: caller.agentId ?? null, projectId: caller.projectId ?? null, cwd, tools }),
+      fullPermission: (run) => this.approvals.isAuto(approvalKey(run)),
       factory: options.sessionFactory,
       trust: this.trust,
       worktrees: this.worktrees
@@ -251,7 +264,7 @@ export class Harness {
     this.refine = new Refinements({ root: () => this.env.root, bus: this.bus, trust: this.trust, host: () => this.refineHost, runtime: refineRuntime })
     this.lessons = new Lessons({ root: () => this.env.root, runtime: refineRuntime })
     this.pageNotes = new NoteDeliveries({ root: () => this.env.root, bus: this.bus, terminals: () => this.terminals ?? null })
-    this.terminals = new Terminals({ trust: this.trust, subagents: this.subagents, sideQuestions: this.sideQuestions, resolveCapabilities: (caller, tools, cwd) => capabilities.resolve(this, { agentId: caller.agentId ?? null, projectId: caller.projectId ?? null, cwd, tools }), env: this.env, stateDir: this.stateDir, accounts: this.accounts, runs: this.runs, approvals: this.approvals, apps: this.apps, policy: this.policy, bus: this.bus, plugins: this.plugins, pluginControl: { list: (scope) => pluginApi.list(this, scope), attach: (params, on) => pluginApi.attach(this, params, on), trust: (scope) => pluginApi.trust(this, scope), untrust: (scope) => pluginApi.untrust(this, scope), configure: (params) => pluginApi.configure(this, params), install: params => pluginInstall.install(this, params), remove: params => pluginInstall.remove(this, params) }, assets: options.assets, hub: this.hub, world: this.world, doctor: this.doctor, worktrees: this.worktrees, noteCapture: this.noteCapture, pageNotes: this.pageNotes })
+    this.terminals = new Terminals({ trust: this.trust, subagents: this.subagents, sideQuestions: this.sideQuestions, resolveCapabilities: (caller, tools, cwd) => capabilities.resolve(this, { agentId: caller.agentId ?? null, projectId: caller.projectId ?? null, cwd, tools }), env: this.env, stateDir: this.stateDir, accounts: this.accounts, runs: this.runs, approvals: this.approvals, apps: this.apps, policy: this.policy, bus: this.bus, plugins: this.plugins, usage: this.usage, usageLimits: this.usageLimits, pluginControl: { list: (scope) => pluginApi.list(this, scope), attach: (params, on) => pluginApi.attach(this, params, on), trust: (scope) => pluginApi.trust(this, scope), untrust: (scope) => pluginApi.untrust(this, scope), configure: (params) => pluginApi.configure(this, params), install: params => pluginInstall.install(this, params), remove: params => pluginInstall.remove(this, params) }, assets: options.assets, hub: this.hub, world: this.world, doctor: this.doctor, worktrees: this.worktrees, noteCapture: this.noteCapture, pageNotes: this.pageNotes })
     this.ready = this.apps.start().catch((error) => log('connected apps', error instanceof Error ? error.message : String(error)))
     this.runs.listen((event, run) => {
       this.accounts.onRunEvent(event, run)
@@ -259,6 +272,9 @@ export class Harness {
       if (event.type === 'completed' || event.type === 'failed') recall.indexRun(this.env.root, event.runId)
       if (run?.trigger === 'doctor') return
       const runEnded = event.type === 'completed' || event.type === 'failed' || (event.type === 'status.changed' && (event.payload as { status?: string }).status === 'interrupted')
+      // The usage ledger is derived from the same recorded events; a failure never blocks the run.
+      // An interrupted run is indexed too, so its spent tokens are not lost until the next start.
+      if (runEnded) indexRunUsage(this.env.root, event.runId)
       if (runEnded && run?.sessionId) {
         // Notes sent with "Proceed now" while this session was working go out now; the terminal
         // needs a moment to see its run as ended.
@@ -346,13 +362,32 @@ export class Harness {
     } catch (error) {
       log('recall', error instanceof Error ? error.message : String(error))
     }
+    try {
+      // Usage rows come from the same run events; the ledger can always be rebuilt from them.
+      syncUsage(root)
+    } catch (error) {
+      log('usage ledger', error instanceof Error ? error.message : String(error))
+    }
     this.recovery = { interruptedRuns: interruptedRunIds.length, interruptedRunIds, reindexedPages: safeCount(root), migrationError, legacyWiki }
+    if (!this.staleRuns) {
+      // A reply that stops emitting heartbeats while its process lives is settled here, not left
+      // `running` for the next restart (PROP-0041).
+      this.staleRuns = setInterval(() => {
+        try {
+          reconcileStaleRuns(root)
+        } catch (error) {
+          log('stale run check', error instanceof Error ? error.message : String(error))
+        }
+      }, 60_000)
+      this.staleRuns.unref?.()
+    }
     return this.recovery
   }
 
   /** Rebuilds the history index from the run records. Returns the notes in the Wiki. */
   rebuildIndex(): number {
     recall.sync(this.env.root)
+    syncUsage(this.env.root)
     const count = safeCount(this.env.root)
     this.recovery = { ...this.recovery, reindexedPages: count }
     return count
@@ -360,6 +395,7 @@ export class Harness {
 
   /** Stops live runs and refinements and releases the index. */
   async close(): Promise<void> {
+    if (this.staleRuns) clearInterval(this.staleRuns)
     await this.doctor.close()
     this.hub.close()
     await this.refine.close()

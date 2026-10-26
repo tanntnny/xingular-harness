@@ -1,6 +1,6 @@
 # ADR-0021 — Required built-in commands use the bare namespace
 
-Status: Accepted (owner requested implementation of PROP-0021, 2026-10-24).
+Status: Superseded by [ADR-0031](ADR-0031-plugin-command-owner-namespaces.md).
 Supersedes: The command-namespace portion of [ADR-0018](ADR-0018-builtin-feature-plugins.md).
 Related: [PROP-0021](../architecture/proposals/PROP-0021-command-namespaces-and-duplicates.md),
 [11 Terminal](../architecture/11-terminal.md),

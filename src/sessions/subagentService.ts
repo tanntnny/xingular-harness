@@ -14,6 +14,7 @@ import type { Effort } from './runner'
 import type { SessionRunInput } from './sessions'
 import { isActiveStatus } from './contracts'
 import { narrowForProfile } from '../agents/narrow'
+import { PLAN_RESEARCH_EVIDENCE_TOOLS, PLAN_RESEARCH_TOOLS, planResearchProfile } from '../agents/planResearch'
 import { resolveProfile, type AgentProfile } from '../agents/profiles'
 import type { PluginDescriptor } from '../plugins/types'
 import { findRun, loadRun, readEvents, recordedSubagents, recordSubagent, saveRun } from './runStore'
@@ -22,6 +23,7 @@ import { SPAWN_SUBAGENT, SUBAGENT_RELATION, SUBAGENT_OWNER, SUBAGENT_RECEIPT, SU
 type Started = { runId: string; nativeSessionId: string | null }
 /** What a spawn returns: the child, the profile it started from, and profile tools missing here. */
 export type SpawnedSubagent = Started & { agent?: string; unavailableTools?: string[] }
+export interface SubagentRuntimeSettings { model: string | null; effort: Effort | null }
 
 export interface SubagentServiceOptions {
   /** The plugin descriptors, so a profile's plugin list can drop the tools those plugins own. */
@@ -57,6 +59,7 @@ function until<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
 /** One owner of native child execution and delivery, shared by SDK and terminal adapters. */
 export class Subagents {
   private readonly parents = new Map<string, Parent>()
+  private readonly runtimeSettingsByRun = new Map<string, SubagentRuntimeSettings>()
 
   constructor(private readonly env: HarnessEnv, private readonly runs: RunRegistry, private readonly launch: (input: SessionRunInput) => Promise<Started>, private readonly options: SubagentServiceOptions = {}) {
     runs.listen((event) => {
@@ -88,18 +91,53 @@ export class Subagents {
     this.parents.set(input.run.id, { ready, started, input: structuredClone({ ...input, text: '', images: undefined, requiresImageInput: false, preamble: null, resume: null }), accountId, capabilities: ceiling, stopped: new AbortController(), recovered: new Set(), launching: new Map() })
   }
 
+  runtimeSettings(runId: string): SubagentRuntimeSettings | null {
+    return this.runtimeSettingsByRun.get(runId) ?? null
+  }
+
+  private rememberRuntimeSettings(runId: string, settings: SubagentRuntimeSettings): void {
+    this.runtimeSettingsByRun.set(runId, settings)
+    if (this.runtimeSettingsByRun.size > 500) {
+      const oldest = this.runtimeSettingsByRun.keys().next().value
+      if (oldest !== undefined) this.runtimeSettingsByRun.delete(oldest)
+    }
+  }
+
   resolvedModel(runId: string, model: string, effort?: Effort): void {
     const parent = this.parents.get(runId)
     if (parent) {
       parent.input.model = model
       parent.input.effort = effort ?? parent.input.effort
     }
+    const settings = this.runtimeSettingsByRun.get(runId)
+    if (settings) this.rememberRuntimeSettings(runId, { model, effort: effort ?? settings.effort })
   }
 
   private parent(runId: string): Parent {
     const parent = this.parents.get(runId)
     if (!parent || !this.runs.active(runId)) throw new HarnessError('run_not_active', 'The parent run is not accepting subagents.')
     return parent
+  }
+
+  /** The plan-mode per-call gate and spawn implementation share this eligibility check. */
+  planSpawnRefusal(parentRunId: string, args: unknown): string | null {
+    const parent = this.parents.get(parentRunId)
+    if (!parent || !this.runs.active(parentRunId)) return 'The parent run is not accepting subagents.'
+    if (!parent.input.plan) return 'Read-only research delegation is available only during plan mode.'
+    if (!parent.capabilities.tools.includes(SPAWN_SUBAGENT)) return 'Subagents are not enabled for this run.'
+    if (!args || typeof args !== 'object' || Array.isArray(args)) return 'Plan-mode delegation requires a named, eligible read-only research profile.'
+    const request = args as Record<string, unknown>
+    if (typeof request.agent !== 'string' || !request.agent.trim()) return 'Plan-mode delegation requires a named, eligible read-only research profile.'
+    const profile = resolveProfile(this.env.root, parent.input.cwd, request.agent.trim(), parent.input.variant && 'dir' in parent.input.variant ? parent.input.variant.dir : null)
+    if (!profile) return `There is no agent profile named ${request.agent.trim()}.`
+    if (!planResearchProfile(profile)) return 'This profile is not eligible for plan-mode research; use an explicit read-only research profile.'
+    if (request.tools !== undefined && (!Array.isArray(request.tools) || request.tools.some(name => typeof name !== 'string' || !PLAN_RESEARCH_TOOLS.has(name) || !profile.tools!.includes(name) || !parent.capabilities.tools.includes(name)))) {
+      return 'Plan-mode subagent tools must be plan-safe and included in the selected profile and parent capabilities.'
+    }
+    const requested = Array.isArray(request.tools) ? request.tools as string[] : null
+    const available = profile.tools!.filter(name => parent.capabilities.tools.includes(name) && (!requested || requested.includes(name)))
+    if (!available.some(name => PLAN_RESEARCH_EVIDENCE_TOOLS.has(name))) return 'The selected profile has no available read-only research tools in this run.'
+    return null
   }
 
   async spawn(request: SubagentInput): Promise<SpawnedSubagent> {
@@ -114,6 +152,10 @@ export class Subagents {
     if (request.tools !== undefined && (!Array.isArray(request.tools) || request.tools.some((name) => typeof name !== 'string'))) throw invalid('Tools must be an array of tool names.')
     const outside = request.tools?.filter((name) => !capabilities.tools.includes(name)) ?? []
     if (outside.length) throw invalid(`A subagent cannot have tools you do not have: ${outside.join(', ')}.`)
+    if (input.plan) {
+      const refusal = this.planSpawnRefusal(request.parentRunId, request)
+      if (refusal) throw invalid(refusal)
+    }
     await until(parent.ready, parent.stopped.signal)
     let variant: SessionRunInput['variant'] = input.variant ?? null
     let launch = input.launch
@@ -133,20 +175,29 @@ export class Subagents {
       if (profile.effort) effort = profile.effort
       launch = { ...(input.launch ?? {}), sections: [...(input.launch?.sections ?? []).filter((section) => section.id !== 'subagent'), { id: 'subagent', title: `Your role: ${profile.name}`, body: profile.instructions || profile.description, budget: 16_000, order: 22 }] }
     }
+    if (input.plan) {
+      const refusal = this.planSpawnRefusal(request.parentRunId, request)
+      if (refusal) throw invalid(refusal)
+    }
     const narrowed = narrowForProfile(capabilities, profile, request.tools, this.options.descriptors?.() ?? [])
-    const tools = narrowed.capabilities.tools
+    const childCapabilities: CapabilitySet = input.plan
+      ? { ...narrowed.capabilities, tools: narrowed.capabilities.tools.filter(name => PLAN_RESEARCH_TOOLS.has(name)), connectors: [] }
+      : narrowed.capabilities
+    const tools = childCapabilities.tools
     const runId = randomUUID()
     const sessionId = randomUUID()
+    this.rememberRuntimeSettings(runId, { model: model ?? null, effort: effort ?? null })
     recordSubagent(this.env.root, request.parentRunId, runId)
     const child: SessionRunInput = {
       ...input,
-      run: { ...input.run, id: runId, sessionId, parentRunId: request.parentRunId, relation: SUBAGENT_RELATION, goal: takeChars(brief, 4000), title, attachmentCount: 0, resumedFromRunId: null, handoffId: null, profile: profile?.name ?? null },
+      run: { ...input.run, ...(input.plan ? { worktreeId: null } : {}), id: runId, sessionId, parentRunId: request.parentRunId, relation: SUBAGENT_RELATION, goal: takeChars(brief, 4000), title, attachmentCount: 0, resumedFromRunId: null, handoffId: null, profile: profile?.name ?? null },
       accountId, poolId: null, sessionDir: join(input.sessionDir, 'subagents', runId), resume: null,
       text: brief, images: undefined, requiresImageInput: false, preamble: null,
       caller: { ...input.caller, runId: undefined, sessionId },
       tools: { allow: tools, gated: (input.tools.gated ?? []).filter((name) => tools.includes(name)) },
-      capabilities: narrowed.capabilities, depth: (input.depth ?? 0) + 1,
-      variant, launch, model, effort
+      capabilities: childCapabilities, depth: (input.depth ?? 0) + 1,
+      variant, launch, model, effort,
+      ...(input.plan ? { connections: false, subagents: null } : {})
     }
     const started = this.launch(child).catch((error) => {
       if (!findRun(this.env.root, runId)) {

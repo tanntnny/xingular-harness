@@ -51,7 +51,7 @@ A note gains an optional `delivery`:
 - ⌘/Ctrl+Enter is Proceed now; with Shift it is queue.
 - Everything is drawn in a closed shadow root.
 - The page never receives the press or click on what is inspected, nor anything typed in the popover.
-- Inputs, secrets, `[data-sensitive]` elements, frames, shadow roots and custom elements are never picked, as in PROP-0017.
+- Inputs, secrets, `[data-sensitive]` elements, frames, shadow roots and custom elements are never picked, as in PROP-0017. (Open shadow roots and readable custom elements became pickable in [PROP-0038](PROP-0038-annotate-open-shadow-roots.md).)
 - The inspector stays on after each comment.
 - A new operation, `next`, returns `{ active, documentId, url, title, result }`, one comment at a time.
 - `toast` shows a short status in the page.

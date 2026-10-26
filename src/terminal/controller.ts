@@ -8,11 +8,12 @@ import { HarnessError } from '../core/errors'
 import { runStatusSchema, type RunEvent, type RunRecord } from '../sessions/contracts'
 import { briefTitle } from '../sessions/subagents'
 import type { ActiveRun, ApprovalDecision, QuestionAnswer, QuestionInput } from '../sessions/registry'
-import { SubagentMonitor, type TerminalSubagentActivity, type TerminalSubagentProfile } from './subagentMonitor'
+import { SubagentMonitor, type TerminalSubagentActivity, type TerminalSubagentProfile, type TerminalSubagentRun } from './subagentMonitor'
 
 export interface PolicyReply {
   allowed: boolean
   reason?: string | null
+  workspaceRoot?: string
   requiresApproval?: boolean
   rememberable?: boolean
   standing?: 'full' | 'switch' | 'none'
@@ -25,6 +26,12 @@ export interface ControllerHooks {
   begin(input: { reservedRunId: string | null; nativeTurnId: string; text: string }): ActiveRun
   /** Whether a native tool call may run. */
   policy(run: ActiveRun, tool: string, args: unknown): Promise<PolicyReply>
+  /** The workspace root pinned on the run record. */
+  workspaceRoot(run: ActiveRun): string
+  /** One-shot approval before an explicitly broad Bash command runs. */
+  workspaceEscape(run: ActiveRun, tool: string, args: unknown, reason: string): Promise<boolean>
+  /** Whether Full Permission may bypass the filesystem boundary for this Bash command. */
+  workspaceBoundaryBypass(run: ActiveRun, tool: string, args: unknown): Promise<boolean>
   /** Saves a user-selected tool grant in the shared local approval store. */
   allowToolGlobally(target: string): void
   /** The native conversation identity changed. */
@@ -52,6 +59,7 @@ export class TerminalController {
   private run: ActiveRun | null = null
   private readonly pending = new Map<string, Record<string, unknown>>()
   private readonly subagents = new SubagentMonitor()
+  private subagentParentRunId: string | null = null
   private ready = false
   private disposed = false
   private dirty = false
@@ -92,6 +100,7 @@ export class TerminalController {
     if (delivery && text && delivery.text !== text) throw new Error('The native prompt did not match the reserved delivery. Inspect the terminal before continuing.')
     const run = this.hooks.begin({ reservedRunId: delivery?.runId ?? null, nativeTurnId, text })
     this.run = run
+    this.subagentParentRunId = run.runId
     this.subagents.begin(run.runId)
     run.onInterrupt(() => void this.commands.push({ type: 'interrupt' }))
     if (text) run.emit('message.completed', { messageId: nativeTurnId, role: 'user', text })
@@ -100,10 +109,8 @@ export class TerminalController {
     return run
   }
 
-  private finish(outcome: 'completed' | 'failed' | 'interrupted', message?: string): void {
-    const runId = this.run?.runId
-    this.run?.finish(outcome, message ? { code: 'terminal_attention', message } : undefined)
-    this.subagents.clear(runId)
+  private finish(outcome: 'completed' | 'failed' | 'interrupted', message?: string, reason?: string): void {
+    this.run?.finish(outcome, message ? { code: 'terminal_attention', message } : undefined, reason)
     this.run = null
     this.seen.clear()
     this.pending.clear()
@@ -163,9 +170,11 @@ export class TerminalController {
     if (event.type === 'question.requested') {
       const payload = event.payload as Record<string, unknown>
       this.pending.set(String(payload.questionId), { ...payload, type: 'question', requestId: payload.questionId, runId: event.runId })
-    } else if (descendant && event.type === 'approval.requested') {
+    } else if (event.type === 'approval.requested') {
       const payload = event.payload as Record<string, unknown>
-      if (!payload.automatic) this.pending.set(String(payload.approvalId), { ...payload, type: 'approval', requestId: payload.approvalId, runId: event.runId })
+      if (!payload.automatic && (descendant || payload.target === 'workspace-write')) {
+        this.pending.set(String(payload.approvalId), { ...payload, type: 'approval', requestId: payload.approvalId, runId: event.runId })
+      }
     } else if (event.type === 'approval.resolved') {
       this.pending.delete(String((event.payload as { approvalId: string }).approvalId))
     } else if (event.type === 'question.answered') {
@@ -174,7 +183,13 @@ export class TerminalController {
   }
 
   /** A child event that belongs to the active terminal parent run. */
-  observeSubagent(parentRunId: string, run: RunRecord, event: RunEvent, profile: TerminalSubagentProfile | null = null): void {
+  observeSubagent(
+    parentRunId: string,
+    run: RunRecord,
+    event: RunEvent,
+    profile: TerminalSubagentProfile | null = null,
+    runtime: Pick<TerminalSubagentRun, 'accountLabel' | 'model' | 'effort'> = {}
+  ): void {
     if (this.disposed || this.activeRun?.runId !== parentRunId || run.relation !== 'subagent') return
     this.subagents.observe(parentRunId, {
       id: run.id,
@@ -185,14 +200,14 @@ export class TerminalController {
       status: runStatusSchema.parse(run.status),
       startedAt: run.startedAt,
       endedAt: run.endedAt,
-      profile
+      profile,
+      ...runtime
     }, event)
   }
 
-  /** Read-only child activity for the active run. */
+  /** Read-only child activity for the latest parent run, retained until another run begins. */
   subagentSnapshot(): TerminalSubagentActivity[] {
-    const run = this.activeRun
-    return run ? this.subagents.snapshot(run.runId) : []
+    return this.subagentParentRunId ? this.subagents.snapshot(this.subagentParentRunId) : []
   }
 
   /** The socket grants this interface only to the process that owns terminal input. */
@@ -209,6 +224,18 @@ export class TerminalController {
       const run = this.activeRun
       if (!run || typeof data.tool !== 'string' || !data.tool) throw new HarnessError('invalid_request', 'An active run and tool name are required.')
       return this.hooks.policy(run, data.tool, data.args ?? {})
+    }
+    if (call === 'terminal.workspaceBoundaryBypass') {
+      const run = this.activeRun
+      if (!run || data.tool !== 'bash') throw new HarnessError('invalid_request', 'An active run and Bash command are required.')
+      const args = data.args && typeof data.args === 'object' && !Array.isArray(data.args) ? data.args : {}
+      return { bypass: await this.hooks.workspaceBoundaryBypass(run, 'bash', args) }
+    }
+    if (call === 'terminal.workspaceEscape') {
+      const run = this.activeRun
+      if (!run || data.tool !== 'bash' || typeof data.reason !== 'string' || !data.reason) throw new HarnessError('invalid_request', 'An active run, Bash command, and outside-scope request are required.')
+      const args = data.args && typeof data.args === 'object' && !Array.isArray(data.args) ? data.args : {}
+      return { approved: await this.hooks.workspaceEscape(run, 'bash', args, data.reason) }
     }
     if (call === 'terminal.approval') return this.requestNativeApproval(data)
     if (call === 'terminal.answers' && this.hooks.answerQuestions) {
@@ -305,6 +332,10 @@ export class TerminalController {
       }
       this.ready = true
       if (typeof data.nativeSessionId === 'string' && data.nativeSessionId) {
+        if (this.nativeId !== data.nativeSessionId) {
+          this.subagents.clear()
+          this.subagentParentRunId = null
+        }
         this.nativeId = data.nativeSessionId
         this.hooks.native(data.nativeSessionId)
       }
@@ -312,7 +343,7 @@ export class TerminalController {
     }
     if (event === 'begin') {
       const run = this.begin(String(data.turnId ?? randomUUID()), String(data.text ?? ''))
-      return { runId: run.runId }
+      return { runId: run.runId, workspaceRoot: this.hooks.workspaceRoot(run) }
     }
     if (event === 'shutdown') {
       this.ready = false
@@ -320,7 +351,11 @@ export class TerminalController {
       return {}
     }
     if (event === 'settled') {
-      this.finish(data.aborted ? 'interrupted' : data.error ? 'failed' : 'completed', data.error ? String(data.error) : undefined)
+      // A reply that stopped at its work-slice boundary is interrupted, not completed: the record
+      // says `slice_complete` (or `stalled`) so a host can continue it (PROP-0041).
+      const reason = typeof data.reason === 'string' ? data.reason : undefined
+      const outcome = data.error ? 'failed' : data.aborted || reason ? 'interrupted' : 'completed'
+      this.finish(outcome, data.error ? String(data.error) : undefined, reason)
       return {}
     }
     const run = this.run
@@ -360,6 +395,7 @@ export class TerminalController {
     }
     if (event === 'usage') run.emit('usage.updated', data)
     else if (event === 'checklist') run.emit('checklist.updated', { items: data.items })
+    else if (event === 'checkpoint') run.emit('checkpoint', data)
     else if (event === 'file') run.emit('file.changed', data)
     else if (event === 'message') run.emit('message.completed', { messageId: data.id ?? randomUUID(), role: data.role ?? 'assistant', text: String(data.text) })
     else if (event === 'tool') {
@@ -381,5 +417,7 @@ export class TerminalController {
     this.delivery?.reject(new Error('The terminal stopped before prompt acknowledgement.'))
     this.delivery = null
     this.finish('interrupted')
+    this.subagents.clear()
+    this.subagentParentRunId = null
   }
 }
