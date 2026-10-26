@@ -9,6 +9,16 @@ if [[ "$(uname -s)" == 'Linux' ]] && [[ ! -x /usr/bin/bwrap && ! -x /bin/bwrap ]
   exit 1
 fi
 
+if [[ "$(uname -s)" == 'Linux' ]]; then
+  bwrap_path=/usr/bin/bwrap
+  [[ -x "$bwrap_path" ]] || bwrap_path=/bin/bwrap
+  # Installed is not enough: the sandbox must be able to create its namespaces, or its tests fail.
+  if ! "$bwrap_path" --die-with-parent --unshare-pid --ro-bind / / --dev /dev --proc /proc true; then
+    printf 'bubblewrap is installed but cannot create a sandbox here; check unprivileged user namespaces.\n' >&2
+    exit 1
+  fi
+fi
+
 run_check() {
   local description="$1"
   shift

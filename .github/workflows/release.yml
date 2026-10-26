@@ -34,6 +34,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes bubblewrap
           test -x /usr/bin/bwrap
+          # Ubuntu 24.04 runners block unprivileged user namespaces, so bwrap cannot start without this.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - run: npm run ci
 
   candidate:
