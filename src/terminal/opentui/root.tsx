@@ -28,6 +28,7 @@ import { statusBarText } from './statusBar'
 import { workingLineParts, workingLineText, workingVerbShimmerProfile } from './workingLine'
 import { toastLayout, type ToastLayout } from './toastLayout'
 import { homeBrand } from './homeBrand'
+import { pendingMessageLines, type PendingMessage } from './pendingMessages'
 
 const theme = opentuiTheme
 const scrollbarColor = RGBA.fromHex(theme.dim)
@@ -570,6 +571,17 @@ function StatusBar(props: { view: OpenTuiView }) {
         {statusBarText(props.view)}
       </text>
     </box>
+  )
+}
+
+function PendingMessages(props: { messages: readonly PendingMessage[]; width: number; height: number }) {
+  const lines = () => pendingMessageLines(props.messages, props.width, Math.min(4, Math.max(0, props.height - 8)))
+  return (
+    <Show when={lines().length > 0}>
+      <box width='100%' paddingX={1} flexDirection='column' flexShrink={0}>
+        <For each={lines()}>{line => <text fg={theme.muted} wrapMode='none' truncate={true}>{line}</text>}</For>
+      </box>
+    </Show>
   )
 }
 
@@ -1215,6 +1227,7 @@ export function OpenTuiRoot(props: { app: OpenTuiApplication }) {
           </box>
         </Show>
 
+        <PendingMessages messages={(view() as OpenTuiView & { pendingMessages?: readonly PendingMessage[] }).pendingMessages ?? []} width={Math.max(0, dimensions().width - 4)} height={dimensions().height} />
         <WorkingLine view={view()} width={Math.max(0, dimensions().width - 4)} />
         <For each={view().widgets.above}>
           {lines => <AnsiView lines={lines} fg={theme.text} />}

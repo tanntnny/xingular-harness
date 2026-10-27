@@ -1,6 +1,7 @@
 # Harness terminal frontend
 
-Status: current terminal behavior, checked against `@xingular/harness` 1.3.0. Last updated: 2026-11-19.
+Status: terminal behavior and message-delivery contract
+([known drift D-20](architecture/README.md#known-drift)).
 Decision: [ADR-0001](decisions/ADR-0001-owned-terminal.md),
 [ADR-0006](decisions/ADR-0006-opentui-only-terminal.md),
 [ADR-0009](decisions/ADR-0009-xharness-command.md),
@@ -28,8 +29,9 @@ overrides the Bun executable.
 [`app.ts`](../src/terminal/opentui/app.ts) owns the terminal lifecycle and reuses the shared
 `TerminalRuntime`, session replacement, commands, decisions, account pinning and run records. It
 projects the runtime's snapshot and transcript into an OpenCode-inspired view, with a native
-OpenTUI textarea for the prompt, `Ctrl+K` for the command palette, `Return` to send (or to queue behind a running reply),
-`Cmd+Return` (or `Alt+Return`) to steer a running reply, and `Shift+Return` for a newline. Typing `/` or `$` filters
+OpenTUI textarea for the prompt and `Ctrl+K` for the command palette. `Return` sends or steers a
+running reply; `Cmd+Return`, `Ctrl+Return` or `Alt+Return` queues a follow-up, and `Shift+Return`
+inserts a newline. Typing `/` or `$` filters
 matching commands or skills; `Tab` inserts the selected entry and leaves the cursor at the end of the inserted text.
 With an empty composer, unmodified Up recalls the latest non-empty user message from the active session.
 With a draft, unmodified Up browses older history and Down browses newer history when the caret is at
@@ -41,8 +43,8 @@ history shortcuts from anywhere. History includes
 user messages and Bash commands from the active Pi session; recalled Bash commands return to `!`
 mode. Executed slash commands from this terminal instance are included too, across session switches.
 `/new` and `/session` (also `/resume`) switch the saved-message and Bash history to that session.
-Steering needs a terminal that reports Cmd with the
-kitty keyboard protocol; elsewhere `Alt+Return` steers. In the composer, `Tab` opens up to eight matching filesystem entries for the path token at the cursor, or current-folder entries when the token is empty. The list has no heading or hint row. Up/Down select; Enter or Tab inserts the selection; Escape closes the list. Directories end in `/`, and Bash mode escapes shell-special characters. Use `/effort` or Shift+Up/Down to change effort. The command palette opens above the composer under a muted (`dim`) top rule, and has no other border. Its rows align slash commands and descriptions in two columns: the command column sizes to the widest visible name, bounded to preserve description space, and both columns wrap instead of truncating. The plan-choice rule, question block's top-only divider, and `/btw` block's top rule use the same muted color as the normal composer divider. The console has no background of its own: the renderer, root surface
+Modified Enter shortcuts depend on the terminal reporting the modifier distinctly; Cmd may require
+the kitty keyboard protocol. In the composer, `Tab` opens up to eight matching filesystem entries for the path token at the cursor, or current-folder entries when the token is empty. The list has no heading or hint row. Up/Down select; Enter or Tab inserts the selection; Escape closes the list. Directories end in `/`, and Bash mode escapes shell-special characters. Use `/effort` or Shift+Up/Down to change effort. The command palette opens above the composer under a muted (`dim`) top rule, and has no other border. Its rows align slash commands and descriptions in two columns: the command column sizes to the widest visible name, bounded to preserve description space, and both columns wrap instead of truncating. The plan-choice rule, question block's top-only divider, and `/btw` block's top rule use the same muted color as the normal composer divider. The console has no background of its own: the renderer, root surface
 and transcript are transparent, so the terminal's own background shows through, while panels,
 dialogs and the scrim stay opaque. The composer has no panel background: it is bounded by a top and
 a bottom rule, with the working status and spinner above it and a wrapping status bar below it. Its
@@ -425,6 +427,20 @@ The Annotate tab has no search row, so these letters are free for actions. `/ann
 sends the unsent annotations with your request after them; `/annotate:clear` resolves the unsent ones
 and stops sharing them.
 
+## Pending messages and barriers
+
+The terminal shows pending steering, follow-up and deferred plan/Bash inputs above the working
+line, distinguishing their delivery type. A steering message is
+intended for the active reply; a follow-up waits until it finishes. With no active reply, a normal
+message starts a turn. Pi's steering and follow-up settings determine delivery within those queues.
+
+A queued plan or `!` Bash command is a barrier: it runs as a standalone turn after the current
+response, and subsequent inputs wait behind it rather than entering Pi's native queues and
+crossing the barrier. `Alt+Up` restores queued text to the draft; queued images are dropped, with
+a warning for deferred images. Pi's queue projection can briefly include an item already taken
+for delivery; identical queued text can also make its displayed removal ambiguous. Interrupting a
+reply does not automatically clear native queues, and deferred work may run after it settles.
+
 ## Plan mode and thinking keys
 
 Use `/plan <brief>` for one read-only planning request. A plan waits outside Pi's native follow-up
@@ -594,7 +610,7 @@ cursor, Backspace and Delete treat it as one unit.
 - **Refusals.** A model whose `input` lacks `image` refuses the attach with a notice naming the
   model. Bash mode and plugin editors take no images. A slash command or Bash command sent with
   images runs without them, with a warning. Alt+Up (dequeue) restores queued text and drops
-  queued images with a warning.
+  queued images; deferred images produce a warning.
 
 Finder-copied file paths are read before clipboard image pixels. On macOS, `.heic` and `.heif`
 files are converted with `/usr/bin/sips` to private temporary PNGs, preserving the copied path

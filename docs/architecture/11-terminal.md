@@ -48,7 +48,14 @@ Screen: transcript above the composer, centred dialogs, full-screen resource bro
   shared tool alongside its read-only set and restores the normal set on success, failure or
   interruption. There is no terminal-only question alias (PROP-0040).
 - A plan request keeps `bash` in its active set; each call runs in the sandbox's read-only scope
-  (PROP-0043). A user `!` command is refused while a plan request runs.
+  (PROP-0043). A user `!` command submitted during a plan request waits as a separate turn; it
+  cannot run inside the plan's read-only request.
+- The terminal message-delivery contract is Enter to send or steer an active reply, and
+  Cmd/Ctrl/Alt+Enter to queue a follow-up. Pending steering, follow-up and deferred plan/Bash
+  inputs are projected above the working line from Pi's queues and the deferred barrier. Pi's
+  projection may briefly include an item already taken for delivery. A queued plan or Bash command
+  runs separately after the active reply, and later inputs cannot bypass it through Pi's native
+  queues. Modified shortcuts require terminal support.
 - Current standalone source defaults: `~/.xingular-harness/{data,state}`; `npm run dev` uses
   `~/.xingular-harness-dev/{data,state}`. The standalone development launch uses a file SecretStore
   under its resolved development state directory, even when its profile names a host backend; it

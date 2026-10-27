@@ -19,6 +19,7 @@ import { TranscriptModel } from './model'
 import { QuestionDockState, type QuestionDockQuestion } from './questionDockState'
 import { workingLineText } from './workingLine'
 import { createHarnessTheme } from '../tui/theme'
+import { terminalKeybindings } from '../tui/keybindings'
 import type { TerminalDecision, TerminalRuntime } from '../tui/runtime'
 import type { TerminalSubagentActivity } from '../subagentMonitor'
 import type { TerminalCommandHelpGroup } from '../commandHelp'
@@ -854,6 +855,40 @@ describe('OpenTuiApplication', () => {
     }
   })
 
+  it('shows live native and deferred queues and sends modified Enter as a follow-up', async () => {
+    const app = new OpenTuiApplication([])
+    const steering = ['change direction']
+    const followUp = ['later']
+    const submit = vi.fn(async () => {})
+    const session = { isIdle: false, getSessionStats: () => ({ tokens: {} }), getSteeringMessages: () => steering, getFollowUpMessages: () => followUp }
+    const internals = app as unknown as {
+      runtime: TerminalRuntime
+      commands: { expandSkill(text: string): string; execute(text: string): Promise<boolean> }
+      keybindings: ReturnType<typeof terminalKeybindings>
+      syncDraft(text: string): void
+      initialized: boolean
+      deferredInputs: { kind: 'plan' | 'bash' | 'prompt'; text: string; followUp?: boolean }[]
+    }
+    internals.runtime = { session, snapshot: () => undefined, submit, dispose: async () => {} } as unknown as TerminalRuntime
+    internals.commands = { expandSkill: text => text, execute: async () => false }
+    internals.keybindings = terminalKeybindings('/unused/isolated-account')
+    internals.syncDraft = () => {}
+    internals.initialized = true
+    try {
+      internals.deferredInputs = [{ kind: 'plan', text: 'plan it' }, { kind: 'prompt', text: 'after plan', followUp: false }]
+      expect(app.view().pendingMessages).toEqual([
+        { kind: 'steering', text: 'change direction' }, { kind: 'followUp', text: 'later' },
+        { kind: 'plan', text: 'plan it' }, { kind: 'prompt', text: 'after plan' }
+      ])
+      steering.length = 0
+      expect(app.view().pendingMessages[0]).toEqual({ kind: 'followUp', text: 'later' })
+      internals.deferredInputs = []
+      app.setDraft('next')
+      expect(app.handleKey({ ...key('return', '\x1b[13;5u'), ctrl: true })).toBe(true)
+      await vi.waitFor(() => expect(submit).toHaveBeenCalledWith('next', true, undefined))
+    } finally { await app.shutdown() }
+  })
+
   it('attaches pasted images and large pastes as labels and sends them with the prompt', async () => {
     const app = new OpenTuiApplication([])
     const directory = await mkdtemp(join(tmpdir(), 'harness-attach-'))
@@ -892,7 +927,7 @@ describe('OpenTuiApplication', () => {
       await vi.waitFor(() => expect(submit).toHaveBeenCalled())
       const [text, followUp, images] = submit.mock.calls[0]!
       expect(text).toBe('what is [Image #1] a\nb\nc\nd\ne')
-      expect(followUp).toBe(true)
+      expect(followUp).toBe(false)
       expect(images).toEqual([expect.objectContaining({ type: 'image', mimeType: expect.stringMatching(/^image\//u), data: expect.any(String) })])
       expect(app.view().attachments).toEqual([])
     } finally {

@@ -141,7 +141,7 @@ The first published release of the 1.1 line, and npm `latest`. It follows the 1.
 
 - Keep the OpenTUI home screen when a notice arrives before any conversation, such as `Unknown command: /tihnk`. The notice shows beneath the product mark instead of replacing it, and the composer keeps its "Ask anything…" placeholder.
 
-- Swap the OpenTUI send keys: `Return` now queues a prompt behind a running reply (it still sends when idle), and `Cmd+Return` steers the reply mid-run. `Alt+Return` also steers, for terminals that do not report Cmd. The `app.message.followUp` action is renamed `app.message.steer`, so a `keybindings.json` entry under the old name needs renaming.
+- Swap the OpenTUI send keys back: `Return` sends, or steers a running reply, and `Cmd+Return`, `Ctrl+Return` or `Alt+Return` queues a follow-up. The `app.message.steer` action is renamed `app.message.followUp` again, so a `keybindings.json` entry under the older name needs renaming. Pending steering, follow-up and deferred plan/Bash inputs show above the working line with their delivery type, a queued plan or `!` command acts as a barrier that later inputs wait behind, and `Alt+Up` restores queued text to the draft.
 
 - Draw the OpenTUI `select`, `confirm`, `input` and `editor` dialogs, including `/effort` and the Thinking setting, as the same flat centered panel on the scrim that `/model` and the other pages use, instead of a rounded bordered box. The box clipped the heading's `Esc` hint and the option count; centered dialogs now cap their height at the rows the overlay shows.
 

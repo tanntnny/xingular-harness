@@ -43,6 +43,7 @@ import { PlanChoice, type PlanChoiceView } from './planChoice'
 import { QuestionDockState, type QuestionDockAnswers, type QuestionDockQuestion, type QuestionDockView } from './questionDockState'
 import { linkTarget, openLink as openWithDefaultHandler, type LinkTarget } from '../../core/links'
 import { subagentRoster, type SubagentRosterView } from './subagentsWidget'
+import type { PendingMessage } from './pendingMessages'
 
 const exec = promisify(execFile)
 const COPY_TOAST_DURATION_MS = 2500
@@ -147,6 +148,7 @@ export interface OpenTuiView {
   planChoice: PlanChoiceView | null
   /** The pending question form above the composer, or null. */
   questionDock: QuestionDockView | null
+  pendingMessages: readonly PendingMessage[]
   working: {
     sessionName?: string
     active: boolean
@@ -1375,13 +1377,13 @@ export class OpenTuiApplication {
     }
   }
 
-  /** Enter queues the prompt behind a running reply; Cmd/Alt+Enter steers it (see `app.message.steer`). */
+  /** Enter steers a running reply; modified Enter queues a follow-up. */
   submitPrompt(): void {
     this.input(() => this.onSubmitPrompt())
   }
 
   private onSubmitPrompt(): void {
-    this.submit(this.bashMode ? `!${this.draft}` : this.draft, true)
+    this.submit(this.bashMode ? `!${this.draft}` : this.draft, false)
   }
 
   private async runBash(text: string): Promise<void> {
@@ -1445,7 +1447,10 @@ export class OpenTuiApplication {
         }
         if (!this.session.isIdle) this.notify(followUp ? 'Follow-up message queued.' : 'Steering message queued.')
         await this.runtime!.submit(expanded, followUp, images)
-      } finally { if (command) this.commandBusy = false }
+      } finally {
+        if (command) this.commandBusy = false
+        this.change()
+      }
     })
   }
 
@@ -1780,9 +1785,9 @@ export class OpenTuiApplication {
       const hidden = !this.session.settingsManager.getHideThinkingBlock()
       this.session.settingsManager.setHideThinkingBlock(hidden)
       this.transcript.setThinkingHidden(hidden)
-    } else if (is('app.message.steer')) {
+    } else if (is('app.message.followUp')) {
       const editor = this.customEditor as (EditorComponent & { getExpandedText?(): string }) | undefined
-      this.submit(editor?.getExpandedText?.() ?? (this.bashMode ? `!${this.draft}` : this.draft), false)
+      this.submit(editor?.getExpandedText?.() ?? (this.bashMode ? `!${this.draft}` : this.draft), true)
     }
     else if (is('app.message.dequeue')) {
       const pending = this.session.clearQueue()
@@ -1810,7 +1815,7 @@ export class OpenTuiApplication {
     return [
       'Tab files/folders · Shift+Tab plan mode', 'Shift+↑/↓ effort · /effort · Ctrl+K commands', 'Ctrl+O expand details · Ctrl+T thinking',
       'Ctrl+L model', 'Ctrl+N new session', '↑/↓ at either draft endpoint browse older/newer history · Ctrl+↑/↓ anywhere',
-      'Enter send or queue · Cmd+Enter steer · Esc dismisses btw or stops reply', 'Ctrl+C clear or quit · Ctrl+D quit',
+      'Enter send or steer · Cmd/Ctrl/Alt+Enter queue · Esc dismisses btw or stops reply', 'Ctrl+C clear or quit · Ctrl+D quit',
       'PgUp/PgDn transcript'
     ].join('\n')
   }
@@ -1907,6 +1912,11 @@ export class OpenTuiApplication {
       planMode: this.planMode,
       planChoice: this.draft === '' && !this.bashMode ? this.planChoice.view : null,
       questionDock: this.questionDock?.view ?? null,
+      pendingMessages: [
+        ...(this.runtime?.session?.getSteeringMessages?.() ?? []).map(text => ({ kind: 'steering' as const, text })),
+        ...(this.runtime?.session?.getFollowUpMessages?.() ?? []).map(text => ({ kind: 'followUp' as const, text })),
+        ...this.deferredInputs.map(input => ({ kind: input.kind, text: input.text }))
+      ],
       working: { ...this.working(), sessionName: snapshot?.name },
       statuses: [...this.statuses.values()],
       linkHovered: this.hoveredLink !== null,

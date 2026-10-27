@@ -7,7 +7,7 @@ declare module '@earendil-works/pi-tui' {
   interface Keybindings {
     'app.thinking.increase': true
     'app.thinking.decrease': true
-    'app.message.steer': true
+    'app.message.followUp': true
   }
 }
 
@@ -21,7 +21,7 @@ const actions: Record<string, string | string[]> = {
   'app.model.cycleForward': 'ctrl+p', 'app.model.cycleBackward': 'alt+p',
   'app.model.select': 'ctrl+l', 'app.tools.expand': 'ctrl+o', 'app.thinking.toggle': 'ctrl+t',
   'app.editor.external': 'ctrl+g', 'app.message.copy': 'ctrl+x',
-  'app.message.steer': ['super+enter', 'alt+enter'], 'app.message.dequeue': 'alt+up',
+  'app.message.followUp': ['super+enter', 'ctrl+enter', 'alt+enter'], 'app.message.dequeue': 'alt+up',
   'app.clipboard.pasteImage': process.platform === 'darwin' ? ['ctrl+v', 'alt+v'] : 'ctrl+v',
   'app.session.toggleNamedFilter': 'ctrl+n', 'app.session.togglePath': 'ctrl+p',
   'app.session.toggleSort': 'ctrl+s', 'app.session.rename': 'ctrl+r',
