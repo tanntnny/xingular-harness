@@ -134,7 +134,7 @@ Modules with no member of their own: `variant/` (functions over the variant stor
 | Letter | The harness owns |
 |---|---|
 | **E** Execution | Isolated account folders, the Pi session, the terminal launch spec |
-| **T** Tools | History, trajectory, Wiki notes, skill loading, `ask_user`, the run checklist, the connected-apps broker, the tool gate |
+| **T** Tools | History, trajectory, Wiki notes, skill loading, `ask_user`, the run todo list, the connected-apps broker, the tool gate |
 | **C** Context | The compiler, stable prefix and updates, the versioned variant (c1–c8), skills, on-demand Wiki notes |
 | **L** Lifecycle | Run state, interrupt, recovery, approvals and questions, subagents, refinement |
 | **O** Observability | Validated run events saved per run; usage counters |

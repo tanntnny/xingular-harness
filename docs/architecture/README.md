@@ -1,10 +1,11 @@
 # Harness architecture specification
 
-**Status:** binding. **As of:** 2026-10-26, checked against `src/` on branch `release/1.0.0`.
+**Status:** binding. **As of:** 2026-10-27, checked against `src/` on branch `release/1.0.0`.
 
 This folder is the core specification of `@xingular/harness`. Code must conform to it. A change
-that would alter what it says needs a proposal the user approves first (see
-[Changing the architecture](#changing-the-architecture)).
+that alters what it says must update the affected pages in the same change (see
+[Changing the architecture](#changing-the-architecture)). Proposals are optional design records,
+not prerequisites or approval gates.
 
 Other documents explain and record; this folder decides. Where another document disagrees with a
 page here, this page wins, and the disagreement is listed under [Known drift](#known-drift).
@@ -64,7 +65,7 @@ current behavior.
 
 | Word | Meaning |
 |---|---|
-| **Foundation** | The fixed half of the harness: code and invariants that no edit, improver or adoption can change. Changes by release, and by proposal when a contract moves. |
+| **Foundation** | The fixed half of the harness: code and invariants that no edit, improver or adoption can change. Changes by release; contract changes update the specification and may use an optional proposal as a design record. |
 | **Agent Mode** | A planned foundation-level work style, with at most one mode active at a time. Plugins remain independently stackable contributions. This is distinct from plan mode and existing `mode` fields; it is not a runtime contract ([FW-0001](../future-work.md#fw-0001-agent-modes-starting-with-router-agent-mode)). |
 | **Variant** | The mutating half: one tree of eight components (c1–c8) for one scope. Formerly "harness tree". |
 | **Component** | One of c1–c8 inside a variant (system prompt, guardrails, memory, tool guidance, subagents, skills, scripts, plugins). |
@@ -86,29 +87,29 @@ Every coding agent and contributor follows these steps.
 2. **Within the spec: just do it.** If the change fits every contract and invariant, make it. If it
    adds detail without changing a rule (a new server method in an existing group, a new optional
    field), update the page in the same commit.
-3. **Outside the spec: propose and stop.** If the change would alter a contract, an invariant, a
-   layer boundary, an extension point, or the storage layout, do not change code or pages yet.
-   Write `proposals/PROP-NNNN-<slug>.md` from the [template](proposals/README.md#template) with
-   status `Proposed`, add it to the proposals index, and ask the user to review it.
-4. **After approval.** The user sets or confirms status `Accepted`. Then implement it, update the
-   affected pages in the same change, and add an ADR in `../decisions/` when the choice is a
-   lasting one. A rejected proposal keeps its file with status `Rejected`.
+3. **Outside the spec: implement and update.** If the change alters a contract, an invariant, a
+   layer boundary, an extension point, or the storage layout, implement the requested change and
+   update affected pages in the same change. A proposal may document the design, but is optional
+   and does not gate implementation.
+4. **Record lasting decisions.** Add an ADR in `../decisions/` when the choice is a lasting one.
+   Proposals may be added to the index when useful; no `Accepted` status is required before work.
 5. **Drift is reported, not fixed silently.** If code and a page already disagree, add the item to
-   [Known drift](#known-drift) and tell the user. Do not change either side to match without
-   asking; resolving drift that changes a rule is itself a proposal.
+   [Known drift](#known-drift) and tell the user. When resolving drift within the requested scope,
+   update the code and spec together and record the rationale; do not silently change unrelated
+   behavior.
 
-When unsure whether a change alters the architecture, treat it as if it does and write the
-proposal.
+When unsure whether a change alters the architecture, read the affected pages and update them in
+the same change. Use a proposal only when it helps explain the design.
 
 ## Known drift
 
-Disagreements found while writing this specification. Each needs a decision from the user (a
-proposal, or a correction to the other document).
+Disagreements found while writing this specification. Record their evidence here and report them;
+resolve relevant drift by updating the implementation and specification together in the same change.
 
 | ID | Where | What disagrees |
 |---|---|---|
 | D-1 | `AGENTS.md` (before this spec), `INV-RUN-6` | The old rule said only `sessions/runStore.ts` writes `runs/<id>/`. In code, four other harness modules also write side files there: `prompt/compile.ts` (`context.json`), `sessions/sessions.ts` (`caller.json`), `capabilities/runSnapshot.ts` (`capabilities.json`), `mcp/service.ts` (`mcp-context.json`). The spec states the rule the code keeps (see `INV-RUN-6`); whether to route all of them through `runStore.ts` is open. |
-| D-2 | `README.md` "Plugins" | Describes a `plugin_propose` tool and an Inbox for proposed plugins. No such tool exists in `src/`. |
+| D-2 | Plugin proposal review surfaces | `plugin_propose` and hash-bound proposal APIs now exist; a terminal review UI is pending and no App review UI is claimed. See [PAR-017](../parity.md#gaps). |
 | D-3 | `README.md` "External curation" | Describes `externalMaintenance`, `vaultAccess`, `MAINTENANCE_PLUGIN`, `maintenance.*` methods and tools. None exist in `src/`. |
 | D-4 | `INV-BND-2` | Several names carry an application's name: the context message type `xingular-context`, the approval extension `xagent-approvals`, the MCP client name `xagent`, and the terminal commands `xagent-wiki` / `xagent-mcp`. The default product name `Xingular Agent` is allowed; these are not. |
 | D-5 | `INV-BND-2` | `RunRecord` carries `worktreeId` and `handoffId`, which are application concepts. They are stored and returned, never read, and are documented as the application's fields. Since PROP-0016 (2026-10-23) `worktreeId` has Harness meaning when it names a registered worktree; only `handoffId` remains an application field. |
@@ -124,4 +125,5 @@ proposal, or a correction to the other document).
 | D-15 | Terminal sketch verification status — resolved 2026-10-24 by PROP-0028 | Pages 11 and 14 and `terminal-tui.md` said connected-sketch implementation verification was pending, while retained PTY evidence and PAR-014 recorded it as verified. Updated the docs to distinguish deterministic fixture verification from owner visual acceptance, every-emulator rendering and live-model sketch quality. |
 | D-16 | Terminal slash-command highlighting — resolved 2026-10-24 | `terminal-tui.md` specified accent coloring for recognized leading commands while typing, but the OpenTUI composer only styled attachment labels. User-message bubbles also lacked command-token styling. The renderer now uses the active command registry for both surfaces. |
 | D-17 | `PROP-0039`, `ADR-0036`, `INV-GATE-3/8` | Implementation is in progress in the 1.2.0 worktree: native writes revalidate canonical targets and atomically replace files under an OS write scope; default Bash fails closed on external hard-link aliases and runs in a sandbox that prevents new cross-boundary links; outside-scope Bash requires approval before one execution and command output never triggers approval or replay. The filesystem root is rejected as a workspace, and approval details expose the complete command. Launcher selection uses fixed system paths. Same-user peer processes remain outside this boundary. Focused macOS tests, full Harness CI, App compatibility checks, and PTY verification at 40x20, 80x24, and 100x30 pass. Linux sandbox integration remains unverified locally because this Darwin host has no `bwrap` and Colima is stopped; both CI workflows now install bubblewrap and `scripts/ci.sh` fails if it is absent, but an Ubuntu run is still required. No candidate, tag, or publication exists. |
+| D-19 | Provider limits layout | Page 09 describes a centered Limits dialog; page 11 and `src/terminal/tui/pages/usagePage.ts` describe and implement a full-screen page. |
 | D-18 | `core/index.ts` migration 5 | The `run_stats` table has no writer in the Harness. PROP-0042's `usage_requests` ledger is the analytics source; whether to drop the older table is open. |

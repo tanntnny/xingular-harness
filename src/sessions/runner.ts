@@ -7,7 +7,7 @@ import { classifyMessage } from '../accounts/accounts'
 import { EFFORTS, type Effort } from '../core/effort'
 import type { AccountContext } from '../accounts/env'
 import { HarnessError } from '../core/errors'
-import { withWorkspaceWriteScope } from '../core/workspaceBashTool'
+import { createWorkspaceShellTool } from '../core/workspaceBashTool'
 import { DEFAULT_COMMAND_TIMEOUT_SECONDS, withCommandBudget } from '../core/commandBudget'
 import { createWorkspaceBashOperations } from '../core/workspaceSandbox'
 import { withWorkspaceWriteAuthorization, workspaceEditOperations, workspaceWriteOperations, type WorkspaceWriteAuthorization } from '../core/workspaceWriteOperations'
@@ -762,7 +762,7 @@ export const piSessionFactory: SessionFactory = async ({ params, allow, gate, to
   })
   const gatedExtension = (api: ExtensionAPI) => {
     const writeAuthorizations = new Map<string, WorkspaceWriteAuthorization>()
-    const bash = withWorkspaceWriteScope(pi.createBashTool(params.cwd, { operations: workspaceBash }))
+    const bash = createWorkspaceShellTool(pi, params.cwd, workspaceBash)
     const write = withWorkspaceWriteAuthorization(pi.createWriteTool(params.cwd, { operations: workspaceWriteOperations }), writeAuthorizations)
     const edit = withWorkspaceWriteAuthorization(pi.createEditTool(params.cwd, { operations: workspaceEditOperations }), writeAuthorizations)
     api.registerTool({ ...bash, defaultActive: false })

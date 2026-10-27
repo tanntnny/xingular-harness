@@ -14,6 +14,7 @@ import { ResumeSessionsPage } from './sessionPicker'
 import { expandSkillInvocation, type SkillEntry } from './skillInvocation'
 import type { TerminalRuntime } from './runtime'
 import type { TerminalTrajectoryRun, TerminalTrajectorySnapshot } from '../trajectory'
+import type { TodoEntry } from '../opentui/model'
 import type { TerminalSubagentActivity } from '../subagentMonitor'
 import { groupTerminalCommands, type TerminalCommandCompletion, type TerminalCommandHelpGroup } from '../commandHelp'
 import { createBuiltinPluginCommandHandlers } from './pluginCommands'
@@ -34,6 +35,9 @@ export interface TerminalCommandHost {
   refresh(): void
   changed(): void
   showHelp(groups: TerminalCommandHelpGroup[]): void
+  /** The latest todo list of this reply, or an empty list. */
+  todo(): Promise<readonly TodoEntry[]>
+  showTodo(items: readonly TodoEntry[]): void
   plan(brief: string): void
   /** Asks a side question in its own tool-free session; empty text dismisses the one showing. */
   btw(question: string): Promise<void>
@@ -86,7 +90,7 @@ export function createTerminalCommands(host: TerminalCommandHost) {
   /** The text to send: a leading `$name` of a loaded skill becomes the `/skill:name` form Pi expands. */
   const expandSkill = (text: string): string => expandSkillInvocation(text, new Set(skills().map((skill) => skill.name)))
 
-  async function openPage(id: CommandPageId, options: { runId?: string; url?: string; annotate?: AnnotateStart; usageTab?: 'analysis' | 'limit'; usagePeriod?: 'today' | '7d' | '30d' | 'all' } = {}) {
+  async function openPage(id: CommandPageId, options: { runId?: string; url?: string; annotate?: AnnotateStart; usageTab?: 'analysis' | 'limit' | 'accounts'; usagePeriod?: 'today' | '7d' | '30d' | 'all' } = {}) {
     let close = () => {}
     const page = createCommandPage(host, id, { ...options, close: () => close() })
     await host.ui.custom<void>((tui, _theme, _keys, done) => {
@@ -221,7 +225,7 @@ export function createTerminalCommands(host: TerminalCommandHost) {
     const coreNames = coreCommandNames(session)
     const aliases = new Set<string>(LEGACY_BUILTIN_COMMAND_ALIASES.keys())
     for (const command of pluginCommands) {
-      if (coreNames.has(command.name)) continue
+      if (command.rootOnly || coreNames.has(command.name)) continue
       aliases.add(`plugin:${command.name}`)
       if (command.legacyBare) aliases.add(command.name)
     }
@@ -236,11 +240,12 @@ export function createTerminalCommands(host: TerminalCommandHost) {
     const prompts = session.resourceLoader.getPrompts().prompts
     const commands = new Map(BUILTINS.map(command => [command.name, command]))
     for (const command of pluginCommands) {
+      if (command.rootOnly) continue
       const invocation = `${command.prefix}:${command.name}`
       commands.set(invocation, { name: invocation, description: command.description, group: 'Plugins' })
     }
     for (const module of BUILTIN_PLUGIN_REGISTRY.modules) {
-      const defaultCommand = module.defaultCommand && BUILTIN_PLUGIN_REGISTRY.command(module.commandPrefix ?? module.descriptor.id, module.defaultCommand)
+      const defaultCommand = module.defaultCommand && BUILTIN_PLUGIN_REGISTRY.defaultCommand(module.commandPrefix ?? module.descriptor.id)
       if (defaultCommand) {
         const invocation = `${defaultCommand.prefix}:`
         commands.set(invocation, { name: invocation, description: defaultCommand.description, group: 'Plugins' })
@@ -399,6 +404,12 @@ export function createTerminalCommands(host: TerminalCommandHost) {
         case 'doctor': await openPage('doctor'); break
         case 'worktree': await openPage('worktree'); break
         case 'trajectory': await openPage('trajectory', { runId: argument }); break
+        case 'todo': {
+          const items = await host.todo()
+          if (!items.length) notify('No todo list in this reply yet. The agent writes one with todo_write for multi-step work.')
+          else host.showTodo(items)
+          break
+        }
         case 'subagents': await openPage('subagents'); break
         case 'agents': await openPage('agents'); break
         case 'permissions': await openPage('permissions'); break

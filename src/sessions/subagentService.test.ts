@@ -6,19 +6,23 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { memorySecretStore } from '../accounts/secrets'
 import { createHarness, type Harness } from '../harness'
 import type { SessionRunInput } from './sessions'
+import type { SessionFactory } from './runner'
 import { SUBAGENT_OWNER, SUBAGENT_RECEIPT, subagentHistory } from './subagents'
-import { loadRun, recordSubagent, saveRun } from './runStore'
+import { loadRun, readEvents, recordSubagent, saveRun } from './runStore'
+import type { Resolver } from '../plugins/discover'
 
 const open: Harness[] = []
 afterEach(async () => { for (const harness of open.splice(0)) await harness.close() })
 
-function setup() {
+function setup(options: { resolver?: Resolver } = {}) {
   const finish = new Map<string, (text: string) => void>()
   const systems = new Map<string, string>()
   const updates = new Map<string, string | null>()
   const gates = new Map<string, { check: (name: string, args: unknown) => Promise<string | null> }>()
+  const paramsByRun = new Map<string, Parameters<SessionFactory>[0]['params']>()
   const root = mkdtempSync(join(tmpdir(), 'native-subagents-'))
-  const harness = createHarness({ dataRoot: join(root, 'data'), stateDir: join(root, 'state'), secrets: memorySecretStore(), sessionFactory: async ({ params }) => {
+  const harness = createHarness({ dataRoot: join(root, 'data'), stateDir: join(root, 'state'), secrets: memorySecretStore(), ...(options.resolver ? { resolver: options.resolver } : {}), sessionFactory: async ({ params }) => {
+    paramsByRun.set(params.runId, params)
     systems.set(params.runId, params.system)
     updates.set(params.runId, params.update?.content ?? null)
     if (params.gate) gates.set(params.runId, params.gate)
@@ -35,7 +39,7 @@ function setup() {
     run: { id, sessionId: 'opaque-parent' }, caller: { agentId: 'caller', actor: 'Chat' }, cwd: root,
     sessionDir: join(root, 'history'), text: 'Parent', tools: { allow: ['read'] }, ...extra
   })
-  return { harness, finish, start, systems, updates, gates, root }
+  return { harness, finish, start, systems, updates, gates, paramsByRun, root }
 }
 const empty = () => ({ owners: [], receipts: [] })
 
@@ -183,12 +187,30 @@ describe('native subagent ownership and delivery', () => {
   })
 })
 
+describe('subagent profiles a package brings', () => {
+  it('lists them for the run and starts a child from one by its frontmatter name', async () => {
+    const pkg = mkdtempSync(join(tmpdir(), 'profile-package-'))
+    mkdirSync(join(pkg, 'agents'), { recursive: true })
+    writeFileSync(join(pkg, 'plugin.json'), JSON.stringify({ name: 'egm', description: 'Spec reviews.' }))
+    const persona = join(pkg, 'agents', 'design_critic.md')
+    writeFileSync(persona, '---\nname: egm-design\ndescription: Hostile design critic.\ntools: [Read, Grep]\n---\nAudit the design with no prior context.\n')
+    const resolver: Resolver = async () => [{ kind: 'agent', path: persona, origin: 'package', project: false, packageRoot: pkg, source: pkg, enabled: true }]
+    const { harness, start, systems, updates } = setup({ resolver })
+    await start('parent', { tools: { allow: ['read', 'grep', 'spawn_subagent', 'wait_subagents'] } })
+    expect(updates.get('parent')).toContain('- egm-design — Hostile design critic.')
+    const child = await harness.subagents.spawn({ parentRunId: 'parent', brief: 'Review docs/design.md', agent: 'egm-design' })
+    expect(child.agent).toBe('egm-design')
+    expect(systems.get(child.runId)).toContain('Audit the design with no prior context.')
+  })
+})
+
 describe('plan-mode research subagents', () => {
   it('allows only a named eligible profile and keeps its child read-only, non-nested and plan-gated', async () => {
-    const { harness, start, gates, updates } = setup()
+    const { harness, start, gates, updates, finish, paramsByRun } = setup()
     await start('planned', {
       run: { id: 'planned', sessionId: 'opaque-parent', worktreeId: 'managed' },
       plan: true, subagents: { maxDepth: 3 }, connections: true,
+      workSlice: { maxToolCalls: 1, maxSlices: 4, continue: true },
       tools: { allow: ['read', 'grep', 'edit', 'bash', 'ask_user', 'web_search', 'web_fetch', 'spawn_subagent', 'wait_subagents'] }
     })
     expect(updates.get('planned')).toContain('Plan mode may start only a named profile')
@@ -196,8 +218,10 @@ describe('plan-mode research subagents', () => {
     expect(updates.get('planned')).toContain('- researcher — Researches code, history and public sources')
     expect(updates.get('planned')).not.toContain('- worker —')
     expect(harness.subagents.planSpawnRefusal('planned', { brief: 'Explore' })).toContain('named')
-    expect(harness.subagents.planSpawnRefusal('planned', { agent: 'worker' })).toContain('not eligible')
-    expect(harness.subagents.planSpawnRefusal('planned', { agent: 'explorer', tools: ['edit'] })).toContain('plan-safe')
+    expect(harness.subagents.planSpawnRefusal('planned', { agent: 'worker' })).toContain('non-research tools')
+    const incompatible = harness.subagents.planSpawnRefusal('planned', { agent: 'explorer', tools: ['edit', 'find'] })
+    expect(incompatible).toContain('edit, find')
+    expect(incompatible).toContain('Omit `tools`')
     expect(harness.subagents.planSpawnRefusal('planned', { agent: 'explorer' })).toBeNull()
     expect(await gates.get('planned')!.check('spawn_subagent', { agent: 'explorer' })).toBeNull()
     expect(await gates.get('planned')!.check('spawn_subagent', { agent: 'worker' })).toContain('Plan mode is research-only')
@@ -208,13 +232,47 @@ describe('plan-mode research subagents', () => {
     const { loadRun: loadCapabilities } = await import('../capabilities/runSnapshot')
     const capabilities = loadCapabilities(harness.env.root, child.runId)!
     expect(capabilities.tools).toContain('read')
-    for (const name of ['edit', 'write', 'bash', 'ask_user', 'mcp_call_tool', 'spawn_subagent']) expect(capabilities.tools).not.toContain(name)
+    for (const name of ['edit', 'write', 'bash', 'ask_user', 'mcp_call_tool', 'spawn_subagent', 'checkpoint_write']) expect(capabilities.tools).not.toContain(name)
     expect(capabilities.connectors).toEqual([])
     expect(loadRun(harness.env.root, child.runId)).toMatchObject({ relation: 'subagent', profile: 'explorer', worktreeId: null })
     expect(updates.get(child.runId)).toContain('read-only research subagent')
     expect(await gates.get(child.runId)!.check('write', {})).toContain('child capability snapshot')
     expect(harness.subagents.planSpawnRefusal(child.runId, { agent: 'explorer' })).toContain('not enabled')
+
+    const params = paramsByRun.get(child.runId)!
+    expect(params.slice?.maxToolCalls).toBe(1)
+    const extension = params.inline?.find((candidate) => candidate.name === 'work-slice')
+    expect(extension).toBeDefined()
+    const handlers = new Map<string, (event: unknown) => unknown>()
+    ;(extension!.factory as (pi: unknown) => void)({
+      on: (name: string, handler: (event: unknown) => unknown) => handlers.set(name, handler)
+    })
+    handlers.get('agent_start')!({})
+    const refusal = handlers.get('tool_call')!({ toolName: 'read', input: { path: 'src/login.ts' } }) as { block: boolean; reason: string }
+    expect(refusal.block).toBe(true)
+    expect(refusal.reason).toContain('partial research report')
+    expect(refusal.reason).not.toContain('checkpoint_write')
+    finish.get(child.runId)!('Partial research findings')
+    await harness.runs.wait(child.runId)
+    await new Promise((resolve) => setTimeout(resolve, 60))
+    expect(loadRun(harness.env.root, child.runId)).toMatchObject({ status: 'interrupted', terminalReason: 'slice_complete' })
+    expect(readEvents(harness.env.root, child.runId).find((event) => event.type === 'checkpoint')?.payload).toMatchObject({ slice: 1, reason: 'budget', done: [] })
+    expect(paramsByRun.size).toBe(2)
     await harness.runs.interrupt('planned')
+  })
+
+  it('omits research profiles with no evidence tools in the frozen parent capabilities', async () => {
+    const { harness, start, updates } = setup()
+    await start('no-research-tools', {
+      plan: true,
+      tools: { allow: ['spawn_subagent', 'wait_subagents'] },
+      capabilities: { version: 1, tools: ['spawn_subagent', 'wait_subagents'], connectors: [], contributions: [] }
+    })
+    const prompt = updates.get('no-research-tools') ?? ''
+    expect(prompt).toContain('No eligible read-only research profiles')
+    expect(prompt).not.toContain('- explorer —')
+    expect(harness.subagents.planSpawnRefusal('no-research-tools', { agent: 'explorer' })).toContain('no read-only research evidence tool')
+    await harness.runs.interrupt('no-research-tools')
   })
 
   it('rejects unsafe global and project profile overrides by their effective allowlists', async () => {
@@ -225,8 +283,8 @@ describe('plan-mode research subagents', () => {
     writeFileSync(join(root, '.xingular', 'agents', 'explorer.md'), '---\ndescription: Editable explorer\ntools: [read, edit]\nplugins: [web]\n---\nEdit files.\n')
     writeFileSync(join(root, '.xingular', 'agents', 'fact-checker.md'), '---\ndescription: Checks source facts\ntools: [read, grep]\nplugins: [history, variant]\n---\nReturn cited findings.\n')
     await start('plan-overrides', { plan: true, tools: { allow: ['read', 'edit', 'spawn_subagent', 'wait_subagents'] } })
-    expect(harness.subagents.planSpawnRefusal('plan-overrides', { agent: 'researcher' })).toContain('not eligible')
-    expect(harness.subagents.planSpawnRefusal('plan-overrides', { agent: 'explorer' })).toContain('not eligible')
+    expect(harness.subagents.planSpawnRefusal('plan-overrides', { agent: 'researcher' })).toContain('explicit tools allowlist')
+    expect(harness.subagents.planSpawnRefusal('plan-overrides', { agent: 'explorer' })).toContain('non-research tools')
     expect(harness.subagents.planSpawnRefusal('plan-overrides', { agent: 'fact-checker' })).toBeNull()
     await harness.runs.interrupt('plan-overrides')
   })
@@ -244,7 +302,7 @@ describe('agent profiles (PROP-0029)', () => {
     expect(systems.get(child.runId)).toContain('Your role: explorer')
     const { loadRun: frozen } = await import('../capabilities/runSnapshot')
     const tools = frozen(harness.env.root, child.runId)!.tools
-    expect(tools).toEqual(expect.arrayContaining(['read', 'grep', 'checklist_write']))
+    expect(tools).toEqual(expect.arrayContaining(['read', 'grep', 'todo_write']))
     expect(tools).not.toContain('edit')
     expect(tools).not.toContain('bash')
     expect(loadRun(harness.env.root, child.runId).profile).toBe('explorer')
@@ -285,5 +343,74 @@ describe('subagent titles (PROP-0030)', () => {
     const unnamed = await harness.subagents.spawn({ parentRunId: 'parent', brief: 'First line of a long brief\nsecond line with more detail' })
     expect(loadRun(harness.env.root, unnamed.runId).title).toBe('First line of a long brief')
     await expect(harness.subagents.spawn({ parentRunId: 'parent', title: 'one two three four five six seven', brief: 'x' })).rejects.toMatchObject({ code: 'invalid_request' })
+  })
+})
+
+describe('continuing a stopped subagent', () => {
+  const tools = { allow: ['read', 'spawn_subagent', 'wait_subagents'] }
+  const owner = (runId: string) => subagentHistory([{ type: 'custom', customType: SUBAGENT_OWNER, data: { runId } }])
+  const savedHistory = (root: string, childRunId: string) => {
+    const folder = join(root, 'history', 'subagents', childRunId)
+    mkdirSync(folder, { recursive: true })
+    writeFileSync(join(folder, 'child.jsonl'), `${JSON.stringify({ type: 'session', id: 'native-history' })}\n`)
+  }
+
+  it('reopens the stopped child’s own history as a new child run of the next parent', async () => {
+    const { harness, start, updates, root } = setup()
+    await start('original', { tools })
+    const child = await harness.subagents.spawn({ parentRunId: 'original', brief: 'Map the auth flow', title: 'Map auth' })
+    await harness.runs.interrupt('original')
+    expect(loadRun(harness.env.root, child.runId).status).toBe('interrupted')
+    savedHistory(root, child.runId)
+
+    // The next launch of the same conversation may carry another session id.
+    await start('resumed', { tools, run: { id: 'resumed', sessionId: 'another-launch' } })
+    const notice = await harness.subagents.delivery('resumed', owner('original'), false)
+    expect(notice?.text).toContain(`Subagent run ${child.runId} · interrupted (Map auth)`)
+    expect(notice?.text).toContain(`spawn_subagent { "continue": "${child.runId}" }`)
+
+    const continued = await harness.subagents.spawn({ parentRunId: 'resumed', continue: child.runId })
+    expect(continued.continued).toBe(child.runId)
+    const record = loadRun(harness.env.root, continued.runId)
+    expect(record).toMatchObject({ relation: 'subagent', parentRunId: 'resumed', resumedFromRunId: child.runId, sessionId: loadRun(harness.env.root, child.runId).sessionId, title: 'Map auth', goal: 'Map the auth flow' })
+    expect(updates.get(continued.runId)).toContain(`The previous run (${child.runId}) stopped before it finished`)
+    expect(harness.subagents.results({ parentRunId: 'resumed' }).map(result => result.runId)).toContain(continued.runId)
+
+    // The stopped link is reported through its continuation, and the chain resolves to the newest link.
+    const history = subagentHistory([{ type: 'custom', customType: SUBAGENT_OWNER, data: { runId: 'original' } }, { type: 'custom_message', details: { [SUBAGENT_RECEIPT]: notice!.receipt } }])
+    expect(await harness.subagents.delivery('resumed', history, false)).toBeNull()
+    await expect(harness.subagents.spawn({ parentRunId: 'resumed', continue: child.runId })).rejects.toThrow('is still running')
+  })
+
+  it('refuses what it cannot continue', async () => {
+    const { harness, finish, start, root } = setup()
+    await start('original', { tools })
+    const done = await harness.subagents.spawn({ parentRunId: 'original', brief: 'Finish', title: 'Finish' })
+    finish.get(done.runId)!('Finished')
+    await harness.runs.wait(done.runId)
+    const stopped = await harness.subagents.spawn({ parentRunId: 'original', brief: 'Stop', title: 'Stop' })
+    const unsaved = await harness.subagents.spawn({ parentRunId: 'original', brief: 'Unsaved', title: 'Unsaved' })
+    await expect(harness.subagents.spawn({ parentRunId: 'original', continue: stopped.runId })).rejects.toThrow('is still running')
+    await harness.runs.interrupt('original')
+    savedHistory(root, stopped.runId)
+    await start('resumed', { tools })
+    harness.subagents.restore('resumed', owner('original'))
+    await expect(harness.subagents.spawn({ parentRunId: 'resumed', continue: 'foreign' })).rejects.toThrow('Continue only a subagent that this conversation started.')
+    await expect(harness.subagents.spawn({ parentRunId: 'resumed', continue: done.runId })).rejects.toThrow('already finished')
+    await expect(harness.subagents.spawn({ parentRunId: 'resumed', continue: unsaved.runId })).rejects.toThrow('saved conversation is missing')
+    await expect(harness.subagents.spawn({ parentRunId: 'resumed', continue: stopped.runId, agent: 'worker' })).rejects.toThrow('keeps its profile and tools')
+    await harness.runs.interrupt('resumed')
+    // A parent that lost a tool the child had cannot widen it back.
+    await start('narrower', { tools: { allow: ['spawn_subagent', 'wait_subagents'] } })
+    harness.subagents.restore('narrower', owner('original'))
+    await expect(harness.subagents.spawn({ parentRunId: 'narrower', continue: stopped.runId })).rejects.toThrow('needs capabilities you do not have in this run: read')
+  })
+
+  it('tells a continued parent to continue its unfinished children rather than start them again', async () => {
+    const { continuationBody, continuationOf } = await import('./continuation')
+    const body = continuationBody({ ...continuationOf('/nowhere', 'missing'), runId: 'parent', unfinishedSubagents: ['child-1'] })
+    expect(body).toContain('Subagents that did not finish: child-1.')
+    expect(body).toContain('spawn_subagent { "continue": "<run ID>" }')
+    expect(body).not.toContain('Start them again')
   })
 })

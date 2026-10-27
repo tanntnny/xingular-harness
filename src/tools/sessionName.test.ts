@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import { sessionNameTool } from './sessionName'
+import { SESSION_GUIDANCE, deriveSessionName, sessionNameTool } from './sessionName'
 import { planModeTools, planRefusal } from '../sessions/planMode'
 
 describe('session naming', () => {
@@ -18,6 +18,22 @@ describe('session naming', () => {
     const session = { setSessionName: vi.fn() }
     await expect(sessionNameTool(() => session).execute({ name })).rejects.toThrow()
     expect(session.setSessionName).not.toHaveBeenCalled()
+  })
+
+  it('derives a short provisional name from a substantive request', () => {
+    expect(deriveSessionName('Please fix the login redirect before release')).toBe('Fix the login redirect before release')
+    expect(deriveSessionName('Can you add a browser tab?')).toBe('Add a browser tab')
+    expect(deriveSessionName('continue where you left off')).toBe('Continue previous work')
+    expect(deriveSessionName('hello')).toBeNull()
+    expect(deriveSessionName('Thanks!')).toBeNull()
+    expect(deriveSessionName('!git status')).toBeNull()
+    expect(deriveSessionName('https://example.com')).toBeNull()
+  })
+
+  it('describes the first-tool-call trigger shared with the prompt', () => {
+    const tool = sessionNameTool(() => ({ setSessionName: vi.fn() }))
+    expect(tool.description).toContain('before your first other tool call')
+    expect(tool.description).toContain(SESSION_GUIDANCE)
   })
 
   it('reports an unavailable native session', async () => {

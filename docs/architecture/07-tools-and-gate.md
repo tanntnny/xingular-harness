@@ -16,9 +16,9 @@ person without letting remembered per-tool grants widen that boundary.
 | `dispatch` | `tools/dispatch.ts` | One entry point for every History, Wiki and skill call, from a Pi tool, the server or a terminal. |
 | `harnessTools` | `tools/harnessTools.ts` | The definitions as `ToolSpec`s for one session. |
 | `askUserTool` (`ask_user`) | `tools/askUser.ts` | Stops an attended plan run and asks up to five related questions with choices and concise 1–2 word labels; absent from newly resolved normal runs. |
-| `checklistTool` (`checklist_write`) | `tools/checklist.ts` | Writes the run's whole checklist as a `checklist.updated` event (PROP-0006). Read-only for the gate, so plan mode allows it. Terminal sessions register the same tool; it reaches the run through the `checklist` telemetry call. The prompt's Progress group asks the model to keep it current and write one final update before replying; unfinished work is not automatically marked complete. |
+| `todoTool` (`todo_write`) | `tools/todo.ts` | Writes the run's whole todo list as a `todo.updated` event (PROP-0006, renamed by PROP-0045). Read-only for the gate, so plan mode allows it. Terminal sessions register the same tool; it reaches the run through the `todo` telemetry call. The prompt's Progress group asks the model to call it before the first other tool call when work has several steps, keep it current, and write one final update before replying; unfinished work is not automatically marked complete. The pre-rename `checklist.updated` event is still read, never written. |
 | `subagentTools` | `tools/spawnSubagent.ts` | `spawn_subagent` (requires a short `title`, PROP-0030) and `wait_subagents`; normal-mode descriptions guide selective, bounded delegation, while plan-mode spawns require a named eligible read-only research profile. |
-| `annotationsPart` (`page_notes_list`, `page_notes_read`, `page_notes_mark_fixed`) | `annotations/part.ts` | World tools over the page notes a person shared with the session or agent (PROP-0017). `page_notes_mark_fixed` records the agent's claim that it fixed a note it was sent; it never resolves a note or changes grants (PROP-0018). |
+| `annotationsPart` (`page_notes_list`, `page_notes_read`) | `annotations/part.ts` | Read-only world tools over the page notes a person shared with the session or agent (PROP-0017, PROP-0048). |
 | `webTools` | `web/tools.ts` | `web_search` (Brave, key from the secret store), `web_fetch` (checked public reads). An application provides them as a provider. |
 | gate | `sessions/sessions.ts::gate`, `sessions/runner.ts` | `ToolGate { ask, check }`, loaded as the last extension (`xagent-approvals`). |
 | `Approvals`, `decide`, `grant`, `approvalKey` | `sessions/approvals.ts` | Standing approvals. |
@@ -26,7 +26,7 @@ person without letting remembered per-tool grants widen that boundary.
 Harness tools: `get_capabilities` (read-only current-run discovery), `history_search`, `history_read`,
 `trajectory_search`, `trajectory_read`, `wiki_search`, `wiki_read`, `wiki_list`, `wiki_write`
 (not in the default set), `skill_load`, `ask_user` (attended plan runs and pinned continuations only),
-`checklist_write`. Broker:
+`todo_write`, `plugin_propose`. Broker:
 `mcp_list_tools`, `mcp_call_tool`. Native Pi tools: `read`, `grep`, `find`,
 `ls`, `edit`, `write`, `bash`.
 
@@ -44,6 +44,17 @@ extension (`terminal/piExtension.ts`) registers the same schema from Pi's active
 when plan mode is active it reports the plan's allowed tool set. `sessions/planMode.ts` includes it in
 the shared read-only allowlist. Host sessions use this Harness tool rather than defining a duplicate.
 It reports availability, never permission, and every call remains subject to the gate.
+
+## Plugin proposal security
+
+`plugin_propose { name, description, files }` is a write-classified Harness tool, subject to the
+normal capability and per-call gate, and creates only a pending proposal in the Harness data root.
+It does not accept, install, enable or trust a plugin. Proposal text is untrusted, including skill
+instructions; preview and human review are needed before acceptance. Acceptance is a separate
+trusted-caller API, bound to the reviewed content hash; it does not execute package code, grant
+trust or bypass the loader, attachment controls, capability restrictions or gate. Text contributions
+can load once enabled without code trust, so review their instructions as well as executable files.
+See page 06 and [ADR-0046](../decisions/ADR-0046-hash-bound-plugin-proposals.md).
 
 ## Native file paths
 
@@ -76,6 +87,18 @@ never replayed after partial effects. Full Permission is the explicit eligible-r
 Unsupported or unavailable sandbox enforcement fails closed. A side-question run has an empty
 capability set and no tools (PROP-0019).
 
+**Windows** has no write-boundary sandbox the harness can use, so the Bash tool treats every
+command there as an outside request: a human-only one-call approval (or an eligible Full
+Permission answer), then the command runs once without a sandbox. Plan-mode Bash is refused,
+because a read-only scope cannot be enforced. Commands run in Git Bash when it is installed
+(`%ProgramFiles%\Git\bin\bash.exe`, then `bash.exe` on `PATH`, never the WSL launcher in
+`System32`), otherwise in PowerShell (`pwsh.exe`, then Windows PowerShell). The tool keeps the name
+`bash`; its description names the shell. Native `edit` and `write` run their atomic helper with
+Node directly, without an OS guard: the target is still canonicalized, authorized, revalidated and
+replaced by rename, and outside targets still need their approval, but a junction or symlink swap
+between the check and the rename is not prevented
+([ADR-0042](../decisions/ADR-0042-windows-shell-without-sandbox.md)).
+
 ## The gate, per call
 
 For native `edit` and `write`, the canonical target check is added to policy scope before approval;
@@ -96,6 +119,7 @@ policy.authorize(call) throws           ─► refuse
 outside native file target              ─► human-only one-call approval; eligible Full Permission may answer
 Bash workspace scope                    ─► hard-link scan, OS sandbox, run once
 Bash outside scope                      ─► pre-execution human-only approval, then run once unconfined
+Bash on Windows (no sandbox)            ─► as outside scope; plan-mode Bash refused
 trigger probe, improver, reflection or unattended ─► refuse anything requiring a person
 run.requestApproval(...)                ─► standing approvals may answer where eligible, else the person
   denied                                ─► refuse; never replay a command
@@ -131,6 +155,8 @@ the switch and global tools.
   Full Permission switch can answer automatically under its existing restrictions. In plan mode, Bash
   runs only in the read-only scope (PROP-0043): no writes but a discarded temp folder, no network,
   no signals outside the sandbox, no macOS mach services; Full Permission and `outside` never apply.
+  On Windows, which has no sandbox, every Bash call takes the `outside` path and plan-mode Bash is
+  refused (ADR-0042).
 - **INV-GATE-4** Refinement runs (`probe`, `improver`) never ask a person; what would need one is
   refused, never queued (`INV-REF-4`).
 - **INV-GATE-5** SDK tools are registered only if their names are in the run's frozen capability
@@ -155,6 +181,7 @@ the switch and global tools.
   same choice as `!outside <command>`. Full Permission is the only standing boundary bypass and
   remains subject to host policy, authorization, read-only, plan, unattended, probe, improver and
   reflection restrictions. The rule does not protect against a peer process running as the same user.
+  On Windows the atomic replacement runs without an OS-enforced scope (ADR-0042).
 
 ## Data
 
@@ -164,16 +191,23 @@ the switch and global tools.
 
 `src/tools/*.ts`, `src/web/*.ts`, `src/sessions/sessions.ts`, `src/sessions/runner.ts`,
 `src/sessions/workspaceBoundary.ts`, `src/sessions/initialBash.ts`, `src/core/workspaceBashTool.ts`,
-`src/core/workspaceSandbox.ts`, `src/core/workspaceWriteOperations.ts`, `src/sessions/approvals.ts`,
-`src/sessions/policy.ts`. Decision: [ADR-0036](../decisions/ADR-0036-workspace-write-operation-boundary.md).
+`src/core/shell.ts`, `src/core/workspaceSandbox.ts`, `src/core/workspaceWriteOperations.ts`,
+`src/sessions/approvals.ts`, `src/sessions/policy.ts`. Decisions:
+[ADR-0036](../decisions/ADR-0036-workspace-write-operation-boundary.md),
+[ADR-0042](../decisions/ADR-0042-windows-shell-without-sandbox.md).
 
 ## Session naming (PROP-0010)
 
 `session_name` (`tools/sessionName.ts`) binds to the current native session. It maintains
 only Pi session metadata and is explicitly plan-safe, while still subject to capability
-selection and the host policy. The terminal registers the same definition through its Pi
-bridge; standalone policy permits naming without approval. See page 02 for validation and
-persistence. It is a foundation tool, not mutable variant data.
+selection and the host policy. The prompt asks for it once before the first other tool call when
+a request needs tools or changes state. When a top-level attended session starts unnamed, the
+harness also derives a provisional name from its first substantive request and sets it through
+Pi before the first model request; a host gate refusal or a failed write leaves the session
+unnamed and never fails the run. The model may revise the provisional name. The terminal
+registers the same definition through its Pi bridge; standalone policy permits naming without
+approval. See page 02 for validation and persistence. It is a foundation tool, not mutable
+variant data.
 
 ## Diagnostic probes
 
@@ -181,3 +215,10 @@ persistence. It is a foundation tool, not mutable variant data.
 intersect current capabilities, and execute tool calls through the existing gate. Calls that
 require an additional per-call approval report blocked; batch diagnostic consent does not grant
 standing permission. No raw tool inputs, results, or screenshots enter diagnostic findings.
+
+A live check may also run one command the harness wrote itself, when the capability it diagnoses is
+a native Pi tool rather than a harness tool: the shell check runs `printf` through the same
+workspace root, hard-link scan and write-boundary sandbox as a Bash call, and reports only the exit
+status. It passes the gate first, and a diagnostic never widens the boundary — Full Permission,
+an outside-workspace request and a host bypass are all refused for it — so a boundary that stops
+the command before the shell starts is reported as blocked with the boundary's own reason.

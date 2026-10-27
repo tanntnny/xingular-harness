@@ -8,7 +8,7 @@ const GAP = '  '
 
 export type SubagentTone = 'success' | 'warning' | 'error' | 'muted' | 'accent'
 
-/** One roster row: status mark, profile, session name, checklist progress, in that order. */
+/** One roster row: status mark, profile, session name, todo progress, in that order. */
 export interface SubagentRowView {
   id: string
   mark: string
@@ -18,7 +18,7 @@ export interface SubagentRowView {
   /** The profile's colour name (PROP-0029); null for a copy of the parent. */
   color: string | null
   title: string
-  /** `n of m tasks`, or null when the child wrote no checklist. */
+  /** `n of m tasks`, or null when the child wrote no todo. */
   tasks: string | null
 }
 
@@ -49,8 +49,8 @@ function mark(status: TerminalSubagentActivity['status'], frame: string): { mark
   }
 }
 
-export function subagentTasks(checklist: TerminalSubagentActivity['checklist']): string | null {
-  return checklist && checklist.total > 0 ? `${checklist.done} of ${checklist.total} tasks` : null
+export function subagentTasks(todo: TerminalSubagentActivity['todo']): string | null {
+  return todo && todo.total > 0 ? `${todo.done} of ${todo.total} tasks` : null
 }
 
 /**
@@ -58,15 +58,17 @@ export function subagentTasks(checklist: TerminalSubagentActivity['checklist']):
  * rows. The session name is cut first when the terminal is narrow.
  */
 export function subagentRoster(items: readonly TerminalSubagentActivity[], width: number, frame: string = getWorkingSpinnerFrames()[0] ?? ''): SubagentRosterView | null {
-  if (!items.length || width < 1) return null
-  const ordered = [...items].sort((left, right) => {
+  // The status line already describes the main agent; its row is only on the /subagents page.
+  const children = items.filter(item => item.relation !== 'main')
+  if (!children.length || width < 1) return null
+  const ordered = [...children].sort((left, right) => {
     const active = Number(ACTIVE_SUBAGENT_STATUSES.has(right.status)) - Number(ACTIVE_SUBAGENT_STATUSES.has(left.status))
     return active || left.startedAt.localeCompare(right.startedAt) || left.id.localeCompare(right.id)
   })
   const rows = ordered.slice(0, MAX_VISIBLE_ROWS).map((item): SubagentRowView => {
     const status = mark(item.status, frame)
     const profile = cut(safe(item.profile?.name ?? '') || 'subagent', Math.max(1, Math.min(24, width - 2)))
-    const tasks = subagentTasks(item.checklist)
+    const tasks = subagentTasks(item.todo)
     const used = 2 + visibleWidth(profile) + GAP.length + (tasks ? GAP.length + tasks.length : 0)
     const title = cut(safe(item.title) || 'Subagent', Math.max(1, width - used))
     return { id: item.id, mark: status.mark, tone: status.tone, profile, color: item.profile?.color ?? null, title, tasks }

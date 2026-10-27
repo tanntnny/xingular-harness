@@ -3,7 +3,7 @@ import { visibleWidth } from '@earendil-works/pi-tui'
 import type { AttachmentLabel } from './attachments'
 import { leadingSlashCommandRange } from './slashCommandHighlight'
 
-/** The parts of an OpenTUI textarea that attachment marks use. */
+/** The parts of an OpenTUI textarea used by composer marks and attachment edits. */
 export interface MarkTarget {
   readonly plainText: string
   readonly extmarks: {
@@ -26,24 +26,39 @@ export function bufferOffset(text: string, index: number): number {
   return offset
 }
 
-/**
- * Keeps one virtual (atomic, coloured) mark on each attachment label in the composer.
- * A label that an edit has cut into (word delete, a partial cut) is removed whole, as is its
- * attachment once the draft is reported. Returns true when it changed the text.
- */
-export function syncSlashCommandMark(target: MarkTarget, names: readonly string[], typeId: number, styleId: number): void {
+function leadingSkillInvocationRange(text: string, names: readonly string[]): { start: number; end: number } | undefined {
+  const match = /^(\s*)\$(\S+)/u.exec(text)
+  if (!match || !names.includes(match[2]!)) return undefined
+  return { start: match[1]!.length, end: match[0].length }
+}
+
+function syncTextMark(
+  target: MarkTarget,
+  range: { start: number; end: number } | undefined,
+  typeId: number,
+  styleId: number
+): void {
   const marks = target.extmarks.getAllForTypeId(typeId)
-  const command = leadingSlashCommandRange(target.plainText, names)
-  if (!command) {
+  if (!range) {
     for (const mark of marks) target.extmarks.delete(mark.id)
     return
   }
 
-  const start = bufferOffset(target.plainText, command.start)
-  const end = start + visibleWidth(target.plainText.slice(command.start, command.end))
+  const start = bufferOffset(target.plainText, range.start)
+  const end = start + visibleWidth(target.plainText.slice(range.start, range.end))
   if (marks.length === 1 && marks[0]!.start === start && marks[0]!.end === end) return
   for (const mark of marks) target.extmarks.delete(mark.id)
   target.extmarks.create({ start, end, virtual: true, styleId, typeId })
+}
+
+/** Keeps one virtual mark on the recognized leading slash command. */
+export function syncSlashCommandMark(target: MarkTarget, names: readonly string[], typeId: number, styleId: number): void {
+  syncTextMark(target, leadingSlashCommandRange(target.plainText, names), typeId, styleId)
+}
+
+/** Colors only a leading `$name` that names an enabled skill; its arguments remain normal text. */
+export function syncSkillInvocationMark(target: MarkTarget, names: readonly string[], typeId: number, styleId: number): void {
+  syncTextMark(target, leadingSkillInvocationRange(target.plainText, names), typeId, styleId)
 }
 
 export function syncAttachmentMarks(target: MarkTarget, labels: readonly AttachmentLabel[], typeId: number, styleId: number): boolean {

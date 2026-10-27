@@ -80,6 +80,25 @@ describe('installing a package', () => {
     expect(await loaded()).toEqual({ extensions: [], skills: [] })
   })
 
+  it('routes Hub-owned removal through the receipt owner and refuses floating Hub updates', async () => {
+    const { root, base, call, harness } = setup()
+    kit(join(base, 'kit'))
+    const installed = await call<Plugin[]>('plugins.install', { source: join(base, 'kit') })
+    const plugin = installed.find(candidate => candidate.id === 'package:review-kit')!
+    const entry = {
+      id: 'community/review-kit', title: 'Review Kit', description: 'Review helpers.', publisher: 'Community', license: 'MIT', version: '1.0.0',
+      category: 'plugin', channel: 'community', tags: [], requires: {}, sourceUrl: 'https://example.com/review-kit',
+      delivery: { kind: 'pi-package', source: 'npm:review-kit@1.0.0' }
+    }
+    mkdirSync(join(root, 'hub'), { recursive: true })
+    writeFileSync(join(root, 'hub/installed.json'), JSON.stringify([{ entry, installedAt: '2026-10-20T08:00:00.000Z', resourceIds: [plugin.id], document: null }]))
+    await expect(call('plugins.update', { pluginId: plugin.id })).rejects.toThrow('managed by Hub')
+
+    const after = await call<Plugin[]>('plugins.remove', { pluginId: plugin.id })
+    expect(after.some(candidate => candidate.id === plugin.id)).toBe(false)
+    expect((await harness.hub.list()).installed).toEqual([])
+  })
+
   it('refuses a folder that is not there, and a plugin that was not installed', async () => {
     const { base, call } = setup()
     await expect(call('plugins.install', { source: join(base, 'missing') })).rejects.toThrow('does not exist')

@@ -39,8 +39,6 @@ export interface WorldOptions {
   request?: WebRequest
   /** Replaces the browser's launcher and address check in tests. */
   browser?: Omit<BrowserPartOptions, 'stateDir'> | false
-  /** Told when the agent marks a page note fixed, so front ends refresh (PROP-0018). */
-  notesChanged?: (sessionId: string | null, ids: string[]) => void
 }
 
 /** A family of world tools, switched as one plugin. */

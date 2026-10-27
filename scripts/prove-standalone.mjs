@@ -98,11 +98,11 @@ try {
   const pageNote = await request('annotations.create', { source: { url: 'https://example.com/proof', title: 'Proof' }, target: { kind: 'text', exact: 'proof text', prefix: '', suffix: '', start: 0, end: 10 }, body: 'Remember the proof.' })
   const sharedNote = await request('annotations.share', { id: pageNote.id, principal: { sessionId: 'proof-agent' } })
   const helper = await request('annotations.pageScript')
-  // A host's session gets the queued notes as one instruction, starts the run itself, and reports it.
+  // A host's session gets its unsent notes as one message, starts the run itself, and reports it.
   const acted = await request('annotations.createAndAct', { note: { source: { url: 'http://localhost:5173/', title: 'Dev' }, target: { kind: 'page' }, body: 'Fix the header.' }, action: 'send', sessionId: 'proof-host', trusted: true })
   const composed = await request('annotations.compose', { sessionId: 'proof-host' })
   const delivered = await request('annotations.delivered', { ids: composed.ids, sessionId: 'proof-host', runId: 'proof-host-run' })
-  check('queues a page note for a host session and records the run it was sent in', acted.send?.state === 'host' && composed.text.includes('Fix the header.') && delivered.notes[0]?.delivery?.state === 'sent', `${composed.ids.length} note`)
+  check('sends a page note to a host session and records the run it was sent in', acted.send?.state === 'host' && composed.text.includes('Fix the header.') && delivered.notes[0]?.delivery?.state === 'sent', `${composed.ids.length} note`)
   check('keeps a private page note, shares it with one session, and serves the page helper', pageNote.grants.length === 0 && sharedNote.grants[0]?.principal.sessionId === 'proof-agent' && helper.script.includes('__ARGS__'), `version ${sharedNote.version}`)
   check('makes, lists and removes a managed worktree, keeping unsaved work as a snapshot', listed.length === 1 && carried && Boolean(removed.snapshot) && !existsSync(made.worktree.path), `${made.worktree.name}; snapshot ${removed.snapshot ? 'kept' : 'missing'}`)
 

@@ -23,7 +23,7 @@ function env() {
 
 // What each front end switches on for a person's own session: the harness's tools, the broker's,
 // the world tools and the annotations tools.
-const TOOLS = ['checklist_write', 'session_name', ...DEFAULT_TOOL_NAMES, 'mcp_list_tools', 'mcp_call_tool', 'web_search', 'web_fetch', 'page_notes_list', 'page_notes_read', 'page_notes_mark_fixed', 'spawn_subagent', 'wait_subagents']
+const TOOLS = ['todo_write', 'session_name', ...DEFAULT_TOOL_NAMES, 'mcp_list_tools', 'mcp_call_tool', 'web_search', 'web_fetch', 'page_notes_list', 'page_notes_read', 'spawn_subagent', 'wait_subagents']
 
 test('a terminal session and a host session compile to the same prompt', () => {
   const harness = env()

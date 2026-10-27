@@ -146,15 +146,15 @@ describe('TranscriptModel', () => {
     expect(items[2]).toMatchObject({ kind: 'assistant', text: 'partial', streaming: true })
   })
 
-  it('shows a checklist call as its list and names the agent and brief of a subagent call', () => {
+  it('shows a todo call as its list and names the agent and brief of a subagent call', () => {
     const model = new TranscriptModel()
     const items = [{ text: 'Read the code', status: 'completed' }, { text: 'Fix the bug', status: 'in_progress' }, { text: 'Run tests', status: 'pending' }]
     model.bind(session([
       {
         role: 'assistant',
         content: [
-          { type: 'toolCall', id: 'c1', name: 'checklist_write', arguments: { items } },
-          { type: 'toolCall', id: 'c2', name: 'checklist_write', arguments: { items: 'nope' } },
+          { type: 'toolCall', id: 'c1', name: 'todo_write', arguments: { items } },
+          { type: 'toolCall', id: 'c2', name: 'todo_write', arguments: { items: 'nope' } },
           { type: 'toolCall', id: 's1', name: 'spawn_subagent', arguments: { agent: 'explorer', title: 'Map the login route', brief: 'Find the login route' } }
         ]
       },
@@ -162,10 +162,20 @@ describe('TranscriptModel', () => {
       { role: 'toolResult', toolCallId: 'c2', content: 'Send items', isError: false }
     ]))
     const view = model.view().items
-    expect(view[0]).toMatchObject({ kind: 'checklist', status: 'ok', items })
-    expect(view[1]).toMatchObject({ kind: 'tool', name: 'checklist_write' })
+    expect(view[0]).toMatchObject({ kind: 'todo', origin: 'tool', status: 'ok', items })
+    expect(view[1]).toMatchObject({ kind: 'tool', name: 'todo_write' })
     expect(view[2]).toMatchObject({ kind: 'tool', summary: 'explorer · Map the login route' })
     expect(model.view().items[0]).toBe(view[0])
+  })
+
+  it('shows a pre-rename checklist_write call as a todo card', () => {
+    const model = new TranscriptModel()
+    const items = [{ text: 'Read the code', status: 'completed' }]
+    model.bind(session([
+      { role: 'assistant', content: [{ type: 'toolCall', id: 'c1', name: 'checklist_write', arguments: { items } }] },
+      { role: 'toolResult', toolCallId: 'c1', content: '[x] Read the code', isError: false }
+    ]))
+    expect(model.view().items[0]).toMatchObject({ kind: 'todo', origin: 'tool', status: 'ok', items })
   })
 
   it('strips paired bold markers from thinking without changing assistant text', () => {

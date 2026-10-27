@@ -69,7 +69,7 @@ interface AnchoredNotice {
   anchor?: object
   sequence: number
   multiline: boolean
-  item: NoticeItem | CommandHelpItem
+  item: NoticeItem | CommandHelpItem | TodoTranscriptItem
 }
 
 export interface BashItem {
@@ -104,16 +104,19 @@ export interface CompactionItem {
   tokensBefore?: number
 }
 
-/** A `checklist_write` call, shown as the list it wrote rather than as a tool row. */
-export interface ChecklistTranscriptItem {
-  kind: 'checklist'
+/** A `todo_write` call, shown as the list it wrote rather than as a tool row. */
+export interface TodoTranscriptItem {
+  kind: 'todo'
   id: string
-  toolCallId: string
-  status: ToolStatus
-  items: readonly ChecklistEntry[]
+  /** Set for a tool call; absent for a `/todo` snapshot. */
+  toolCallId?: string
+  /** Set for a tool call; a command snapshot has no status mark. */
+  status?: ToolStatus
+  origin: 'tool' | 'command'
+  items: readonly TodoEntry[]
 }
 
-export interface ChecklistEntry {
+export interface TodoEntry {
   text: string
   status: 'pending' | 'in_progress' | 'completed'
 }
@@ -140,7 +143,7 @@ export type TranscriptItem =
   | SummaryItem
   | CompactionItem
   | PlanItem
-  | ChecklistTranscriptItem
+  | TodoTranscriptItem
 
 export interface TranscriptView {
   items: readonly TranscriptItem[]
@@ -243,25 +246,25 @@ function toolOutput(message: LooseMessage): string {
   return clip(text)
 }
 
-const CHECKLIST_STATUSES = new Set(['pending', 'in_progress', 'completed'])
+const TODO_STATUSES = new Set(['pending', 'in_progress', 'completed'])
 
-/** The items of a `checklist_write` call, or null when the arguments are not a checklist. */
-export function checklistEntries(args: unknown): ChecklistEntry[] | null {
+/** The items of a `todo_write` (or pre-rename `checklist_write`) call, or null when they are not a todo list. */
+export function todoEntries(args: unknown): TodoEntry[] | null {
   const items = (args as { items?: unknown } | null | undefined)?.items
   if (!Array.isArray(items)) return null
-  const entries: ChecklistEntry[] = []
+  const entries: TodoEntry[] = []
   for (const item of items) {
     const entry = item as { text?: unknown; status?: unknown } | null
-    if (!entry || typeof entry.text !== 'string' || !entry.text.trim() || typeof entry.status !== 'string' || !CHECKLIST_STATUSES.has(entry.status)) return null
-    entries.push({ text: ansiLabel(entry.text.trim(), 500), status: entry.status as ChecklistEntry['status'] })
+    if (!entry || typeof entry.text !== 'string' || !entry.text.trim() || typeof entry.status !== 'string' || !TODO_STATUSES.has(entry.status)) return null
+    entries.push({ text: ansiLabel(entry.text.trim(), 500), status: entry.status as TodoEntry['status'] })
   }
   return entries
 }
 
 function sameTranscriptItem(left: TranscriptItem, right: TranscriptItem): boolean {
   if (left.kind !== right.kind) return false
-  if (left.kind === 'checklist' && right.kind === 'checklist') {
-    return left.id === right.id && left.toolCallId === right.toolCallId && left.status === right.status
+  if (left.kind === 'todo' && right.kind === 'todo') {
+    return left.id === right.id && left.origin === right.origin && left.toolCallId === right.toolCallId && left.status === right.status
       && JSON.stringify(left.items) === JSON.stringify(right.items)
   }
   const leftFields = Object.entries(left)
@@ -418,7 +421,14 @@ export class TranscriptModel {
     this.invalidate()
   }
 
-  private addNotice(sequence: number, multiline: boolean, item: NoticeItem | CommandHelpItem): void {
+  /** A `/todo` snapshot: the list at the moment the command ran, with no tool row. */
+  todo(items: readonly TodoEntry[]): void {
+    const sequence = this.nextNotice++
+    this.addNotice(sequence, true, { kind: 'todo', id: `todo-${sequence}`, origin: 'command', items })
+    this.invalidate()
+  }
+
+  private addNotice(sequence: number, multiline: boolean, item: NoticeItem | CommandHelpItem | TodoTranscriptItem): void {
     const messages = this.session?.messages ?? []
     this.notices.push({ afterMessageCount: messages.length, anchor: messages.at(-1), sequence, multiline, item })
     if (this.notices.length > 60) this.notices = this.notices.slice(-60)
@@ -556,9 +566,9 @@ export class TranscriptModel {
           const status: ToolStatus = result ? (result.isError === true ? 'error' : 'ok') : pending.has(block.id) ? 'running' : 'pending'
           const resultImageCount = result ? imageCount(result.content) : 0
           const id = `m${index}.c${textIndex++}`
-          const checklist = block.name === 'checklist_write' && result?.isError !== true ? checklistEntries(block.arguments) : null
-          if (checklist) {
-            items.push({ kind: 'checklist', id, toolCallId: block.id, status, items: checklist })
+          const todo = (block.name === 'todo_write' || block.name === 'checklist_write') && result?.isError !== true ? todoEntries(block.arguments) : null
+          if (todo) {
+            items.push({ kind: 'todo', id, origin: 'tool', toolCallId: block.id, status, items: todo })
             continue
           }
           items.push({

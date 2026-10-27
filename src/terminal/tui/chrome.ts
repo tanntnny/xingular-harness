@@ -193,3 +193,18 @@ export function pageFrame({ title, meta, body, footer, width, rows, theme, heade
     footerRow(footer, width, theme)
   ].slice(0, rows)
 }
+
+/** A full-width two-pane list uses a 40/60 split once there is room to read both panes. */
+export function inspectorListWidth(width: number): number | undefined {
+  return width < 88 ? undefined : Math.max(32, Math.floor((width - 3) * 0.4))
+}
+
+/** Joins a list and passive detail pane without drawing a box around either. */
+export function splitColumns(left: readonly string[], right: readonly string[], leftWidth: number, width: number, rows: number, theme: Theme): string[] {
+  const rightWidth = Math.max(0, width - leftWidth - 3)
+  return Array.from({ length: Math.max(0, Math.trunc(rows)) }, (_, index) => {
+    const leftLine = truncateToWidth(left[index] ?? '', leftWidth, '')
+    const rightLine = truncateToWidth(right[index] ?? '', rightWidth, '')
+    return leftLine + ' '.repeat(Math.max(0, leftWidth - visibleWidth(leftLine))) + theme.fg('dim', ' │ ') + rightLine
+  })
+}

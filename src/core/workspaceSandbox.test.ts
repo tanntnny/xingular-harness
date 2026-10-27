@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { resolveWorkspaceRoot } from './workspace'
-import { createWorkspaceBashOperations } from './workspaceSandbox'
+import { createWorkspaceBashOperations, WINDOWS_UNSANDBOXED_REASON } from './workspaceSandbox'
 
 const fixtures: string[] = []
 const sandboxExecutables = process.platform === 'darwin'
@@ -266,7 +266,7 @@ describe('workspace Bash sandbox', () => {
     const target = join(root, 'must-not-exist.txt')
     const callbacks: string[] = []
     const operations = createWorkspaceBashOperations(root, {
-      platform: 'win32',
+      platform: 'freebsd',
       workspaceWriteScope: () => 'read-only',
       bypassWorkspaceBoundary: async () => {
         callbacks.push('bypass')
@@ -282,9 +282,63 @@ describe('workspace Bash sandbox', () => {
   it('fails closed when the platform has no supported workspace sandbox', async () => {
     const { root } = workspaceFixture()
     const target = join(root, 'must-not-exist.txt')
-    const operations = createWorkspaceBashOperations(root, { platform: 'win32' })
+    const operations = createWorkspaceBashOperations(root, { platform: 'freebsd' })
 
     await expect(operations.exec(`printf unsafe > '${target}'`, root, { onData: () => {} })).rejects.toThrow('Bash was not run')
     expect(existsSync(target)).toBe(false)
+  })
+})
+
+// Windows has no sandbox: every command is a one-call request a person approves. These run the
+// Windows branch with this machine's shell, so they need a POSIX shell, not Windows.
+describe('workspace Bash on Windows', () => {
+  it('asks before every command and runs it once only when approved', async () => {
+    const { root } = workspaceFixture()
+    const target = join(root, 'approved.txt')
+    const reasons: string[] = []
+    let answer = false
+    const operations = createWorkspaceBashOperations(root, {
+      platform: 'win32',
+      requestWorkspaceWriteScope: async (request) => {
+        reasons.push(request.reason)
+        return answer
+      }
+    })
+
+    await expect(operations.exec(`printf denied > '${target}'`, root, { onData: () => {} })).rejects.toThrow('Bash was not run')
+    expect(existsSync(target)).toBe(false)
+
+    answer = true
+    const output: Buffer[] = []
+    const result = await operations.exec(`printf approved > '${target}' && printf done`, root, { onData: (chunk) => output.push(chunk) })
+    expect(result.exitCode).toBe(0)
+    expect(readFileSync(target, 'utf8')).toBe('approved')
+    expect(Buffer.concat(output).toString()).toBe('done')
+    expect(reasons).toEqual([WINDOWS_UNSANDBOXED_REASON, WINDOWS_UNSANDBOXED_REASON])
+  })
+
+  it('refuses plan-mode commands without asking to widen them', async () => {
+    const { root } = workspaceFixture()
+    const callbacks: string[] = []
+    const operations = createWorkspaceBashOperations(root, {
+      platform: 'win32',
+      workspaceWriteScope: () => 'read-only',
+      bypassWorkspaceBoundary: async () => { callbacks.push('bypass'); return true },
+      requestWorkspaceWriteScope: async () => { callbacks.push('outside'); return true }
+    })
+
+    await expect(operations.exec('printf x', root, { onData: () => {} })).rejects.toThrow('Plan-mode Bash needs a read-only sandbox, which Windows does not have')
+    expect(callbacks).toEqual([])
+  })
+
+  it('says so when no shell is installed', async () => {
+    const { root } = workspaceFixture()
+    const operations = createWorkspaceBashOperations(root, {
+      platform: 'win32',
+      shell: () => null,
+      requestWorkspaceWriteScope: async () => true
+    })
+
+    await expect(operations.exec('printf x', root, { onData: () => {} })).rejects.toThrow('Bash was not run')
   })
 })

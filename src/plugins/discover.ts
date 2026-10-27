@@ -1,18 +1,20 @@
 // What Pi would load for a session, found with Pi's own resolver so the list matches Pi's
 // rules. Resolving reads folders and manifests; it never runs an extension.
-import { existsSync } from 'node:fs'
+import { existsSync, lstatSync, readdirSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join, sep } from 'node:path'
 
 import { log } from '../core/bus'
+import * as frontmatter from '../core/frontmatter'
 import { loadPi } from '../pi/runtime'
 import { packageManifest } from './manifest'
 
 /**
  * `context` is an instruction file Pi reads on its own: `AGENTS.md`, `SYSTEM.md` and their kin.
  * `hook` is a package's hooks file, which the harness runs itself; Pi never loads it.
+ * `agent` is a subagent profile a package brings; the harness reads it, Pi never does.
  */
-export type FoundKind = 'extension' | 'skill' | 'prompt' | 'theme' | 'context' | 'hook'
+export type FoundKind = 'extension' | 'skill' | 'prompt' | 'theme' | 'context' | 'hook' | 'agent'
 
 /** Where a found item comes from. `builtin` is one of the Pi command's own extensions. */
 export type FoundOrigin = 'shared' | 'package' | 'project' | 'home' | 'builtin'
@@ -48,6 +50,37 @@ export type Resolver = (input: ResolveInput) => Promise<Found[]>
 /** The extensions built into the `pi` command. A terminal loads them; an SDK session has none. */
 export const PI_BUILTINS = ['llama.cpp', 'codemode', 'tool-search', 'mcp'] as const
 export const BUILTIN_PREFIX = 'builtin:'
+
+/** At most this many profiles are read from one package. */
+const MAX_PACKAGE_PROFILES = 50
+
+/**
+ * The subagent profiles in a package's agents folder: Markdown files whose frontmatter has a
+ * `name` and a `description`. Anything else there (notes, a README) is not a profile.
+ */
+export function packageProfiles(root: string, folder: string): string[] {
+  const dir = join(root, folder)
+  let names: string[]
+  try {
+    if (!lstatSync(dir).isDirectory()) return []
+    names = readdirSync(dir).filter((name) => name.endsWith('.md') && !name.startsWith('.')).sort()
+  } catch {
+    return []
+  }
+  const profiles: string[] = []
+  for (const name of names) {
+    const path = join(dir, name)
+    try {
+      if (!lstatSync(path).isFile()) continue
+      const front = frontmatter.parse(readFileSync(path, 'utf8'))?.front
+      if (typeof front?.name === 'string' && front.name.trim() && typeof front.description === 'string' && front.description.trim()) profiles.push(path)
+    } catch {
+      continue
+    }
+    if (profiles.length >= MAX_PACKAGE_PROFILES) break
+  }
+  return profiles
+}
 
 const inside = (path: string, parent: string): boolean => path === parent || path.startsWith(parent.endsWith(sep) ? parent : `${parent}${sep}`)
 
@@ -131,7 +164,9 @@ export const piResolver: Resolver = async ({ cwd, agentDir, install, packages })
   for (const configured of manager().listConfiguredPackages()) if (configured.scope === 'user' && configured.installedPath) roots.set(configured.installedPath, configured.source)
   for (const folder of packages ?? []) roots.set(folder, folder)
   for (const [root, source] of roots) {
-    const hooks = packageManifest(root).hooks
+    const manifest = packageManifest(root)
+    for (const path of packageProfiles(root, manifest.agents)) found.push({ kind: 'agent', path, origin: 'package', project: false, packageRoot: root, source, enabled: true })
+    const hooks = manifest.hooks
     if (!hooks || !existsSync(join(root, hooks))) continue
     found.push({ kind: 'hook', path: join(root, hooks), origin: 'package', project: false, packageRoot: root, source, enabled: true })
     // Pi takes a folder with none of its own resources to be an extension itself. A package that

@@ -21,13 +21,25 @@ export function subagentDepth(options: SubagentOptions | undefined): number {
 
 export interface SubagentInput {
   parentRunId: string
-  brief: string
+  /** The task for a new child; with `continue`, an optional extra instruction. */
+  brief?: string
   /** The short name the roster shows for the child (PROP-0030); the spawn tool requires it. */
   title?: string
   tools?: string[]
   wait?: boolean
   /** An agent profile by name (PROP-0029), or one of the parent variant's subagents (c5). */
   agent?: string
+  /**
+   * A stopped child to continue instead of starting a fresh one: its run id. The new child reopens
+   * that child's own history and keeps its profile, tools, account and variant; `brief` is then an
+   * optional extra instruction.
+   */
+  continue?: string
+}
+
+/** The words that tell a parent a stopped child can be continued rather than started again. */
+export function continueHint(runId: string): string {
+  return `Its conversation is saved: continue it with spawn_subagent { "continue": "${runId}" } if the work is still needed, instead of starting it again from scratch.`
 }
 
 /** A subagent title is one short imperative, at most this many words (PROP-0030). */

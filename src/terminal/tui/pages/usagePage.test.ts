@@ -1,10 +1,11 @@
 import type { Theme } from '@earendil-works/pi-coding-agent'
-import { stripTerminalSequences, visibleWidth } from '@earendil-works/pi-tui'
+import { stripTerminalSequences, visibleWidth, type TUI } from '@earendil-works/pi-tui'
 import { describe, expect, it, vi } from 'vitest'
 
 import type { UsageLimitsReport } from '../../../usage/limits/types'
 import type { UsageSummary, UsageTotals } from '../../../usage/types'
 import { createHarnessTheme } from '../theme'
+import { PageOverlay } from '../pageOverlay'
 import { UsagePage } from './usagePage'
 
 const theme = createHarnessTheme({ getColorMode: () => 'truecolor' } as Theme)
@@ -56,13 +57,53 @@ describe('Usage terminal page', () => {
     await vi.waitFor(() => expect(plain(page.render(100, 30))).toContain('anthropic/claude-opus-5-5'))
     expect(call).toHaveBeenCalledWith('terminal.usage.summary', expect.objectContaining({ scope: 'account', period: '7d' }))
     const text = plain(page.render(100, 30))
-    expect(page.presentation).toBe('centered')
+    expect(page.presentation).toBe('fullscreen')
     expect(text).toContain('1.2M in')
     expect(text).toContain('$7.80')
     expect(text).toContain('Work')
     expect(text).toContain('14.2% cache hits')
     expect(text).not.toContain('BY MODEL')
     expect(text).not.toContain('Ledger updated')
+    page.dispose()
+  })
+
+  it('shows a full-screen top tab strip and navigates by keyboard and pointer', async () => {
+    const { page } = setup()
+    const close = vi.fn()
+    const tui = { terminal: { columns: 80, rows: 24 }, centeredDialogs: true } as unknown as TUI
+    const overlay = new PageOverlay({ page, tui, theme: () => theme, close, changed: vi.fn() })
+    overlay.mounted()
+    await vi.waitFor(() => expect(plain(overlay.render(80))).toContain('1.2M in'))
+    const rows = overlay.render(80).map(stripTerminalSequences)
+    expect(rows).toHaveLength(24)
+    expect(rows[0]).toContain('Analysis')
+    expect(rows[0]).toContain('Limits')
+    expect(rows[1]).toBe('─'.repeat(80))
+    overlay.handleInput('\t')
+    await vi.waitFor(() => expect(plain(overlay.render(80))).toContain('5-hour window'))
+    expect(page.activeTab()).toBe('limits')
+    overlay.handleInput('\x1b[Z')
+    expect(page.activeTab()).toBe('analysis')
+    overlay.render(80)
+    overlay.handleMouse({ type: 'click', button: 'left', x: 15, y: 0, screenX: 15, screenY: 0, width: 80, height: 24, shift: false, alt: false, ctrl: false })
+    expect(page.activeTab()).toBe('limits')
+    overlay.handleInput('\x1b')
+    expect(close).toHaveBeenCalledOnce()
+    overlay.dispose()
+  })
+
+  it('loads the selected tab after an in-flight request finishes', async () => {
+    let resolve!: (value: UsageSummary) => void
+    const call = vi.fn((method: string) => method === 'terminal.usage.summary'
+      ? new Promise<UsageSummary>(done => { resolve = done })
+      : Promise.resolve(structuredClone(limits)))
+    const page = new UsagePage({ theme: () => theme, call, changed: vi.fn() })
+    page.activate()
+    page.handleInput('\t')
+    resolve(structuredClone(summary))
+    await vi.waitFor(() => expect(call).toHaveBeenCalledWith('terminal.usage.limits', { refresh: true }))
+    resolve(structuredClone(summary))
+    await vi.waitFor(() => expect(plain(page.render(80, 20))).toContain('5-hour window'))
     page.dispose()
   })
 
@@ -157,5 +198,40 @@ it('colors a nearly exhausted window red', async () => {
   page.selectTab('limits')
   await vi.waitFor(() => expect(plain(page.render(100, 30))).toContain('10% left'))
   expect(page.render(100, 30).join('\n')).toContain(theme.fg('error', '10% left'))
+  page.dispose()
+})
+
+
+it('refreshes all accounts on entry and r, retaining cached readings on error without a local ledger', async () => {
+  const report = structuredClone(limits)
+  report.accounts.push({ accountId: 'b', label: 'Personal', plan: null, health: 'ok', providers: [] })
+  let fail = false
+  const call = vi.fn(async (method: string) => {
+    if (method === 'terminal.usage.allLimits') {
+      if (fail) throw new Error('Refresh failed')
+      return structuredClone(report)
+    }
+    return method === 'terminal.usage.summary' ? structuredClone(summary) : structuredClone(limits)
+  })
+  const page = new UsagePage({ theme: () => theme, call, changed: vi.fn(), initialTab: 'accounts' })
+  page.activate()
+  await vi.waitFor(() => expect(plain(page.render(100, 40))).toContain('Personal'))
+  expect(call).toHaveBeenCalledWith('terminal.usage.allLimits', { refresh: true })
+  expect(call).not.toHaveBeenCalledWith('terminal.usage.summary', expect.anything())
+  const text = plain(page.render(100, 40))
+  expect(text).toContain('cached · headers')
+  expect(text).toContain('unavailable')
+  expect(text).toContain('ago')
+  expect(text).not.toContain('7d ·')
+  fail = true
+  page.handleInput('r')
+  await vi.waitFor(() => expect(plain(page.render(100, 40))).toContain('Refresh failed'))
+  expect(plain(page.render(100, 40))).toContain('Work')
+  fail = false
+  page.handleInput('\t')
+  expect(page.activeTab()).toBe('analysis')
+  page.handleInput('\x1b[Z')
+  expect(page.activeTab()).toBe('accounts')
+  await vi.waitFor(() => expect(call.mock.calls.filter(([method]) => method === 'terminal.usage.allLimits').length).toBe(3))
   page.dispose()
 })

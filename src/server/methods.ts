@@ -5,6 +5,7 @@ import { ensureSharedDir, nativeConfig } from '../accounts/env'
 import { audit, readAudit, summaryAuthentication } from '../accounts/store'
 import type { Effort } from '../core/effort'
 import { HarnessError, invalid } from '../core/errors'
+import { openLinkTarget } from '../core/links'
 import * as capabilities from '../capabilities/api'
 import { loadRun as loadCapabilitySnapshot } from '../capabilities/runSnapshot'
 import { capabilitySet } from '../capabilities/runSnapshot'
@@ -13,6 +14,7 @@ import type { CallerContext } from '../core/caller'
 import * as plugins from '../plugins/api'
 import { BUILTIN_PLUGIN_REGISTRY } from '../plugins/builtin'
 import * as install from '../plugins/install'
+import * as proposals from '../plugins/proposals'
 import { compile, load, render, type Launch } from '../prompt/compile'
 import { continuationOf } from '../sessions/continuation'
 import * as control from '../sessions/control'
@@ -23,7 +25,7 @@ import { findRun, listRuns, loadRun, pendingDecisions, readEvents, runFamily, sn
 import type { SubagentInput } from '../sessions/subagents'
 import type { SessionRunInput } from '../sessions/sessions'
 import type { TerminalPrepareInput } from '../terminal/terminals'
-import { checklistOf } from '../tools/checklist'
+import { todoOf } from '../tools/todo'
 import { dispatch } from '../tools/dispatch'
 import * as components from '../variant/components'
 import { materialise, type VariantChoice } from '../variant/materialise'
@@ -216,6 +218,11 @@ export function methods(harness: Harness): Record<string, Handler> {
       harness.bus.emit({ type: 'plugins.changed' })
       return { described: [...harness.applicationPlugins] }
     },
+    'plugins.proposals.create': (params: Params) => proposals.create(root(), params.name, params.description, params.files),
+    'plugins.proposals.list': () => proposals.list(root()),
+    'plugins.proposals.preview': (params: Params) => proposals.preview(root(), text(params, 'id')),
+    'plugins.proposals.reject': (params: Params) => proposals.reject(root(), text(params, 'id'), text(params, 'hash')),
+    'plugins.proposals.accept': (params: Params) => proposals.accept(harness, text(params, 'id'), text(params, 'hash')),
     'plugins.list': (params: Params) => plugins.list(harness, pluginScope(params)),
     'plugins.get': async (params: Params) => (await plugins.list(harness, pluginScope(params))).find((plugin) => plugin.id === text(params, 'pluginId')) ?? null,
     'plugins.attach': (params: Params) => plugins.attach(harness, { ...pluginScope(params), id: text(params, 'id'), scope: params.scope ?? null }, true),
@@ -242,6 +249,10 @@ export function methods(harness: Harness): Record<string, Handler> {
       params.tools === undefined ? undefined : Array.isArray(params.tools) ? params.tools.filter((item: unknown): item is string => typeof item === 'string') : []
     ),
 
+    // ---- Links: what a person's click opens, and with which system handler ---------------------------
+    // A person's action, not a model tool: nothing here is in `HARNESS_TOOLS`, so the gate is untouched.
+    'links.open': (params: Params) => openLinkTarget(text(params, 'target'), { base: optional(params, 'base'), opener: harness.linkOpener }),
+
     // ---- Runs --------------------------------------------------------------------------------------
     'runs.load': (params: Params) => snapshot(root(), text(params, 'runId')),
     'runs.family': (params: Params) => runFamily(root(), text(params, 'runId')),
@@ -251,7 +262,9 @@ export function methods(harness: Harness): Record<string, Handler> {
     'runs.since': (params: Params) => runsSince(root(), { session: optional(params.filter ?? {}, 'session'), agent: optional(params.filter ?? {}, 'agent'), account: optional(params.filter ?? {}, 'account') }, optional(params, 'since')),
     'runs.events': (params: Params) => readEvents(root(), text(params, 'runId')),
     'runs.pending': (params: Params) => pendingDecisions(readEvents(root(), text(params, 'runId'))),
-    'runs.checklist': (params: Params) => checklistOf(readEvents(root(), text(params, 'runId'))),
+    'runs.todo': (params: Params) => todoOf(readEvents(root(), text(params, 'runId'))),
+    // Pre-rename name; kept for one release so existing hosts keep working.
+    'runs.checklist': (params: Params) => todoOf(readEvents(root(), text(params, 'runId'))),
     'runs.continuation': (params: Params) => continuationOf(root(), text(params, 'runId'), optional(params, 'sessionDir')),
     'runs.active': () => runs.activeRunIds(),
     'runs.interrupt': async (params: Params) => {

@@ -15,6 +15,8 @@ export interface BuiltinPluginCommand {
   name: string
   description: string
   legacyBare: boolean
+  /** Reached only as the namespace root (`/annotate:`); it has no `/<prefix>:<name>` route and is not listed by name. */
+  rootOnly?: boolean
 }
 
 export interface BuiltinWorldContext {
@@ -40,7 +42,7 @@ export interface BuiltinPluginModule {
   descriptor: PluginDescriptor
   /** Stable terminal command namespace; defaults to the plugin id. */
   commandPrefix?: string
-  /** Command invoked by the namespace root, such as `/annotate:`. */
+  /** Command invoked by the namespace root, such as `/annotate:`. Mark it `rootOnly` to give it no named route. */
   defaultCommand?: string
   /** Stable order for model tools, independent of descriptor display order. */
   toolOrder?: number
@@ -86,6 +88,9 @@ export function createBuiltinPluginRegistry(modules: readonly BuiltinPluginModul
     if (module.defaultCommand && !module.commands?.some(command => command.name === module.defaultCommand)) {
       throw new Error(`Unknown default command for built-in plugin ${id}: ${module.defaultCommand}`)
     }
+    for (const command of module.commands ?? []) {
+      if (command.rootOnly && command.name !== module.defaultCommand) throw new Error(`Root-only command ${prefix}:${command.name} must be the default command of built-in plugin ${id}.`)
+    }
   }
 
   const commands = modules.flatMap(module => (module.commands ?? []).map(command => ({
@@ -94,11 +99,13 @@ export function createBuiltinPluginRegistry(modules: readonly BuiltinPluginModul
     ...command,
     legacyBare: !!module.descriptor.required
   })))
-  const byRoute = new Map(commands.map(command => [`${command.prefix}:${command.name}`, command]))
+  const allRoutes = new Map(commands.map(command => [`${command.prefix}:${command.name}`, command]))
+  const routed = commands.filter(command => !command.rootOnly)
+  const byRoute = new Map(routed.map(command => [`${command.prefix}:${command.name}`, command]))
   const byName = new Map<string, BuiltinPluginCommand[]>()
-  for (const command of commands) byName.set(command.name, [...(byName.get(command.name) ?? []), command])
+  for (const command of routed) byName.set(command.name, [...(byName.get(command.name) ?? []), command])
   const defaults = new Map(modules.flatMap(module => module.defaultCommand
-    ? [[module.commandPrefix ?? module.descriptor.id, byRoute.get(`${module.commandPrefix ?? module.descriptor.id}:${module.defaultCommand}`)!] as const]
+    ? [[module.commandPrefix ?? module.descriptor.id, allRoutes.get(`${module.commandPrefix ?? module.descriptor.id}:${module.defaultCommand}`)!] as const]
     : []))
   const toolModules = modules.map((module, index) => ({ module, index })).filter(({ module }) => module.tools)
     .sort((left, right) => (left.module.toolOrder ?? left.index) - (right.module.toolOrder ?? right.index))

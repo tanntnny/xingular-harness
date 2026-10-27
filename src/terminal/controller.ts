@@ -8,7 +8,32 @@ import { HarnessError } from '../core/errors'
 import { runStatusSchema, type RunEvent, type RunRecord } from '../sessions/contracts'
 import { briefTitle } from '../sessions/subagents'
 import type { ActiveRun, ApprovalDecision, QuestionAnswer, QuestionInput } from '../sessions/registry'
-import { SubagentMonitor, type TerminalSubagentActivity, type TerminalSubagentProfile, type TerminalSubagentRun } from './subagentMonitor'
+import { MAIN_PROFILE, SubagentMonitor, type TerminalSubagentActivity, type TerminalSubagentProfile, type TerminalSubagentRun } from './subagentMonitor'
+
+type MonitorRuntime = Pick<TerminalSubagentRun, 'accountLabel' | 'model' | 'effort'>
+
+/** A saved run to show in the monitor after the conversation is reopened. */
+export interface MonitorEntry {
+  record: RunRecord
+  events: readonly RunEvent[]
+  profile?: TerminalSubagentProfile | null
+  runtime?: MonitorRuntime
+}
+
+function monitorRun(record: RunRecord, relation: 'main' | 'subagent', profile: TerminalSubagentProfile | null, runtime: MonitorRuntime): TerminalSubagentRun {
+  return {
+    id: record.id,
+    parentRunId: record.parentRunId,
+    relation,
+    title: record.title ?? (briefTitle(record.goal) || (relation === 'main' ? 'Main agent' : '')),
+    goal: record.goal,
+    status: runStatusSchema.parse(record.status),
+    startedAt: record.startedAt,
+    endedAt: record.endedAt,
+    profile: relation === 'main' ? MAIN_PROFILE : profile,
+    ...runtime
+  }
+}
 
 export interface PolicyReply {
   allowed: boolean
@@ -23,7 +48,7 @@ export interface ControllerHooks {
   sessionId: string
   nativeSessionId: string | null
   /** Reserves or creates the run for a native turn and starts tracking it. */
-  begin(input: { reservedRunId: string | null; nativeTurnId: string; text: string }): ActiveRun
+  begin(input: { reservedRunId: string | null; nativeTurnId: string; text: string; model?: string | null; effort?: string | null }): ActiveRun
   /** Whether a native tool call may run. */
   policy(run: ActiveRun, tool: string, args: unknown): Promise<PolicyReply>
   /** The workspace root pinned on the run record. */
@@ -36,6 +61,11 @@ export interface ControllerHooks {
   allowToolGlobally(target: string): void
   /** The native conversation identity changed. */
   native(nativeSessionId: string): void
+  /**
+   * The conversation opened with no turn running: show its latest parent run's rows again. `owners`
+   * are the parent run ids recorded on the native branch, oldest first.
+   */
+  hydrate?(owners: string[]): void
   telemetry(event: string): void
   interrupt?(runId: string): Promise<void>
   resolveApproval?(runId: string, requestId: string, decision: ApprovalDecision): void
@@ -91,14 +121,14 @@ export class TerminalController {
     return createHash('sha256').update(`${this.hooks.sessionId}:${this.run?.runId}:${nativeId}`).digest('hex')
   }
 
-  private begin(nativeTurnId: string, text: string): ActiveRun {
+  private begin(nativeTurnId: string, text: string, launch: { model?: string | null; effort?: string | null } = {}): ActiveRun {
     if (this.startupError) throw new Error(this.startupError)
     this.dirty = false
     this.multilineDraft = false
     if (this.run && !this.run.finished) return this.run
     const delivery = this.delivery
     if (delivery && text && delivery.text !== text) throw new Error('The native prompt did not match the reserved delivery. Inspect the terminal before continuing.')
-    const run = this.hooks.begin({ reservedRunId: delivery?.runId ?? null, nativeTurnId, text })
+    const run = this.hooks.begin({ reservedRunId: delivery?.runId ?? null, nativeTurnId, text, ...launch })
     this.run = run
     this.subagentParentRunId = run.runId
     this.subagents.begin(run.runId)
@@ -191,18 +221,23 @@ export class TerminalController {
     runtime: Pick<TerminalSubagentRun, 'accountLabel' | 'model' | 'effort'> = {}
   ): void {
     if (this.disposed || this.activeRun?.runId !== parentRunId || run.relation !== 'subagent') return
-    this.subagents.observe(parentRunId, {
-      id: run.id,
-      parentRunId: run.parentRunId,
-      relation: 'subagent',
-      title: run.title ?? briefTitle(run.goal),
-      goal: run.goal,
-      status: runStatusSchema.parse(run.status),
-      startedAt: run.startedAt,
-      endedAt: run.endedAt,
-      profile,
-      ...runtime
-    }, event)
+    this.subagents.observe(parentRunId, monitorRun(run, 'subagent', profile, runtime), event)
+  }
+
+  /** An event of the tracked parent run itself, shown as the `main` row; it outlives settlement. */
+  observeMain(run: RunRecord, event: RunEvent, runtime: MonitorRuntime = {}): void {
+    if (this.disposed || this.subagentParentRunId !== run.id || run.relation) return
+    this.subagents.observe(run.id, monitorRun(run, 'main', null, runtime), event)
+  }
+
+  /** Shows a saved parent run and its descendants, as they ended, until another run begins. */
+  restoreMonitor(parent: MonitorEntry, children: readonly MonitorEntry[]): void {
+    if (this.disposed || this.activeRun || this.delivery) return
+    this.subagentParentRunId = parent.record.id
+    this.subagents.restore(parent.record.id, [
+      { run: monitorRun(parent.record, 'main', null, parent.runtime ?? {}), events: parent.events },
+      ...children.map((child) => ({ run: monitorRun(child.record, 'subagent', child.profile ?? null, child.runtime ?? {}), events: child.events }))
+    ])
   }
 
   /** Read-only child activity for the latest parent run, retained until another run begins. */
@@ -339,10 +374,15 @@ export class TerminalController {
         this.nativeId = data.nativeSessionId
         this.hooks.native(data.nativeSessionId)
       }
+      const owners = Array.isArray(data.owners) ? data.owners.filter((id: unknown): id is string => typeof id === 'string') : []
+      if (!this.activeRun && !this.delivery && this.hooks.hydrate) this.hooks.hydrate(owners)
       return {}
     }
     if (event === 'begin') {
-      const run = this.begin(String(data.turnId ?? randomUUID()), String(data.text ?? ''))
+      const run = this.begin(String(data.turnId ?? randomUUID()), String(data.text ?? ''), {
+        model: typeof data.model === 'string' && data.model ? data.model : null,
+        effort: typeof data.effort === 'string' && data.effort ? data.effort : null
+      })
       return { runId: run.runId, workspaceRoot: this.hooks.workspaceRoot(run) }
     }
     if (event === 'shutdown') {
@@ -394,7 +434,7 @@ export class TerminalController {
       }
     }
     if (event === 'usage') run.emit('usage.updated', data)
-    else if (event === 'checklist') run.emit('checklist.updated', { items: data.items })
+    else if (event === 'todo' || event === 'checklist') run.emit('todo.updated', { items: data.items })
     else if (event === 'checkpoint') run.emit('checkpoint', data)
     else if (event === 'file') run.emit('file.changed', data)
     else if (event === 'message') run.emit('message.completed', { messageId: data.id ?? randomUUID(), role: data.role ?? 'assistant', text: String(data.text) })

@@ -152,9 +152,9 @@ describe('a native SDK runtime on the actual Harness terminal socket', () => {
 
   it('retains the latest parent’s flat child activity until the next run', async () => {
     const { harness } = await setup()
-    await terminalCall('begin', { text: 'Observe child work' })
+    await terminalCall('begin', { text: 'Observe child work', model: 'test/model-1', effort: 'high' })
     const parentId = harness.runs.activeForSession('offline-sdk')!.runId
-    const { loadRun, saveRun } = await import('../../sessions/runStore')
+    const { loadRun, recordSubagent, saveRun } = await import('../../sessions/runStore')
     const parent = loadRun(harness.env.root, parentId)!
     saveRun(harness.env.root, {
       ...parent, id: 'observed-child', sessionId: 'opaque-child', parentRunId: parentId, relation: 'subagent',
@@ -168,6 +168,8 @@ describe('a native SDK runtime on the actual Harness terminal socket', () => {
       ...parent, id: 'unrelated-child', sessionId: 'other-child', parentRunId: 'other-parent', relation: 'subagent',
       nativeSessionId: null, status: 'queued', endedAt: null, goal: 'Unrelated task'
     })
+    recordSubagent(harness.env.root, parentId, 'observed-child')
+    recordSubagent(harness.env.root, 'observed-child', 'observed-nested')
 
     const child = harness.runs.start('opaque-child', 'observed-child')
     child.emit('tool.started', { toolCallId: 'read-1', name: 'read', summary: 'src/auth.ts', input: '{"token":"hidden"}' })
@@ -177,7 +179,8 @@ describe('a native SDK runtime on the actual Harness terminal socket', () => {
     unrelated.emit('tool.started', { toolCallId: 'write-1', name: 'write', summary: 'outside parent' })
 
     const { children } = await controlCall<{ children: Array<{ id: string; goal: string; activity: string }> }>('terminal.subagents.monitor')
-    expect(children.map(item => item.id)).toEqual(['observed-child', 'observed-nested'])
+    expect(children.map(item => item.id)).toEqual([parentId, 'observed-child', 'observed-nested'])
+    expect(children[0]).toEqual(expect.objectContaining({ relation: 'main', profile: { name: 'main', color: 'main' }, goal: 'Observe child work', model: 'test/model-1', effort: 'high' }))
     expect(children).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: 'observed-child', goal: 'Inspect auth flow', activity: 'read' }),
       expect.objectContaining({ id: 'observed-nested', goal: 'Check token handling', activity: 'grep' })
@@ -198,12 +201,26 @@ describe('a native SDK runtime on the actual Harness terminal socket', () => {
       expect.objectContaining({ id: 'observed-nested', status: 'completed', activity: 'Completed' })
     ]))
     expect(settled.children.map(item => item.id)).not.toContain('unrelated-child')
+    expect(settled.children[0]).toEqual(expect.objectContaining({ id: parentId, relation: 'main', status: 'completed' }))
 
+    const native = loadRun(harness.env.root, parentId).nativeSessionId
     await terminalCall('ready', { nativeSessionId: '/history/replaced-session.jsonl' })
     await expect(controlCall('terminal.subagents.monitor')).resolves.toEqual({ children: [] })
 
+    // Reopening the conversation shows its latest parent run again, from the saved runs.
+    await terminalCall('ready', { nativeSessionId: native, owners: ['missing-owner', parentId] })
+    const reopened = await controlCall<{ children: Array<{ id: string; relation: string; status: string; activity: string; model?: string | null; effort?: string | null }> }>('terminal.subagents.monitor')
+    expect(reopened.children.map(item => item.id)).toEqual([parentId, 'observed-child', 'observed-nested'])
+    expect(reopened.children).toEqual([
+      expect.objectContaining({ id: parentId, relation: 'main', status: 'completed', model: 'test/model-1', effort: 'high' }),
+      expect.objectContaining({ id: 'observed-child', relation: 'subagent', status: 'completed', activity: 'Completed' }),
+      expect.objectContaining({ id: 'observed-nested', relation: 'subagent', status: 'completed', activity: 'Completed' })
+    ])
+    expect(JSON.stringify(reopened.children)).not.toContain('hidden')
+
     await terminalCall('begin', { text: 'Next parent run' })
-    await expect(controlCall('terminal.subagents.monitor')).resolves.toEqual({ children: [] })
+    const next = await controlCall<{ children: Array<{ relation: string; goal: string }> }>('terminal.subagents.monitor')
+    expect(next.children).toEqual([expect.objectContaining({ relation: 'main', goal: 'Next parent run' })])
     await terminalCall('settled', { aborted: true })
   })
 
@@ -246,13 +263,16 @@ describe('a native SDK runtime on the actual Harness terminal socket', () => {
 
     await terminalCall('begin', { text: 'Plan research' })
     const parentRunId = harness.runs.activeForSession('offline-sdk')!.runId
-    await controlCall('terminal.subagents.register', {
+    const registered = await controlCall<{ subagentProfiles: { plan: string } }>('terminal.subagents.register', {
       tools: ['read', 'edit', 'bash', 'spawn_subagent', 'wait_subagents'], plan: true,
       history: { owners: [], receipts: [] }
     })
+    expect(registered.subagentProfiles.plan).toContain('- explorer —')
+    expect(registered.subagentProfiles.plan).toContain('- researcher —')
+    expect(registered.subagentProfiles.plan).not.toContain('- worker —')
     await expect(controlCall<{ allowed: boolean }>('terminal.subagents.planSafe', { input: { agent: 'explorer', brief: 'Trace the login route' } })).resolves.toEqual({ allowed: true })
     const unsafe = await controlCall<{ allowed: boolean; reason: string }>('terminal.subagents.planSafe', { input: { agent: 'worker', brief: 'Change the login route' } })
-    expect(unsafe).toMatchObject({ allowed: false, reason: expect.stringContaining('not eligible') })
+    expect(unsafe).toMatchObject({ allowed: false, reason: expect.stringContaining('non-research tools') })
     expect(harness.runs.activeForSession('offline-sdk')!.runId).toBe(parentRunId)
     await runtime.interrupt()
   })

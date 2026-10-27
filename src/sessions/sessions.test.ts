@@ -653,8 +653,8 @@ describe('session turns on Pi', () => {
     expect(received!.allow).not.toContain(ASK_USER)
     expect(received!.allow).toEqual(expect.arrayContaining(['history_search', 'wiki_search', 'wiki_read', 'skill_load', 'trajectory_read']))
     expect(received!.allow).not.toContain('wiki_write')
-    expect(received!.tools.map((tool) => tool.name)).toEqual(['get_capabilities', 'history_search', 'history_read', 'trajectory_search', 'trajectory_read', 'wiki_search', 'wiki_read', 'wiki_list', 'wiki_write', 'skill_load', 'checklist_write', 'checkpoint_write', 'session_name', 'spawn_subagent', 'wait_subagents', 'web_search', 'web_fetch', 'browser_navigate', 'browser_snapshot', 'browser_read', 'browser_screenshot', 'browser_click', 'browser_type', 'browser_select', 'browser_press', 'browser_scroll', 'browser_wait', 'browser_tabs', 'page_notes_list', 'page_notes_read', 'page_notes_mark_fixed', 'react'])
-    expect(await received!.tools.find((tool) => tool.name === 'skill_load')!.execute({})).toBe('You have no skills.')
+    expect(received!.tools.map((tool) => tool.name)).toEqual(['get_capabilities', 'history_search', 'history_read', 'trajectory_search', 'trajectory_read', 'wiki_search', 'wiki_read', 'wiki_list', 'wiki_write', 'skill_load', 'plugin_propose', 'todo_write', 'checkpoint_write', 'session_name', 'spawn_subagent', 'wait_subagents', 'web_search', 'web_fetch', 'browser_navigate', 'browser_snapshot', 'browser_read', 'browser_screenshot', 'browser_click', 'browser_type', 'browser_select', 'browser_press', 'browser_scroll', 'browser_wait', 'browser_tabs', 'page_notes_list', 'page_notes_read', 'react'])
+    expect(await received!.tools.find((tool) => tool.name === 'skill_load')!.execute({})).toContain('plugin-authoring')
     expect(received!.params.system).toContain('# Xingular Agent context')
   })
 
@@ -720,19 +720,19 @@ describe('session turns on Pi', () => {
     expect(result.messages.at(-1)?.content).not.toContain('Plan mode is on for this request')
   })
 
-  it('records the checklist the model writes, whole, and allows it in plan mode', async () => {
+  it('records the todo the model writes, whole, and allows it in plan mode', async () => {
     let received: Parameters<SessionFactory>[0] | null = null
     const { events, run } = setup(async (input) => {
       received = input
       return fakeSession(() => new Promise((resolve) => setTimeout(resolve, 50)), input.gate)
     })
-    await run('run-checklist', { plan: true })
+    await run('run-todo', { plan: true })
     await tick()
-    expect(await received!.gate.check('checklist_write', { items: [] })).toBeNull()
-    const tool = received!.tools.find((candidate) => candidate.name === 'checklist_write')!
+    expect(await received!.gate.check('todo_write', { items: [] })).toBeNull()
+    const tool = received!.tools.find((candidate) => candidate.name === 'todo_write')!
     expect(await tool.execute({ items: [{ text: 'Read the code', status: 'completed' }, { text: 'Write the fix', status: 'in_progress' }] })).toBe('[x] Read the code\n[~] Write the fix')
     expect(await tool.execute({ items: [{ text: '', status: 'pending' }] })).toContain('Every step needs text')
-    expect(events.filter((event) => event.type === 'checklist.updated').map((event) => event.payload)).toEqual([
+    expect(events.filter((event) => event.type === 'todo.updated').map((event) => event.payload)).toEqual([
       { items: [{ text: 'Read the code', status: 'completed' }, { text: 'Write the fix', status: 'in_progress' }] }
     ])
   })
@@ -760,6 +760,69 @@ describe('session turns on Pi', () => {
     expect([...names.keys()]).toEqual(['named-plan', 'named-next'])
   })
 
+  it('names an unnamed top-level session from its first substantive request and shows its state', async () => {
+    let received: Parameters<SessionFactory>[0] | null = null
+    const names = new Map<string, string>()
+    const { run } = setup(async input => {
+      received = input
+      const id = input.params.runId
+      return {
+        ...fakeSession(async () => undefined, input.gate),
+        get sessionName() { return names.get(id) },
+        setSessionName: (name: string) => { names.set(id, name) }
+      }
+    })
+    await run('auto-name', { text: 'Please fix the login redirect before release' })
+    expect(names.get('auto-name')).toBe('Fix the login redirect before release')
+    expect(received!.params.update?.content).toContain('## Session state')
+    expect(received!.params.update?.content).toContain('Name: unnamed.')
+    expect(received!.params.update?.content).toContain('Todo for this run: The todo list is empty.')
+  })
+
+  it('leaves a greeting and a child run unnamed', async () => {
+    const names = new Map<string, string>()
+    const { run } = setup(async input => {
+      const id = input.params.runId
+      return {
+        ...fakeSession(async () => undefined, input.gate),
+        get sessionName() { return names.get(id) },
+        setSessionName: (name: string) => { names.set(id, name) }
+      }
+    })
+    await run('greeting', { text: 'hello' })
+    await run('child', { text: 'fix the login redirect', run: { id: 'child', sessionId: 'agent-1', relation: 'subagent' } })
+    expect(names.get('greeting')).toBeUndefined()
+    expect(names.get('child')).toBeUndefined()
+  })
+
+  it('does not auto-name when the host refuses session naming', async () => {
+    const names = new Map<string, string>()
+    const { run } = setup(async input => {
+      const id = input.params.runId
+      return {
+        ...fakeSession(async () => undefined, input.gate),
+        get sessionName() { return names.get(id) },
+        setSessionName: (name: string) => { names.set(id, name) }
+      }
+    }, { scope: async () => ({ allowed: false, reason: 'Naming disabled by host' }) })
+    await run('auto-denied', { text: 'fix the login redirect' })
+    expect(names.get('auto-denied')).toBeUndefined()
+  })
+
+  it('honors autoName: false', async () => {
+    const names = new Map<string, string>()
+    const { run } = setup(async input => {
+      const id = input.params.runId
+      return {
+        ...fakeSession(async () => undefined, input.gate),
+        get sessionName() { return names.get(id) },
+        setSessionName: (name: string) => { names.set(id, name) }
+      }
+    })
+    await run('auto-off', { text: 'fix the login redirect', autoName: false })
+    expect(names.get('auto-off')).toBeUndefined()
+  })
+
   it('applies host restrictions to session naming', async () => {
     let received: Parameters<SessionFactory>[0] | undefined
     const { run } = setup(async input => {
@@ -770,15 +833,15 @@ describe('session turns on Pi', () => {
     expect(await received!.gate.check('session_name', { name: 'Inspect browser tools' })).toBe('Naming disabled by host')
   })
 
-  it('gives no checklist tool when the harness tools are off', async () => {
+  it('gives no todo tool when the harness tools are off', async () => {
     let received: Parameters<SessionFactory>[0] | null = null
     const { run } = setup(async (input) => {
       received = input
       return fakeSession(async () => undefined, input.gate)
     })
-    await run('run-no-checklist', { harnessTools: false })
+    await run('run-no-todo', { harnessTools: false })
     await tick()
-    expect(received!.tools.map((tool) => tool.name)).not.toContain('checklist_write')
+    expect(received!.tools.map((tool) => tool.name)).not.toContain('todo_write')
     expect(received!.tools.map((tool) => tool.name)).not.toContain('session_name')
     expect(received!.allow).not.toContain('session_name')
   })
@@ -861,7 +924,7 @@ describe('continuing a run that stopped', () => {
     await tick()
     const firstCapabilities = loadCapabilitySnapshot(harness.env.root, 'first')!
     expect(firstCapabilities.tools).toContain(ASK_USER)
-    await received!.tools.find((tool) => tool.name === 'checklist_write')!.execute({ items: [{ text: 'Read', status: 'completed' }, { text: 'Fix', status: 'in_progress' }] })
+    await received!.tools.find((tool) => tool.name === 'todo_write')!.execute({ items: [{ text: 'Read', status: 'completed' }, { text: 'Fix', status: 'in_progress' }] })
     await harness.runs.interrupt('first')
     await tick(60)
     mkdirSync(sessionDir, { recursive: true })
@@ -871,7 +934,7 @@ describe('continuing a run that stopped', () => {
     expect(continuationOf(root, 'missing').reason).toBe('not_found')
     expect(continuationOf(root, 'first', join(root, 'elsewhere'))).toMatchObject({ resumable: false, reason: 'history_missing' })
     const continuation = continuationOf(root, 'first', sessionDir)
-    expect(continuation).toMatchObject({ resumable: true, reason: null, status: 'interrupted', resume: { sessionFile: realpathSync(join(sessionDir, 'saved.jsonl')), nativeSessionId: 'native-1' }, checklist: [{ text: 'Read', status: 'completed' }, { text: 'Fix', status: 'in_progress' }] })
+    expect(continuation).toMatchObject({ resumable: true, reason: null, status: 'interrupted', resume: { sessionFile: realpathSync(join(sessionDir, 'saved.jsonl')), nativeSessionId: 'native-1' }, todo: [{ text: 'Read', status: 'completed' }, { text: 'Fix', status: 'in_progress' }] })
 
     await expect(run('wrong-account', { continueFrom: 'first', accountId: 'another' })).rejects.toMatchObject({ code: 'continuation_mismatch' })
     await expect(run('wrong-variant', { continueFrom: 'first', variant: { scope: 'other' } })).rejects.toMatchObject({ code: 'continuation_mismatch' })
@@ -1107,7 +1170,7 @@ describe('work slices', () => {
     expect(inputs[1].params.runId).not.toBe('slice-first')
   })
 
-  it('does not call a reply that rewrites its checklist a stall', async () => {
+  it('does not call a reply that rewrites its todo a stall', async () => {
     // Three updates with different items are the progress report PROP-0006 asks for, not a loop.
     const { harness, events, run } = setup(async (input) => fakeSession(async () => {
       const slice = driveGuard(input)
@@ -1118,13 +1181,13 @@ describe('work slices', () => {
         [{ text: 'Land the fix', status: 'completed' }, { text: 'Run the checks', status: 'in_progress' }],
         [{ text: 'Land the fix', status: 'completed' }, { text: 'Run the checks', status: 'completed' }]
       ]) {
-        slice.call({ toolName: 'checklist_write', input: { items } })
+        slice.call({ toolName: 'todo_write', input: { items } })
       }
     }, input.gate))
-    await run('slice-checklist', { workSlice: { continue: false } })
+    await run('slice-todo', { workSlice: { continue: false } })
     await tick(120)
-    expect(loadRun(harness.env.root, 'slice-checklist')).toMatchObject({ status: 'completed' })
-    expect(loadRun(harness.env.root, 'slice-checklist').terminalReason).toBeNull()
+    expect(loadRun(harness.env.root, 'slice-todo')).toMatchObject({ status: 'completed' })
+    expect(loadRun(harness.env.root, 'slice-todo').terminalReason).toBeNull()
     expect(events.some((event) => event.type === 'checkpoint')).toBe(false)
   })
 })

@@ -3,12 +3,13 @@ import type { TerminalCommandHost } from './commands'
 import { DoctorPage } from './pages/doctorPage'
 import { AccountsPage } from './pages/accountsPage'
 import { BrowserPage } from './pages/browserPage'
+import { PluginsPage } from './pages/pluginsPage'
+import { HubPage } from './pages/hubPage'
 import { LogPage, formatRunEventLog } from './pages/logPage'
 import { PermissionsPage } from './pages/permissionsPage'
 import { SettingsPage } from './pages/settingsPage'
 import { TrajectoryPage } from './pages/trajectoryPage'
 import { WorktreesPage } from './pages/worktreesPage'
-import { NotesPage } from './pages/notesPage'
 import { AnnotatePage, type AnnotateStart } from './pages/annotatePage'
 import { SubagentsPage } from './pages/subagentsPage'
 import { AgentsPage } from './pages/agentsPage'
@@ -18,12 +19,12 @@ import { createSettingsModel } from './settingsModel'
 export type CommandPageId = 'doctor' | 'accounts' | 'permissions' | 'plugins' | 'hub' | 'components' | 'settings' | 'trajectory' | 'log' | 'harness' | 'skills' | 'connections' | 'tools' | 'worktree' | 'notes' | 'annotate' | 'subagents' | 'agents' | 'usage'
 
 /** Construct one independent full-screen page for a slash command. */
-export function createCommandPage(host: TerminalCommandHost, id: CommandPageId, options: { runId?: string; url?: string; annotate?: AnnotateStart; usageTab?: 'analysis' | 'limit'; usagePeriod?: 'today' | '7d' | '30d' | 'all'; close?(): void } = {}): TerminalPage {
+export function createCommandPage(host: TerminalCommandHost, id: CommandPageId, options: { runId?: string; url?: string; annotate?: AnnotateStart; usageTab?: 'analysis' | 'limit' | 'accounts'; usagePeriod?: 'today' | '7d' | '30d' | 'all'; close?(): void } = {}): TerminalPage {
   const theme = () => host.ui.theme
   const notify = (message: string, type?: string) => host.ui.notify(message, type === 'error' || type === 'warning' ? type : 'info')
   switch (id) {
     case 'usage':
-      return new UsagePage({ theme, call: host.control, changed: host.changed, initialTab: options.usageTab === 'limit' ? 'limits' : 'analysis', ...(options.usagePeriod ? { initialPeriod: options.usagePeriod } : {}) })
+      return new UsagePage({ theme, call: host.control, changed: host.changed, initialTab: options.usageTab === 'limit' ? 'limits' : options.usageTab === 'accounts' ? 'accounts' : 'analysis', ...(options.usagePeriod ? { initialPeriod: options.usagePeriod } : {}) })
     case 'doctor':
       return new DoctorPage({ theme, call: host.control, confirm: host.ui.confirm.bind(host.ui), select: host.ui.select.bind(host.ui), changed: host.changed,
         selection: () => {
@@ -45,17 +46,25 @@ export function createCommandPage(host: TerminalCommandHost, id: CommandPageId, 
         activeTools: () => host.session().getActiveToolNames(),
         confirm: (title, message) => host.ui.confirm(title, message), notify, changed: host.changed
       })
+    case 'plugins':
+      return new PluginsPage({
+        theme, call: host.control, changed: host.changed,
+        ui: { select: host.ui.select.bind(host.ui), confirm: host.ui.confirm.bind(host.ui), notify, input: host.ui.input.bind(host.ui) }
+      })
+    case 'hub':
+      return new HubPage({
+        theme, call: host.control, changed: host.changed,
+        ui: { select: host.ui.select.bind(host.ui), confirm: host.ui.confirm.bind(host.ui), notify }
+      })
     case 'harness':
     case 'skills':
     case 'connections':
     case 'tools':
-    case 'plugins':
-    case 'hub':
     case 'components':
       return new BrowserPage({
         theme, call: host.control, changed: host.changed,
-        section: id === 'harness' || id === 'hub' ? 'overview' : id === 'components' ? 'library' : id,
-        source: id === 'hub' ? 'discover' : 'installed',
+        section: id === 'harness' ? 'overview' : id === 'components' ? 'library' : id,
+        source: 'installed',
         ui: {
           select: host.ui.select.bind(host.ui), confirm: host.ui.confirm.bind(host.ui), notify: host.ui.notify.bind(host.ui), input: host.ui.input.bind(host.ui),
           secretInput: (title, placeholder) => {
@@ -79,13 +88,9 @@ export function createCommandPage(host: TerminalCommandHost, id: CommandPageId, 
         ui: { select: host.ui.select.bind(host.ui), confirm: host.ui.confirm.bind(host.ui), notify: host.ui.notify.bind(host.ui), input: host.ui.input.bind(host.ui) }
       })
     case 'notes':
-      return new NotesPage({
-        theme, call: host.control, changed: host.changed, ...(options.url !== undefined ? { start: options.url ? { url: options.url } : {} } : {}),
-        ui: { select: host.ui.select.bind(host.ui), confirm: host.ui.confirm.bind(host.ui), notify: host.ui.notify.bind(host.ui), input: host.ui.input.bind(host.ui) }
-      })
     case 'annotate':
       return new AnnotatePage({
-        theme, call: host.control, changed: host.changed, start: options.annotate ?? { kind: 'web' },
+        theme, call: host.control, changed: host.changed, start: options.annotate ?? { kind: 'web' }, initialTab: id === 'notes' ? 'all' : 'annotate',
         ui: { select: host.ui.select.bind(host.ui), confirm: host.ui.confirm.bind(host.ui), notify: host.ui.notify.bind(host.ui), input: host.ui.input.bind(host.ui) }
       })
     case 'settings':

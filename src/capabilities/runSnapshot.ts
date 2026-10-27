@@ -19,10 +19,17 @@ function strings(value: unknown): string[] {
   return Array.isArray(value) ? [...new Set(value.filter((item): item is string => typeof item === 'string' && item.length > 0))] : []
 }
 
+/** Tool names that were renamed; a pinned run keeps the current name so a continuation can use it. */
+const RENAMED_TOOLS: Record<string, string> = { checklist_write: 'todo_write' }
+
+function tools(value: unknown): string[] {
+  return [...new Set(strings(value).map((name) => RENAMED_TOOLS[name] ?? name))]
+}
+
 export function capabilitySet(value: unknown): CapabilitySet {
   if (!value || typeof value !== 'object' || (value as { version?: unknown }).version !== 1) throw invalid('A capability set must use version 1.')
   const record = value as Record<string, unknown>
-  return { version: 1, tools: strings(record.tools), connectors: strings(record.connectors), contributions: strings(record.contributions) }
+  return { version: 1, tools: tools(record.tools), connectors: strings(record.connectors), contributions: strings(record.contributions) }
 }
 
 /** Writes a run's capability set once. A resumed or duplicate launch cannot replace it. */
@@ -31,11 +38,12 @@ export function freezeRun(root: string, runId: string, caller: { agentId?: strin
   const snapshot: RunCapabilitySnapshot = {
     version: 1,
     caller: { agentId: caller.agentId ?? null, projectId: caller.projectId ?? null },
-    tools: strings(set.tools),
+    tools: tools(set.tools),
     connectors: strings(set.connectors),
     contributions: strings(set.contributions)
   }
-  const existing = existsSync(target) ? readJson<RunCapabilitySnapshot>(target) : null
+  const stored = existsSync(target) ? readJson<RunCapabilitySnapshot>(target) : null
+  const existing = stored ? { ...stored, tools: tools(stored.tools) } : null
   if (existing) {
     if (JSON.stringify(existing) !== JSON.stringify(snapshot)) throw new HarnessError('capabilities_frozen', 'This run already has a different frozen capability set.')
     return existing
@@ -52,7 +60,7 @@ export function loadRun(root: string, runId: string): RunCapabilitySnapshot | nu
   return {
     version: 1,
     caller: { agentId: typeof caller.agentId === 'string' ? caller.agentId : null, projectId: typeof caller.projectId === 'string' ? caller.projectId : null },
-    tools: strings(record.tools),
+    tools: tools(record.tools),
     connectors: strings(record.connectors),
     contributions: strings(record.contributions)
   }

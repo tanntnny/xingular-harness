@@ -12,6 +12,8 @@ import { materialise } from '../variant/materialise'
 import * as store from '../variant/store'
 import type { Variant } from '../variant/surface'
 import * as notes from '../wiki/notes'
+import { SESSION_GUIDANCE } from '../tools/sessionName'
+import { TODO_GUIDANCE } from '../tools/todo'
 import { compile, fit, load, render, renderCompactionCheckpoint, REPORTING_GUIDANCE, sessionFile, sessionLaunch, SECTION_ORDER, type ContextUpdate, type HostSection, type Launch } from './compile'
 
 const roots: string[] = []
@@ -55,10 +57,10 @@ test('cuts at a paragraph and points to the rest', () => {
   expect(cut.body).toBe(`${'a'.repeat(40)}\n\n${'b'.repeat(40)}\n\n(more)`)
 })
 
-test('a compaction checkpoint carries the request, active plan instructions, and current checklist within a bound', () => {
+test('a compaction checkpoint carries the request, active plan instructions, and current todo within a bound', () => {
   const checkpoint = renderCompactionCheckpoint({
     goal: 'Finish the migration',
-    checklist: [
+    todo: [
       { text: 'Inspect the current flow', status: 'completed' },
       { text: 'Preserve the open question about retries', status: 'in_progress' },
       { text: 'Verify the fallback path', status: 'pending' }
@@ -73,7 +75,7 @@ test('a compaction checkpoint carries the request, active plan instructions, and
   expect(checkpoint).toContain('[x] Inspect the current flow')
   expect(checkpoint.indexOf('In progress and pending')).toBeLessThan(checkpoint.indexOf('Completed (1)'))
   expect(Array.from(checkpoint).length).toBeLessThanOrEqual(8_100)
-  expect(renderCompactionCheckpoint({ goal: 'A completed request', checklist: [] })).toBeNull()
+  expect(renderCompactionCheckpoint({ goal: 'A completed request', todo: [] })).toBeNull()
 })
 
 test('the variant supplies the instructions, guardrails, memory, subagents, scripts and tool guidance, in order', () => {
@@ -174,7 +176,7 @@ test('state stays out of the system prompt and only delivered changes are resent
   const unchanged = sessionLaunch(env, agent(), hosted(), history, materialised)
   expect(unchanged.system).toBe(first.system)
   expect(unchanged.update).toBeNull()
-  notes.write(env.root, 'projects/xingular-agent/release', '# Release checklist\n')
+  notes.write(env.root, 'projects/xingular-agent/release', '# Release todo\n')
   const changed = sessionLaunch(env, agent(), hosted(), history, materialised)
   expect(changed.system).toBe(first.system)
   expect(changed.update!.content).toContain('projects/xingular-agent/release')
@@ -185,6 +187,22 @@ test('state stays out of the system prompt and only delivered changes are resent
   const next = sessionLaunch(env, agent(), hosted(), history, materialise(env.root, { scope: 'nora' }, { subagents: true }))
   expect(next.system).toContain('Releases ship on Thursdays.')
   expect(next.system).not.toBe(first.system)
+})
+
+test('delivers session state as a context update and never in the stable prompt', () => {
+  const env = setup()
+  const launch = hosted({ tools: ['read', 'session_name', 'todo_write'], sessionState: { name: 'Fix login', todo: [], firstTurn: true } })
+  const first = sessionLaunch(env, agent(), launch, null)
+  expect(first.system).not.toContain('Session state')
+  expect(first.update!.content).toContain('## Session state')
+  expect(first.update!.content).toContain('Name: "Fix login".')
+  expect(first.update!.content).toContain('Todo for this run: The todo list is empty.')
+  const history = join(mkdtempSync(join(tmpdir(), 'harness-state-')), 'chat.jsonl')
+  delivered(history, first.update!)
+  const unchanged = sessionLaunch(env, agent(), launch, history)
+  expect(unchanged.update).toBeNull()
+  const changed = sessionLaunch(env, agent(), hosted({ tools: ['read', 'session_name', 'todo_write'], sessionState: { name: 'Fix signup', todo: [], firstTurn: true } }), history)
+  expect(changed.update!.content).toContain('Fix signup')
 })
 
 test('the snapshot follows the active branch and refreshes after compaction', () => {
@@ -234,16 +252,31 @@ test('describes naming only when available, including for CLI callers', () => {
     expect(disabled.toolGroups.some(group => group.tools.includes('session_name'))).toBe(false)
     const enabled = compile(env, caller, hosted({ tools: ['read', 'session_name'] }))
     expect(enabled.toolGroups).toContainEqual({ group: 'Session', tools: ['session_name'] })
-    expect(render(env, enabled)).toContain('at most six words')
+    const rendered = render(env, enabled)
+    expect(rendered).toContain('at most six words')
+    expect(rendered).toContain('before your first other tool call')
+    expect(rendered).toContain(SESSION_GUIDANCE)
   }
 })
 
-test('asks for a checklist the user can follow when checklist_write is available', () => {
+test('asks for a todo the user can follow when todo_write is available', () => {
   const env = setup()
   const without = compile(env, agent(), hosted({ tools: ['read'] }))
   expect(without.toolGroups.some(group => group.group === 'Progress')).toBe(false)
-  const withChecklist = compile(env, agent(), hosted({ tools: ['read', 'checklist_write'] }))
-  expect(withChecklist.toolGroups).toContainEqual({ group: 'Progress', tools: ['checklist_write'] })
-  expect(render(env, withChecklist)).toContain('The user follows your work from it')
-  expect(render(env, withChecklist)).toContain('Before your final reply, write one final update')
+  const withTodo = compile(env, agent(), hosted({ tools: ['read', 'todo_write'] }))
+  expect(withTodo.toolGroups).toContainEqual({ group: 'Progress', tools: ['todo_write'] })
+  const rendered = render(env, withTodo)
+  expect(rendered).toContain('The person follows your work from it')
+  expect(rendered).toContain('Before your final reply, write one final update')
+  expect(rendered).toContain('before your first other tool call')
+  expect(rendered).toContain(TODO_GUIDANCE)
+})
+
+test('keeps the shared session and todo guidance inside the tools budget', () => {
+  const env = setup()
+  const pack = compile(env, agent(), hosted({ tools: ['read', 'session_name', 'todo_write'] }))
+  const tools = pack.sections.find((entry) => entry.id === 'tools')!
+  expect(tools.cut).toBe(false)
+  expect(tools.body).toContain(SESSION_GUIDANCE)
+  expect(tools.body).toContain(TODO_GUIDANCE)
 })

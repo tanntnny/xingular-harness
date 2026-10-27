@@ -25,6 +25,7 @@ export function listCommands(plugins: readonly Plugin[]): ListedCommand[] {
   }
 
   for (const command of BUILTIN_PLUGIN_REGISTRY.commands()) {
+    if (command.rootOnly) continue
     const name = `${command.prefix}:${command.name}`
     out.set(name, { name, description: command.description, group: 'Plugins', source: 'plugin', owner: command.pluginId })
   }

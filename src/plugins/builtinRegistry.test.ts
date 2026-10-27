@@ -85,8 +85,11 @@ describe('built-in plugin registry', () => {
 
   it('keeps first-class Harness pages out of plugin command metadata', () => {
     const routes = BUILTIN_PLUGIN_REGISTRY.commands().map(command => `${command.prefix}:${command.name}`)
-    expect(routes).toEqual(['annotate:notes', 'annotate:annotate', 'usage:analysis', 'usage:limit'])
-    expect(BUILTIN_PLUGIN_REGISTRY.defaultCommand('annotate')?.name).toBe('annotate')
+    expect(routes).toEqual(['annotate:open', 'annotate:notes', 'annotate:submit', 'annotate:clear', 'usage:analysis', 'usage:limit', 'usage:accounts'])
+    expect(BUILTIN_PLUGIN_REGISTRY.defaultCommand('annotate')?.name).toBe('open')
+    // The root command has no route of its own, so /annotate: is not listed twice.
+    expect(BUILTIN_PLUGIN_REGISTRY.command('annotate', 'open')).toBeUndefined()
+    expect(BUILTIN_PLUGIN_REGISTRY.commandsNamed('open')).toEqual([])
     expect(BUILTIN_PLUGIN_REGISTRY.defaultCommand('usage')?.name).toBe('analysis')
     expect(BUILTIN_PLUGIN_REGISTRY.descriptors().map(plugin => plugin.id)).toEqual(expect.arrayContaining([
       'web', 'browser', 'annotations', 'history', 'subagents', 'connected-apps', 'hub', 'refinement', 'doctor', 'worktrees'

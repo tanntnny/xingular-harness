@@ -24,6 +24,8 @@ export const runEventTypeSchema = z.enum([
   'extension.notice',
   'reaction.added',
   'agent.message',
+  'todo.updated',
+  // Written before the rename; accepted so stored run logs keep their lists. Never written now.
   'checklist.updated',
   'checkpoint',
   'heartbeat',
@@ -180,12 +182,12 @@ const extensionNoticePayload = z.object({
   text: z.string(),
   extension: z.string().optional()
 })
-/** One line of the run's checklist. The list has no ids: every update replaces all of it. */
-export const checklistItemSchema = z.object({ text: z.string().min(1).max(500), status: z.enum(['pending', 'in_progress', 'completed']) }).strict()
-export type ChecklistItem = z.infer<typeof checklistItemSchema>
-export const MAX_CHECKLIST_ITEMS = 50
-/** The whole checklist as the model last wrote it; the latest event replaces every earlier one. */
-const checklistPayload = z.object({ items: z.array(checklistItemSchema).max(MAX_CHECKLIST_ITEMS) }).strict()
+/** One line of the run's todo list. The list has no ids: every update replaces all of it. */
+export const todoItemSchema = z.object({ text: z.string().min(1).max(500), status: z.enum(['pending', 'in_progress', 'completed']) }).strict()
+export type TodoItem = z.infer<typeof todoItemSchema>
+export const MAX_TODO_ITEMS = 50
+/** The whole todo list as the model last wrote it; the latest event replaces every earlier one. */
+const todoPayload = z.object({ items: z.array(todoItemSchema).max(MAX_TODO_ITEMS) }).strict()
 export const MAX_CHECKPOINT_SUMMARY = 1_200
 export const MAX_CHECKPOINT_DONE = 20
 export const MAX_CHECKPOINT_EVIDENCE = 5
@@ -337,7 +339,8 @@ export const runEventPayloadSchemas = {
   'extension.notice': extensionNoticePayload,
   'reaction.added': reactionAddedPayload,
   'agent.message': agentMessagePayload,
-  'checklist.updated': checklistPayload,
+  'todo.updated': todoPayload,
+  'checklist.updated': todoPayload,
   checkpoint: checkpointPayload,
   heartbeat: heartbeatPayload,
   'artifact.added': artifactPayload,
@@ -413,6 +416,10 @@ export interface RunRecord {
   profile?: string | null
   /** The short name a parent gave a subagent, shown in the roster (PROP-0030). */
   title?: string | null
+  /** The model the run used, as `provider/id`: the launch selection, then the one the session opened. */
+  model?: string | null
+  /** The reasoning effort the run used. */
+  effort?: string | null
 }
 
 const text = z.string().nullish().transform((value) => value ?? null)
@@ -445,7 +452,9 @@ export const runRecordSchema = z.object({
   variantScope: text.optional(),
   variantVersion: text.optional(),
   profile: text.optional(),
-  title: text.optional()
+  title: text.optional(),
+  model: text.optional(),
+  effort: text.optional()
 }) satisfies z.ZodType<RunRecord, unknown>
 
 /** Records written before PROP-0009 name the variant `harnessScope` and `harnessVersion`. */

@@ -1,6 +1,10 @@
+import { randomUUID } from 'node:crypto'
 import { accessSync, constants, existsSync, readFileSync, statSync } from 'node:fs'
-import { delimiter, isAbsolute, join } from 'node:path'
+import { basename, delimiter, isAbsolute, join } from 'node:path'
 import type { Harness } from '../harness'
+import { hostShell, shellLabel } from '../core/shell'
+import { createWorkspaceBashOperations, workspaceSandboxBackend } from '../core/workspaceSandbox'
+import { resolveWorkspaceRoot } from '../core/workspace'
 import { defaultAssets, type TerminalAssets } from '../terminal/terminals'
 import { loadPi, PINNED_PI_VERSION } from '../pi/runtime'
 import { list as listPlugins } from '../plugins/api'
@@ -17,12 +21,20 @@ import type { CheckResult, DoctorCheck, DoctorContext } from './types'
 const pass = (evidence: string): CheckResult => ({ status: 'pass', evidence })
 const fail = (evidence: string, remedy: string): CheckResult => ({ status: 'fail', evidence, remedy })
 
-function executable(name: string): boolean {
+function resolvedExecutable(name: string): string | null {
   const paths = isAbsolute(name) ? [name] : (process.env.PATH ?? '').split(delimiter).filter(Boolean).map(dir => join(dir, name))
-  return paths.some(path => {
-    try { accessSync(path, constants.X_OK); return statSync(path).isFile() } catch { return false }
-  })
+  for (const path of paths) {
+    try { accessSync(path, constants.X_OK); if (statSync(path).isFile()) return path } catch { /* try the next PATH entry */ }
+  }
+  return null
 }
+
+function executable(name: string): boolean {
+  return resolvedExecutable(name) !== null
+}
+
+/** One command written by the harness, not the model: it prints a fixed word and touches nothing. */
+const BASH_PROBE_COMMAND = `printf '%s\\n' harness-doctor`
 
 export async function builtinChecks(harness: Harness, context: DoctorContext, secrets: SecretStore, assets: TerminalAssets = defaultAssets()): Promise<DoctorCheck[]> {
   const check = (id: string, category: string, title: string, local: DoctorCheck['local']): DoctorCheck => ({ id, category, title, local })
@@ -86,10 +98,54 @@ export async function builtinChecks(harness: Harness, context: DoctorContext, se
       }), tools: ['read', 'grep', 'find', 'ls', 'write', 'edit']
     },
     {
-      ...check('native.bash', 'tools', 'Native shell tool', async () => process.platform === 'win32'
-        ? { status: 'unverified', evidence: 'Windows shell resolution is delegated to Pi; no shell was launched.' }
-        : executable('bash') ? pass('Bash is executable on the inherited PATH. No shell command was run.') : fail('Bash was not found on the inherited PATH.', 'Verify the shell executable used by Pi.')),
-      tools: ['bash']
+      ...check('native.bash', 'tools', 'Native shell tool', async () => {
+        if (process.platform === 'win32') {
+          const shell = hostShell()
+          if (!shell) return fail('Neither Git Bash nor PowerShell was found.', 'Install Git for Windows, or restore Windows PowerShell.')
+          return { status: 'warning', evidence: `Commands run in ${shellLabel(shell)} at ${shell.executable}. Windows has no workspace write-boundary sandbox, so each command asks for approval unless Full Permission is on, and plan mode cannot run commands. No shell command was run.`, remedy: 'Approve each command when asked, or turn on Full Permission for this session.' }
+        }
+        const shell = resolvedExecutable('bash')
+        if (!shell) return fail('Bash was not found on the inherited PATH.', 'Verify the shell executable used by Pi.')
+        // Bash runs inside the platform's write-boundary sandbox; without that backend every call
+        // fails before the command starts, so presence of bash alone is not readiness.
+        const backend = workspaceSandboxBackend(process.platform)
+        return backend
+          ? pass(`Bash is executable at ${shell}, and the ${basename(backend)} workspace write-boundary sandbox it runs inside is present. No shell command was run.`)
+          : fail(`Bash is executable at ${shell}, but the workspace write-boundary sandbox this platform needs is missing, so every Bash call fails before it runs.`, process.platform === 'linux' ? 'Install bubblewrap (bwrap) so Bash can run inside the workspace boundary.' : 'Restore the platform sandbox executable so Bash can run inside the workspace boundary.')
+      }),
+      tools: ['bash'],
+      live: {
+        notice: 'Run one fixed command written by the harness (printf) in the working folder, inside the same workspace write-boundary sandbox as a normal Bash call. No model input, no network request, no file written; only the exit status is reported.',
+        run: async probe => {
+          if (process.platform === 'win32') return { status: 'unverified', evidence: 'On Windows every command needs a person to approve it, so the diagnostic does not run one.' }
+          const refusal = await harness.sessions.diagnosticGate(probe.run, context.caller).check('bash', { command: BASH_PROBE_COMMAND })
+          if (refusal) return { status: 'blocked', evidence: `The tool policy refused the diagnostic command: ${refusal}`, remedy: 'Review what the policy allows Bash to do in this session.' }
+          const toolCallId = randomUUID()
+          probe.run.emit('tool.started', { toolCallId, name: 'bash', summary: 'Synthetic diagnostic command' })
+          let output = ''
+          try {
+            // The same root, boundary, hard-link scan and sandbox a real Bash call takes. A
+            // diagnostic never widens that boundary, so Full Permission cannot change this result.
+            const workspaceRoot = resolveWorkspaceRoot(context.cwd)
+            const { exitCode } = await createWorkspaceBashOperations(workspaceRoot).exec(BASH_PROBE_COMMAND, workspaceRoot, {
+              onData: chunk => { if (output.length < 400) output += chunk.toString('utf8') },
+              signal: probe.signal,
+              timeout: 20
+            })
+            probe.run.emit('tool.completed', { toolCallId, name: 'bash', ok: exitCode === 0 })
+            return exitCode === 0 && output.includes('harness-doctor')
+              ? pass('A real command ran in the working folder through the workspace sandbox and returned exit status 0 with the expected output.')
+              : fail(`The shell returned exit status ${exitCode ?? 'unknown'} for the diagnostic command.`, 'Review the shell executable, the workspace write-boundary sandbox and the working folder permissions.')
+          } catch (error) {
+            probe.run.emit('tool.completed', { toolCallId, name: 'bash', ok: false })
+            return {
+              status: 'blocked',
+              evidence: `The command could not start in this working folder, so the shell itself was not exercised: ${error instanceof Error ? error.message : String(error)}`,
+              remedy: 'Resolve what stops Bash before it runs (a hard-link alias in the workspace, a missing sandbox backend, or a redirected workspace root), or choose another working folder.'
+            }
+          }
+        }
+      }
     },
     check('runtime.storage', 'runtime', 'State and data storage', async () => {
       accessSync(harness.stateDir, constants.R_OK | constants.W_OK)

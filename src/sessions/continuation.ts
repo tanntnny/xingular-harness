@@ -4,10 +4,10 @@
 import { loadRun as loadCapabilities } from '../capabilities/runSnapshot'
 import type { CapabilitySet } from '../capabilities/types'
 import type { HostSection } from '../prompt/compile'
-import { checklistOf, describeChecklist } from '../tools/checklist'
+import { todoOf, describeTodo } from '../tools/todo'
 import { checkpointOf, describeCheckpoint } from '../tools/checkpoint'
 import type { Checkpoint } from './contracts'
-import { isActiveStatus, type ChecklistItem } from './contracts'
+import { isActiveStatus, type TodoItem } from './contracts'
 import { findHistory } from './history'
 import { findRun, pendingDecisions, readEvents, recordedSubagents, type PendingDecision } from './runStore'
 
@@ -33,7 +33,9 @@ export interface Continuation {
   capabilities: CapabilitySet | null
   stoppedAt: string | null
   terminalReason: string | null
-  checklist: ChecklistItem[]
+  todo: TodoItem[]
+  /** @deprecated Use `todo`; kept for one release so hosts can migrate. */
+  checklist: TodoItem[]
   /** The last work-slice handoff, when the run wrote one (PROP-0041). */
   checkpoint: Checkpoint | null
   pending: PendingDecision[]
@@ -50,7 +52,7 @@ export interface Continuation {
 export function continuationOf(root: string, runId: string, sessionDir?: string | null): Continuation {
   const record = findRun(root, runId)
   if (!record) {
-    return { runId, sessionId: '', status: 'missing', resumable: false, reason: 'not_found', resume: null, accountId: null, variant: null, capabilities: null, stoppedAt: null, terminalReason: null, checklist: [], checkpoint: null, pending: [], lastTool: null, unfinishedSubagents: [] }
+    return { runId, sessionId: '', status: 'missing', resumable: false, reason: 'not_found', resume: null, accountId: null, variant: null, capabilities: null, stoppedAt: null, terminalReason: null, todo: [], checklist: [], checkpoint: null, pending: [], lastTool: null, unfinishedSubagents: [] }
   }
   const events = readEvents(root, runId)
   const started = events.filter((event) => event.type === 'tool.started').at(-1)
@@ -79,7 +81,8 @@ export function continuationOf(root: string, runId: string, sessionDir?: string 
     capabilities,
     stoppedAt: record.endedAt,
     terminalReason: record.terminalReason,
-    checklist: checklistOf(events),
+    checklist: todoOf(events),
+    todo: todoOf(events),
     checkpoint: checkpointOf(events),
     pending: pendingDecisions(events),
     lastTool,
@@ -105,9 +108,9 @@ export function continuationBody(continuation: Continuation): string {
   ]
   if (continuation.lastTool) lines.push(continuation.lastTool.finished ? `Its last tool call, ${continuation.lastTool.name}, finished.` : `Its last tool call, ${continuation.lastTool.name}, did not finish; its effect is unknown.`)
   if (continuation.checkpoint) lines.push('', 'The handoff it wrote when it stopped:', describeCheckpoint(continuation.checkpoint))
-  if (continuation.checklist.length) lines.push('', 'Its checklist when it stopped:', describeChecklist(continuation.checklist))
+  if (continuation.todo.length) lines.push('', 'Its todo list when it stopped:', describeTodo(continuation.todo))
   if (continuation.pending.length) lines.push('', 'Unanswered when it stopped (ask again if still needed; never assume an answer):', ...continuation.pending.map(describePending))
-  if (continuation.unfinishedSubagents.length) lines.push('', `Subagents that did not finish: ${continuation.unfinishedSubagents.join(', ')}. Start them again if their work is still needed.`)
+  if (continuation.unfinishedSubagents.length) lines.push('', `Subagents that did not finish: ${continuation.unfinishedSubagents.join(', ')}. Their conversations are saved: continue one with spawn_subagent { "continue": "<run ID>" } if its work is still needed, instead of starting it again from scratch.`)
   return lines.join('\n')
 }
 

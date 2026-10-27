@@ -1,11 +1,11 @@
 // What a person sees of everything that shapes a session. A plugin is a bundle with a title and
-// a description; its contributions are the instructions, skills, commands, tools, connections,
-// code and themes it brings.
+// a description; its contributions are the instructions, skills, commands, subagent profiles,
+// tools, connections, code and themes it brings.
 import type { Attachment } from './attachments'
 import type { Registered } from './plugins'
 import type { ProjectCode } from './trust'
 
-export const CONTRIBUTION_KINDS = ['instruction', 'skill', 'command', 'tool', 'connection', 'code', 'theme'] as const
+export const CONTRIBUTION_KINDS = ['instruction', 'skill', 'command', 'agent', 'tool', 'connection', 'code', 'theme'] as const
 export type ContributionKind = (typeof CONTRIBUTION_KINDS)[number]
 
 /**

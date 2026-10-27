@@ -32,13 +32,13 @@ const compacted = (timestamp = 10) => ({
 })
 
 describe('active-run compaction checkpoints', () => {
-  it('reinjects the latest validated checklist on each request after a new compaction', async () => {
+  it('reinjects the latest validated todo on each request after a new compaction', async () => {
     const { dispatch } = setup()
     await dispatch('before_agent_start', { messageType: 'user', prompt: 'Finish the migration' })
     expect(await dispatch('context', { messages: [{ role: 'user', content: 'Finish the migration', timestamp: 1 }] })).toBeUndefined()
 
     await dispatch('tool_result', {
-      toolName: 'checklist_write', isError: false,
+      toolName: 'todo_write', isError: false,
       input: { items: [{ text: 'Inspect the current flow', status: 'completed' }, { text: 'Preserve retry behavior', status: 'in_progress' }] }
     })
     const first = await dispatch('context', compacted())
@@ -50,7 +50,7 @@ describe('active-run compaction checkpoints', () => {
     expect(nextRequest.messages.at(-1).content).toContain('[~] Preserve retry behavior')
 
     await dispatch('tool_result', {
-      toolName: 'checklist_write', isError: false,
+      toolName: 'todo_write', isError: false,
       input: { items: [{ text: 'Verify new retry handling', status: 'pending' }] }
     })
     const updated = await dispatch('context', compacted())
@@ -65,20 +65,20 @@ describe('active-run compaction checkpoints', () => {
     expect(result.messages.at(-1).content).toContain('Plan mode is research-only.')
   })
 
-  it('includes a checklist written after an earlier compaction', async () => {
+  it('includes a todo written after an earlier compaction', async () => {
     const { dispatch } = setup()
     await dispatch('before_agent_start', { messageType: 'user', prompt: 'Finish the migration' })
     expect(await dispatch('context', compacted())).toBeUndefined()
 
     await dispatch('tool_result', {
-      toolName: 'checklist_write', isError: false,
+      toolName: 'todo_write', isError: false,
       input: { items: [{ text: 'Continue from the open retry question', status: 'in_progress' }] }
     })
     expect((await dispatch('context', compacted())).messages.at(-1).content).toContain('Continue from the open retry question')
   })
 
-  it('seeds a continued run from its persisted checklist', async () => {
-    const { dispatch } = setup({ initialChecklist: [{ text: 'Resume the pending migration step', status: 'in_progress' }] })
+  it('seeds a continued run from its persisted todo', async () => {
+    const { dispatch } = setup({ initialTodo: [{ text: 'Resume the pending migration step', status: 'in_progress' }] })
     await dispatch('before_agent_start', { messageType: 'user', prompt: 'Continue the migration' })
     expect((await dispatch('context', compacted())).messages.at(-1).content).toContain('Resume the pending migration step')
   })
@@ -87,7 +87,7 @@ describe('active-run compaction checkpoints', () => {
     const { dispatch } = setup()
     await dispatch('before_agent_start', { messageType: 'user', prompt: 'Inspect this task' })
     await dispatch('tool_result', {
-      toolName: 'checklist_write', isError: false,
+      toolName: 'todo_write', isError: false,
       input: { items: [{ text: 'Keep this in the old branch', status: 'in_progress' }] }
     })
     expect((await dispatch('context', compacted())).messages.at(-1).content).toContain('Keep this in the old branch')
@@ -96,16 +96,16 @@ describe('active-run compaction checkpoints', () => {
     expect(await dispatch('context', compacted())).toBeUndefined()
   })
 
-  it('does not expose malformed checklist updates or retain state after the run settles', async () => {
+  it('does not expose malformed todo updates or retain state after the run settles', async () => {
     const { dispatch } = setup()
     await dispatch('before_agent_start', { messageType: 'user', prompt: 'Inspect the code' })
     await dispatch('context', { messages: [] })
     await dispatch('tool_result', {
-      toolName: 'checklist_write', isError: false,
+      toolName: 'todo_write', isError: false,
       input: { items: [{ text: 'Valid current step', status: 'in_progress' }] }
     })
     await dispatch('tool_result', {
-      toolName: 'checklist_write', isError: false,
+      toolName: 'todo_write', isError: false,
       input: { items: [{ text: '', status: 'pending' }] }
     })
     expect((await dispatch('context', compacted())).messages.at(-1).content).toContain('Valid current step')

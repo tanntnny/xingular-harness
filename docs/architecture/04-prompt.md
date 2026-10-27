@@ -16,7 +16,7 @@ keeps provider caching effective across turns.
 | `render(env, pack)` → `string` | One string for a session that takes a single prompt. |
 | `sessionLaunch(env, caller, launch, historyFile, variant)` → `{ system, update, pack }` | SDK sessions: stable prefix plus an update with only the dynamic sections that changed since the last delivered snapshot. |
 | `deliveredSnapshot(sessionFile)` | Reads the last delivered snapshot on the active history branch; a compaction forces a fresh one. |
-| `renderCompactionCheckpoint` | Compiles a bounded current-request, checklist and plan-state message for post-compaction model requests. |
+| `renderCompactionCheckpoint` | Compiles a bounded current-request, todo list and plan-state message for post-compaction model requests. |
 | `saveForSession`, `copyToRun` | Terminal sessions keep the pack they started with and copy it to each run. |
 | `record`, `load`, `packPath` | The pack each run was given, at `runs/<id>/context.json`. |
 | `toolGroups`, `fit`, `clip` | The tool manifest by group; cutting text to a budget at a paragraph boundary. |
@@ -28,8 +28,7 @@ A `ContextPack` holds `sections: Section[]` (each with `id`, `title`,
 
 ## Section order
 
-`SECTION_ORDER`: `harnessIdentity` 5, `system` 25, `guardrails` 40, `memory` 45, `references`
-50, `subagents` 64, `scripts` 66, `wiki` 80, `tools` 90, `reporting` 95. Application sections
+`SECTION_ORDER`: `harnessIdentity` 5, `system` 25, `sessionState` 30, `guardrails` 40, `memory` 45, `references` 50, `subagents` 64, `scripts` 66, `wiki` 80, `tools` 90, `reporting` 95. Application sections
 sit among them by their `order`; plan mode uses `plan` at 25. Ties keep insertion order.
 When a run may spawn, the dynamic `subagents` section lists every profile it can start (built-in,
 global, project and variant c5 names) and replaces the variant's own list (PROP-0029). Normal-mode
@@ -37,9 +36,18 @@ guidance in that section explains when delegation is worth its overhead, profile
 self-contained briefs, independent parallel work, and parent ownership of integration. Plan mode
 lists only effective profiles eligible for read-only research and requires a named profile; keeping
 this section dynamic leaves the stable system prompt unchanged across modes. The `tools`
-section has a Progress paragraph whenever `checklist_write` is available: it asks for a checklist
-early and kept current, then requests a final update before the reply. Only fully completed work is
+section has a Progress paragraph whenever `todo_write` is available: it asks for `todo_write` before
+the first other tool call when work has several steps, asks for the list to stay current, then
+requests a final update before the reply. Only fully completed work is
 marked completed; unfinished or blocked steps remain accurate (PROP-0006).
+
+`session-state` is a built-in dynamic section at order 30 when a top-level run supplies it. It
+names the current session or says “unnamed”, shows this run's todo (empty at the start) and a
+previous run's list as context, and says whether this is the first turn. It describes only tools
+in the frozen set: the name line appears only with `session_name`, and the todo line only with
+`todo_write`. It never enters the stable prefix. Structured sessions deliver it through
+`sessionLaunch` and the changed-section rule; the terminal appends the same text as a request-time
+custom message.
 
 The fixed `harness-identity` section says `You are an AI agent running in <productName>.` and uses
 `env.productName` (default `Xingular Agent`). `Launch.standard: { cwd, project?: { name } | null }` requests shared role and working-folder
@@ -81,7 +89,7 @@ compile ──► pack ──► stable sections ──► system prompt (+ "Con
   `references` is always resent when present, because it belongs to the current request.
 - After successful compaction, the foundation checkpoint extension detects the compacted context and
   uses `renderCompactionCheckpoint` to append one hidden, ephemeral context message to each model
-  request while the active run continues, when a checklist or applicable plan instructions exist.
+  request while the active run continues, when a todo list or applicable plan instructions exist.
   It contains only the current request and available state. It is not written to native history, and its state is
   discarded when the run settles or the branch changes.
 - The session appends the update as a hidden custom message and saves its snapshot in the
@@ -113,8 +121,8 @@ file SecretStore with a host Keychain. See [parity](../parity.md).
   instructions. SDK sessions use `sessionLaunch`; terminal sessions use `compile` + `render`.
 - **INV-PRM-2** The system prompt holds only stable text: identity, role, the variant's sections, the
   harness's reporting guidance, tool guidance and the tool manifest. Changing state never enters it.
-- **INV-PRM-3** `references`, `wiki`, and every section the application marks `dynamic` are
-  delivered as context updates in native history, never in the system prompt.
+- **INV-PRM-3** `session-state`, `references`, `wiki`, and every section the application marks
+  `dynamic` are delivered as context updates in native history, never in the system prompt.
 - **INV-PRM-4** An update carries only changed dynamic sections, so an unchanged turn appends
   nothing. A compaction on the active branch forces the full snapshot again.
 - **INV-PRM-5** The pack only describes tools the caller can call (the frozen capability set).
@@ -149,12 +157,15 @@ what this page states is binding. Adopting parts of that draft is an architectur
 ## Source map
 
 `src/prompt/compile.ts`, `src/sessions/sessions.ts` (calls `sessionLaunch`),
-`src/terminal/terminals.ts` (calls `compile` + `render`), `src/variant/materialise.ts` (variant
-sections), `src/sessions/planMode.ts` (`plan` section).
+`src/terminal/terminals.ts` (calls `compile` + `render`), `src/sessions/sessionState.ts`
+(the native name reader and state shape), `src/variant/materialise.ts` (variant sections),
+`src/sessions/planMode.ts` (`plan` section).
 
 ## Session naming guidance (PROP-0010)
 
-The Session tool group describes `session_name` when available: name meaningful work early
-with an imperative sentence of at most six words, and revise when the objective changes.
+The Session tool group describes `session_name` when available: call it once before the first
+other tool call when a request needs tools or changes state, with an imperative sentence of at
+most six words, and revise only when the objective changes.
 This is fixed foundation guidance. The current name stays in native session metadata and
-the terminal snapshot; it is never interpolated into the stable system prompt.
+the terminal snapshot; it may appear in the request-scoped `session-state` update, but it is never
+interpolated into the stable system prompt.

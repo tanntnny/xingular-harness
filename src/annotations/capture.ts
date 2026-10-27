@@ -5,8 +5,11 @@
 // - `bridge`: app windows that loaded the page bridge script (a macOS web view has no DevTools port).
 // The person selects text, clicks an element, or inspects with the popover; the front end pulls
 // what they did through the page helper.
+import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { join } from 'node:path'
+import { existsSync, readdirSync, statSync } from 'node:fs'
+import { createServer } from 'node:net'
+import { basename, join } from 'node:path'
 
 import type { Browser, Page } from 'playwright-core'
 
@@ -37,7 +40,7 @@ export interface CaptureWindow {
 /** One comment the person submitted in the inspector's popover. */
 export interface InspectResult extends CaptureEnvelope {
   body: string
-  action: 'save' | 'queue' | 'send'
+  action: 'save' | 'send'
 }
 
 export interface InspectState {
@@ -56,12 +59,88 @@ export interface InspectState {
 /** Opens a DevTools connection to a running app; tests replace it. */
 export type AppConnector = (endpoint: string) => Promise<Browser>
 
+/** A desktop app on this computer that answers on a DevTools port. */
+export interface DevToolsApp {
+  endpoint: string
+  port: number
+  /** The title of its first window, or what the app calls itself. */
+  name: string
+  /** What the DevTools port reports, such as `Chrome/126.0` or `Electron/31.0`. */
+  browser: string
+  electron: boolean
+  windows: number
+}
+
+/** Reads a JSON answer from a loopback DevTools port, or null when nothing answers in time; tests replace it. */
+export type DevToolsFetch = (url: string, timeoutMs: number) => Promise<unknown>
+
+/** Starts an app the person named; tests replace it. */
+export type AppSpawner = (command: string, args: string[]) => void
+
 export interface AnnotationCaptureOptions {
   stateDir: string
   launch?: Launcher
   network?: NetworkPolicy
   connect?: AppConnector
   bridge?: NotesBridge
+  fetchJson?: DevToolsFetch
+  spawnApp?: AppSpawner
+  /** A free loopback port for an app started here; tests replace it. */
+  freePort?: () => Promise<number>
+  /** How long a started app has to open its DevTools port, in milliseconds. */
+  launchTimeoutMs?: number
+}
+
+/** Where apps started with `--remote-debugging-port` or `--inspect` usually listen. */
+export const DEVTOOLS_PORTS = [9222, 9223, 9224, 9225, 9226, 9227, 9228, 9229, 9230] as const
+const PROBE_MS = 400
+
+const fetchJson: DevToolsFetch = async (url, timeoutMs) => {
+  try {
+    const response = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) })
+    return response.ok ? await response.json() : null
+  } catch {
+    return null
+  }
+}
+
+const spawnApp: AppSpawner = (command, args) => {
+  // The app is the person's: it keeps running after the terminal ends.
+  const child = spawn(command, args, { detached: true, stdio: 'ignore' })
+  child.on('error', () => undefined)
+  child.unref()
+}
+
+const freePort = (): Promise<number> => new Promise((resolve, reject) => {
+  const server = createServer()
+  server.unref()
+  server.on('error', reject)
+  server.listen(0, '127.0.0.1', () => {
+    const address = server.address()
+    server.close(() => typeof address === 'object' && address ? resolve(address.port) : reject(new Error('No free port.')))
+  })
+})
+
+/** The program inside a macOS `.app` bundle, or the path itself. */
+export function appExecutable(path: string): string {
+  if (!/\.app\/?$/.test(path)) return path
+  const folder = join(path, 'Contents', 'MacOS')
+  if (!existsSync(folder)) throw new Error(`${path} has no Contents/MacOS folder.`)
+  const programs = readdirSync(folder).filter((name) => !name.startsWith('.') && statSync(join(folder, name)).isFile())
+  const named = basename(path.replace(/\/$/, ''), '.app')
+  const program = programs.find((name) => name === named) ?? programs[0]
+  if (!program) throw new Error(`${path} has no program in Contents/MacOS.`)
+  return join(folder, program)
+}
+
+function describeApp(port: number, version: Record<string, unknown>, list: unknown): DevToolsApp {
+  const agent = typeof version['User-Agent'] === 'string' ? version['User-Agent'] : ''
+  const electron = /Electron\/([\d.]+)/.exec(agent)
+  const browser = electron ? `Electron/${electron[1]}` : typeof version.Browser === 'string' ? version.Browser : 'DevTools'
+  const pages = Array.isArray(list) ? list.filter((entry): entry is Record<string, unknown> => !!entry && typeof entry === 'object' && (entry as Record<string, unknown>).type === 'page' && !/^(?:devtools|chrome-extension):/.test(String((entry as Record<string, unknown>).url ?? ''))) : []
+  const title = pages.map((page) => typeof page.title === 'string' ? page.title.trim() : '').find(Boolean)
+  const product = /\)\s+([A-Za-z][\w .-]*?)\/[\d.]+\s+(?:Chrome|Electron)\//.exec(agent)?.[1]
+  return { endpoint: `http://127.0.0.1:${port}`, port, name: (title || product || browser).slice(0, 120), browser, electron: !!electron, windows: pages.length }
 }
 
 const IDLE_MS = 60 * 60_000
@@ -192,6 +271,8 @@ class WebTarget implements Target {
 
 export class AnnotationCapture {
   private readonly targets = new Map<string, Target>()
+  /** Ports the person attached to or started an app on, checked again by `discover`. */
+  private readonly knownPorts = new Set<number>()
   private readonly inspecting = new Map<string, { captureId: string; documentId: string | null }>()
   private readonly network: NetworkPolicy
   readonly bridge: NotesBridge
@@ -235,10 +316,11 @@ export class AnnotationCapture {
     return pageReply<T>((await this.target(key).evaluate(operation)).reply)
   }
 
-  /** What `key` captures in now. */
-  describe(key: string): { kind: CaptureTargetSpec['kind']; app: NoteApp | null; inspecting: boolean } {
+  /** What `key` captures in now, with the script to load while it captures a bridge. */
+  describe(key: string): { kind: CaptureTargetSpec['kind']; app: NoteApp | null; inspecting: boolean; bridge?: { snippet: string } } {
     const target = this.targets.get(key)
-    return { kind: target?.kind ?? 'web', app: target?.app ?? null, inspecting: this.inspecting.has(key) }
+    const bridge = target?.kind === 'bridge' ? this.bridge.current() : null
+    return { kind: target?.kind ?? 'web', app: target?.app ?? null, inspecting: this.inspecting.has(key), ...(bridge ? { bridge: { snippet: bridge.snippet } } : {}) }
   }
 
   /** Captures in an app's windows instead of the browser: over its DevTools port, or the page bridge. */
@@ -253,6 +335,8 @@ export class AnnotationCapture {
       const name = spec.name?.trim() || `App at ${new URL(spec.endpoint).host}`
       const target = new CdpTarget(browser, { kind: 'cdp', name: name.slice(0, 200) })
       await this.replace(key, target)
+      const port = Number(new URL(spec.endpoint).port)
+      if (port) this.knownPorts.add(port)
       return { kind: 'cdp', app: target.app, windows: await target.windows() }
     }
     if (spec.kind === 'bridge') {
@@ -266,6 +350,44 @@ export class AnnotationCapture {
 
   windows(key: string): Promise<CaptureWindow[]> {
     return this.target(key).windows()
+  }
+
+  /** Apps on this computer that answer on a DevTools port: the usual ports and any used before. */
+  async discover(ports: readonly number[] = []): Promise<DevToolsApp[]> {
+    const probe = this.options.fetchJson ?? fetchJson
+    const wanted = [...new Set([...DEVTOOLS_PORTS, ...this.knownPorts, ...ports])].filter((port) => Number.isInteger(port) && port > 0 && port < 65536)
+    const found = await Promise.all(wanted.map(async (port) => {
+      const version = await probe(`http://127.0.0.1:${port}/json/version`, PROBE_MS)
+      if (!version || typeof version !== 'object') return null
+      // A Node `--inspect` port answers too, but has no windows to annotate.
+      if (typeof (version as Record<string, unknown>).webSocketDebuggerUrl !== 'string' && typeof (version as Record<string, unknown>).Browser !== 'string') return null
+      if (/^node(?:\.js)?\//i.test(String((version as Record<string, unknown>).Browser ?? ''))) return null
+      return describeApp(port, version as Record<string, unknown>, await probe(`http://127.0.0.1:${port}/json/list`, PROBE_MS))
+    }))
+    return found.filter((app): app is DevToolsApp => app !== null).sort((left, right) => left.port - right.port)
+  }
+
+  /**
+   * Starts the app the person named with a DevTools port and attaches to its windows. A macOS `.app`
+   * bundle starts its own program. The app keeps running when the capture ends.
+   */
+  async launchApp(key: string, path: string, args: readonly string[] = []): Promise<{ kind: 'cdp'; app: NoteApp | null; windows: CaptureWindow[]; endpoint: string }> {
+    const program = appExecutable(path.trim())
+    if (!program) throw new Error('Give the path of the app to start.')
+    const port = await (this.options.freePort ?? freePort)()
+    ;(this.options.spawnApp ?? spawnApp)(program, [...args, `--remote-debugging-port=${port}`])
+    this.knownPorts.add(port)
+    const endpoint = `http://127.0.0.1:${port}`
+    const probe = this.options.fetchJson ?? fetchJson
+    const deadline = Date.now() + (this.options.launchTimeoutMs ?? 20_000)
+    for (;;) {
+      if (await probe(`${endpoint}/json/version`, PROBE_MS)) break
+      if (Date.now() > deadline) throw new Error(`${basename(path)} did not open a DevTools port. Only Chromium and Electron apps can be inspected this way.`)
+      await new Promise((resolve) => setTimeout(resolve, 250))
+    }
+    const name = basename(path.trim().replace(/\/$/, '')).replace(/\.app$/, '')
+    const attached = await this.attach(key, { kind: 'cdp', endpoint, name })
+    return { kind: 'cdp', app: attached.app, windows: attached.windows, endpoint }
   }
 
   /** Switches to another window or tab of the target; an inspector there starts again. */

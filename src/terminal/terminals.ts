@@ -29,11 +29,13 @@ import { prependSearchPath, searchPath } from '../core/path'
 import type { BrokerSession, ConnectedApps } from '../mcp/service'
 import type { CallerContext } from '../core/caller'
 import { dispatch } from '../tools/dispatch'
+import { defaultSkillPaths } from '../tools/defaultSkills'
 import { materialise, type Materialised, type VariantChoice } from '../variant/materialise'
 import * as componentLibrary from '../variant/components'
 import * as variantStore from '../variant/store'
 import type { VariantTrust } from '../variant/trust'
 import type { AttachParams, PluginScope } from '../plugins/api'
+import type { Proposal } from '../plugins/proposals'
 import type { Loading, Plugins } from '../plugins/plugins'
 import type { Plugin } from '../plugins/types'
 import type { Hub } from '../hub/hub'
@@ -42,10 +44,10 @@ import type { RunRecord } from '../sessions/contracts'
 import { isActiveStatus } from '../sessions/contracts'
 import type { ToolPolicy } from '../sessions/policy'
 import type { ActiveRun, RunRegistry } from '../sessions/registry'
-import { findRun, loadRun, saveRun, updateRun } from '../sessions/runStore'
+import { findRun, loadRun, readEvents, recordedSubagents, saveRun, updateRun } from '../sessions/runStore'
 import { combineWorkspaceScope, inspectRunWorkspaceWrite } from '../sessions/workspaceBoundary'
 import type { ToolSpec } from '../tools/types'
-import { CHECKLIST_WRITE } from '../tools/checklist'
+import { TODO_WRITE } from '../tools/todo'
 import { DEFAULT_TOOL_NAMES } from '../tools/definitions'
 import { harnessTools } from '../tools/harnessTools'
 import { HARNESS_PLUGINS } from '../plugins/builtin'
@@ -53,6 +55,7 @@ import * as attachments from '../plugins/attachments'
 import { FIRST_PARTY_PLUGINS } from '../plugins/firstParty'
 import { createProfile, listProfiles, profileDirs, profileSection, removeProfile, resolveProfile, type ProfileScope } from '../agents/profiles'
 import type { TerminalSubagentProfile } from './subagentMonitor'
+import type { MonitorEntry } from './controller'
 import { SESSION_NAME } from '../tools/sessionName'
 import { contributionId } from '../plugins/identity'
 import type { World } from '../world/world'
@@ -70,7 +73,7 @@ import { TerminalController, type PolicyReply } from './controller'
 import { terminalCommandFiles } from './launch'
 import { SessionSocket, socketPath } from './socket'
 import { harnessLogInfo, readHarnessLogChunk } from './logs'
-import { listTerminalTrajectoryRuns, readTerminalTrajectory } from './trajectory'
+import { listTerminalTrajectoryRuns, readTerminalTrajectory, latestTerminalTodo } from './trajectory'
 import { BrowserControl } from './browserControl'
 
 /** Identity of the exact resource decision that this terminal was prepared with. */
@@ -78,7 +81,7 @@ function resourceIdentity(loading: Loading | null): string {
   if (!loading) return 'null'
   return JSON.stringify({
     extensions: loading.extensionPaths, builtins: loading.builtins, skills: loading.skillPaths,
-    prompts: loading.promptPaths, themes: loading.themePaths, detached: loading.detached,
+    prompts: loading.promptPaths, themes: loading.themePaths, profiles: loading.profilePaths, detached: loading.detached,
     project: loading.projectCode, packages: loading.packageCode
   })
 }
@@ -204,6 +207,12 @@ export interface PluginControl {
   configure(params: PluginScope & { pluginId: string; settings: Record<string, unknown> }): Promise<Plugin[]>
   install?(params: PluginScope & { source: string }): Promise<Plugin[]>
   remove?(params: PluginScope & { pluginId: string }): Promise<Plugin[]>
+  proposals?: {
+    list(): Proposal[] | Promise<Proposal[]>
+    preview(id: string): Proposal | Promise<Proposal>
+    accept(id: string, hash: string): Proposal | Promise<Proposal>
+    reject(id: string, hash: string): Proposal | Promise<Proposal>
+  }
 }
 
 const READ_ONLY_TOOLS = new Set(['read', 'grep', 'find', 'ls'])
@@ -213,6 +222,8 @@ export class Terminals {
   private readonly diagnosticOwners = new Map<string, string>()
   /** The variant each live session runs, for loading its skills. */
   private readonly variantDirs = new Map<string, string>()
+  /** The subagent profile files each live session's packages bring, chosen when it started. */
+  private readonly packageProfiles = new Map<string, string[]>()
   /** The world tools each session was given, so a call can only reach one of them. */
   private readonly worldNames = new Map<string, Set<string>>()
   private readonly worldReadOnly = new Set<string>()
@@ -237,11 +248,55 @@ export class Terminals {
     return this.childProfiles.get(record.id) ?? null
   }
 
+  /** Account, model and effort for a monitor row, from the run record. */
+  private monitorRuntime(live: Live, record: RunRecord): MonitorEntry['runtime'] {
+    let accountLabel: string | null = record.accountId === live.account.id ? live.account.label : null
+    if (accountLabel === null && record.accountId) {
+      try { accountLabel = this.options.accounts.find(record.accountId).label } catch {}
+    }
+    return { accountLabel, model: record.model ?? null, effort: (record.effort as Effort | null | undefined) ?? null }
+  }
+
+  /**
+   * Shows the reopened conversation's latest parent run again: the last owner on its native branch
+   * that ran in this folder, with every descendant flat, as each ended.
+   */
+  private hydrateMonitor(live: Live, owners: readonly string[]): void {
+    const { root } = this.options.env
+    const native = live.controller.nativeSessionId
+    if (!native) return
+    for (const id of [...owners].reverse()) {
+      const record = findRun(root, id)
+      if (!record || record.relation || record.nativeSessionId !== native || record.workingDirectory !== live.input.cwd) continue
+      const children: RunRecord[] = []
+      const seen = new Set([record.id])
+      const visit = (parentId: string): void => {
+        for (const childId of recordedSubagents(root, parentId)) {
+          if (seen.has(childId)) continue
+          seen.add(childId)
+          const child = findRun(root, childId)
+          if (child?.relation !== 'subagent') continue
+          children.push(child)
+          visit(child.id)
+        }
+      }
+      visit(record.id)
+      const entry = (run: RunRecord, profile: TerminalSubagentProfile | null = null): MonitorEntry => ({ record: run, events: readEvents(root, run.id), profile, runtime: this.monitorRuntime(live, run) })
+      live.controller.restoreMonitor(entry(record), children.map(child => entry(child, this.subagentProfile(child))))
+      return
+    }
+  }
+
   constructor(private readonly options: TerminalsOptions) {
     this.assets = options.assets ?? defaultAssets()
     options.runs.listen(event => {
-      this.sessions.get(event.sessionId)?.controller.observe(event)
+      const session = this.sessions.get(event.sessionId)
+      session?.controller.observe(event)
       const record = findRun(options.env.root, event.runId)
+      if (record && !record.relation && session) {
+        session.controller.observeMain(record, event, this.monitorRuntime(session, record))
+        return
+      }
       if (record?.relation !== 'subagent') return
       let parentId = record.parentRunId
       const seen = new Set<string>()
@@ -255,8 +310,8 @@ export class Terminals {
           const settings = options.subagents?.runtimeSettings(record.id)
           owner.controller.observeSubagent(parent.id, record, event, this.subagentProfile(record), {
             accountLabel: owner.account.label,
-            model: settings?.model ?? null,
-            effort: settings?.effort ?? null
+            model: settings?.model ?? record.model ?? null,
+            effort: settings?.effort ?? (record.effort as Effort | null | undefined) ?? null
           })
           break
         }
@@ -430,6 +485,16 @@ export class Terminals {
       return params[name] as string
     }
     switch (call) {
+      case 'plugins.proposals.list':
+        if (!api.proposals) throw invalid('Proposal review is unavailable in this host.')
+        return api.proposals.list()
+      case 'plugins.proposals.preview':
+        if (!api.proposals) throw invalid('Proposal review is unavailable in this host.')
+        return api.proposals.preview(text('id'))
+      case 'plugins.proposals.accept':
+      case 'plugins.proposals.reject':
+        if (!api.proposals) throw invalid('Proposal review is unavailable in this host.')
+        return api.proposals[call === 'plugins.proposals.accept' ? 'accept' : 'reject'](text('id'), text('hash'))
       case 'plugins.attach':
       case 'plugins.detach':
         return api.attach({ ...scope, id: text('id'), scope: params.everywhere === true || !projectId ? {} : { projectId } }, call === 'plugins.attach')
@@ -546,7 +611,7 @@ export class Terminals {
       return params.scope
     }
     switch (call.slice('terminal.agents.'.length)) {
-      case 'list': return { ...listProfiles(root, cwd, this.variantDirs.get(live.input.sessionId) ?? null), dirs: profileDirs(root, cwd) }
+      case 'list': return { ...listProfiles(root, cwd, this.variantDirs.get(live.input.sessionId) ?? null, this.packageProfiles.get(live.input.sessionId)), dirs: profileDirs(root, cwd) }
       case 'create': return createProfile(root, cwd, { name: name(), scope: scope(), from: typeof params.from === 'string' && params.from ? params.from : null })
       case 'remove': removeProfile(root, cwd, { name: name(), scope: scope() }); return {}
       default: throw invalid('Unknown profile operation.')
@@ -637,6 +702,9 @@ export class Terminals {
     if (call === 'terminal.usage.limits') {
       return params.refresh === true ? limits.refresh(live.account.id, { force: true }) : limits.read(live.account.id)
     }
+    if (call === 'terminal.usage.allLimits') {
+      return params.refresh === true ? limits.refresh() : limits.read()
+    }
     if (call === 'terminal.usage.headers') {
       if (typeof params.provider !== 'string' || !params.provider) throw invalid('A provider is required.')
       if (typeof params.status !== 'number' || !Number.isFinite(params.status)) throw invalid('A response status is required.')
@@ -685,12 +753,12 @@ export class Terminals {
       case 'read': return pageNotes.read(root, id())
       case 'create': {
         const note = pageNotes.create(root, { source: params.source as pageNotes.NoteSource, target: params.target as pageNotes.NoteTarget, body: params.body as string, tags: params.tags as string[] })
-        return params.share === true ? pageNotes.share(root, note.id, { sessionId }) : note
+        return params.share === true ? needNotes().share(note.id, undefined, sessionId) : note
       }
       case 'update': return pageNotes.update(root, id(), version(), (params.patch ?? {}) as pageNotes.NotePatch)
       case 'delete': pageNotes.remove(root, id(), version()); return {}
       // A terminal shares with, and withdraws from, its own session only.
-      case 'share': return pageNotes.share(root, id(), { sessionId })
+      case 'share': return needNotes().share(id(), undefined, sessionId)
       case 'unshare': return pageNotes.unshare(root, id(), { sessionId })
       case 'open': return needCapture().open(sessionId, typeof params.url === 'string' && params.url ? params.url : null)
       case 'identity': return needCapture().identity(sessionId)
@@ -705,7 +773,7 @@ export class Terminals {
         const note = pageNotes.read(root, id())
         return needCapture().reveal(sessionId, note.source.url, note.target)
       }
-      // ---- The inspector and the queue (PROP-0018); a terminal queues and sends to its own session.
+      // ---- The inspector and sending (PROP-0018, PROP-0042); a terminal shares with and sends to its own session.
       case 'target': return { ...needCapture().describe(sessionId), windows: await needCapture().windows(sessionId).catch(() => []) }
       case 'attach': {
         const kind = params.kind
@@ -723,10 +791,17 @@ export class Terminals {
       case 'inspect': return needCapture().inspect(sessionId)
       case 'stopInspect': await needCapture().stopInspect(sessionId); return {}
       case 'next': return inspectStep(needCapture(), needNotes(), sessionId, sessionId, 'terminal')
-      case 'queue': return needNotes().queue(id(), version(), sessionId)
-      case 'dequeue': return needNotes().dequeue(id(), version())
       case 'confirm': return needNotes().confirm(id(), version())
-      case 'send': return needNotes().send(sessionId, { ids: Array.isArray(params.ids) ? params.ids.filter((entry): entry is string => typeof entry === 'string') : null })
+      case 'confirmAll': return { notes: needNotes().confirmAll(sessionId) }
+      case 'clear': return { notes: needNotes().clear(sessionId) }
+      case 'send': return needNotes().send(sessionId, {
+        ids: Array.isArray(params.ids) ? params.ids.filter((entry): entry is string => typeof entry === 'string') : null,
+        prompt: typeof params.prompt === 'string' ? params.prompt : null
+      })
+      case 'discover': return { apps: await needCapture().discover() }
+      case 'launch':
+        if (typeof params.path !== 'string' || !params.path.trim()) throw invalid('Give the path of the app to start.')
+        return needCapture().launchApp(sessionId, params.path, Array.isArray(params.args) ? params.args.filter((entry): entry is string => typeof entry === 'string') : [])
       default:
         throw new HarnessError('unknown_method', `Unknown call ${call}.`)
     }
@@ -782,7 +857,7 @@ export class Terminals {
   }
 
   /** The run a native turn reports into: the one reserved by `send`, or a new one for what the person typed. */
-  private begin(live: Live, reservedRunId: string | null, text: string): ActiveRun {
+  private begin(live: Live, reservedRunId: string | null, text: string, launch: { model?: string | null; effort?: string | null } = {}): ActiveRun {
     const { root } = this.options.env
     const { sessionId } = live.input
     if (this.options.runs.activeForSession(sessionId)) throw new HarnessError('session_busy', 'A native turn already owns this session.')
@@ -794,6 +869,12 @@ export class Terminals {
       runId = newId()
       saveRun(root, this.runRecord(live, runId, text || null))
       copyToRun(root, live.input.sessionFolder, runId)
+    }
+    if (launch.model || launch.effort) {
+      updateRun(root, runId, (record) => {
+        if (launch.model) record.model = launch.model
+        if (launch.effort) record.effort = launch.effort
+      })
     }
     return this.options.runs.start(sessionId, runId)
   }
@@ -832,7 +913,7 @@ export class Terminals {
       }
     }
     if (inspection.outside) return { allowed: false, requiresApproval: true, rememberable: false, standing: 'switch', reason: inspection.reason, workspaceRoot }
-    if (name === SESSION_NAME || name === CHECKLIST_WRITE || name === SPAWN_SUBAGENT || name === WAIT_SUBAGENTS || READ_ONLY_TOOLS.has(name) || this.worldReadOnly.has(name) || this.options.apps.toolNames.includes(name as never) || ['bash', 'edit', 'write'].includes(name)) {
+    if (name === SESSION_NAME || name === TODO_WRITE || name === SPAWN_SUBAGENT || name === WAIT_SUBAGENTS || READ_ONLY_TOOLS.has(name) || this.worldReadOnly.has(name) || this.options.apps.toolNames.includes(name as never) || ['bash', 'edit', 'write'].includes(name)) {
       return { allowed: true, workspaceRoot }
     }
     return { allowed: false, requiresApproval: true, rememberable: true, reason: 'This native action requires approval.', workspaceRoot }
@@ -901,11 +982,12 @@ export class Terminals {
     }
     if (call === 'terminal.subagents.tools') {
       const variantDir = this.variantDirs.get(live.input.sessionId) ?? null
+      const packaged = this.packageProfiles.get(live.input.sessionId) ?? []
       return {
         tools: subagentTools(service!, '').map(tool => ({ name: tool.name, label: tool.label, description: tool.description, parameters: tool.parameters(Type) })),
         profiles: {
-          normal: profileSection(this.options.env.root, live.input.cwd, variantDir).body,
-          plan: profileSection(this.options.env.root, live.input.cwd, variantDir, true).body
+          normal: profileSection(this.options.env.root, live.input.cwd, variantDir, false, undefined, packaged).body,
+          plan: profileSection(this.options.env.root, live.input.cwd, variantDir, true, undefined, packaged).body
         }
       }
     }
@@ -919,13 +1001,23 @@ export class Terminals {
       if (!Array.isArray(params.tools) || params.tools.some((name: unknown) => typeof name !== 'string')) throw invalid('Native tool names are required.')
       if (params.plan !== undefined && typeof params.plan !== 'boolean') throw invalid('plan must be a boolean.')
       const readOnly = live.input.readOnly === true
-      const readTools = new Set([...READ_ONLY_TOOLS, SESSION_NAME, CHECKLIST_WRITE, SPAWN_SUBAGENT, WAIT_SUBAGENTS, 'ask_user', 'mcp_list_tools', 'mcp_call_tool', 'history_search', 'history_read', 'wiki_search', 'wiki_read', 'wiki_list', 'memory_facts', 'skill_load'])
+      const readTools = new Set([...READ_ONLY_TOOLS, SESSION_NAME, TODO_WRITE, SPAWN_SUBAGENT, WAIT_SUBAGENTS, 'ask_user', 'mcp_list_tools', 'mcp_call_tool', 'history_search', 'history_read', 'wiki_search', 'wiki_read', 'wiki_list', 'memory_facts', 'skill_load'])
       const tools = [...new Set(params.tools as string[])].filter(name =>
         (!readOnly || readTools.has(name)) && (params.plan === true || (name !== 'ask_user' && name !== 'ask_user_question')))
       const caller = { ...live.caller, runId: run.runId }
       const capabilities = this.options.resolveCapabilities ? await this.options.resolveCapabilities(caller, tools, live.input.cwd) : { version: 1 as const, tools, connectors: [], contributions: [] }
+      const variantDir = this.variantDirs.get(live.input.sessionId) ?? null
+      const packaged = this.packageProfiles.get(live.input.sessionId) ?? []
+      const subagentProfiles = {
+        normal: profileSection(this.options.env.root, live.input.cwd, variantDir, false, undefined, packaged).body,
+        plan: profileSection(this.options.env.root, live.input.cwd, variantDir, true, {
+          frozenTools: capabilities.tools,
+          contributions: capabilities.contributions,
+          descriptors: HARNESS_PLUGINS
+        }, packaged).body
+      }
       freezeRun(this.options.env.root, run.runId, caller, capabilities)
-      if (!service || live.input.subagents === null) return { runId: run.runId, connectors: capabilities.connectors }
+      if (!service || live.input.subagents === null) return { runId: run.runId, connectors: capabilities.connectors, subagentProfiles }
       service.register({
         run: { id: run.runId, sessionId: live.input.sessionId, mode: live.input.run?.mode ?? 'code', projectId: live.input.projectId, worktreeId: live.input.run?.worktreeId },
         cwd: live.input.cwd, sessionDir: this.historyDir(live.input), text: '', caller: live.caller,
@@ -935,10 +1027,14 @@ export class Terminals {
         connections: live.input.connections === false ? false : { readOnly }, subagents: live.input.subagents,
         plan: params.plan === true,
         variant: live.variant ? { dir: live.variant.dir, scope: live.variant.scope } : null,
+        packageProfiles: packaged,
         capabilities
       }, live.account.id, capabilities)
-      service.restore(run.runId, params.history ?? { owners: [], receipts: [] })
-      return { runId: run.runId, connectors: capabilities.connectors }
+      const history = params.history ?? { owners: [], receipts: [] }
+      service.restore(run.runId, history)
+      // Children an earlier reply left stopped, reported before the model answers.
+      const notice = await service.delivery(run.runId, history, false)
+      return { runId: run.runId, connectors: capabilities.connectors, subagentProfiles, notice }
     }
     if (call === 'terminal.subagents.verify') { await service!.verify(run.runId, params.history); return {} }
     if (call === 'terminal.subagents.delivery') return service!.delivery(run.runId, params.history, params.settle === true)
@@ -1085,11 +1181,12 @@ export class Terminals {
         writable: Boolean(input.variant && !('dir' in input.variant)), apps, hub: this.options.hub,
         plugins: () => this.options.pluginControl?.list({ cwd: input.cwd, accountId: preparedAccount.id, projectId: input.projectId ?? null }) ?? Promise.resolve([]) })
       if (variant) this.variantDirs.set(sessionId, variant.dir)
+      this.packageProfiles.set(sessionId, loading?.profilePaths ?? [])
       const worldTools = await this.worldToolNames(input, preparedAccount)
       const ownTools = await this.ownToolNames(input, preparedAccount)
-      const launchTools = [...new Set([...(input.launch?.tools ?? []), CHECKLIST_WRITE, SESSION_NAME, ...ownTools, ...(broker ? apps.toolNames : []), ...worldTools])]
+      const launchTools = [...new Set([...(input.launch?.tools ?? []), TODO_WRITE, SESSION_NAME, ...ownTools, ...(broker ? apps.toolNames : []), ...worldTools])]
       // The profiles replace the variant's own subagent list, which they include.
-      const profiles = this.options.subagents && input.subagents !== null ? profileSection(root, input.cwd, variant?.dir ?? null) : null
+      const profiles = this.options.subagents && input.subagents !== null ? profileSection(root, input.cwd, variant?.dir ?? null, false, undefined, loading?.profilePaths ?? []) : null
       const launchSections = profiles ? [...(input.launch?.sections ?? []).filter((section) => section.id !== profiles.id), profiles] : input.launch?.sections
       // A terminal is a person's own session: the same standard sections a host's session has.
       const standard = input.launch?.standard === null ? null : input.launch?.standard ?? { cwd: input.cwd }
@@ -1108,7 +1205,8 @@ export class Terminals {
         controller: new TerminalController({
           sessionId,
           nativeSessionId: input.nativeSessionId ?? null,
-          begin: ({ reservedRunId, text }) => this.begin(live, reservedRunId, text),
+          begin: ({ reservedRunId, text, model, effort }) => this.begin(live, reservedRunId, text, { model, effort }),
+          hydrate: (owners) => this.hydrateMonitor(live, owners),
           policy: (run, tool, args) => this.decide(live, run, tool, args),
           workspaceRoot: run => {
             const record = loadRun(this.options.env.root, run.runId)
@@ -1204,6 +1302,7 @@ export class Terminals {
           }
           if (call.startsWith('terminal.components.')) return this.componentsCall(live, call, params)
           if (call.startsWith('terminal.trajectory.')) return this.trajectoryCall(live, call, params)
+          if (call === 'terminal.todo') return latestTerminalTodo(this.options.env.root, live.input.sessionId, live.controller.nativeSessionId)
           if (call === 'terminal.permissions.get') {
             const policy = this.options.approvals.read()
             return { full: this.options.approvals.isAuto('pi'), globalTools: policy.globalTools.pi ?? [] }
@@ -1239,7 +1338,7 @@ export class Terminals {
         args.push('--no-extensions', '--no-skills', '--no-prompt-templates', '--no-themes')
         // The pi command's own extensions are not loaded: a host's session cannot have them (PROP-0039).
         for (const path of [...(loading?.extensionPaths ?? []), ...(variant?.extensionPaths ?? [])]) args.push('--extension', path)
-        for (const path of [...(variant?.skillPaths ?? []), ...(loading?.skillPaths ?? [])]) args.push('--skill', path)
+        for (const path of [...(variant?.skillPaths ?? []), ...defaultSkillPaths(variant?.dir), ...(loading?.skillPaths ?? [])]) args.push('--skill', path)
         for (const path of loading?.promptPaths ?? []) args.push('--prompt-template', path)
         for (const path of loading?.themePaths ?? []) args.push('--theme', path)
       }
@@ -1264,6 +1363,7 @@ export class Terminals {
       if (token) this.socket.revoke(token)
       this.sessions.delete(sessionId)
       this.variantDirs.delete(sessionId)
+      this.packageProfiles.delete(sessionId)
       this.worldNames.delete(sessionId)
       if (this.worktreeLeases.get(sessionId) === acquiredWorktreeId) this.worktreeLeases.delete(sessionId)
       apps.revokeSession(sessionId)

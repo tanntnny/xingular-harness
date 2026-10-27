@@ -1,3 +1,4 @@
+import { stripTerminalSequences, truncateToWidth, wrapTextWithAnsi } from '@earendil-works/pi-tui'
 import { formatTerminalCommandLabel } from '../commandHelp'
 
 export interface PaletteItem {
@@ -15,6 +16,16 @@ export function paletteCommandColumnWidth(items: readonly PaletteItem[], termina
   const widestName = items.reduce((width, item) => Math.max(width, formatTerminalCommandLabel(item.name, item.aliases).length + 1), 1)
   const commandLimit = Math.max(1, Math.floor((terminalWidth - 8) / 2))
   return Math.min(widestName, commandLimit)
+}
+
+export function paletteTextLines(text: string, width: number): string[] {
+  const columns = Math.max(1, width)
+  const safe = stripTerminalSequences(text).replace(/[\x00-\x09\x0b-\x1f\x7f]/gu, ' ')
+  const lines = safe.split('\n').flatMap(line => line ? wrapTextWithAnsi(line, columns) : [''])
+  if (lines.length <= 3) return lines
+  const result = lines.slice(0, 3)
+  result[2] = `${truncateToWidth(result[2] ?? '', columns - 1, '', false)}…`
+  return result
 }
 
 /** The order a match earns: an exact name or alias, a prefix, part of a name, then only a description. */

@@ -11,17 +11,17 @@ Everything you build here must follow it.
 1. **Read first.** Before changing code, read the spec pages for the modules you touch.
 2. **Within the spec: go ahead.** If the change keeps every contract and invariant, make it. If it
    adds detail without changing a rule, update the page in the same commit.
-3. **Outside the spec: document and implement.** If the change would alter a contract, an
-   invariant (`INV-*`), a layer boundary, an extension point, or the storage layout, write a
-   `docs/architecture/proposals/PROP-NNNN-<slug>.md` from the
-   [template](docs/architecture/proposals/README.md#template), add it to the index, and implement
-   the requested change. Update affected spec pages in the same change.
+3. **Outside the spec: implement and update.** If the change alters a contract, an invariant
+   (`INV-*`), a layer boundary, an extension point, or the storage layout, implement the requested
+   change and update affected spec pages in the same change. Proposals are optional design records;
+   they are not prerequisites or approval gates.
 4. Add an ADR in `docs/decisions/` for a lasting architectural choice.
 5. **Drift.** If code and the spec already disagree, add it to
    [Known drift](docs/architecture/README.md#known-drift) and tell the user. Do not silently
    change either side.
 
-When unsure whether a change alters the architecture, write the proposal.
+When unsure whether a change alters the architecture, read and update the affected spec pages in the
+same change. Use a proposal only when it helps explain the design.
 
 ## One capability surface
 

@@ -41,7 +41,7 @@ export const AGENT_SCOPES = {
 } as const
 
 const TABS = [{ id: 'agents', title: 'Agents' }] as const
-const GROUP: Record<AgentProfile['source'], string> = { builtin: 'Built-in', global: 'Global', project: 'Project', variant: 'From the variant' }
+const GROUP: Record<AgentProfile['source'], string> = { builtin: 'Built-in', global: 'Global', project: 'Project', variant: 'From the variant', plugin: 'From a plugin' }
 
 function clean(value: string): string {
   return stripTerminalSequences(value).replace(/[\x00-\x08\x0b-\x1f\x7f]/g, ' ').replace(/[ \t]+/g, ' ').trim()
@@ -87,7 +87,7 @@ export class AgentsPage implements TerminalPage {
     const overview = this.overview
     if (!overview) return []
     const rows: ListRow<Row>[] = [{ id: 'new', label: 'New profile', group: 'Actions', detail: 'from a template, then opens in your editor', tone: 'accent', data: { kind: 'new' } }]
-    for (const source of ['builtin', 'global', 'project', 'variant'] as const) {
+    for (const source of ['builtin', 'global', 'project', 'variant', 'plugin'] as const) {
       for (const profile of overview.profiles.filter(entry => entry.source === source)) {
         rows.push({
           id: `profile:${profile.name}`, label: profile.name, group: GROUP[source], detail: clean(profile.description), tone: 'muted',
@@ -147,6 +147,8 @@ export class AgentsPage implements TerminalPage {
     }
     const { profile } = row
     const own = profile.source === 'global' || profile.source === 'project' ? profile.source : null
+    // A package's profile comes with the package: it is switched on and off on the plugins page.
+    if (profile.source === 'plugin') return
     const choice = await this.options.ui.select(`${profile.name} · ${GROUP[profile.source]}`, [...(own ? [AGENT_ACTIONS.edit] : []), AGENT_ACTIONS.copy, ...(own ? [AGENT_ACTIONS.remove] : [])])
     if (choice === AGENT_ACTIONS.edit && profile.path) return this.attempt(() => this.open(profile.path!))
     if (choice === AGENT_ACTIONS.copy) return this.attempt(() => this.create(profile.name))

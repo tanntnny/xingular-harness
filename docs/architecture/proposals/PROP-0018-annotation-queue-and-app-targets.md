@@ -1,13 +1,17 @@
 ---
 id: PROP-0018
 title: Inspector-style page notes, a fix queue to the agent, and app windows as capture targets
-status: Implemented
+status: Implemented; queue, three-button popover and page_notes_mark_fixed superseded by PROP-0048
 created: 2026-10-23
-updated: 2026-10-23
+updated: 2026-10-27
 affects: [INV-STO-3, INV-SRV-1, 07-tools-and-gate.md, 10-server-protocol.md, 11-terminal.md, 12-storage.md, 13-world-tools.md, 14-surfaces-and-parity.md]
 ---
 
 # PROP-0018: Inspector, fix queue and app targets for page notes
+
+> The fix queue, its three-button popover and `page_notes_mark_fixed` were replaced by
+> [PROP-0048](PROP-0048-simple-annotate.md): a note is pending or sent, and the popover has Annotate
+> and Annotate & send.
 
 Requested by the owner on 2026-10-23. They chose these four things:
 - the popover's three choices: Save, Queue, Send now

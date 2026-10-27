@@ -3,9 +3,9 @@ import { expect, test } from 'vitest'
 import { listCommands } from '../commands/list'
 import { BUILTIN_PLUGIN_REGISTRY, HARNESS_PLUGINS } from './builtin'
 
-test('the usage plugin declares both namespaced commands and a namespace root', () => {
+test('the usage plugin declares its namespaced commands and a namespace root', () => {
   const routes = BUILTIN_PLUGIN_REGISTRY.commands().filter((command) => command.pluginId === 'usage')
-  expect(routes.map((command) => `${command.prefix}:${command.name}`).sort()).toEqual(['usage:analysis', 'usage:limit'])
+  expect(routes.map((command) => `${command.prefix}:${command.name}`).sort()).toEqual(['usage:accounts', 'usage:analysis', 'usage:limit'])
   const root = BUILTIN_PLUGIN_REGISTRY.defaultCommand('usage')
   expect(root?.name).toBe('analysis')
 })
@@ -16,6 +16,7 @@ test('commands.list publishes the usage routes without running anything', () => 
   expect(names).toContain('usage:')
   expect(names).toContain('usage:analysis')
   expect(names).toContain('usage:limit')
+  expect(names).toContain('usage:accounts')
   const analysis = commands.find((command) => command.name === 'usage:analysis')
   expect(analysis).toMatchObject({ source: 'plugin', owner: 'usage' })
 })

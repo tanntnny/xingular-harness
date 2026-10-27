@@ -208,7 +208,7 @@ export class BrowserPage implements TerminalPage {
     if (row.hub) {
       const entry = row.hub
       const installed = this.snapshot?.hub?.installed.some(receipt => receipt.entry.id === entry.id && receipt.entry.version === entry.version)
-      actions.push({ id: 'preview', label: 'Preview reviewed content', run: async () => {
+      if (entry.delivery.kind !== 'pi-package') actions.push({ id: 'preview', label: 'Preview reviewed content', run: async () => {
         const page = await this.options.call<HubPreviewPage>('terminal.browser.hubPreview', { id: entry.id, version: entry.version })
         this.showContent(page.content + (page.done ? '' : '\n\n[Preview limited to first page.]'))
       } })

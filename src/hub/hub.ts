@@ -263,7 +263,7 @@ export class Hub {
           rmSync(join(root, 'registry', kind, kind === 'skills' ? name : `${name}.md`), { recursive: true, force: true })
         }
         if (entry.delivery.kind === 'registry') attachments.save(root, choicesBefore)
-        if (entry.delivery.kind === 'pi-package') for (const pluginId of receipt.resourceIds) await packages.remove(this.harness, { pluginId })
+        if (entry.delivery.kind === 'pi-package') for (const pluginId of receipt.resourceIds) await packages.removeDirect(this.harness, { pluginId })
         throw error
       }
       this.harness.bus.emit({ type: 'hub.changed' })
@@ -329,7 +329,9 @@ export class Hub {
             moves.push({ source, staged: destination })
           }
         }
-        if (receipt.entry.delivery.kind === 'pi-package') for (const pluginId of receipt.resourceIds) await packages.remove(this.harness, { pluginId })
+        if (receipt.entry.delivery.kind === 'pi-package') for (const pluginId of receipt.resourceIds) {
+          if ((await pluginApi.list(this.harness, {})).some((plugin) => plugin.id === pluginId && plugin.install)) await packages.removeDirect(this.harness, { pluginId })
+        }
         writeJson(join(root, 'hub', 'installed.json'), records.filter((item) => item !== receipt))
         committed = true
         try { rmSync(staged, { recursive: true, force: true }) } catch { /* The receipt is removed; leave the staged copy for disk recovery. */ }

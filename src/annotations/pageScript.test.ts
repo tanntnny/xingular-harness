@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import type { Browser, Page } from 'playwright-core'
 
-import { pageCall, pageReply } from './pageScript'
+import { PAGE_SCRIPT, pageCall, pageReply } from './pageScript'
 import { validateTarget } from './store'
 
 // The helper runs in a real page. Without a local Chrome or Playwright Chromium the test is skipped.
@@ -22,6 +22,14 @@ beforeAll(async () => {
 afterAll(async () => { await browser?.close() })
 
 const run = async <T>(operation: Parameters<typeof pageCall>[0]): Promise<T> => pageReply<T>(await page.evaluate(pageCall(operation)))
+
+describe('the inspector popover', () => {
+  it('offers two buttons, Annotate and Annotate & send', () => {
+    expect(PAGE_SCRIPT).toContain('data-action="save">Annotate</button>')
+    expect(PAGE_SCRIPT).toContain('data-action="send">Annotate &amp; send</button>')
+    expect(PAGE_SCRIPT).not.toContain('data-action="queue"')
+  })
+})
 
 describe('the page helper in a real page', () => {
   it('captures selected text and an element the person clicks, and reveals them again', async (context) => {
@@ -107,8 +115,9 @@ describe('the page helper in a real page', () => {
 
     await page.click('h1')
     await page.keyboard.type('Bigger')
+    // There is no queue any more: every shortcut annotates and sends.
     await page.keyboard.press('Control+Shift+Enter')
-    expect((await run<Next>({ operation: 'next', captureId: 'i1' })).result).toMatchObject({ action: 'queue', body: 'Bigger', target: { kind: 'element', tag: 'h1' } })
+    expect((await run<Next>({ operation: 'next', captureId: 'i1' })).result).toMatchObject({ action: 'send', body: 'Bigger', target: { kind: 'element', tag: 'h1' } })
 
     // A drag over text opens the popover on the selection.
     const box = (await page.locator('#p').boundingBox())!

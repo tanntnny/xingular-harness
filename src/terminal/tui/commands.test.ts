@@ -65,7 +65,7 @@ function setup(extensionCommands: TestExtensionCommand[] = [{
   const host: TerminalCommandHost = {
     session: () => session, runtime: () => runtime as unknown as ReturnType<TerminalCommandHost['runtime']>, ui,
     cwd: () => '/isolated/project', branch: () => 'main', sessionDirectory: () => '/isolated/account/history',
-    refresh: vi.fn(), changed: vi.fn(), showHelp: vi.fn(), shutdown: vi.fn(), setEditorText: vi.fn(), copyText: vi.fn(async () => {}),
+    refresh: vi.fn(), changed: vi.fn(), showHelp: vi.fn(), todo: vi.fn(async () => []), showTodo: vi.fn(), shutdown: vi.fn(), setEditorText: vi.fn(), copyText: vi.fn(async () => {}),
     subagents: () => [],
     plan: vi.fn(),
     btw: vi.fn(async () => {}),
@@ -91,6 +91,18 @@ describe('owned terminal commands', () => {
       expect(await commands.execute(text)).toBe(false)
     }
     expect(ui.notify).not.toHaveBeenCalled()
+  })
+
+  it('shows the current todo, accepts the legacy alias, and explains an empty list', async () => {
+    const { commands, host, ui } = setup()
+    vi.mocked(host.todo).mockResolvedValue([{ text: 'Read the code', status: 'completed' }, { text: 'Fix the bug', status: 'in_progress' }])
+    expect(await commands.execute('/todo')).toBe(true)
+    expect(host.showTodo).toHaveBeenCalledWith([{ text: 'Read the code', status: 'completed' }, { text: 'Fix the bug', status: 'in_progress' }])
+    expect(await commands.execute('/checklist')).toBe(true)
+    expect(host.showTodo).toHaveBeenCalledTimes(2)
+    vi.mocked(host.todo).mockResolvedValue([])
+    expect(await commands.execute('/todo')).toBe(true)
+    expect(ui.notify).toHaveBeenCalledWith(expect.stringContaining('No todo list'), 'info')
   })
 
   it('reloads trusted resources and reports success or the trust failure', async () => {
@@ -183,24 +195,28 @@ describe('owned terminal commands', () => {
   it('keeps built-in command prefixes reserved and reports a colliding extension owner', async () => {
     const handler = vi.fn(async () => {})
     const { commands, ui } = setup([{
-      name: 'annotate', invocationName: 'annotate', description: 'Other annotate',
+      name: 'notes', invocationName: 'notes', description: 'Other notes',
       sourceInfo: { path: '/project/extensions/annotate.ts' }, handler
     }])
     const names = commands.completions().map(item => item.name)
-    expect(names).toContain('annotate:annotate')
+    expect(names).toContain('annotate:notes')
     expect(names).toContain('annotate:')
-    await commands.execute('/annotate:annotate')
+    await commands.execute('/annotate:notes')
     expect(ui.custom).toHaveBeenCalledOnce()
     expect(handler).not.toHaveBeenCalled()
     expect(ui.notify).toHaveBeenCalledWith(expect.stringContaining('/project/extensions/annotate.ts'), 'error')
   })
 
-  it('routes the annotation namespace root, command alias, and notes command', async () => {
+  it('routes the annotation namespace root and notes command, with no duplicate /annotate:annotate', async () => {
     const { commands, host, ui } = setup()
-    for (const route of ['/annotate:', '/annotate:annotate', '/annotate:notes']) await commands.execute(route)
+    for (const route of ['/annotate:', '/annotate: localhost:5173', '/annotate:notes']) await commands.execute(route)
     expect(ui.custom).toHaveBeenCalledTimes(3)
     expect(host.refresh).toHaveBeenCalledTimes(3)
     expect(ui.notify).not.toHaveBeenCalled()
+    expect(commands.completions().map(item => item.name)).not.toContain('annotate:annotate')
+    await commands.execute('/annotate:annotate')
+    expect(ui.custom).toHaveBeenCalledTimes(3)
+    expect(ui.notify).toHaveBeenCalledWith(expect.stringContaining('Unknown plugin command: /annotate:annotate'), 'error')
   })
 
   it('routes first-class Harness pages and keeps their former routes as hidden aliases', async () => {
@@ -265,7 +281,7 @@ describe('owned terminal commands', () => {
   it('populates completion from builtins and loaded resources', () => {
     const { commands } = setup()
     const names = commands.completions().map(item => item.name)
-    expect(names).toEqual(expect.arrayContaining(['model', 'session', 'history', 'accounts', 'review', 'effort', 'thinking', 'doctor', 'worktree', 'trajectory', 'subagents', 'agents', 'mcp', 'log', 'permissions', 'components', 'annotate:', 'annotate:notes', 'annotate:annotate']))
+    expect(names).toEqual(expect.arrayContaining(['model', 'session', 'history', 'accounts', 'review', 'effort', 'thinking', 'doctor', 'worktree', 'trajectory', 'subagents', 'agents', 'mcp', 'log', 'permissions', 'components', 'annotate:', 'annotate:notes', 'annotate:submit', 'annotate:clear']))
     expect(names).not.toContain('resume')
     expect(names).not.toContain('tree')
     expect(names).not.toContain('side')
@@ -273,7 +289,7 @@ describe('owned terminal commands', () => {
     expect(names).not.toContain('skill:diagnose')
     expect(new Set(names).size).toBe(names.length)
     for (const name of ['plugin:doctor', 'plugin:trajectory', 'plugin:subagents', 'plugin:worktree']) expect(names).not.toContain(name)
-    expect(names).toEqual(expect.arrayContaining(['annotate:', 'annotate:notes', 'annotate:annotate', 'deploy:deploy']))
+    expect(names).toEqual(expect.arrayContaining(['annotate:', 'annotate:notes', 'annotate:submit', 'annotate:clear', 'deploy:deploy']))
   })
 
   it('shows help as ordered groups, including loaded extension and prompt commands', async () => {
@@ -291,9 +307,9 @@ describe('owned terminal commands', () => {
     const runCommands = groups.find(group => group.name === 'Run')?.commands ?? []
     expect(runCommands).toContainEqual({ name: 'btw', aliases: ['side'], description: 'Ask a side question without interrupting: /btw <question>' })
     expect(runCommands.map(command => command.name)).not.toContain('side')
-    expect(groups.find(group => group.name === 'Inspect')?.commands.map(command => command.name)).toEqual(['copy', 'export', 'trajectory', 'log'])
+    expect(groups.find(group => group.name === 'Inspect')?.commands.map(command => command.name)).toEqual(['copy', 'export', 'todo', 'trajectory', 'log'])
     expect(groups.find(group => group.name === 'Harness')?.commands.map(command => command.name)).toEqual(expect.arrayContaining(['accounts', 'plugins', 'settings', 'doctor', 'worktree', 'subagents', 'agents', 'mcp']))
-    expect(groups.find(group => group.name === 'Plugins')?.commands.map(command => command.name)).toEqual(expect.arrayContaining(['annotate:', 'annotate:notes', 'annotate:annotate', 'deploy:deploy']))
+    expect(groups.find(group => group.name === 'Plugins')?.commands.map(command => command.name)).toEqual(expect.arrayContaining(['annotate:', 'annotate:notes', 'annotate:submit', 'annotate:clear', 'deploy:deploy']))
     expect(groups.find(group => group.name === 'Prompts')?.commands).toEqual([{ name: 'review', description: 'Review code' }])
     expect(ui.notify).not.toHaveBeenCalled()
   })
@@ -496,7 +512,7 @@ describe('owned terminal commands', () => {
 
   it.each([
     ['/accounts', ['Accounts', 'Pools']], ['/permissions', ['Overview', 'Tools']],
-    ['/plugins', ['Overview', 'Foundation', 'Variant', 'Skills', 'Plugins', 'Connections', 'Tools', 'Library']], ['/hub', ['Overview', 'Foundation', 'Variant', 'Skills', 'Plugins', 'Connections', 'Tools', 'Library']],
+    ['/plugins', ['Plugins', 'Trust', 'Packages', 'Proposals']], ['/hub', ['Catalog', 'Installed']],
     ['/components', ['Overview', 'Foundation', 'Variant', 'Skills', 'Plugins', 'Connections', 'Tools', 'Library']], ['/harness', ['Overview', 'Foundation', 'Variant', 'Skills', 'Plugins', 'Connections', 'Tools', 'Library']], ['/skills', ['Overview', 'Foundation', 'Variant', 'Skills', 'Plugins', 'Connections', 'Tools', 'Library']], ['/mcp', ['Overview', 'Foundation', 'Variant', 'Skills', 'Plugins', 'Connections', 'Tools', 'Library']], ['/connections', ['Overview', 'Foundation', 'Variant', 'Skills', 'Plugins', 'Connections', 'Tools', 'Library']], ['/tools', ['Overview', 'Foundation', 'Variant', 'Skills', 'Plugins', 'Connections', 'Tools', 'Library']], ['/settings', expect.any(Array)],
     ['/trajectory', ['Runs', 'Events']], ['/subagents', ['Subagents']], ['/agents', ['Agents']], ['/worktree', ['Worktrees']], ['/doctor', ['Doctor']], ['/log', ['Diagnostics', 'Run Events']]
   ])('opens %s as its own page with local tabs', async (command, tabs) => {

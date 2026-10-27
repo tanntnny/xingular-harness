@@ -10,7 +10,7 @@ import type { ContributionKind } from './types'
 
 export { packageManifest } from './manifest'
 
-export const FOUND_KINDS: Record<Found['kind'], ContributionKind> = { extension: 'code', hook: 'code', skill: 'skill', prompt: 'command', theme: 'theme', context: 'instruction' }
+export const FOUND_KINDS: Record<Found['kind'], ContributionKind> = { extension: 'code', hook: 'code', skill: 'skill', prompt: 'command', agent: 'agent', theme: 'theme', context: 'instruction' }
 
 /** The id of the plugin a found item is listed under. */
 export function pluginIdOf(item: Found): string {

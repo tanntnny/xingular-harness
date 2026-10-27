@@ -1,5 +1,67 @@
 # Changelog
 
+## Unreleased
+
+- Give top-level sessions a name and a current-state prompt. An unnamed session derives a
+  provisional six-word name from its first substantive request; greetings and short replies stay
+  unnamed, and the model can revise the name. Each top-level run also receives a request-scoped
+  `Session state` update with the current name, this run's empty todo, and the previous run's list
+  as context, in both the terminal and structured sessions. The stable system prompt is unchanged.
+
+- Make annotating simpler. `/annotate:` is one full-screen page with an Annotate tab and an All
+  annotations tab (`/annotate:notes`); the duplicate `/annotate:annotate` is gone. The page takes the
+  page address, a DevTools port or an app to start in its own field, so no dialog hides behind it.
+  The popover has two buttons, Annotate and Annotate & send; every annotation is shared with the
+  session, and a note is either unsent or sent. There is no queue and no "fixed" status, and the
+  agent's `page_notes_mark_fixed` tool is removed. New `/annotate:submit <request>` sends the unsent
+  annotations with your request, and `/annotate:clear` resolves them. Press `a` to list the Electron
+  and Chromium apps running with a DevTools port, type a port, or start an app with one. Running
+  `/annotate:` again returns to the window that is still open, with its URL and the inspector on; the
+  field appears only when no window is open. Sends no
+  longer fail silently: a key pressed while the page is busy gets a notice, and a send held back
+  while the agent was working is retried until the session is free. Any page that opens a dialog as
+  it starts now shows it above itself (PROP-0048, ADR-0044).
+
+- Install agent plugins written for other harnesses as they are. A package's `agents/*.md` files
+  become subagent profiles (a new `agent` contribution, switched like a skill), named by their
+  frontmatter, with other harnesses' tool names translated and nothing able to replace an existing
+  profile. A package with no `package.json` name takes its name and description from `plugin.json`
+  (or `.claude-plugin/` / `.codex-plugin/`). Google's Elephant-Goldfish Model, for example, installs
+  with `xagent plugins install git:https://github.com/google/elephant-goldfish-model@<commit>` and
+  brings its 7 skills and 9 reviewer profiles.
+
+- Keep subagent progress through Esc, failures and restarts. A parent continues a stopped child with
+  `spawn_subagent { continue: <runId> }`, which reopens that child's own conversation with its
+  profile, tools, account and variant, instead of starting it again. The next reply hears about
+  stopped children before it answers. A reopened terminal conversation still adopts children an
+  earlier launch started. The `/subagents` page now shows the main agent as a `main` row (a
+  reserved profile name), and both the page and the rows under the status line come back when a
+  conversation is reopened, until the next run starts. Run records keep their `model` and `effort`
+  (ADR-0043).
+
+- Make the shell, write and edit tools work on Windows right after install. Commands run in Git
+  Bash when it is installed and in PowerShell otherwise; the tool keeps the name `bash`. Windows has
+  no write-boundary sandbox, so each command asks for a one-call approval unless Full Permission is
+  on, and plan-mode Bash is refused there. Write and edit run their atomic helper with Node
+  directly. `/doctor` names the Windows shell instead of reporting it as delegated to Pi (ADR-0042).
+
+- Make `/doctor` check the use of Bash, not only that the executable exists. The local shell check
+  now also reports the platform write-boundary backend (sandbox-exec on macOS, bubblewrap on Linux)
+  whose absence stops every Bash call before it runs. The new live check runs one fixed command the
+  harness wrote (`printf`) in the working folder through the same root, hard-link scan and sandbox a
+  real Bash call takes, after the policy gate, and reports only the exit status. A diagnostic never
+  widens the boundary, so a command that the boundary refuses before the shell starts is reported
+  as blocked with that reason.
+
+## 1.3.0 — todo progress, bounded work, and plugin management
+
+- Make session naming and progress guidance concrete: name a session before the first tool call when work needs tools or changes state, and keep a todo list for multi-step work. Prompt and tool descriptions use the same wording; guidance remains advisory and subagents retain the parent's title.
+- Rename the run checklist to todo: `todo_write`, `todo.updated`, `runs.todo`, the `todo` plugin and a todo block in the terminal. Add `/todo` (alias `/checklist`) to show the current list in the terminal and App without a model request. Existing runs still read `checklist.updated`; pinned `checklist_write` calls continue through `todo_write`; `runs.checklist` and `continuation.checklist` remain deprecated aliases for one release (PROP-0045).
+- Raise work-slice defaults to 320 tool calls and 60 minutes, with no token ceiling unless configured. Make stall detection progress-aware, bound plan research to eligible read-only profiles, and restore the latest plan/todo context after compaction (PROP-0044–0046; ADR-0039).
+- Separate `/plugins` local package management from `/hub` Community catalog discovery. Preserve all-channel Hub receipts and visible cache/refresh state; keep Hub-owned package removal receipt-aware and prevent floating updates (PROP-0047; ADR-0041).
+- Improve terminal skill completion and highlighting while preserving command and argument distinctions.
+- Make Doctor's Bash readiness check verify the required write-boundary sandbox and add a fixed, no-network live probe through the same workspace boundary; report policy blocks accurately without widening permissions.
+
 ## 1.2.0 — workspace safety and terminal capabilities
 
 - Scope model-controlled file writes and Bash to the active project workspace by default; reject the filesystem root as a workspace. Native writes use revalidated atomic replacement; Bash fails closed on incomplete hard-link scans or unavailable sandboxing (macOS also blocks workspace-local hard links). Explicit outside-scope Bash requires approval before one execution, showing the complete escaped command; output never triggers approval or retry.
@@ -12,6 +74,7 @@
 - Add reproducible PTY and session-runtime profiling plus [EXP-0003's baseline report](docs/experiments/EXP-0003-performance-audit/results.md); it measures 1.1.1 on a dirty worktree, not 1.2.0.
 - Update the pinned Pi runtime to 1.4.0, with the terminal adapter's private hooks and HTTP dispatcher chunk rechecked against it.
 - Fix the work-slice stall guard reporting a reply's own checklist updates as repeated work. A call's identity is its name and every argument, hashed, instead of six fixed field names that made every `checklist_write` look alike; the counts and the nudge start fresh in each reply, so a terminal session no longer carries a repeat from one reply into the next. Three identical calls are still named once, and a repeat after that still ends the slice.
+- Raise the work-slice defaults to 320 tool calls and 60 minutes, and drop the token cap by default: calls and the clock are the bound, and a token ceiling is available per run with `workSlice.maxNewTokens` for whoever wants one. A continuation keeps the policy, and eight slices still cap unattended work. See PROP-0044.
 
 ## 1.1.1 — agent profiles and named subagents
 

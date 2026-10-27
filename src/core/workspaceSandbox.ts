@@ -4,9 +4,11 @@ import { randomUUID } from 'node:crypto'
 import { accessSync, constants, existsSync, lstatSync, mkdtempSync, realpathSync, readdirSync, rmSync, statSync, type Dirent } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { spawnSync } from 'node:child_process'
 
 import type { BashOperations } from '@earendil-works/pi-coding-agent'
 
+import { hostShell, shellArguments, type Shell } from './shell'
 import { isWithinWorkspace, verifyWorkspaceRoot } from './workspace'
 
 const MARKER_PREFIX = '__XINGULAR_WORKSPACE_SANDBOX_STARTED_'
@@ -40,7 +42,12 @@ export interface WorkspaceBashOptions {
   workspaceWriteScope?: () => WorkspaceWriteScope | undefined
   /** Exposed for platform-specific tests; production uses the current operating system. */
   platform?: NodeJS.Platform
+  /** Exposed for tests; production uses the machine's shell (`hostShell`). */
+  shell?: () => Shell | null
 }
+
+/** Why a Windows command asks first: Windows has no write-boundary sandbox the harness can use. */
+export const WINDOWS_UNSANDBOXED_REASON = 'Windows has no workspace write-boundary sandbox, so this command would run without one. It will not run until this one-call request is approved.'
 
 export interface WorkspaceSandboxCommand {
   executable: string
@@ -50,6 +57,20 @@ export interface WorkspaceSandboxCommand {
 
 interface ProcessResult {
   exitCode: number | null
+}
+
+const SANDBOX_BACKENDS: Partial<Record<NodeJS.Platform, readonly string[]>> = {
+  darwin: ['/usr/bin/sandbox-exec'],
+  linux: ['/usr/bin/bwrap', '/bin/bwrap']
+}
+
+/**
+ * The operating system's write-boundary sandbox for this platform, or null when it is not
+ * installed. Bash cannot run without it, so readiness diagnostics report it before a command runs.
+ */
+export function workspaceSandboxBackend(platform: NodeJS.Platform = process.platform): string | null {
+  const candidates = SANDBOX_BACKENDS[platform]
+  return candidates ? systemExecutable(candidates) : null
 }
 
 function systemExecutable(candidates: readonly string[]): string | null {
@@ -68,6 +89,20 @@ function shellPath(): string {
   const shell = ['/bin/bash', '/usr/bin/bash'].find((candidate) => existsSync(candidate))
   if (!shell) throw new Error('The workspace write-boundary sandbox requires Bash, but no Bash executable was found.')
   return shell
+}
+
+function requireShell(resolve: () => Shell | null): Shell {
+  const shell = resolve()
+  if (!shell) {
+    throw new Error(process.platform === 'win32'
+      ? 'No shell was found: neither Git Bash nor PowerShell is available. Bash was not run.'
+      : 'No Bash executable was found. Bash was not run.')
+  }
+  return shell
+}
+
+function unconfinedCommand(shell: Shell, command: string): WorkspaceSandboxCommand {
+  return { executable: shell.executable, args: shellArguments(shell, command), marker: '' }
 }
 
 function sbplString(value: string): string {
@@ -123,13 +158,13 @@ export function workspaceSandboxCommand(
   const writeRoots = [...new Set([workspaceRoot, ...additionalWriteRoots].map((root) => realpathSync(root)))].sort((left, right) => left.length - right.length)
 
   if (platform === 'darwin') {
-    const executable = systemExecutable(['/usr/bin/sandbox-exec'])
+    const executable = workspaceSandboxBackend(platform)
     if (!executable) throw new Error('Workspace write-boundary sandbox unavailable: sandbox-exec was not found. Bash was not run.')
     return { executable, args: ['-p', macSandboxProfile(writeRoots), shell, '-c', wrappedCommand], marker }
   }
 
   if (platform === 'linux') {
-    const executable = systemExecutable(['/usr/bin/bwrap', '/bin/bwrap'])
+    const executable = workspaceSandboxBackend(platform)
     if (!executable) throw new Error('Workspace write-boundary sandbox unavailable: install bubblewrap (bwrap). Bash was not run.')
     return {
       executable,
@@ -151,13 +186,13 @@ export function workspaceSandboxCommand(
 
 function readOnlySandboxCommand(platform: NodeJS.Platform, tempRoot: string, cwd: string, shell: string, wrappedCommand: string, marker: string): WorkspaceSandboxCommand {
   if (platform === 'darwin') {
-    const executable = systemExecutable(['/usr/bin/sandbox-exec'])
+    const executable = workspaceSandboxBackend(platform)
     if (!executable) throw new Error('Read-only Bash sandbox unavailable: sandbox-exec was not found. Bash was not run.')
     return { executable, args: ['-p', macReadOnlyProfile(tempRoot), shell, '-c', wrappedCommand], marker }
   }
 
   if (platform === 'linux') {
-    const executable = systemExecutable(['/usr/bin/bwrap', '/bin/bwrap'])
+    const executable = workspaceSandboxBackend(platform)
     if (!executable) throw new Error('Read-only Bash sandbox unavailable: install bubblewrap (bwrap). Bash was not run.')
     return {
       executable,
@@ -180,7 +215,12 @@ function readOnlySandboxCommand(platform: NodeJS.Platform, tempRoot: string, cwd
 }
 
 function killProcess(child: ReturnType<typeof spawn>): void {
-  if (child.pid && process.platform !== 'win32') {
+  if (child.pid && process.platform === 'win32') {
+    // Git Bash and PowerShell start their own children; end the whole tree.
+    spawnSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true })
+    return
+  }
+  if (child.pid) {
     try {
       process.kill(-child.pid, 'SIGKILL')
       return
@@ -323,9 +363,11 @@ export function createWorkspaceBashOperations(
       if (!isWithinWorkspace(root, canonicalCwd)) throw new Error('The Bash working directory is outside the active project workspace.')
 
       const scope = options.workspaceWriteScope?.() ?? bashWriteScope.getStore() ?? 'workspace'
+      const platform = options.platform ?? process.platform
+      const shell = options.shell ?? hostShell
       // Nothing widens a read-only scope: no Full Permission bypass, no outside request.
       if (scope === 'read-only') {
-        const platform = options.platform ?? process.platform
+        if (platform === 'win32') throw new Error('Plan-mode Bash needs a read-only sandbox, which Windows does not have. Bash was not run.')
         const tempRoot = realpathSync(mkdtempSync(join(tmpdir(), 'harness-read-only-bash-')))
         try {
           const spec = workspaceSandboxCommand(platform, root, canonicalCwd, command, [], tempRoot)
@@ -344,12 +386,16 @@ export function createWorkspaceBashOperations(
         bypass = false
       }
       if (bypass) {
-        const result = await runProcess({ executable: shellPath(), args: ['-c', command], marker: '' }, canonicalCwd, execOptions, null)
+        const result = await runProcess(unconfinedCommand(requireShell(shell), command), canonicalCwd, execOptions, null)
         return { exitCode: result.exitCode }
       }
 
-      if (scope === 'outside') {
-        const reason = 'This command requests filesystem writes outside the active project workspace. It will not run until this one-call request is approved.'
+      // Without a sandbox every Windows command is an outside request: a person approves it once.
+      if (scope === 'outside' || platform === 'win32') {
+        const resolved = requireShell(shell)
+        const reason = scope === 'outside'
+          ? 'This command requests filesystem writes outside the active project workspace. It will not run until this one-call request is approved.'
+          : WINDOWS_UNSANDBOXED_REASON
         let approved = false
         try {
           approved = await options.requestWorkspaceWriteScope?.({ command, cwd: canonicalCwd, workspaceRoot: root, reason }) ?? false
@@ -357,13 +403,12 @@ export function createWorkspaceBashOperations(
           approved = false
         }
         if (!approved) throw new Error(`${reason} Bash was not run.`)
-        execOptions.onData(Buffer.from('\n[Outside-workspace writes approved for this command; running once.]\n'))
-        const result = await runProcess({ executable: shellPath(), args: ['-c', command], marker: '' }, canonicalCwd, execOptions, null)
+        if (scope === 'outside') execOptions.onData(Buffer.from('\n[Outside-workspace writes approved for this command; running once.]\n'))
+        const result = await runProcess(unconfinedCommand(resolved, command), canonicalCwd, execOptions, null)
         return { exitCode: result.exitCode }
       }
 
       assertNoExternalHardlinks(root)
-      const platform = options.platform ?? process.platform
       const spec = workspaceSandboxCommand(platform, root, canonicalCwd, command)
       const result = await runProcess(spec, canonicalCwd, execOptions, spec.marker)
       return { exitCode: result.exitCode }

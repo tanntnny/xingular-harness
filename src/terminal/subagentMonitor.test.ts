@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import type { RunEvent } from '../sessions/contracts'
-import { SubagentMonitor, type TerminalSubagentRun } from './subagentMonitor'
+import { MAIN_PROFILE, SubagentMonitor, type TerminalSubagentRun } from './subagentMonitor'
 
 function run(id: string, parentRunId: string, startedAt: string, extra: Partial<TerminalSubagentRun> = {}): TerminalSubagentRun {
   return {
@@ -32,20 +32,22 @@ describe('SubagentMonitor', () => {
     expect(output).not.toContain('PRIVATE_ARGUMENTS')
   })
 
-  it('keeps the parent title when the child names its own session, and counts the checklist', () => {
+  it('keeps the parent title when the child names its own session, and counts the todo', () => {
     const monitor = new SubagentMonitor()
     monitor.begin('parent')
     const child = run('child', 'parent', '2026-10-23T00:00:00.000Z', { title: 'Map the auth flow', profile: { name: 'worker', color: 'green' } })
     monitor.observe('parent', child, event('tool.started', 1, { toolCallId: 'n1', name: 'session_name', input: '{"name":"Fix   the login"}' }))
-    expect(monitor.snapshot('parent')[0]).toMatchObject({ title: 'Map the auth flow', profile: { name: 'worker', color: 'green' }, checklist: null })
+    expect(monitor.snapshot('parent')[0]).toMatchObject({ title: 'Map the auth flow', profile: { name: 'worker', color: 'green' }, todo: null })
     monitor.observe('parent', child, event('tool.completed', 2, { toolCallId: 'n1', name: 'session_name', ok: true }))
-    monitor.observe('parent', child, event('checklist.updated', 5, { items: [{ text: 'PRIVATE_STEP', status: 'completed' }, { text: 'b', status: 'in_progress' }, { text: 'c', status: 'pending' }] }))
+    monitor.observe('parent', child, event('todo.updated', 5, { items: [{ text: 'PRIVATE_STEP', status: 'completed' }, { text: 'b', status: 'in_progress' }, { text: 'c', status: 'pending' }] }))
     const row = monitor.snapshot('parent')[0]!
-    expect(row).toMatchObject({ title: 'Map the auth flow', checklist: { done: 1, total: 3 } })
+    expect(row).toMatchObject({ title: 'Map the auth flow', todo: { done: 1, total: 3 } })
     expect(JSON.stringify(row)).not.toContain('Fix the login')
     expect(JSON.stringify(row)).not.toContain('PRIVATE_STEP')
-    monitor.observe('parent', child, event('checklist.updated', 6, { items: [] }))
-    expect(monitor.snapshot('parent')[0]?.checklist).toBeNull()
+    monitor.observe('parent', child, event('todo.updated', 6, { items: [] }))
+    expect(monitor.snapshot('parent')[0]?.todo).toBeNull()
+    monitor.observe('parent', child, event('checklist.updated', 7, { items: [{ text: 'legacy', status: 'completed' }] }))
+    expect(monitor.snapshot('parent')[0]?.todo).toEqual({ done: 1, total: 1 })
   })
 
   it('projects only safe cumulative usage and volatile runtime metadata', () => {
@@ -107,5 +109,31 @@ describe('SubagentMonitor', () => {
 
     monitor.observe('parent', run('child', 'parent', '2026-10-23T00:00:00.000Z', { status: 'completed', endedAt: '2026-10-23T00:00:03.000Z' }), event('completed', 3))
     expect(monitor.snapshot('parent')[0]).toMatchObject({ status: 'completed', activity: 'Completed' })
+  })
+
+  it('puts the main row first, folds the parent’s own events, and ignores a main row for another run', () => {
+    const monitor = new SubagentMonitor()
+    monitor.begin('parent')
+    monitor.observe('parent', run('child', 'parent', '2026-10-23T00:00:00.000Z'), event('tool.started', 1, { toolCallId: 'c1', name: 'grep' }))
+    const main = run('parent', null as unknown as string, '2026-10-23T00:00:01.000Z', { relation: 'main', profile: MAIN_PROFILE })
+    monitor.observe('parent', main, event('usage.updated', 2, { inputTokens: 10, outputTokens: 5, model: 'gpt-x', provider: 'openai' }))
+    monitor.observe('parent', main, event('todo.updated', 3, { items: [{ text: 'a', status: 'completed' }, { text: 'b', status: 'pending' }] }))
+    monitor.observe('parent', run('other', null as unknown as string, '2026-10-23T00:00:02.000Z', { relation: 'main' }), event('tool.started', 4, { toolCallId: 'x', name: 'read' }))
+    expect(monitor.snapshot('parent').map(row => row.id)).toEqual(['parent', 'child'])
+    expect(monitor.snapshot('parent')[0]).toMatchObject({ relation: 'main', profile: MAIN_PROFILE, usage: { inputTokens: 10, model: 'gpt-x' }, todo: { done: 1, total: 2 } })
+  })
+
+  it('restores a saved parent and its children as they ended', () => {
+    const monitor = new SubagentMonitor()
+    monitor.begin('earlier')
+    monitor.restore('parent', [
+      { run: run('parent', null as unknown as string, '2026-10-23T00:00:00.000Z', { relation: 'main', status: 'interrupted' }), events: [] },
+      { run: run('child', 'parent', '2026-10-23T00:00:01.000Z', { status: 'interrupted' }), events: [event('tool.started', 1, { toolCallId: 'c1', name: 'edit' }), event('usage.updated', 2, { inputTokens: 3 })] }
+    ])
+    expect(monitor.snapshot('earlier')).toEqual([])
+    expect(monitor.snapshot('parent')).toEqual([
+      expect.objectContaining({ id: 'parent', relation: 'main', status: 'interrupted', activity: 'Interrupted' }),
+      expect.objectContaining({ id: 'child', status: 'interrupted', activity: 'Interrupted', usage: { inputTokens: 3 } })
+    ])
   })
 })

@@ -107,6 +107,11 @@ export class NotesBridge {
     return this.starting
   }
 
+  /** What a window loads, once the bridge is listening. */
+  current(): BridgeInfo | null {
+    return this.info
+  }
+
   private async listen(): Promise<BridgeInfo> {
     const settingsFile = this.settingsFile()
     if (existsSync(settingsFile)) chmodSync(settingsFile, 0o600)

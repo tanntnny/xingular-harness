@@ -47,7 +47,9 @@ function ordered(record: RunRecord): RunRecord {
     ...(record.variantScope ? { variantScope: record.variantScope } : {}),
     ...(record.variantVersion ? { variantVersion: record.variantVersion } : {}),
     ...(record.profile ? { profile: record.profile } : {}),
-    ...(record.title ? { title: record.title } : {})
+    ...(record.title ? { title: record.title } : {}),
+    ...(record.model ? { model: record.model } : {}),
+    ...(record.effort ? { effort: record.effort } : {})
   }
 }
 

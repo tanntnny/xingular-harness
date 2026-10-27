@@ -17,7 +17,7 @@ terminal command or page, a host screen.
 |---|---|---|
 | Foundation service | A member of `Harness` with server methods | `sessions`, `accounts`, `apps`, `worktrees` (PROP-0016), agent profiles (`agents.*`, PROP-0029) |
 | Built-in feature plugin | A module in `BuiltinPluginRegistry` (`plugins/builtin.ts`) that may supply a `WorldPart`, server methods and terminal commands | web tools, browser tools, annotations, worktrees |
-| First-party plugin | A descriptor in the registry (`plugins/builtin.ts`) | lessons, checklist |
+| First-party plugin | A descriptor in the registry (`plugins/builtin.ts`) | lessons, todo |
 | Terminal surface | A command, page or dialog in `terminal/` | `/plan`, `/doctor`, the resource browser |
 | Host surface | A host screen built on the same methods and tools | the App's chat, Capability and Harness screens |
 | Host-backed backend | An operating-system object only a host has, behind a generic Harness contract | the App's WebKit tabs, macOS computer bridge, keychain |
@@ -29,6 +29,9 @@ terminal command or page, a host screen.
   tool that passes the gate (page 07). Both front ends use the same methods; neither has a private
   path to Harness state. Foundation context behavior, including bounded checkpoint restoration after
   compaction (PROP-0033), is shared by terminal and embedded sessions; a host does not reimplement it.
+  The direct `/plugins` page manages local plugin state and package lifecycle; `/hub` presents the
+  Community catalog and all installed Hub receipts. These are distinct presentations of existing
+  Harness services, not host-only capabilities. The broad `/harness` browser remains available.
 - Workspace write scope is Harness-owned on both surfaces. Each run pins a canonical root after
   worktree selection; reads retain OS-permission scope, while native file writes and shell
   filesystem effects default to that root; the filesystem root itself is not a valid workspace.

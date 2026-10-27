@@ -46,3 +46,18 @@ jobs:
           name: harness-ci-${{ matrix.os }}
           path: outputs/ci-candidate/
           if-no-files-found: error
+
+  # The full suite assumes a POSIX host. This job checks the Windows shell, approval and write paths
+  # on a real Windows machine (ADR-0042).
+  windows:
+    name: Windows shell and file tools
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.19.0'
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npx vitest run src/core -t Windows

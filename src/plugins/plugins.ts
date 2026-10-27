@@ -17,6 +17,8 @@ export interface Loading {
   skillPaths: string[]
   promptPaths: string[]
   themePaths: string[]
+  /** Subagent profile files packages bring. The harness reads them; Pi is never given them. */
+  profilePaths: string[]
   /** The `pi` command's own extensions left on, as `builtin:<name>`. Only a terminal has them. */
   builtins: string[]
   /** Hooks files the harness runs itself. Pi is never given them. */
@@ -154,6 +156,7 @@ export class Plugins {
       skillPaths: paths('skill', false),
       promptPaths: paths('prompt', false),
       themePaths: paths('theme', false),
+      profilePaths: paths('agent', false),
       builtins: paths('extension', true),
       hooks: chosen.filter((item) => item.kind === 'hook' && item.packageRoot).map((item) => ({ path: item.path, packageRoot: item.packageRoot!, hash: packageCodeState[item.packageRoot!]?.hash ?? '' })),
       found,

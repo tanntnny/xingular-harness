@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
-import { create, importNotes, list, markSent, queue, queued, read, remove, revokeBinding, share, unshare, update, visibleTo, type NoteInput } from './store'
+import { clearPending, create, importNotes, list, markPending, markSent, pending, read, remove, revokeBinding, share, unshare, update, visibleTo, type NoteInput } from './store'
 
 const root = () => mkdtempSync(join(tmpdir(), 'harness-notes-'))
 const page: NoteInput = { source: { url: 'https://example.com/page', title: 'Page', capturedAt: '2026-10-23T00:00:00Z' }, target: { kind: 'page' }, body: '  private body  ', tags: [' tag ', 'tag'] }
@@ -77,23 +77,36 @@ describe('page note store', () => {
   it('keeps resolved notes out of delivery and requires confirmation once page-origin delivery is flagged', () => {
     const dir = root()
     const note = create(dir, page)
-    const pending = queue(dir, note.id, note.version, 's1', { confirm: true })
-    const stillPending = queue(dir, note.id, pending.version, 's1')
+    const first = markPending(dir, note.id, note.version, 's1', { confirm: true })
+    const stillPending = markPending(dir, note.id, first.version, 's1')
     expect(stillPending.delivery?.confirm).toBe(true)
-    expect(queued(dir, 's1').map((entry) => entry.id)).toEqual([note.id])
+    expect(pending(dir, 's1').map((entry) => entry.id)).toEqual([note.id])
     expect(() => markSent(dir, [note.id], 's1', 'run-1')).toThrow('Confirm this note')
 
-    const confirmed = queue(dir, note.id, stillPending.version, 's1', { confirmed: true })
+    const confirmed = markPending(dir, note.id, stillPending.version, 's1', { confirmed: true })
     expect(confirmed.delivery?.confirm).toBeUndefined()
     expect(markSent(dir, [note.id], 's1', 'run-1')[0].delivery).toMatchObject({ state: 'sent', runId: 'run-1' })
 
     const another = create(dir, page)
-    const queuedNote = queue(dir, another.id, another.version, 's1')
+    const queuedNote = markPending(dir, another.id, another.version, 's1')
     const resolved = update(dir, another.id, queuedNote.version, { status: 'resolved' })
     expect(resolved.delivery).toBeNull()
-    expect(queued(dir, 's1').map((entry) => entry.id)).not.toContain(another.id)
-    expect(() => queue(dir, another.id, resolved.version, 's1')).toThrow('Reopen this note')
+    expect(pending(dir, 's1').map((entry) => entry.id)).not.toContain(another.id)
+    expect(() => markPending(dir, another.id, resolved.version, 's1')).toThrow('Reopen this note')
     expect(() => markSent(dir, [another.id], 's1', 'run-2')).toThrow('Resolved notes')
+  })
+
+  it('stops sending a note to a session that no longer may read it, and clears unsent notes', () => {
+    const dir = root()
+    const note = create(dir, page)
+    markPending(dir, note.id, 1, 's1')
+    expect(unshare(dir, note.id, { sessionId: 's1' }).delivery).toBeNull()
+    const other = create(dir, page)
+    markPending(dir, other.id, 1, 's1')
+    expect(clearPending(dir, 's2')).toEqual([])
+    const [cleared] = clearPending(dir, 's1')
+    expect(cleared).toMatchObject({ id: other.id, status: 'resolved', delivery: null, grants: [] })
+    expect(cleared.history.at(-1)?.operation).toBe('clear')
   })
 
   it('searches and filters by page and status', () => {

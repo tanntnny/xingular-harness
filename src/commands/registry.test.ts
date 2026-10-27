@@ -25,8 +25,10 @@ describe('command registry', () => {
       ]
     } as never])
     const names = listed.map((command) => command.name)
-    expect(names).toEqual(expect.arrayContaining(['help', 'fork', 'annotate:annotate', 'annotate:', 'review', 'skill:deploy']))
+    expect(names).toEqual(expect.arrayContaining(['help', 'fork', 'annotate:submit', 'annotate:', 'review', 'skill:deploy']))
     expect(names).not.toContain('skill:off')
+    expect(names).not.toContain('annotate:open')
+    expect(names).not.toContain('annotate:annotate')
     expect(listed.find((command) => command.name === 'fork')?.source).toBe('core')
   })
 })

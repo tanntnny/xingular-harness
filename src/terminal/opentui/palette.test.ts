@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { matchPalette, paletteCommandColumnWidth, type PaletteItem } from './palette'
+import { matchPalette, paletteCommandColumnWidth, paletteTextLines, type PaletteItem } from './palette'
 
 const commands: PaletteItem[] = [
   { name: 'session', aliases: ['resume'], description: 'Choose a saved session in this account and folder' },
@@ -11,6 +11,11 @@ const commands: PaletteItem[] = [
 const names = (items: PaletteItem[]) => items.map(item => item.name)
 
 describe('the command palette', () => {
+  it('wraps entries to three lines and marks omitted text', () => {
+    expect(paletteTextLines('one two three four five six seven eight', 8)).toEqual(['one two', 'three', 'four…'])
+    expect(paletteTextLines('one\ntwo\nthree', 8)).toEqual(['one', 'two', 'three'])
+    expect(paletteTextLines('a\nb\nc\nd', 1)).toEqual(['a', 'b', '…'])
+  })
   it('offers the command named by the filter before a description that mentions it', () => {
     expect(names(matchPalette(commands, 'account'))).toEqual(['accounts', 'session'])
     expect(matchPalette(commands, 'account')[1]).toEqual(commands[0])

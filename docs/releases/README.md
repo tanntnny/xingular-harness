@@ -2,12 +2,14 @@
 
 1. Review and commit the completed Harness changes on the active release branch. Review App
    compatibility changes separately. Preserve old tags and exclude outputs, external references,
-   and caches.
+   and caches. Stable versions use `X.Y.Z`; unstable previews use `X.Y.Z-unstable.N` and publish
+   to npm's `unstable` dist-tag. Use a new, unused version for every publication.
 2. Run `npm run ci` and the required App checks. Require green CI on Ubuntu and macOS; install Bun
    1.4.2 and use Node 22.19.0. Do not waive failing checks.
 3. Run `npm run release:pack` and inspect the candidate inventory, SHA-256 and npm integrity. Run
    `npm run release:smoke -- <tarball> --terminal` for a fresh-install SDK/server/terminal check;
-   `--offline` is only a local smoke check, not fresh-install acceptance.
+   `--offline` is only a local smoke check, not fresh-install acceptance. Unstable candidates go
+   through the same checks as stable releases.
 4. Run `npm run release:preflight`. Verify npm scope ownership and trusted-publisher settings for
    `tanntnny/xingular-harness` and `release.yml`, with direct publishing enabled. Configure the
    GitHub `npm-publish` environment with required reviewers. No login is started automatically; an
@@ -20,8 +22,9 @@
    the protected `npm-publish` environment, compare the uploaded candidate's commit, SHA-256 and npm
    integrity with the approved local candidate; stop if they differ. This environment approval is a
    separate publication gate. The publish job publishes that same tarball with OIDC provenance and
-   `--tag latest`, then verifies registry integrity/provenance and creates a GitHub release. No local
-   publishing token is needed. Inspect registry state before retrying any failed publication.
+   `--tag latest` for stable versions or `--tag unstable` for unstable previews, then verifies the
+   matching registry dist-tag, integrity and provenance and creates a GitHub release (marked
+   prerelease for unstable versions). No local publishing token is needed. Inspect registry state before retrying any failed publication.
 
 A published version cannot be replaced. Corrections require a later version. This package's
 intentional 1.0.0 reset does not rewrite historical decisions or claim an ordering above older
@@ -29,8 +32,8 @@ intentional 1.0.0 reset does not rewrite historical decisions or claim an orderi
 
 ## Historical 4.0.0 candidate evidence
 
-The following report records a prior candidate and registry snapshot; it is not evidence for the
-1.2.0 candidate or a description of the current release gates.
+The following report records a prior candidate and registry snapshot; it is not evidence for any
+current candidate or a description of the current release gates.
 
 At the time, local checks on that candidate source passed: Harness `npm run ci` (typecheck, 134 test
 files with 1,004 passing tests and 3 skipped, plus the standalone proof); App typecheck, `npm test`

@@ -154,8 +154,8 @@ class LocalProvider(http.server.BaseHTTPRequestHandler):
         results = [item for item in messages[user_index + 1:] if item.get('role') == 'tool']
         index = len(results)
         sequence = []
-        if 'verify-checklist' in user:
-            sequence = [('checklist_write', {'items': [
+        if 'verify-todo' in user:
+            sequence = [('todo_write', {'items': [
                 {'text': 'CHECK_DONE: Completed row ' + 'wrapping word ' * 13 + 'CHECK_WRAP_TAIL', 'status': 'completed'},
                 {'text': 'CHECK_ACTIVE: Active row', 'status': 'in_progress'},
                 {'text': 'CHECK_PENDING: Pending row', 'status': 'pending'}
@@ -249,6 +249,7 @@ class LocalProvider(http.server.BaseHTTPRequestHandler):
                         '# Primary heading\n\n',
                         '## Secondary heading\n\n',
                         '[Harness docs](https://example.test/docs)\n\n',
+                        '[Missing note](missing-note.md)\n\n',
                         '**bold**, *italic*, ~~deleted~~, and `inline code`.\n\n',
                         '```ts\nconst answer = 42\n```\n\n',
                         '> Quoted guidance.\n\n',
@@ -358,6 +359,10 @@ class Terminal:
     def click(self, x, y):
         self.send(f'\x1b[<0;{x};{y}M')
         self.send(f'\x1b[<0;{x};{y}m')
+
+    def ctrl_click(self, x, y):
+        self.send(f'\x1b[<16;{x};{y}M')
+        self.send(f'\x1b[<16;{x};{y}m')
 
     def move(self, x, y):
         self.send(f'\x1b[<35;{x};{y}M')
@@ -548,11 +553,11 @@ def main():
     parser.add_argument('--sizes', help='Comma-separated terminal sizes to verify')
     parser.add_argument('--welcome-only', action='store_true', help='Verify the welcome identity, accent colors and /help transition in an isolated PTY')
     parser.add_argument('--click-focus-only', action='store_true', help='Verify chat-click composer focus without running the full interaction suite')
-    parser.add_argument('--composer-only', action='store_true', help='Verify slash-command colors, composer modes, and multiline gutters in an isolated PTY')
+    parser.add_argument('--composer-only', action='store_true', help='Verify slash-command and skill colors, composer modes, and multiline gutters in an isolated PTY')
     parser.add_argument('--file-completion-only', action='store_true', help='Verify file and folder completion in an isolated PTY')
     parser.add_argument('--history-only', action='store_true', help='Verify active-session prompt history in an isolated PTY')
     parser.add_argument('--resume-only', action='store_true', help='Verify the full-screen, searchable two-line saved-session picker in an isolated PTY')
-    parser.add_argument('--checklist-only', action='store_true', help='Verify checklist status and item-text alignment in an isolated PTY')
+    parser.add_argument('--todo-only', action='store_true', help='Verify the todo list and /todo in an isolated PTY')
     parser.add_argument('--questions-only', action='store_true', help='Verify question choices, bounded sketch previews and focus changes in an isolated PTY')
     parser.add_argument('--jump-latest-only', action='store_true', help='Verify the transcript jump-to-latest badge and click behavior in an isolated PTY (screen assertions use optional pyte)')
     parser.add_argument('--help-only', action='store_true', help='Verify grouped, wrapping /help output in an isolated PTY')
@@ -592,7 +597,7 @@ def main():
             sizes = ['40x20', '80x24', '120x40']
         elif not args.sizes and args.accounts_only:
             sizes = ['80x24', '120x40']
-        elif not args.sizes and (args.attachments_only or args.dialog_paste_only or args.composer_only or args.file_completion_only or args.history_only or args.checklist_only or args.questions_only or args.jump_latest_only or args.thinking_only or args.compaction_only):
+        elif not args.sizes and (args.attachments_only or args.dialog_paste_only or args.composer_only or args.file_completion_only or args.history_only or args.todo_only or args.questions_only or args.jump_latest_only or args.thinking_only or args.compaction_only):
             sizes = ['80x24']
         elif not args.sizes and args.markdown_only:
             sizes = ['120x40']
@@ -619,7 +624,7 @@ def main():
                             'cost': {'input': 0, 'output': 0, 'cacheRead': 0, 'cacheWrite': 0}}]}}}))
             (shared / 'settings.json').write_text(json.dumps({'defaultProvider': 'terminal-local', 'defaultModel': 'terminal-verifier',
                                                               'defaultThinkingLevel': 'medium', 'enableAnalytics': False}))
-            if args.browser_only:
+            if args.browser_only or args.composer_only:
                 active_skill = shared / 'skills' / 'browser-active' / 'SKILL.md'
                 active_skill.parent.mkdir(parents=True)
                 active_skill.write_text('---\nname: browser-active\ndescription: Inspect a browser fixture.\n---\nRead the fixture.\n')
@@ -800,16 +805,16 @@ def main():
                     terminal.send('/quit\r')
                     print(f'PASS {dimensions}: full-screen saved-session picker', flush=True)
                     continue
-                if args.checklist_only:
+                if args.todo_only:
                     start = len(terminal.data)
-                    terminal.send('verify-checklist\r')
+                    terminal.send('verify-todo\r')
                     terminal.wait('CHECK_DONE:', start, timeout=50)
                     terminal.wait('LOCAL_FINAL:', start, timeout=50)
-                    record = wait_for_goal(terminal, root, 'verify-checklist')
-                    assert record.get('status') == 'completed', 'The checklist fixture run did not complete'
+                    record = wait_for_goal(terminal, root, 'verify-todo')
+                    assert record.get('status') == 'completed', 'The todo fixture run did not complete'
                     terminal.read(0.3)
                     if terminal.screen is None:
-                        raise AssertionError('Checklist alignment verification requires pyte')
+                        raise AssertionError('Todo alignment verification requires pyte')
                     positions = {
                         'CHECK_DONE:': ('✓', terminal.locate('CHECK_DONE:')),
                         'CHECK_ACTIVE:': ('●', terminal.locate('CHECK_ACTIVE:')),
@@ -821,14 +826,27 @@ def main():
                         glyph_column = line.index(glyph) + 1
                         assert text_column == glyph_column + 2, f'{label} did not keep one cell after its status glyph: {terminal.screen.display!r}'
                         text_columns.add(text_column)
-                    assert len(text_columns) == 1, f'Checklist item text columns did not align: {terminal.screen.display!r}'
+                    assert len(text_columns) == 1, f'Todo item text columns did not align: {terminal.screen.display!r}'
                     done_column, done_row = positions['CHECK_DONE:'][1]
                     tail_column, tail_row = terminal.locate('CHECK_WRAP_TAIL')
-                    assert tail_row > done_row and tail_column == done_column, f'Wrapped checklist text did not align under its item text: {terminal.screen.display!r}'
-                    terminal.snapshot('checklist-aligned-rows')
-                    profile['checks'].append('checklist status glyphs have a fixed one-cell gap before aligned text; wrapped item text stays in the same column')
+                    tail_line = terminal.screen.display[tail_row - 1]
+                    tail_indent = len(tail_line) - len(tail_line.lstrip(' '))
+                    assert tail_row > done_row and tail_indent + 1 == done_column, f'Wrapped todo text did not align under its item text: {terminal.screen.display!r}'
+                    terminal.snapshot('todo-aligned-rows')
+                    profile['checks'].append('todo status glyphs have a fixed one-cell gap before aligned text; wrapped item text stays in the same column')
+                    before = len(records(root))
+                    start = len(terminal.data)
+                    terminal.send('/todo\r')
+                    terminal.wait('Todo ·', start, timeout=10)
+                    terminal.read(0.3)
+                    assert len(records(root)) == before, '/todo started a model run'
+                    if terminal.screen is None:
+                        raise AssertionError('Todo card verification requires pyte')
+                    visible = '\n'.join(terminal.screen.display)
+                    assert 'CHECK_DONE:' in visible and 'CHECK_PENDING:' in visible, f'/todo did not show the current list: {terminal.screen.display!r}'
+                    profile['checks'].append('/todo shows the current list without a model request')
                     terminal.send('/quit\r')
-                    print(f'PASS {dimensions}: checklist row alignment', flush=True)
+                    print(f'PASS {dimensions}: todo row alignment and /todo', flush=True)
                     continue
                 if args.command_completion_only:
                     start = len(terminal.data)
@@ -1276,13 +1294,32 @@ def main():
                         profile['checks'].append('transcript spacing assertions skipped because pyte is unavailable')
                     if terminal.screen is not None:
                         link_x, link_y = terminal.locate('Harness docs')
+                        resting = terminal.screen.buffer[link_y - 1][link_x - 1].fg
+                        assert resting == '8ab4f8', f'Markdown link should rest in Harness blue, got {resting!r}'
                         terminal.move(link_x, link_y)
-                        terminal.wait('Click to open link', start, timeout=10)
+                        hovered = resting
+                        for _ in range(40):
+                            terminal.read(0.1)
+                            hovered = terminal.screen.buffer[link_y - 1][link_x - 1].fg
+                            if hovered == 'c9ddff':
+                                break
+                        assert hovered == 'c9ddff', f'hovered Markdown link should use the hover colour, got {hovered!r}'
+                        assert 'Click to open' not in '\n'.join(terminal.screen.display), 'the status line should not advertise the hover'
                         terminal.snapshot('markdown-link-hover')
                         terminal.move(1, 1)
+                        cleared = hovered
+                        for _ in range(40):
+                            terminal.read(0.1)
+                            cleared = terminal.screen.buffer[link_y - 1][link_x - 1].fg
+                            if cleared == '8ab4f8':
+                                break
+                        assert cleared == '8ab4f8', f'Markdown link kept the hover colour after the pointer left, got {cleared!r}'
+                        profile['checks'].append('label-only Markdown links; hover recolours the link text and clears when the pointer leaves, without a status-line hint')
+                        terminal.click(1, 1)
                         terminal.read(0.2)
-                        assert 'Click to open link' not in '\n'.join(terminal.screen.display), 'Markdown link hover hint remained after moving away'
-                        profile['checks'].append('label-only Markdown links, PTY mouse hover hint, and hover hint clears after pointer leaves')
+                        terminal.ctrl_click(*terminal.locate('Missing note'))
+                        terminal.wait('That link points at a file that is not there.', start, timeout=10)
+                        profile['checks'].append('Ctrl+click opens the link under the pointer, after a plain click left a selection behind, and a refused target reports instead of running')
                     else:
                         profile['checks'].append('label-only Markdown links; PTY hover inspection skipped because optional pyte is unavailable')
                     profile['checks'].append('streamed Markdown, status-bar cache rate, code, quotes, lists, tables, dividers and image alt text')
@@ -1609,45 +1646,32 @@ def main():
                     assert second_session and second_session != first_session, 'The new prompt was not recorded in a distinct native session'
 
                     terminal.send('scratch-draft')
-                    history_start = len(terminal.data)
-                    terminal.send('\x1b[A')
-                    terminal.wait(second_goal, history_start, timeout=10)
-                    terminal.snapshot('history-recalled-from-draft-end')
-                    if terminal.screen is not None:
-                        composer = '\n'.join(terminal.screen.display[-8:])
-                        assert second_goal in composer and 'scratch-draft' not in composer, 'Up at the draft end did not recall older history'
-                    terminal.send('\x1b[D' * len(second_goal))
-                    terminal.read(0.2)
-                    history_start = len(terminal.data)
-                    terminal.send('\x1b[A')
-                    terminal.wait('/new', history_start, timeout=10)
-                    terminal.snapshot('history-recalled-from-draft-start')
-                    if terminal.screen is not None:
-                        composer = '\n'.join(terminal.screen.display[-8:])
-                        assert '/new' in composer and second_goal not in composer, 'Up at the draft start did not recall older history'
-                    history_start = len(terminal.data)
-                    terminal.send('\x1b[B')
-                    terminal.wait(second_goal, history_start, timeout=10)
-                    if terminal.screen is not None:
-                        composer = '\n'.join(terminal.screen.display[-8:])
-                        assert second_goal in composer, 'Down at the draft end did not recall newer history'
-                    terminal.send('\x1b[D' * len(second_goal))
-                    terminal.read(0.2)
-                    restore_start = len(terminal.data)
-                    terminal.send('\x1b[B')
-                    terminal.wait('scratch-draft', restore_start, timeout=10)
-                    terminal.snapshot('history-restored-scratch-draft')
-                    if terminal.screen is not None:
-                        composer = '\n'.join(terminal.screen.display[-8:])
-                        assert 'scratch-draft' in composer, 'Down at the draft start did not restore the working draft after newest history'
-                    profile['checks'].append('plain Up/Down browse older/newer history at both draft endpoints and restore the working draft')
-                    terminal.send('\x03')
-                    terminal.read(0.2)
-
-                    terminal.read(0.3)
                     terminal.send('\x1b[A')
                     terminal.send('\r')
                     wait_for_history_runs(second_goal, 2, second_session)
+
+                    third_goal = 'verify-history-third-session'
+                    terminal.send(third_goal)
+                    terminal.send('\r')
+                    third_record = wait_for_goal(terminal, root, third_goal)
+                    assert third_record.get('nativeSessionId') == second_session, 'The third prompt left the active history session'
+
+                    terminal.send('scratch-draft')
+                    terminal.send('\x1b[A')
+                    terminal.send('\x1b[D' * len(third_goal))
+                    terminal.send('\x1b[A')
+                    terminal.send('\r')
+                    wait_for_history_runs(second_goal, 3, second_session)
+
+                    terminal.send('scratch-draft')
+                    terminal.send('\x1b[A')
+                    terminal.send('\x1b[A')
+                    terminal.send('\x1b[B')
+                    terminal.send('\x1b[D' * len(second_goal))
+                    terminal.send('\x1b[B')
+                    terminal.send('\r')
+                    wait_for_history_runs('scratch-draft', 1, second_session)
+                    profile['checks'].append('plain Up/Down browse older/newer history at both draft endpoints; endpoint navigation preserves and restores drafts')
 
                     terminal.send(f'/resume {first_session}\r')
                     terminal.read(1)
@@ -1661,11 +1685,8 @@ def main():
                     terminal.send('\x03')
                     terminal.read(0.2)
 
-                    bash_start = len(terminal.data)
                     bash_command = 'printf USER_COMMAND_VERIFIED'
                     terminal.send(f'!{bash_command}\r')
-                    terminal.wait('Approve Action?', bash_start, timeout=10)
-                    terminal.send('\r')
                     wait_for_bash_command(first_session, bash_command)
                     terminal.send('\x1b[A')
                     terminal.read(0.2)
@@ -1744,6 +1765,23 @@ def main():
                     terminal.send('\x15')
                     terminal.read(0.1)
 
+                    skill_start = len(terminal.data)
+                    terminal.send('$browser-active SKILL_ARGUMENT')
+                    terminal.read(0.2)
+                    terminal.snapshot('skill-invocation-composer')
+                    assert_command_highlighting(terminal, '$browser-active', 'SKILL_ARGUMENT', True, 'enabled skill composer token')
+                    assert has_truecolor_foreground(bytes(terminal.data[skill_start:]), '#8ab4f8'), 'Enabled skill token did not use the composer accent'
+                    terminal.send('\x15')
+                    terminal.read(0.1)
+
+                    unknown_skill_start = len(terminal.data)
+                    terminal.send('$not-a-skill UNKNOWN_SKILL_ARGUMENT')
+                    terminal.read(0.2)
+                    assert_command_highlighting(terminal, '$not-a-skill', 'UNKNOWN_SKILL_ARGUMENT', False, 'unknown skill composer token')
+                    assert not has_truecolor_foreground(bytes(terminal.data[unknown_skill_start:]), '#8ab4f8'), 'Unknown skill token used the composer accent'
+                    terminal.send('\x15')
+                    terminal.read(0.1)
+
                     unknown_start = len(terminal.data)
                     terminal.send('/not-a-command UNKNOWN_ARGUMENT')
                     terminal.read(0.2)
@@ -1751,7 +1789,7 @@ def main():
                     assert not has_truecolor_foreground(bytes(terminal.data[unknown_start:]), '#8ab4f8'), 'Unknown composer token used the command accent'
                     terminal.send('\x15')
                     terminal.read(0.1)
-                    profile['checks'].append('recognized slash tokens use the accent in composer and user bubble; unknown tokens and arguments stay normal')
+                    profile['checks'].append('recognized slash and enabled-skill tokens use the accent; user bubbles keep slash styling; unknown tokens and arguments stay normal')
 
                     terminal.send('explicit-first')
                     terminal.send('\x1b[13;2u')
@@ -1985,6 +2023,8 @@ def main():
                 terminal.send('\x1b[B')
                 terminal.read(0.2)
                 terminal.send('\r')
+                # Show the edit notice even if earlier resize/scroll checks left the transcript away from latest.
+                terminal.send('\x1b[1;5F')
                 terminal.wait('Describe what to change', start)
                 terminal.read(0.3)
                 start = len(terminal.data)
@@ -2003,7 +2043,8 @@ def main():
                 plan_requests = [item for item in LocalProvider.requests if 'verify-plan' in item.get('user', '')]
                 implement_requests = [item for item in LocalProvider.requests if 'Implement the plan' in item.get('user', '')]
                 assert plan_requests and implement_requests, 'Provider did not see the plan and implement prompts'
-                assert 'ask_user' in plan_requests[0]['tools'] and 'bash' not in plan_requests[0]['tools'], 'Plan mode did not expose questions while keeping other tools read-only'
+                plan_tools = set(plan_requests[0]['tools'])
+                assert {'ask_user', 'bash'} <= plan_tools and not ({'write', 'edit'} & plan_tools), 'Plan mode did not expose questions and read-only Bash while withholding native writes'
                 assert 'ask_user' not in implement_requests[-1]['tools'] and 'bash' in implement_requests[-1]['tools'], 'Implement did not restore normal tools'
                 plan_question_events = [event for record in plan_runs for event in record['_events'] if event['type'] == 'question.answered']
                 assert plan_question_events, 'The plan-only question was not recorded'

@@ -8,7 +8,7 @@ const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
 const report = { package: `${pkg.name}@${pkg.version}`, local: [], registry: 'unverified', trustedPublisher: 'Requires package-owner verification of tanntnny/xingular-harness, release.yml, and direct publication enabled.' }
 let failed = false
 const check = (name, ok) => { report.local.push({ name, ok }); if (!ok) failed = true }
-check('Expected package/version/license', pkg.name === '@xingular/harness' && /^\d+\.\d+\.\d+$/.test(pkg.version) && pkg.license === 'Apache-2.0')
+check('Expected package/version/license', pkg.name === '@xingular/harness' && /^\d+\.\d+\.\d+(?:-unstable\.\d+)?$/.test(pkg.version) && pkg.license === 'Apache-2.0')
 check('Working tree is clean', !execFileSync('git', ['status', '--porcelain', '--untracked-files=all'], { cwd: root, encoding: 'utf8' }).trim())
 if (process.argv.includes('--tagged')) {
   const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim()

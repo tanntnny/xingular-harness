@@ -36,12 +36,12 @@ import { parseAnsi, type AnsiLine } from './ansi'
 import { asTui, PiDialogHost, type OverlayView } from './dialogHost'
 import { ComposerAttachments, imageMimeTypeForPath, isLargePaste, parsePastedImagePaths, type AttachmentLabel } from './attachments'
 import { splitBashDraft } from './bashMode'
-import { TranscriptModel, type TranscriptItem } from './model'
+import { TranscriptModel, type TodoEntry, type TranscriptItem } from './model'
 import { matchPalette, type PaletteItem } from './palette'
 import { completeFilePaths, formatPathCompletion, type PathCompletionItem } from './pathCompletion'
 import { PlanChoice, type PlanChoiceView } from './planChoice'
 import { QuestionDockState, type QuestionDockAnswers, type QuestionDockQuestion, type QuestionDockView } from './questionDockState'
-import { clickableMarkdownUrl, openMarkdownLink } from './markdownLinks'
+import { linkTarget, openLink as openWithDefaultHandler, type LinkTarget } from '../../core/links'
 import { subagentRoster, type SubagentRosterView } from './subagentsWidget'
 
 const exec = promisify(execFile)
@@ -97,6 +97,10 @@ export interface RendererControls {
   setTitle(title: string): void
   setMousePointer(style: 'default' | 'pointer'): void
   getLinkAt(x: number, y: number): string | null
+  /** The renderer's id for the link at a cell, for the frame pass that recolours it. */
+  getLinkIdAt(x: number, y: number): number
+  /** Draws a frame even when nothing in the view changed, so a hover colour reaches the screen. */
+  requestRender(): void
   destroy(): void
 }
 
@@ -129,6 +133,7 @@ export interface OpenTuiView {
   items: readonly TranscriptItem[]
   hasUserMessages: boolean
   slashCommandNames: readonly string[]
+  skillNames: readonly string[]
   draft: string
   draftEpoch: number
   draftCursorOffset: number | null
@@ -151,6 +156,7 @@ export interface OpenTuiView {
     tokensPerSecond: number | null
   }
   statuses: string[]
+  /** A link is under the pointer, so its text is drawn in the hover colour. */
   linkHovered: boolean
   toast: string | null
   palette: PaletteView | null
@@ -186,6 +192,7 @@ export class OpenTuiApplication {
   private ui?: TerminalUi
   private commands?: ReturnType<typeof createTerminalCommands>
   private slashCommandNames?: string[]
+  private skillNames?: string[]
   private sideQuestion?: SideQuestion
   private keybindings?: ReturnType<typeof terminalKeybindings>
   private themeValue?: Theme
@@ -224,6 +231,8 @@ export class OpenTuiApplication {
   private toastMessage?: string
   private toastTimer?: ReturnType<typeof setTimeout>
   private hoveredLink: string | null = null
+  private hoveredLinkId = 0
+  private hoveredAt = { x: 0, y: 0 }
   private activeTurnId?: string
   private toolsExpanded = false
   private deferredInputs: DeferredInput[] = []
@@ -250,28 +259,52 @@ export class OpenTuiApplication {
   private pendingDraft?: boolean
   private draftSyncing = false
 
-  constructor(private readonly args: string[], private readonly openLink: (url: string) => Promise<void> = openMarkdownLink) {}
+  constructor(private readonly args: string[], private readonly openLink: (target: LinkTarget) => Promise<unknown> = target => openWithDefaultHandler(target)) {}
 
   attachRenderer(renderer: RendererControls): void {
     this.renderer = renderer
     this.host.onTitle = title => renderer.setTitle(title)
   }
 
-  updateLinkHover(x: number, y: number): void {
-    const next = clickableMarkdownUrl(this.renderer?.getLinkAt(x, y))
-    if (next === this.hoveredLink) return
-    this.hoveredLink = next
-    this.renderer?.setMousePointer(next ? 'pointer' : 'default')
-    this.change()
+  /** The link under the pointer, for the frame pass that recolours it. */
+  get linkHighlight(): { id: number; x: number; y: number } | null {
+    return this.hoveredLinkId ? { id: this.hoveredLinkId, ...this.hoveredAt } : null
   }
 
-  activateLinkAt(x: number, y: number): boolean {
-    const url = clickableMarkdownUrl(this.renderer?.getLinkAt(x, y))
-    if (!url) return false
+  updateLinkHover(x: number, y: number): void {
+    const raw = this.renderer?.getLinkAt(x, y) ?? null
+    const target = raw ? linkTarget(raw, { base: this.runtime?.cwd }) : null
+    const next = target ? `${target.kind}:${'url' in target ? target.url : 'address' in target ? target.address : target.path}` : raw
+    const entered = next !== this.hoveredLink
+    // Moving inside one link moves the cells the frame pass recolours, so it counts as a change too.
+    if (!entered && x === this.hoveredAt.x && y === this.hoveredAt.y) return
+    this.hoveredLink = next
+    this.hoveredLinkId = next ? this.renderer?.getLinkIdAt(x, y) ?? 0 : 0
+    this.hoveredAt = { x, y }
+    if (entered) this.renderer?.setMousePointer(next ? 'pointer' : 'default')
+    this.change()
+    // The hover only changes the frame's colours, not the view, so the frame must be asked for.
+    this.renderer?.requestRender()
+  }
+
+  /**
+   * Opens the link under the pointer for the gesture the platform uses: Ctrl+click wherever a
+   * terminal reports it, and the primary click on macOS, whose ⌘ is not part of the mouse protocol
+   * (a macOS terminal opens an OSC 8 link itself on ⌘+click).
+   */
+  activateLinkAt(x: number, y: number, modifiers: { ctrl?: boolean } = {}): boolean {
+    if (!modifiers.ctrl && process.platform !== 'darwin') return false
+    const raw = this.renderer?.getLinkAt(x, y) ?? null
+    if (!raw) return false
     this.hoveredLink = null
+    this.hoveredLinkId = 0
     this.renderer?.setMousePointer('default')
     this.change()
-    this.attempt(() => this.openLink(url))
+    this.renderer?.requestRender()
+    const target = linkTarget(raw, { base: this.runtime?.cwd })
+    // A link this harness will not open still belongs to the link: the click is reported, not ignored.
+    if (!target) this.notify('This link cannot be opened here.', 'error')
+    else this.attempt(() => this.openLink(target))
     return true
   }
 
@@ -355,6 +388,11 @@ export class OpenTuiApplication {
 
   private showHelp(groups: TerminalCommandHelpGroup[]): void {
     this.transcript.commandHelp(groups)
+    this.change()
+  }
+
+  private showTodo(items: readonly TodoEntry[]): void {
+    this.transcript.todo(items)
     this.change()
   }
 
@@ -493,6 +531,8 @@ export class OpenTuiApplication {
         control: (method, params) => controlCall(method, params ?? {}),
         changed: this.change,
         showHelp: groups => this.showHelp(groups),
+        todo: async () => (await controlCall<{ runId: string; todo: TodoEntry[] }>('terminal.todo')).todo,
+        showTodo: items => this.showTodo(items),
         logs: {
           read: () => readHarnessLogSnapshot(
             () => controlCall<HarnessLogInfo>('terminal.logs.info'),
@@ -514,9 +554,12 @@ export class OpenTuiApplication {
         this.keybindings?.reload()
         this.resetActiveWorkingStatus()
         this.refresh()
+        // A reopened conversation shows its latest parent run's rows until a new run starts.
+        void this.refreshSubagents(true)
       }))
       this.initialized = true
       this.refresh()
+      void this.refreshSubagents(true)
       let lastSubagentPoll = 0
       const tick = setInterval(() => {
         if (this.startedAt !== null || this.compacting || this.sideQuestion?.state === 'thinking') this.change()
@@ -579,8 +622,10 @@ export class OpenTuiApplication {
     this.subagentsPolling = true
     try {
       if (!settled && !this.session.getActiveToolNames().includes('spawn_subagent')) {
-        if (this.subagents.length) {
-          this.subagents = []
+        // Without subagents only the main row remains.
+        const main = this.subagents.filter(item => item.relation === 'main')
+        if (main.length !== this.subagents.length) {
+          this.subagents = main
           this.change()
         }
         return
@@ -665,6 +710,7 @@ export class OpenTuiApplication {
 
   private refresh(): void {
     this.slashCommandNames = undefined
+    this.skillNames = undefined
     if (!this.runtime) return
     this.ui?.setThemes(this.session.resourceLoader.getThemes().themes)
     this.transcript.bind(this.session)
@@ -676,6 +722,7 @@ export class OpenTuiApplication {
 
   private resetPresentation(): void {
     this.slashCommandNames = undefined
+    this.skillNames = undefined
     this.resetHistoryBrowse()
     this.invalidateFileCompletion()
     void this.sideQuestion?.dismiss()
@@ -706,6 +753,13 @@ export class OpenTuiApplication {
     this.change()
   }
 
+  private currentSkillNames(): string[] {
+    if (this.skillNames) return this.skillNames
+    if (!this.commands) return []
+    try { return this.skillNames = this.commands.skills().map(skill => skill.name) }
+    catch { return this.skillNames = [] }
+  }
+
   private currentSlashCommandNames(): string[] {
     if (this.slashCommandNames) return this.slashCommandNames
     if (!this.commands) return []
@@ -716,7 +770,7 @@ export class OpenTuiApplication {
         names.add(command.name)
         for (const alias of command.aliases ?? []) names.add(alias)
       }
-      for (const skill of this.commands.skills()) names.add(`skill:${skill.name}`)
+      for (const skill of this.currentSkillNames()) names.add(`skill:${skill}`)
       for (const alias of this.commands.legacyAliases()) names.add(alias)
     } catch { /* A resource reload may briefly leave command metadata unavailable. */ }
     return this.slashCommandNames = [...names]
@@ -1128,9 +1182,8 @@ export class OpenTuiApplication {
     const filter = this.paletteOpen ? this.paletteFilter : skill?.[1] ?? slash?.[1] ?? ''
     const matched = matchPalette(items, filter)
     if (!matched.length) return null
-    const visible = matched.slice(0, 8)
-    const index = Math.min(Math.max(0, this.paletteIndex), visible.length - 1)
-    return { items: visible, index }
+    const index = Math.min(Math.max(0, this.paletteIndex), matched.length - 1)
+    return { items: matched, index }
   }
 
   selectPaletteItem(index: number): void {
@@ -1533,7 +1586,7 @@ export class OpenTuiApplication {
     this.attachments.clearForDraft(this.draft)
     this.draftCursorOffset = this.draft.length
     this.draftEpoch += 1
-    this.paletteSuppressed = false
+    this.paletteSuppressed = true
     this.paletteIndex = 0
     this.updateCustomEditor(this.draft)
     this.syncDraft(this.draft)
@@ -1620,11 +1673,20 @@ export class OpenTuiApplication {
     if (this.handleQuestionKey(key, data)) return true
     // Question editors own their remaining keys; global '?' and '!' shortcuts must not eat input.
     if (this.questionDock && ['note', 'answer'].includes(this.questionDock.view.focus)) return false
+    const palette = this.paletteView()
+    const choice = this.planChoice.view
+    if (choice && !palette) {
+      const action = this.planChoice.handle(key, this.draft === '')
+      if (action === 'implement') { this.implementPlan(choice.title); return true }
+      if (action === 'edit') { this.editPlan(); return true }
+      if (action === 'dismiss') { this.planChoice.clear(); this.change(); return true }
+      if (action === 'moved') { this.change(); return true }
+    }
     if (!this.paletteOpen && key.ctrl && key.name === 'up') { this.historyPrevious(key.cursorOffset); return true }
     if (!this.paletteOpen && key.ctrl && key.name === 'down') { this.historyNext(); return true }
     const plainArrow = !key.ctrl && !key.meta && !key.shift && !key.option && !key.super
     const atDraftEndpoint = this.draft === '' || key.cursorOffset === 0 || key.cursorOffset === this.draft.length
-    if (!this.paletteOpen && !this.fileCompletion && plainArrow && atDraftEndpoint) {
+    if (!palette && !this.paletteOpen && !this.fileCompletion && plainArrow && atDraftEndpoint) {
       if (key.name === 'up' && (this.draft === '' || key.cursorOffset !== undefined)) {
         if (this.historyPrevious(key.cursorOffset)) return true
       }
@@ -1633,17 +1695,16 @@ export class OpenTuiApplication {
         return true
       }
     }
-    if (!this.paletteOpen && !this.fileCompletion && plainArrow && key.name === 'up' && key.atFirstVisualLine &&
+    if (!palette && !this.paletteOpen && !this.fileCompletion && plainArrow && key.name === 'up' && key.atFirstVisualLine &&
       key.cursorOffset !== undefined && key.cursorOffset > 0) {
       this.moveComposerCursor(0)
       return true
     }
-    if (!this.paletteOpen && !this.fileCompletion && plainArrow && key.name === 'down' && key.atLastVisualLine &&
+    if (!palette && !this.paletteOpen && !this.fileCompletion && plainArrow && key.name === 'down' && key.atLastVisualLine &&
       key.cursorOffset !== undefined && key.cursorOffset < this.draft.length) {
       this.moveComposerCursor(this.draft.length)
       return true
     }
-    const palette = this.paletteView()
     if (palette) {
       if (key.name === 'up') { this.paletteIndex = (palette.index - 1 + palette.items.length) % palette.items.length; this.change(); return true }
       if (key.name === 'down') { this.paletteIndex = (palette.index + 1) % palette.items.length; this.change(); return true }
@@ -1652,14 +1713,6 @@ export class OpenTuiApplication {
       if (key.name === 'escape' || (this.paletteOpen && key.ctrl && key.name === 'c')) {
         this.paletteOpen = false; this.paletteSuppressed = true; this.paletteIndex = 0; this.draftEpoch += 1; this.change(); return true
       }
-    }
-    const choice = this.planChoice.view
-    if (choice && !palette) {
-      const action = this.planChoice.handle(key, this.draft === '')
-      if (action === 'implement') { this.implementPlan(choice.title); return true }
-      if (action === 'edit') { this.editPlan(); return true }
-      if (action === 'dismiss') { this.planChoice.clear(); this.change(); return true }
-      if (action === 'moved') { this.change(); return true }
     }
     if (!this.paletteOpen && !this.bashMode && this.draft.trim() === '' && data.startsWith('!')) {
       this.enterBashMode(data.slice(1))
@@ -1756,7 +1809,7 @@ export class OpenTuiApplication {
   private hotkeys(): string {
     return [
       'Tab files/folders · Shift+Tab plan mode', 'Shift+↑/↓ effort · /effort · Ctrl+K commands', 'Ctrl+O expand details · Ctrl+T thinking',
-      'Ctrl+L model', 'Ctrl+N new session', '↑/↓ at draft start/end browse history; line edges jump to characters · Ctrl+↑/↓ anywhere',
+      'Ctrl+L model', 'Ctrl+N new session', '↑/↓ at either draft endpoint browse older/newer history · Ctrl+↑/↓ anywhere',
       'Enter send or queue · Cmd+Enter steer · Esc dismisses btw or stops reply', 'Ctrl+C clear or quit · Ctrl+D quit',
       'PgUp/PgDn transcript'
     ].join('\n')
@@ -1844,6 +1897,7 @@ export class OpenTuiApplication {
       items: transcript.items,
       hasUserMessages: transcript.hasUserMessages,
       slashCommandNames: this.currentSlashCommandNames(),
+      skillNames: this.currentSkillNames(),
       draft: this.paletteOpen ? this.paletteFilter : this.draft,
       draftEpoch: this.draftEpoch,
       draftCursorOffset: this.draftCursorOffset,

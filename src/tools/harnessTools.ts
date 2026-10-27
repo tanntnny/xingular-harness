@@ -11,7 +11,7 @@ export function harnessTools(env: DispatchEnv, context: CallerContext, options: 
     label: tool.label,
     description: describeTool(tool, env.productName),
     parameters: (Type) => Type.Unsafe(tool.parameters),
-    readOnly: tool.name !== 'wiki_write',
+    readOnly: tool.name !== 'wiki_write' && tool.name !== 'plugin_propose',
     execute: async (input) => {
       try {
         return dispatch(env, context, tool.call, input, { variantDir: options.variantDir }) || 'Nothing found.'

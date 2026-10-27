@@ -48,19 +48,21 @@ it. A tool returns only notes a person shared with the calling session or agent;
 and element names are marked untrusted. Capture happens in a visible capture browser in the
 terminal, or in a host's own web view running the same page helper (`annotations.pageScript`).
 
-**Inspector, queue and app targets (PROP-0018).**
+**Inspector, sending and app targets (PROP-0018, PROP-0048).**
 
-- **Inspector.** In the page helper's inspector, hovering outlines a component and a click (or a drag over text) opens a comment popover inside the page, with three choices: save, queue for the agent, or send now.
-  - A queued note is shared with its session.
-  - `annotations/delivery.ts` sends a batch as one instruction, and sends notes the person asked for while the session was busy when its run ends.
-  - The agent reports a fix with `page_notes_mark_fixed`, the only page-note tool that writes. It never resolves a note or changes grants.
+- **Inspector.** In the page helper's inspector, hovering outlines a component and a click (or a drag over text) opens a comment popover inside the page, with two choices: Annotate and Annotate & send.
+  - With a session, every note is shared with it at once and is pending (unsent) until sent.
+  - `annotations/delivery.ts` sends all of a session's pending notes as one message, with the
+    person's request last when given, and sends notes held back while the session was busy when its
+    run ends, trying again while the session still answers busy.
+  - The page-note tools are read-only. Only the person resolves a note.
 - **Targets.** Element targets prefer semantic role/name/text. A visually empty element may still be
   annotated when it has a specific CSS selector (ID, test ID, classes, and a structural path when
   needed); bare tag selectors are not enough. Reveal checks for one live match and preserves any
   captured semantic/context evidence, otherwise reporting ambiguous or unresolved. Text annotations
   continue to use quote plus context, not screen coordinates.
 - Besides the browser window, capture can use an app's own windows:
-  - **DevTools port:** an app started with a DevTools port, on a loopback address only. It uses the app's existing windows, routes nothing, and never closes the app.
+  - **DevTools port:** an app started with a DevTools port, on a loopback address only. It uses the app's existing windows, routes nothing, and never closes the app. `discover` probes loopback ports 9222–9230 and ports used before (a Node inspector is skipped); `launchApp` starts a program (the one inside a macOS `.app`) with `--remote-debugging-port` on a free loopback port and attaches. A started app keeps running.
   - **Page bridge:** a loopback server whose script an app loads while it is developed (`annotations/bridge.ts`), for web views without a DevTools port.
 - **Web components (PROP-0038).** The helper walks the composed tree: open shadow roots and slotted content can be picked, selected and revealed, and such targets carry `tree: 'composed'`. Targets without it resolve by the document-only rules as before. Closed shadow roots and frames stay out of reach, and the inspector says why it refuses something.
 - **Trust.** In Chromium targets the helper runs in an isolated script world, so the page cannot forge a comment. A send from the bridge, or from a host web view without isolation, waits for the person to confirm it.

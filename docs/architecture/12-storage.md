@@ -23,6 +23,7 @@ index.
   legacy/              an earlier Wiki's data, moved once   (08)
   registry/            skills/, prompts/, rules/: the component library   (03)
   plugins/<name>/      packages kept with the data   (06)
+  plugin-proposals/<id>.json   pending and decided proposal text, hash and status; owned by plugins/proposals.ts   (06)
   trash/plugins/       removed packages   (06)
   hub/                 installed documents and provenance   (09)
   runs/<id>/           run.json (including optional legacy-compatible workspaceRoot), events.jsonl, owner.json, subagents.json, context.json, caller.json, capabilities.json, mcp-context.json   (02)

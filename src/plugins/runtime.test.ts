@@ -25,7 +25,7 @@ it('expands theme directories, filters individual files and replaces each handle
   const extension = { path, resolvedPath: path, handlers }
   const loader = { getExtensions: () => ({ extensions: [extension] }) } as unknown as Pi.DefaultResourceLoader
   const owner: Found = { kind: 'extension', path, origin: 'shared', project: false, packageRoot: null, source: null, enabled: true }
-  const loading: Loading = { extensionPaths: [path], skillPaths: [], promptPaths: [], themePaths: [], builtins: [], hooks: [], found: [owner], detached: [], projectCode: null, packageCode: {}, resourceAllowed: (item) => item.path !== first }
+  const loading: Loading = { extensionPaths: [path], skillPaths: [], promptPaths: [], themePaths: [], profilePaths: [], builtins: [], hooks: [], found: [owner], detached: [], projectCode: null, packageCode: {}, resourceAllowed: (item) => item.path !== first }
   const records: Registered[] = [{ path, tools: [], commands: [], hooks: ['resources_discover'], flags: [], shortcuts: [] }]
   let published = 0
   observeResources(pi, loader, loading, records, () => { published++ })

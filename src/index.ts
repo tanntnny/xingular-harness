@@ -17,6 +17,7 @@ export { hubCatalogSchema, hubEntrySchema, hubOverviewSchema, hubReceiptSchema, 
 export { Bus, log, type Notice } from './core/bus'
 export { EMPTY_DIRECTORY, type Directory, type HarnessEnv } from './core/env'
 export { HarnessError, invalid, notFound, toErrorShape, type ErrorShape } from './core/errors'
+export { linkOpenCommand, linkTarget, openableTarget, openLink, openLinkTarget, openWithSystem, type LinkOpener, type LinkTarget, type OpenedTarget } from './core/links'
 export { findBinary, searchPath } from './core/path'
 
 export { fileSecretStore, memorySecretStore, secretKey, type SecretStore } from './accounts/secrets'
@@ -43,7 +44,7 @@ export {
   type Section
 } from './prompt/compile'
 
-export { runEventSchema, runRecordSchema, isActiveStatus, type ChecklistItem, type RunEvent, type RunEventType, type RunRecord } from './sessions/contracts'
+export { runEventSchema, runRecordSchema, isActiveStatus, type TodoItem, type RunEvent, type RunEventType, type RunRecord } from './sessions/contracts'
 export type { ApprovalFacts, ApprovalPolicy, AutomaticReason } from './sessions/approvals'
 export type { ScopeDecision, ToolCall, ToolPolicy } from './sessions/policy'
 export type { ActiveRun, ApprovalDecision, ApprovalInput, QuestionAnswer, QuestionInput } from './sessions/registry'
@@ -58,7 +59,7 @@ export type { Effort } from './sessions/runner'
 export { describeTool, HARNESS_TOOLS, DEFAULT_TOOL_NAMES, WIKI_WRITE, type HarnessCall, type HarnessToolDefinition } from './tools/definitions'
 export type { ToolProvider, ToolResult, ToolSession, ToolSpec } from './tools/types'
 export { SPAWN_SUBAGENT, SUBAGENT_RELATION } from './tools/spawnSubagent'
-export { CHECKLIST_WRITE, checklistOf } from './tools/checklist'
+export { TODO_WRITE, todoOf, CHECKLIST_WRITE, checklistOf } from './tools/todo'
 export { BUILTIN_PROFILES } from './agents/builtin'
 export { PROFILE_COLORS, createProfile, listProfiles, parseProfile, profileDirs, removeProfile, resolveProfile, type AgentProfile, type ProfileColor, type ProfileListing, type ProfileProblem, type ProfileScope, type ProfileSource, type ProfileVariant } from './agents/profiles'
 export { continuationOf, type Continuation, type ContinuationBlock } from './sessions/continuation'

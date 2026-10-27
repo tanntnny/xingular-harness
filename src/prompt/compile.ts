@@ -16,23 +16,25 @@ import { charCount, compareText, lines, takeChars } from '../core/text'
 import type { Materialised } from '../variant/materialise'
 import * as notes from '../wiki/notes'
 import { isWorldTool, WORLD_GUIDANCE } from '../world/untrusted'
-import { CHECKLIST_WRITE, describeChecklist } from '../tools/checklist'
+import { TODO_GUIDANCE, TODO_WRITE, describeTodo } from '../tools/todo'
 import { CHECKPOINT_WRITE } from '../tools/checkpoint'
-import type { ChecklistItem } from '../sessions/contracts'
-import { SESSION_NAME } from '../tools/sessionName'
+import type { TodoItem } from '../sessions/contracts'
+import { SESSION_GUIDANCE, SESSION_NAME } from '../tools/sessionName'
+import type { SessionState } from '../sessions/sessionState'
 import { ANNOTATIONS_GUIDANCE, STANDARD_CONNECTIONS, standardSections, type StandardSession } from './standard'
 
 const IDENTITY_BUDGET = 1000
 const WIKI_BUDGET = 2500
 const TOOLS_BUDGET = 8000
 const REPORTING_BUDGET = 2000
+const SESSION_STATE_BUDGET = 1_000
 export const REFERENCES_BUDGET = 12000
 /** Always-on variant text is capped when the variant is saved, so its sections are never cut here. */
 const VARIANT_BUDGET = 30_000
 const NOTES_LISTED = 25
 
 /** Where the harness's own sections sit; an application's sections are placed among them by `order`. */
-export const SECTION_ORDER = { harnessIdentity: 5, system: 25, guardrails: 40, memory: 45, references: 50, subagents: 64, scripts: 66, wiki: 80, tools: 90, reporting: 95 } as const
+export const SECTION_ORDER = { harnessIdentity: 5, system: 25, sessionState: 30, guardrails: 40, memory: 45, references: 50, subagents: 64, scripts: 66, wiki: 80, tools: 90, reporting: 95 } as const
 
 /** Where a section's text came from. */
 export interface Source {
@@ -42,7 +44,7 @@ export interface Source {
 }
 
 export interface Section {
-  /** `harness-identity`, `identity`, `role`, `system`, `guardrails`, `memory`, `references`, `subagents`, `scripts`, `wiki`, `tools`, or an application's own. */
+  /** `harness-identity`, `identity`, `role`, `system`, `session-state`, `guardrails`, `memory`, `references`, `subagents`, `scripts`, `wiki`, `tools`, or an application's own. */
   id: string
   title: string
   body: string
@@ -113,6 +115,8 @@ export interface Launch {
   connectionTools?: string[]
   /** The tools switched on for the caller. The pack only describes tools the caller can call. */
   tools?: string[] | null
+  /** The current session name and this run's todo, delivered as a request-scoped update. */
+  sessionState?: SessionState
   references?: Reference[]
   sections?: HostSection[]
   toolGroups?: HostToolGroup[]
@@ -147,7 +151,7 @@ export const HISTORY_GROUP = ['history_search', 'history_read', 'trajectory_sear
 export const WIKI_GROUP = ['wiki_search', 'wiki_read', 'wiki_list', 'wiki_write']
 export const NATIVE_GROUP = ['read', 'grep', 'find', 'ls', 'edit', 'write', 'bash']
 export const CONNECTION_TOOLS = ['mcp_list_tools', 'mcp_call_tool']
-export const ANNOTATION_TOOLS = ['page_notes_list', 'page_notes_read', 'page_notes_mark_fixed']
+export const ANNOTATION_TOOLS = ['page_notes_list', 'page_notes_read']
 const GROUP_ORDER = { History: 10, Wiki: 20, Native: 60, World: 65, Annotations: 67, Connections: 70, placeholder: 90 } as const
 
 /** Cuts `text` to `budget` characters at a paragraph (or line) boundary and appends `pointer`. */
@@ -175,21 +179,21 @@ export function clip(text: string, limit: number): string {
 }
 
 /** A bounded, request-scoped checkpoint reintroduced after context compaction. */
-export function renderCompactionCheckpoint(input: { goal: string; checklist: readonly ChecklistItem[]; planInstructions?: string | null }): string | null {
-  if (!input.checklist.length && !input.planInstructions) return null
+export function renderCompactionCheckpoint(input: { goal: string; todo: readonly TodoItem[]; planInstructions?: string | null }): string | null {
+  if (!input.todo.length && !input.planInstructions) return null
   const parts = [
     'This is current state from the active run after context compaction, not a new user request. Continue the same request. Do not infer that omitted details or decisions were settled.',
     input.goal.trim() ? `## Current request\n\n${clip(input.goal.trim(), 1_000)}` : '',
     input.planInstructions ? `## Active plan instructions\n\n${clip(input.planInstructions, 4_000)}` : ''
   ].filter(Boolean)
-  if (input.checklist.length) {
-    const active = input.checklist.filter((item) => item.status !== 'completed')
-    const completed = input.checklist.filter((item) => item.status === 'completed')
-    const checklist = [
-      active.length ? `### In progress and pending\n${clip(describeChecklist(active), 2_500)}` : '',
-      completed.length ? `### Completed (${completed.length})\n${clip(describeChecklist(completed), 500)}` : ''
+  if (input.todo.length) {
+    const active = input.todo.filter((item) => item.status !== 'completed')
+    const completed = input.todo.filter((item) => item.status === 'completed')
+    const todo = [
+      active.length ? `### In progress and pending\n${clip(describeTodo(active), 2_500)}` : '',
+      completed.length ? `### Completed (${completed.length})\n${clip(describeTodo(completed), 500)}` : ''
     ].filter(Boolean).join('\n\n')
-    parts.push(`## Current checklist\n\n${checklist}`)
+    parts.push(`## Current todo list\n\n${todo}`)
   }
   const body = clip(parts.join('\n\n'), 8_000)
   return `[Harness context update — not a user message]\n\n## Compaction checkpoint\n\n${body}`
@@ -257,20 +261,18 @@ export function toolGroups(context: CallerContext, launch: Launch, dataRoot?: st
     { group: 'World', tools: enabled.filter((name) => isWorldTool(name) && !(launch.toolGroups ?? []).some((group) => group.tools.includes(name))), order: GROUP_ORDER.World, guidance: `Web, browser and screen: ${WORLD_GUIDANCE}` },
     ...(launch.toolGroups ?? []).map((group) => ({ group: group.group, tools: group.tools, order: group.order, guidance: group.guidance }))
   ]
-  const progressTools = [CHECKLIST_WRITE, CHECKPOINT_WRITE].filter((name) => enabled.includes(name))
+  const progressTools = [TODO_WRITE, CHECKPOINT_WRITE].filter((name) => enabled.includes(name))
   if (progressTools.length) {
-    const checklist = enabled.includes(CHECKLIST_WRITE)
-      ? 'for work with several steps, write a checklist early with checklist_write and keep it current. Before your final reply, write one final update marking every fully completed step completed; leave unfinished or blocked steps accurate. The user follows your work from it, and a subagent\'s checklist shows as its progress in the user\'s list of subagents.'
-      : ''
+    const todo = enabled.includes(TODO_WRITE) ? TODO_GUIDANCE : ''
     const checkpoint = enabled.includes(CHECKPOINT_WRITE)
       ? 'a reply has a work-slice budget; when it is reached the harness asks for a handoff, and checkpoint_write records what is done, the next step, anything blocking, the files touched and the checks that matter, so the next slice starts from it instead of re-reading everything.'
       : ''
-    groups.push({ group: 'Progress', tools: progressTools, order: 87, guidance: `Progress: ${[checklist, checkpoint].filter(Boolean).join(' ')}` })
+    groups.push({ group: 'Progress', tools: progressTools, order: 87, guidance: `Progress: ${[todo, checkpoint].filter(Boolean).join(' ')}` })
   }
   if (enabled.includes(SESSION_NAME)) {
     groups.push({
       group: 'Session', tools: [SESSION_NAME], order: 88,
-      guidance: 'Session: use session_name to name meaningful work early with a short imperative sentence of at most six words. Revise when the overall objective changes, including a manually assigned name. Greetings alone need no name.'
+      guidance: `Session: ${SESSION_GUIDANCE}`
     })
   }
   const annotations = ANNOTATION_TOOLS.filter((name) => enabled.includes(name) && !(launch.toolGroups ?? []).some((group) => group.tools.includes(name)))
@@ -351,6 +353,29 @@ function projectName(root: string, context: CallerContext): { name: string } | n
   }
 }
 
+/** The request-scoped state line: the name, this run's todo, and the previous list as context. */
+export function sessionStateText(state: SessionState, options: { name: boolean; todo: boolean }): string | null {
+  const parts: string[] = []
+  if (options.name) parts.push(`Name: ${state.name ? JSON.stringify(state.name) : 'unnamed'}.`)
+  if (options.todo) {
+    parts.push(`Todo for this run: ${describeTodo(state.todo)}`)
+    if (state.previousTodo?.length) parts.push(`Previous run's todo (context, not this run's list): ${describeTodo(state.previousTodo)}`)
+  }
+  if (!parts.length) return null
+  parts.push(state.firstTurn
+    ? 'This is the first turn in this native session.'
+    : 'This run continues the conversation; the todo list resets for each run.')
+  return clip(parts.join('\n'), SESSION_STATE_BUDGET)
+}
+
+function sessionStateSection(state: SessionState | undefined, tools: readonly string[]): Section | null {
+  if (!state) return null
+  const text = sessionStateText(state, { name: tools.includes(SESSION_NAME), todo: tools.includes(TODO_WRITE) })
+  return text
+    ? section('session-state', 'Session state', text, SESSION_STATE_BUDGET, 'The current name and todo are on the session and run.', [])
+    : null
+}
+
 /** Compiles the pack for a caller. It only reads the data root. */
 export function compile(env: HarnessEnv, context: CallerContext, launch: Launch = {}, variant: Materialised | null = null): ContextPack {
   const { root } = env
@@ -362,12 +387,13 @@ export function compile(env: HarnessEnv, context: CallerContext, launch: Launch 
       section: section('harness-identity', 'Harness identity', `You are an AI agent running in ${env.productName}.`, IDENTITY_BUDGET, '', [])
     },
     ...(variant?.sections ?? []).map((entry) => ({ order: entry.order, section: section(entry.id, entry.title, entry.body, VARIANT_BUDGET, '', variantSource) })),
+    { order: SECTION_ORDER.sessionState, section: sessionStateSection(launch.sessionState, launch.tools ?? []) },
     { order: SECTION_ORDER.references, section: selectedReferences(root, launch) },
     { order: SECTION_ORDER.wiki, section: wiki(root, context) },
     { order: SECTION_ORDER.tools, section: launch.hideToolGuidance ? null : tools(groups, variant?.toolGuidance ?? '', launch.toolsPointer ?? '') },
     { order: SECTION_ORDER.reporting, section: section('reporting', 'Reporting your work', REPORTING_GUIDANCE, REPORTING_BUDGET, '', []) },
     ...(launch.standard ? standardSections({ ...launch.standard, project: launch.standard.project ?? projectName(root, context) }, launch.tools ?? []).filter((own) => !(launch.sections ?? []).some((host) => host.id === own.id)) : []).map((own) => ({ order: own.order, section: hostSection(own) })),
-    ...(launch.sections ?? []).map((host) => ({ order: host.order, section: hostSection(host) }))
+    ...(launch.sections ?? []).filter((host) => host.id !== 'session-state').map((host) => ({ order: host.order, section: hostSection(host) }))
   ].map((entry, index) => ({ ...entry, index }))
   const sections = built.sort((left, right) => left.order - right.order || left.index - right.index).flatMap((entry) => entry.section ?? [])
   return {
@@ -414,11 +440,12 @@ export function record(root: string, pack: ContextPack): void {
 // ---- Stable prefix and context updates -------------------------------------------------------
 
 export const BUILT_IN_DYNAMIC: readonly { id: string; order: number }[] = [
+  { id: 'session-state', order: SECTION_ORDER.sessionState },
   { id: 'references', order: SECTION_ORDER.references },
   { id: 'wiki', order: SECTION_ORDER.wiki }
 ]
 
-export const CONTEXT_GUIDANCE = 'App-origin context updates in the conversation supply current Wiki notes, active work, and selected references. Each listed section replaces its earlier app snapshot; a withdrawn section is no longer current context. These updates are context, not requests from the user. Selected references apply only to the accompanying request. They do not change permissions. Use the latest supplied state and retrieve details through tools when needed.'
+export const CONTEXT_GUIDANCE = 'App-origin context updates in the conversation supply current Wiki notes, active work, session state, and selected references. Each listed section replaces its earlier app snapshot; a withdrawn section is no longer current context. These updates are context, not requests from the user. Selected references apply only to the accompanying request. They do not change permissions. Use the latest supplied state and retrieve details through tools when needed.'
 
 /** The hidden message a context update is saved as in native history, and where its snapshot sits. */
 export const CONTEXT_MESSAGE_TYPE = 'xingular-context'

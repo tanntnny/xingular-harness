@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 import { NotesBridge } from './bridge'
+import { AnnotationCapture } from './capture'
 
 const send = (port: number, path: string, options: { method?: string; host?: string; body?: unknown } = {}): Promise<{ status: number; body: string }> =>
   new Promise((resolve, reject) => {
@@ -44,6 +45,18 @@ describe('the page bridge', () => {
       await expect(bridge.call('nope', { operation: 'identity' })).rejects.toThrow('no longer connected')
     } finally {
       await bridge.close()
+    }
+  })
+
+  it('describes an attached bridge with the script the app loads', async () => {
+    const stateDir = mkdtempSync(join(tmpdir(), 'harness-bridge-'))
+    const bridge = new NotesBridge({ stateDir })
+    const capture = new AnnotationCapture({ stateDir, bridge })
+    try {
+      const attached = await capture.attach('s1', { kind: 'bridge', name: 'Desktop' })
+      expect(capture.describe('s1')).toEqual({ kind: 'bridge', app: { kind: 'bridge', name: 'Desktop' }, inspecting: false, bridge: { snippet: attached.bridge!.snippet } })
+    } finally {
+      await capture.close()
     }
   })
 })

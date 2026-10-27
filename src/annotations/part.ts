@@ -4,11 +4,10 @@
 import type { PluginDescriptor } from '../plugins/types'
 import type { ToolSpec } from '../tools/types'
 import type { WorldContext, WorldPart } from '../world/world'
-import { listAll, markFixed, read, visibleTo, type Note } from './store'
+import { listAll, read, visibleTo, type Note } from './store'
 
 export const PAGE_NOTES_LIST = 'page_notes_list'
 export const PAGE_NOTES_READ = 'page_notes_read'
-export const PAGE_NOTES_MARK_FIXED = 'page_notes_mark_fixed'
 const PAGE_SIZE = 20
 const LIST_CHARS = 12_000
 const EXCERPT = 240
@@ -21,13 +20,12 @@ export const ANNOTATIONS_PLUGIN: PluginDescriptor = {
   surfaces: {
     preferred: 'host',
     terminal: 'fallback',
-    note: 'In a desktop app you annotate directly on its browser tabs and app windows. In the terminal, /annotate:annotate opens a separate capture browser; the annotations and the agent\'s tools are the same.'
+    note: 'In a desktop app you annotate directly on its browser tabs and app windows. In the terminal, /annotate: opens a separate capture browser or attaches to an app\'s DevTools port; the annotations and the agent\'s tools are the same.'
   },
   switchable: { on: true },
   tools: [
     { name: PAGE_NOTES_LIST, description: 'List web annotations shared with you' },
-    { name: PAGE_NOTES_READ, description: 'Read a web annotation shared with you' },
-    { name: PAGE_NOTES_MARK_FIXED, description: 'Say you dealt with a web annotation sent to you' }
+    { name: PAGE_NOTES_READ, description: 'Read a web annotation shared with you' }
   ]
 }
 
@@ -64,7 +62,7 @@ function full(note: Note): string {
     detail,
     where,
     note.tags.length ? `Tags: ${note.tags.join(', ')}` : '',
-    note.delivery ? `Delivery: ${note.delivery.state}${note.delivery.summary ? ` — ${note.delivery.summary}` : ''}` : '',
+    note.delivery ? `Delivery: ${note.delivery.state === 'sent' ? 'sent to you' : 'shared, not sent yet'}` : '',
     `Updated ${note.updatedAt}`,
     '',
     'Body (the person\'s words):',
@@ -72,7 +70,7 @@ function full(note: Note): string {
   ].filter((line) => line !== '').join('\n')
 }
 
-export function annotationsPart(options: { root: () => string; changed?: (sessionId: string | null, ids: string[]) => void }): WorldPart {
+export function annotationsPart(options: { root: () => string }): WorldPart {
   const principal = (context: WorldContext) => ({ sessionId: context.caller.sessionId ?? context.sessionKey, agentId: context.caller.agentId ?? null })
   const visible = (context: WorldContext) => (note: Note) => visibleTo(note, principal(context))
   return {
@@ -126,31 +124,6 @@ export function annotationsPart(options: { root: () => string; changed?: (sessio
           }
           if (!note || !visible(context)(note)) return `No web annotation ${id || '(no id)'} is shared with you. ${PAGE_NOTES_LIST} lists the ones that are.`
           return `${NOTICE}\n\n${full(note)}`
-        }
-      },
-      {
-        name: PAGE_NOTES_MARK_FIXED,
-        label: 'Mark a web annotation fixed',
-        description: 'Tell the person you dealt with a web annotation they sent you, with one line on what you changed. It stays open until the person checks it and resolves it.',
-        parameters: (Type) => Type.Unsafe({
-          type: 'object', additionalProperties: false, required: ['id', 'summary'],
-          properties: {
-            id: { type: 'string', description: `An annotation id from ${PAGE_NOTES_LIST} or from the person's message.` },
-            summary: { type: 'string', description: 'One line on what you changed.' }
-          }
-        }),
-        execute: async (input) => {
-          const id = typeof input.id === 'string' ? input.id : ''
-          const summary = typeof input.summary === 'string' ? input.summary : ''
-          if (!summary.trim()) return 'Give a one-line summary of what you changed.'
-          let note: Note
-          try {
-            note = markFixed(options.root(), id, principal(context), summary)
-          } catch {
-            return `No web annotation ${id || '(no id)'} is shared with you. ${PAGE_NOTES_LIST} lists the ones that are.`
-          }
-          options.changed?.(note.delivery?.sessionId ?? null, [note.id])
-          return `Marked annotation ${note.id} as fixed. The person will check it and resolve it.`
         }
       }
     ]

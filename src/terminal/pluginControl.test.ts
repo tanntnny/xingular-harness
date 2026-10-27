@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { memorySecretStore } from '../accounts/secrets'
 import { createHarness, type Harness } from '../harness'
 import { runPluginsCli } from '../plugins/cli'
+import * as proposals from '../plugins/proposals'
 import type { Plugin } from '../plugins/types'
 import { rootWithProject, writeFile } from '../../tests/helpers'
 import { SOCKET_ENV, TOKEN_ENV, socketCall, type SocketConnection } from './client'
@@ -73,6 +74,24 @@ describe('plugin control from a terminal session', () => {
     // Without "everywhere", a switch from a terminal is for the session's project.
     const off = await socketCall<Plugin[]>(connection, 'plugins.detach', { id: plugin.id }, 5_000, key)
     expect(off.find((candidate) => candidate.id === plugin.id)!.attachment).toEqual({ global: true, on: { agentIds: [], projectIds: [] }, off: { agentIds: [], projectIds: ['p1'] } })
+  })
+
+  it('protects proposal review and checks the reviewed hash in the backend', async () => {
+    const { root, connection } = await session()
+    const proposal = proposals.create(root, 'new-kit', 'Review this', { 'README.md': 'hello' })
+    for (const method of ['list', 'preview', 'accept', 'reject']) {
+      await expect(socketCall(connection, `plugins.proposals.${method}`, { id: proposal.id, hash: proposal.hash })).rejects.toThrow('Only a person at this terminal')
+    }
+    const { key } = await socketCall<{ key: string }>(connection, 'control.claim')
+    const call = <T>(method: string, params: Record<string, unknown> = {}) => socketCall<T>(connection, method, params, 5_000, key)
+    expect(await call('plugins.proposals.list')).toMatchObject([{ id: proposal.id }])
+    const preview = await call<typeof proposal>('plugins.proposals.preview', { id: proposal.id })
+    await expect(call('plugins.proposals.accept', { id: proposal.id, hash: '0'.repeat(64) })).rejects.toThrow('Stale proposal review')
+    expect(await call('plugins.proposals.accept', { id: proposal.id, hash: preview.hash })).toMatchObject({ status: 'accepted' })
+    await expect(call('plugins.proposals.reject', { id: proposal.id, hash: preview.hash })).rejects.toThrow('no longer pending')
+    const other = proposals.create(root, 'another-kit', 'Review rejection', { 'README.md': 'contents' })
+    await expect(call('plugins.proposals.reject', { id: other.id, hash: '0'.repeat(64) })).rejects.toThrow('Stale proposal review')
+    expect(await call('plugins.proposals.reject', { id: other.id, hash: other.hash })).toMatchObject({ status: 'rejected' })
   })
 
   it('changes a plugin setting only for the person at the terminal, inside its range', async () => {

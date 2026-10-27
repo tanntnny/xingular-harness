@@ -2,7 +2,7 @@
 // session does to the harness, asks before each tool call, takes instructions the harness
 // queues for it, and gives the session the harness's own tools. It runs in the `pi` process,
 // so everything it knows about the harness comes through the session socket.
-import { createBashTool, createEditTool, createWriteTool, type AgentSession, type ExtensionAPI, type ExtensionContext } from '@earendil-works/pi-coding-agent'
+import { createBashTool, createEditTool, createPowerShellTool, createWriteTool, type AgentSession, type ExtensionAPI, type ExtensionContext } from '@earendil-works/pi-coding-agent'
 import { Type } from 'typebox'
 
 import { connectionFromEnv, socketCall, terminalCall } from './client'
@@ -10,19 +10,22 @@ import { controlCall } from './control'
 import { SPAWN_SUBAGENT, SUBAGENT_OWNER, SUBAGENT_RECEIPT, SUBAGENT_RESULTS, subagentHistory, type SubagentReceipt } from '../sessions/subagents'
 import { PLAN_RESEARCH_TOOLS } from '../agents/planResearch'
 import { askUserTool } from '../tools/askUser'
-import { checklistTool } from '../tools/checklist'
-import { checkpointTool } from '../tools/checkpoint'
+import { TODO_WRITE, todoTool } from '../tools/todo'
+import { CHECKPOINT_WRITE, checkpointTool } from '../tools/checkpoint'
 import { createSliceState, parseWorkSlice, workSliceGuard } from '../sessions/workSlice'
 import { DEFAULT_COMMAND_TIMEOUT_SECONDS, withCommandBudget } from '../core/commandBudget'
-import { sessionNameTool } from '../tools/sessionName'
+import { SESSION_NAME, deriveSessionName, sessionNameTool } from '../tools/sessionName'
 import { CAPABILITY_DISCOVERY, describeCapabilities } from '../tools/getCapabilities'
 import type { QuestionAnswer } from '../sessions/registry'
 import { PLAN_INSTRUCTIONS, planRefusal } from '../sessions/planMode'
 import { compactionCheckpoint } from '../sessions/compactionCheckpoint'
+import { sessionStateText } from '../prompt/compile'
+import type { SessionState } from '../sessions/sessionState'
+import type { TodoItem } from '../sessions/contracts'
 import { pruneToolImages } from '../world/images'
 import { parseInitialBashCommand } from '../sessions/initialBash'
 import { inspectWorkspaceWrite } from '../sessions/workspaceBoundary'
-import { withWorkspaceWriteScope } from '../core/workspaceBashTool'
+import { createWorkspaceShellTool } from '../core/workspaceBashTool'
 import { createWorkspaceBashOperations, runWithWorkspaceWriteScope } from '../core/workspaceSandbox'
 import { withWorkspaceWriteAuthorization, workspaceEditOperations, workspaceWriteOperations, type WorkspaceWriteAuthorization } from '../core/workspaceWriteOperations'
 import { BUDGET_GUARD, OUTPUT_TRIM, budgetGuard, outputTrim } from '../plugins/firstParty'
@@ -60,6 +63,7 @@ export default async function (pi: ExtensionAPI, planRun?: TerminalPlanRunState,
   let context: ExtensionContext | null = null
   let nativeSubagents = false
   let subagentParent = false
+  let stoppedChildren: { text: string; receipt: SubagentReceipt } | null = null
   let timer: ReturnType<typeof setInterval> | null = null
   let polling = false
   let failure: string | undefined
@@ -72,6 +76,10 @@ export default async function (pi: ExtensionAPI, planRun?: TerminalPlanRunState,
   const fileTools = new Map<string, string>()
   const writeAuthorizations = new Map<string, WorkspaceWriteAuthorization>()
   let workspaceRoot: string | null = null
+  let sessionState: string | null = null
+  let stateDelivered = false
+  let autoNameTried = false
+  let lastTodo: TodoItem[] = []
 
   // The harness's own tools for this session (connected apps and what the application offers).
   let stage = 'Tool discovery'
@@ -145,10 +153,24 @@ export default async function (pi: ExtensionAPI, planRun?: TerminalPlanRunState,
     },
     workspaceWriteScope: () => planRun?.active ? 'read-only' : undefined
   })
-  pi.registerTool(withWorkspaceWriteScope(createBashTool(process.cwd(), { operations: workspaceBash })))
+  pi.registerTool(createWorkspaceShellTool({ createBashTool, createPowerShellTool }, process.cwd(), workspaceBash))
   pi.registerTool(withWorkspaceWriteAuthorization(createWriteTool(process.cwd(), { operations: workspaceWriteOperations }), writeAuthorizations))
   pi.registerTool(withWorkspaceWriteAuthorization(createEditTool(process.cwd(), { operations: workspaceEditOperations }), writeAuthorizations))
 
+  // The current name and this run's todo ride with each request; they never change the stable prefix.
+  pi.on('context', (event) => {
+    if (!sessionState || stateDelivered) return
+    stateDelivered = true
+    return {
+      messages: [...event.messages, {
+        role: 'custom' as const,
+        customType: 'xingular-session-state',
+        content: sessionState,
+        display: false,
+        timestamp: Date.now()
+      }]
+    }
+  })
   compactionCheckpoint({ planInstructions: () => planRun?.active ? PLAN_INSTRUCTIONS : null })(pi)
 
   // A terminal reply is bounded like any other (PROP-0041): a checkpoint at the boundary, then the
@@ -156,7 +178,7 @@ export default async function (pi: ExtensionAPI, planRun?: TerminalPlanRunState,
   const slicePolicy = parseWorkSlice(undefined)
   const sliceState = createSliceState(slicePolicy)
   // `XINGULAR_WORK_SLICE=off` at launch leaves terminal replies unbounded, as before PROP-0041.
-  if (slicePolicy.enabled) workSliceGuard({ policy: slicePolicy, state: sliceState })(pi)
+  if (slicePolicy.enabled) workSliceGuard({ policy: slicePolicy, state: sliceState, checkpointAvailable: () => !planRun?.active || planRun.allowedTools.has(CHECKPOINT_WRITE) })(pi)
 
   // Only the latest screenshots stay in what the model sees (world/images.ts).
   pi.on('context', (event) => {
@@ -166,8 +188,13 @@ export default async function (pi: ExtensionAPI, planRun?: TerminalPlanRunState,
 
   pi.on('session_start', async (_event, ctx) => {
     context = ctx
+    sessionState = null
+    stateDelivered = false
+    autoNameTried = false
+    lastTodo = []
     if (timer) clearInterval(timer)
-    await terminalCall('ready', { nativeSessionId: ctx.sessionManager.getSessionFile() })
+    // The branch's parent runs let the controller show the latest one's rows again on reopen.
+    await terminalCall('ready', { nativeSessionId: ctx.sessionManager.getSessionFile(), owners: subagentHistory(ctx.sessionManager.getBranch?.() ?? []).owners })
     timer = setInterval(() => {
       if (polling || !context) return
       polling = true
@@ -196,13 +223,17 @@ export default async function (pi: ExtensionAPI, planRun?: TerminalPlanRunState,
     reasoningTokens = undefined
     costReported = false
     // A run a plugin starts with a custom message has no user prompt to record; it still begins a turn.
-    const begun = await terminalCall<{ runId: string; workspaceRoot: string }>('begin', { text: event.messageType === 'user' ? event.prompt : '' })
+    const begun = await terminalCall<{ runId: string; workspaceRoot: string }>('begin', { text: event.messageType === 'user' ? event.prompt : '', model: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : null, effort: pi.getThinkingLevel?.() ?? null })
     workspaceRoot = typeof begun.workspaceRoot === 'string' ? begun.workspaceRoot : null
     if (!workspaceRoot) throw new Error('The active project workspace could not be resolved; the turn was not started.')
+    // Every turn marks its run on the branch, so a reopened conversation finds its latest one.
+    pi.appendEntry(SUBAGENT_OWNER, { runId: begun.runId })
+    stoppedChildren = null
     if (nativeSubagents) {
-      pi.appendEntry(SUBAGENT_OWNER, { runId: begun.runId })
-      const snapshot = await controlCall<{ connectors?: string[] }>('terminal.subagents.register', { tools: pi.getActiveTools(), model: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : null, effort: pi.getThinkingLevel(), plan: planRun?.active === true, history: subagentHistory(ctx.sessionManager.getBranch()) })
+      const snapshot = await controlCall<{ connectors?: string[]; subagentProfiles?: { normal: string; plan: string }; notice?: { text: string; receipt: SubagentReceipt } | null }>('terminal.subagents.register', { tools: pi.getActiveTools(), model: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : null, effort: pi.getThinkingLevel(), plan: planRun?.active === true, history: subagentHistory(ctx.sessionManager.getBranch()) })
       if (planRun && Array.isArray(snapshot.connectors)) planRun.connectors = snapshot.connectors
+      if (planRun && snapshot.subagentProfiles) planRun.subagentProfiles = snapshot.subagentProfiles
+      stoppedChildren = snapshot.notice ?? null
       subagentParent = true
     }
     if (planRun && event.messageType === 'user') {
@@ -254,6 +285,48 @@ export default async function (pi: ExtensionAPI, planRun?: TerminalPlanRunState,
       ? `The user's initial Bash command was not run. Reason: ${refusal}. Do not claim that it ran; explain the limitation and ask how to proceed.`
       : 'The user’s initial Bash command has already run. Read its native Bash result and explain what it shows. Do not run the same command again unless the user explicitly asks.'
     return { message: { customType: 'xingular-initial-bash', content: instruction, display: false, details: {} } }
+  })
+  // A second handler, so the notice joins any initial-Bash message rather than replacing it.
+  pi.on('before_agent_start', async () => {
+    const notice = stoppedChildren
+    stoppedChildren = null
+    if (notice) return { message: { customType: SUBAGENT_RESULTS, content: notice.text, display: false, details: { [SUBAGENT_RECEIPT]: notice.receipt } } }
+  })
+  // A new user turn starts with an empty todo. The previous list is context, not this run's list.
+  // A substantive first turn also gets a provisional name when the terminal policy allows it.
+  pi.on('before_agent_start', async (event, ctx) => {
+    if (event.messageType !== 'user') return
+    const branch = ctx.sessionManager.getBranch?.() ?? []
+    const hasUser = branch.some((entry) => entry.type === 'message' && (entry as { message?: { role?: string } }).message?.role === 'user')
+    let name = typeof pi.getSessionName === 'function' ? pi.getSessionName() ?? null : null
+    if (!name && !autoNameTried && pi.setSessionName) {
+      const candidate = deriveSessionName(event.prompt)
+      if (candidate) {
+        autoNameTried = true
+        try {
+          const policy = await controlCall<{ allowed: boolean; requiresApproval?: boolean }>('terminal.policy', { tool: SESSION_NAME, args: { name: candidate } })
+          if (policy.allowed && !policy.requiresApproval) {
+            pi.setSessionName(candidate)
+            name = candidate
+          }
+        } catch {
+          // Session naming is metadata; a refused or failed name never fails the turn.
+        }
+      }
+    }
+    const state: SessionState = {
+      name,
+      todo: [],
+      ...(lastTodo.length ? { previousTodo: lastTodo } : {}),
+      firstTurn: !hasUser
+    }
+    lastTodo = []
+    const active = typeof pi.getActiveTools === 'function' ? pi.getActiveTools() : null
+    sessionState = sessionStateText(state, {
+      name: active ? active.includes(SESSION_NAME) : true,
+      todo: active ? active.includes(TODO_WRITE) : true
+    })
+    stateDelivered = false
   })
   const deliverChildren = async (event: any, ctx: ExtensionContext, settle: boolean) => {
     if (!nativeSubagents || (settle && event.outcome !== 'completed') || ctx.signal?.aborted) return
@@ -392,6 +465,10 @@ export default async function (pi: ExtensionAPI, planRun?: TerminalPlanRunState,
     if (timer) clearInterval(timer)
     timer = null
     context = null
+    sessionState = null
+    stateDelivered = false
+    autoNameTried = false
+    lastTodo = []
     // This clears the controller's readiness while the next native session binds. The
     // process-level control claim survives replacement; only the session poller stops.
     await terminalCall('shutdown').catch(() => {})
@@ -408,16 +485,18 @@ export default async function (pi: ExtensionAPI, planRun?: TerminalPlanRunState,
       return { content: [{ type: 'text', text: typeof result === 'string' ? result : result.text }], details: undefined }
     }
   })
-  // The checklist is recorded on the harness run; the shared tool validates and the socket carries the event.
+  // The todo list is recorded on the harness run; the shared tool validates and the socket carries the event.
   let recorded: Promise<unknown> = Promise.resolve()
-  const checklist = checklistTool({ emit: (_type, payload) => { recorded = terminalCall('checklist', payload as Record<string, unknown>) } })
+  const todo = todoTool({ emit: (_type, payload) => { recorded = terminalCall('todo', payload as Record<string, unknown>) } })
   pi.registerTool({
-    name: checklist.name, label: checklist.label, description: checklist.description,
-    parameters: Type.Unsafe(checklist.parameters(Type) as Record<string, unknown>),
+    name: todo.name, label: todo.label, description: todo.description,
+    parameters: Type.Unsafe(todo.parameters(Type) as Record<string, unknown>),
     async execute(_id, input) {
       recorded = Promise.resolve()
-      const result = await checklist.execute(input as Record<string, unknown>)
+      const result = await todo.execute(input as Record<string, unknown>)
       await recorded
+      const items = (input as { items?: unknown }).items
+      if (Array.isArray(items)) lastTodo = items as TodoItem[]
       return { content: [{ type: 'text', text: typeof result === 'string' ? result : result.text }], details: undefined }
     }
   })

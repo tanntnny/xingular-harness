@@ -1,5 +1,7 @@
 // What a package says about itself in its `package.json`: Pi's own fields, and under `harness`
-// which part of the harness it extends, its command namespace and the file of hooks it runs.
+// which part of the harness it extends, its command namespace, the file of hooks it runs and the
+// folder of subagent profiles it brings. A package written for other agent harnesses may have no
+// `package.json`; its `plugin.json` then names and describes it.
 import { basename, join } from 'node:path'
 import { z } from 'zod'
 
@@ -16,6 +18,8 @@ export interface PackageManifest {
   commandPrefix: string | null
   /** The hooks file, inside the package, or `null` when it has none. */
   hooks: string | null
+  /** The folder of subagent profiles, inside the package. `agents` unless the manifest names another. */
+  agents: string
   /** Data-only remote connector forms. Invalid templates are ignored; none can carry credentials. */
   connectorTemplates: ConnectorTemplate[]
 }
@@ -61,16 +65,33 @@ function inside(path: unknown): string | null {
   }
 }
 
+/** The plugin manifests other agent harnesses read, in the order they are tried. */
+const PLUGIN_MANIFESTS = ['plugin.json', '.claude-plugin/plugin.json', '.codex-plugin/plugin.json'] as const
+
+const text = (value: unknown): string | null => (typeof value === 'string' && value.trim() ? value.trim() : null)
+
+function pluginJson(packageRoot: string): Raw {
+  for (const file of PLUGIN_MANIFESTS) {
+    const found = readJsonOr<unknown>(join(packageRoot, file), null)
+    if (found && typeof found === 'object' && !Array.isArray(found)) return found as Raw
+  }
+  return {}
+}
+
 export function packageManifest(packageRoot: string): PackageManifest {
   const manifest = readJsonOr<Raw>(join(packageRoot, 'package.json'), {})
-  const own = (manifest.harness && typeof manifest.harness === 'object' && !Array.isArray(manifest.harness) ? manifest.harness : {}) as { extends?: unknown; hooks?: unknown; connectors?: unknown; commandPrefix?: unknown }
+  // Only a package without a name of its own is described by its plugin.json.
+  const plugin = text(manifest.name) ? {} : pluginJson(packageRoot)
+  const own = (manifest.harness && typeof manifest.harness === 'object' && !Array.isArray(manifest.harness) ? manifest.harness : {}) as { extends?: unknown; hooks?: unknown; agents?: unknown; connectors?: unknown; commandPrefix?: unknown }
+  const pluginName = text(plugin.name)
   return {
-    name: typeof manifest.name === 'string' && manifest.name ? manifest.name : basename(packageRoot),
-    description: typeof manifest.description === 'string' ? manifest.description : '',
-    version: typeof manifest.version === 'string' ? manifest.version : null,
+    name: text(manifest.name) ?? (pluginName && /^[a-z0-9][a-z0-9._-]*$/i.test(pluginName) ? pluginName : basename(packageRoot)),
+    description: text(manifest.description) ?? text(plugin.description) ?? '',
+    version: text(manifest.version) ?? text(plugin.version),
     extends: (Array.isArray(own.extends) ? own.extends : typeof own.extends === 'string' ? [own.extends] : []).filter((id): id is string => typeof id === 'string' && !!id),
     commandPrefix: typeof own.commandPrefix === 'string' && /^[a-z][a-z0-9-]*$/i.test(own.commandPrefix) && !['plugin', 'skill'].includes(own.commandPrefix.toLowerCase()) ? own.commandPrefix.toLowerCase() : null,
     hooks: inside(own.hooks),
+    agents: inside(own.agents) ?? 'agents',
     connectorTemplates: (Array.isArray(own.connectors) ? own.connectors : []).flatMap((value) => {
       const parsed = connectorTemplateSchema.safeParse(value)
       return parsed.success ? [parsed.data] : []

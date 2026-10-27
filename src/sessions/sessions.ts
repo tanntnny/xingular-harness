@@ -25,9 +25,10 @@ import { imagePruning } from '../world/images'
 import { materialise, type VariantChoice, type Materialised } from '../variant/materialise'
 import type { VariantTrust } from '../variant/trust'
 import { ASK_USER } from '../tools/askUser'
-import { CHECKLIST_WRITE } from '../tools/checklist'
+import { defaultSkillPaths } from '../tools/defaultSkills'
+import { TODO_WRITE } from '../tools/todo'
 import { CHECKPOINT_WRITE, checkpointOf } from '../tools/checkpoint'
-import { SESSION_NAME, sessionNameTool } from '../tools/sessionName'
+import { SESSION_NAME, deriveSessionName, sessionNameTool } from '../tools/sessionName'
 import { DEFAULT_TOOL_NAMES } from '../tools/definitions'
 import { GET_CAPABILITIES, getCapabilitiesTool } from '../tools/getCapabilities'
 import type { ToolProvider, ToolSession, ToolSpec } from '../tools/types'
@@ -37,6 +38,7 @@ import { SPAWN_SUBAGENT, WAIT_SUBAGENTS, subagentDepth, subagentHistory, subagen
 import type { Subagents } from './subagentService'
 import { selectHistory } from './history'
 import { runLineageJoin } from './lineageJoin'
+import { latestSessionName, type SessionState } from './sessionState'
 import { compactionCheckpoint, COMPACTION_CHECKPOINT_EXTENSION } from './compactionCheckpoint'
 import { createSliceState, parseWorkSlice, sliceOf, workSliceGuard, WorkSliceError, WORK_SLICE_EXTENSION, type SlicePolicy, type WorkSliceInput } from './workSlice'
 import type { ToolPolicy } from './policy'
@@ -87,6 +89,11 @@ export interface SessionRunInput {
    * Its version is pinned for the whole run and recorded on it.
    */
   variant?: VariantChoice | null
+  /**
+   * The subagent profile files this session's switched-on packages bring, chosen when it starts.
+   * The harness sets it; children of the run resolve their profiles from the same list.
+   */
+  packageProfiles?: string[]
   /** What the application adds to the prompt, and which tools it describes. */
   launch?: Launch
   /** The tools switched on, in the order the model sees them, and those that ask before each call. */
@@ -103,6 +110,8 @@ export interface SessionRunInput {
   providers?: boolean
   /** Give the session the harness's own tools: History, the Wiki, skills, and other defaults. */
   harnessTools?: boolean
+  /** Set a provisional name when a top-level session starts unnamed. Defaults to true. */
+  autoName?: boolean
   /**
    * Plan mode: an attended run may read, search, recall and ask, and is told to end with a
    * `<proposed_plan>` block. Other calls are refused at the gate; the system prompt stays stable.
@@ -483,7 +492,7 @@ export class Sessions {
     const canAskUser = pinnedAskUser || (interactivePlan && harnessToolsEnabled)
     const requestedTools = [...new Set([
       ...input.tools.allow.filter((name) => name !== SPAWN_SUBAGENT && name !== WAIT_SUBAGENTS && (name !== ASK_USER || canAskUser)),
-      ...(harnessToolsEnabled ? [...(canAskUser ? [ASK_USER] : []), CHECKLIST_WRITE, CHECKPOINT_WRITE, SESSION_NAME, GET_CAPABILITIES, ...DEFAULT_TOOL_NAMES] : []),
+      ...(harnessToolsEnabled ? [...(canAskUser ? [ASK_USER] : []), TODO_WRITE, CHECKPOINT_WRITE, SESSION_NAME, GET_CAPABILITIES, ...DEFAULT_TOOL_NAMES] : []),
       ...(broker?.toolNames ?? []),
       ...(canSpawn ? [SPAWN_SUBAGENT, WAIT_SUBAGENTS] : [])
     ])]
@@ -537,7 +546,9 @@ export class Sessions {
       variantScope: variant?.scope ?? null,
       variantVersion: variant?.fingerprint ?? null,
       ...(input.run.profile ? { profile: input.run.profile } : {}),
-      ...(input.run.title ? { title: input.run.title } : {})
+      ...(input.run.title ? { title: input.run.title } : {}),
+      ...(input.model ? { model: input.model } : {}),
+      ...(input.effort ? { effort: input.effort } : {})
     })
 
     // What the session is, kept with the run so later consolidation knows which memory it had.
@@ -553,6 +564,30 @@ export class Sessions {
       log(`session ${runId} did not start: ${message}`, code)
     }
 
+    // Plugins are resolved once per run: for the profiles the prompt lists, then for what Pi loads.
+    const { plugins } = this.options
+    let pluginLoading: ReturnType<Plugins['loading']> | null = null
+    const loadPlugins = plugins
+      ? () => (pluginLoading ??= plugins.loading({ cwd: input.cwd, agentDir: context.configDir, install: true, caller: { agentId: caller.agentId ?? null, projectId: caller.projectId ?? null }, contributions: capabilities.contributions }))
+      : null
+
+    // A person's main session sees its current name and whether this run's todo is empty. A
+    // command, child, side question or unattended run has no such state to show.
+    const stateEligible = !input.command
+      && !input.run.relation
+      && (input.depth ?? 0) === 0
+      && !input.automatic
+      && (input.run.trigger == null || input.run.trigger === 'user')
+    const existingName = stateEligible ? latestSessionName(historyFile) : null
+    const sessionState: SessionState | undefined = stateEligible
+      ? {
+          name: existingName,
+          todo: [],
+          ...(continuation?.todo.length ? { previousTodo: continuation.todo } : {}),
+          firstTurn: !historyFile
+        }
+      : undefined
+
     let system: string
     let update: TurnParams['update']
     try {
@@ -562,11 +597,20 @@ export class Sessions {
       const delivered = historyFile ? deliveredSnapshot(historyFile) : null
       const resumed = continuationSection(continuation, delivered?.some((entry) => entry.id === CONTINUATION_SECTION_ID) ?? false)
       // The profiles replace the variant's own subagent list, which they include.
-      const profiles = capabilities.tools.includes(SPAWN_SUBAGENT) ? profileSection(root, input.cwd, variant?.dir ?? null, input.plan === true) : null
+      const researchContext = input.plan === true ? {
+        frozenTools: capabilities.tools,
+        contributions: capabilities.contributions,
+        descriptors: BUILTIN_PLUGIN_REGISTRY.descriptors()
+      } : undefined
+      if (capabilities.tools.includes(SPAWN_SUBAGENT) && loadPlugins && !input.automatic) input.packageProfiles = (await loadPlugins()).profilePaths
+      const profiles = capabilities.tools.includes(SPAWN_SUBAGENT)
+        ? profileSection(root, input.cwd, variant?.dir ?? null, input.plan === true, researchContext, input.packageProfiles ?? [])
+        : null
       if (profiles && variant) variant = { ...variant, sections: variant.sections.filter((section) => section.id !== profiles.id) }
       const own = [plan, resumed, profiles].filter((section): section is NonNullable<typeof section> => section !== null)
       const effectiveLaunch = {
         ...launch,
+        ...(sessionState ? { sessionState } : {}),
         sections: own.length ? [...(launch.sections ?? []).filter((section) => !own.some((entry) => entry.id === section.id)), ...own] : launch.sections,
         tools: capabilities.tools,
         connectionTools: (launch.connectionTools ?? []).filter((name) => capabilities.tools.includes(name)),
@@ -578,8 +622,10 @@ export class Sessions {
       throw error
     }
 
-    // A reply is bounded only when its checkpoint tool is part of the frozen capability set.
-    const sliceEnabled = slicePolicy.enabled && capabilities.tools.includes(CHECKPOINT_WRITE)
+    // Plan-research children are bounded too, but their read-only capability set omits checkpoint_write.
+    const checkpointAvailable = capabilities.tools.includes(CHECKPOINT_WRITE)
+    const planResearchChild = input.plan === true && input.run.relation === 'subagent'
+    const sliceEnabled = slicePolicy.enabled && (checkpointAvailable || planResearchChild)
     const sliceState = createSliceState(slicePolicy, sliceOf(root, runId))
     const run = this.options.runs.start(input.run.sessionId, runId)
     if (run.finished) return { runId, nativeSessionId: null }
@@ -589,7 +635,6 @@ export class Sessions {
     // What every session has, after the tools the caller switched on and in a fixed order.
     const allow = capabilities.tools
     const session: ToolSession = { run, caller, allow, depth, cwd: input.cwd, capabilities }
-    const { plugins } = this.options
 
     let pi: PiSessionLike | undefined
     const naming = sessionNameTool(() => {
@@ -667,17 +712,17 @@ export class Sessions {
         preamble: input.preamble ?? null,
         automatic: input.automatic,
         account: context,
-        resources: { ids: [], skillPaths: variant?.skillPaths ?? [], promptPaths: [] },
+        resources: { ids: [], skillPaths: [...(variant?.skillPaths ?? []), ...defaultSkillPaths(variant?.dir)], promptPaths: [] },
         variantExtensions: variant?.extensionPaths ?? [],
         inline: [
           ...firstPartyFor(root, capabilities.contributions),
           runLineageJoin(root, runId),
           this.options.subagents.extension(runId),
           { name: 'image-pruning', factory: imagePruning() },
-          { name: COMPACTION_CHECKPOINT_EXTENSION, factory: compactionCheckpoint({ initialChecklist: continuation?.checklist, planInstructions: checkpointPlanInstructions }) },
-          ...(sliceEnabled ? [{ name: WORK_SLICE_EXTENSION, factory: workSliceGuard({ policy: slicePolicy, state: sliceState }) }] : [])
+          { name: COMPACTION_CHECKPOINT_EXTENSION, factory: compactionCheckpoint({ initialTodo: continuation?.todo, planInstructions: checkpointPlanInstructions }) },
+          ...(sliceEnabled ? [{ name: WORK_SLICE_EXTENSION, factory: workSliceGuard({ policy: slicePolicy, state: sliceState, checkpointAvailable }) }] : [])
         ],
-        ...(plugins ? { plugins: { loading: () => plugins.loading({ cwd: input.cwd, agentDir: context.configDir, install: true, caller: { agentId: caller.agentId ?? null, projectId: caller.projectId ?? null }, contributions: capabilities.contributions }), loaded: (extensions) => plugins.loaded(extensions) } } : {}),
+        ...(plugins && loadPlugins ? { plugins: { loading: loadPlugins, loaded: (extensions) => plugins.loaded(extensions) } } : {}),
         system,
         ...(sliceEnabled ? { slice: { state: sliceState, maxToolCalls: slicePolicy.maxToolCalls } } : {}),
         // A command sends no request of its own, so the context update waits for the next turn.
@@ -704,10 +749,27 @@ export class Sessions {
         run.finish('failed', { code: 'native_resume_unavailable', message: 'The saved conversation could not be restored.' })
         throw new HarnessError('native_resume_unavailable', 'The saved conversation could not be restored.')
       }
+      // The fallback is a name, not a task step: a refused or failed name never fails the run.
+      if (stateEligible && input.autoName !== false && !existingName && !pi.sessionName
+        && pi.setSessionName && capabilities.tools.includes(SESSION_NAME)) {
+        const name = deriveSessionName(input.text)
+        if (name) {
+          try {
+            if (await gate.check(SESSION_NAME, { name }) === null) pi.setSessionName(name)
+          } catch {
+            // Session naming is metadata; leave the session unnamed.
+          }
+        }
+      }
       const opened = pi
-      updateRun(root, runId, (record) => void (record.nativeSessionId = opened.sessionId))
+      const openedModel = pi.model?.id && pi.model.provider ? `${pi.model.provider}/${pi.model.id}` : null
+      updateRun(root, runId, (record) => {
+        record.nativeSessionId = opened.sessionId
+        if (openedModel) record.model = openedModel
+        if (opened.thinkingLevel) record.effort = opened.thinkingLevel
+      })
       this.options.subagents.register(input, account.id, capabilities, Boolean(pi.sessionManager))
-      if (pi.model?.id && pi.model.provider) this.options.subagents.resolvedModel(runId, `${pi.model.provider}/${pi.model.id}`, pi.thinkingLevel)
+      if (openedModel) this.options.subagents.resolvedModel(runId, openedModel, pi.thinkingLevel)
       params.settle = () => this.options.subagents.verify(runId, opened.sessionManager ? subagentHistory(opened.sessionManager.getBranch()) : undefined)
       void runTurn(run, pi, params).then(() => (sliceEnabled && !input.command ? this.continueSlice({ root, runId, source: input, policy: slicePolicy }) : undefined))
       return { runId, nativeSessionId: pi.sessionId }

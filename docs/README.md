@@ -17,6 +17,9 @@ change the binding architecture or describe implemented capabilities.
 
 | ID | Record | Type | Status | Related |
 |---|---|---|---|---|
+| ADR-0047 | [A link a person clicks opens with the system's handler](decisions/ADR-0047-links-open-with-the-os-handler.md) | Decision | Implemented in the Harness, the terminal and the App; acceptance not certified | [10 Server protocol](architecture/10-server-protocol.md), [parity register](parity.md) |
+| ADR-0046 | [Hash-bound plugin proposal review](decisions/ADR-0046-hash-bound-plugin-proposals.md) | Decision | Harness API and model proposal tool implemented; review surfaces pending | [06 Plugins](architecture/06-plugins-and-capabilities.md), [parity register](parity.md) |
+| ADR-0045 | [Release-owned plugin-authoring skill](decisions/ADR-0045-default-plugin-authoring-skill.md) | Decision | Implemented as an on-demand resource | [06 Plugins](architecture/06-plugins-and-capabilities.md) |
 | PROP-0026 | [Connect structural sketch lines in the terminal display](architecture/proposals/PROP-0026-connected-sketch-display.md) | Proposal | Implemented; working tree and isolated fixtures verified | [ADR-0027](decisions/ADR-0027-connected-sketch-display.md), [11 Terminal](architecture/11-terminal.md), [parity register](parity.md) |
 | ADR-0027 | [Project structural ASCII sketch lines into connected terminal borders](decisions/ADR-0027-connected-sketch-display.md) | Decision | Accepted; working tree and isolated fixtures verified | [PROP-0026](architecture/proposals/PROP-0026-connected-sketch-display.md), [14 Surfaces and parity](architecture/14-surfaces-and-parity.md) |
 | FW-0001 | [Agent Modes, starting with Router Agent Mode](future-work.md#fw-0001-agent-modes-starting-with-router-agent-mode) | Future work | Candidate; requires architecture proposal before implementation | [Architecture glossary](architecture/README.md#glossary), [Feature guide](features/README.md#planned-agent-modes) |

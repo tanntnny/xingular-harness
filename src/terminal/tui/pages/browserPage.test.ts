@@ -51,6 +51,15 @@ describe('unified Harness browser', () => {
     expect(useSkill).not.toHaveBeenCalled()
   })
 
+  it('does not offer an unsupported JSON preview for a Hub Pi package', async () => {
+    const { page, snapshot } = setup({ section: 'plugins', source: 'discover' })
+    snapshot.hub!.entries.push({ id: 'community/package-review', title: 'Package review', description: 'A Pi package.', publisher: 'Someone', channel: 'community', category: 'plugin', version: '1.0.0', license: 'MIT', tags: [], requires: {}, sourceUrl: 'https://example.com/source', delivery: { kind: 'pi-package', source: 'npm:package-review@1.0.0' } })
+    page.activate()
+    await vi.waitFor(() => expect(plain(page)).toContain('Package review'))
+    page.handleInput('\r')
+    expect(plain(page)).not.toContain('Preview reviewed content')
+  })
+
   it('preserves search across Installed / Discover and shows real community entries', async () => {
     const { page } = await ready()
     page.handleInput('review')

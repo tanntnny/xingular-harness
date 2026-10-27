@@ -1,16 +1,16 @@
 # Architecture proposals
 
-A proposal is required before any change that alters a contract, an invariant, a layer
-boundary, an extension point, or the storage layout described in [the specification](../README.md).
-The author writes it and stops; the user reviews it. Code and spec pages change only after the
-proposal is `Accepted`.
+Proposals are optional design records for changes to contracts, invariants, layer boundaries,
+extension points, or storage layout in [the specification](../README.md). They may be written before
+or alongside implementation, but do not gate code or spec changes. When a proposal is created, add
+it to the index and update its status as the work progresses.
 
 ## Status
 
 | Status | Meaning |
 |---|---|
-| `Proposed` | Written, waiting for the user. Nothing has changed. |
-| `Accepted` | The user approved it. Implement it and update the spec pages in the same change. |
+| `Proposed` | A draft design record; implementation status is tracked separately. |
+| `Accepted` | The user approved the design. Approval is not a prerequisite to implementation. |
 | `Implemented` | Code and spec pages match the proposal. Link the commit or ADR. |
 | `Rejected` | The user declined it. The file stays as a record. |
 | `Withdrawn` | The author dropped it before review. |
@@ -73,6 +73,11 @@ proposal is `Accepted`.
 | [PROP-0041](PROP-0041-bounded-work-slices.md) | Bounded work slices, a durable checkpoint, and a stall guard for long replies | Implemented; terminal card, App presentation and /slices open (PAR-004) | INV-RUN-2/3/4/12, INV-PRM-1/2/4/5/10, INV-GATE-2, INV-STO-3, INV-PAR-1/2, 02, 04, 07, 10–12, 14, parity | 2026-10-26 |
 | [PROP-0042](PROP-0042-usage-and-provider-limits.md) | Usage analytics and provider limits as a built-in capability | Accepted; implemented | INV-MEM-5/6, INV-STO-2, INV-SRV-1, INV-PLG-10, INV-ACC-3, 02, 06, 08–12, 14, parity, ADR-0037 | 2026-10-26 |
 | [PROP-0043](PROP-0043-read-only-plan-bash.md) | Read-only Bash in plan mode, enforced by the OS sandbox | Accepted; implemented | INV-RUN-8, INV-GATE-3/8, 02, 07, 11, terminal-tui, parity, ADR-0038 | 2026-10-26 |
+| [PROP-0044](PROP-0044-work-slice-defaults.md) | Raise the work-slice defaults to 320 tool calls and 60 minutes, with no token cap | Accepted; implemented | INV-RUN-13, 02, 10, 11, PROP-0041 | 2026-10-26 |
+| [PROP-0045](PROP-0045-rename-checklist-to-todo.md) | Rename the run checklist to todo and add the /todo command | Accepted; implemented | 02, 04, 06, 07, 10, 11, 14, parity, terminal-tui, README, PROP-0006 | 2026-10-26 |
+| [PROP-0046](PROP-0046-progress-aware-stall-guards.md) | Progress-aware stall guards and bounded plan research children | Implemented; ADR-0039 | INV-RUN-13, 02-sessions-and-runs.md, PROP-0041, terminal-tui.md, ADR-0039 | 2026-10-27 |
+| [PROP-0047](PROP-0047-plugins-hub-separation.md) | Separate local plugin management from Community Hub discovery | Implemented; ADR-0041 | INV-MCP-4, INV-TUI-2/4, INV-PAR-1/2, 06, 09, 10, 11, 14, terminal-tui.md, parity.md | 2026-10-27 |
+| [PROP-0048](PROP-0048-simple-annotate.md) | One annotate page, two actions, and easy app attach | Implemented; ADR-0044 | PROP-0018, 07, 10, 11, 13, terminal-tui.md, parity.md | 2026-10-27 |
 
 Numbers are four digits, start at `0001`, and are never reused.
 

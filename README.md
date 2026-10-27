@@ -45,9 +45,9 @@ index](docs/README.md) links the architecture and other project records.
 - `providers: false` runs a session with the harness's own tools only.
 - `variant: { scope }` runs the session on that scope's head variant (or `{ scope, version }`, or `{ dir }` for a variant on disk). The version is pinned for the run and recorded on it.
 - On the caller, `recallExcludeAgents` hides those agents' conversations from history and trajectory tools.
-- `harnessTools: false` runs a session without the History, Wiki and skill tools (and without `ask_user` and `checklist_write`).
-- Every session with harness tools gets `checklist_write`: the model sends its whole checklist (`pending`, `in_progress`, `completed`, at most 50 steps) and the run records it as a `checklist.updated` event. `checklistOf(events)` or the `runs.checklist` method reads the latest one. Plan mode allows it.
-- `continueFrom: <run id>` continues a run that stopped before it finished (interrupted or failed) as a new run. `harness.recovery.interruptedRunIds` lists the runs `open` marked interrupted, and `continuationOf(root, runId, sessionDir)` (`runs.continuation`) says whether one can be continued and what it left: checklist, unanswered approvals and questions, the last tool and whether it finished, unfinished subagents. The new run reopens the same native history, records `resumedFromRunId`, keeps the account, variant version and capability set (`continuation_mismatch` otherwise), and the model is told where the earlier run stopped. The harness never continues a run by itself; which runs to continue, and when, is the application's choice.
+- `harnessTools: false` runs a session without the History, Wiki and skill tools (and without `ask_user` and `todo_write`).
+- Every session with harness tools gets `todo_write`: the model sends its whole todo list (`pending`, `in_progress`, `completed`, at most 50 steps) and the run records it as a `todo.updated` event. `todoOf(events)` or the `runs.todo` method reads the latest one. Plan mode allows it. The pre-rename `checklist_write` and `checklist.updated` are still read, `runs.checklist` is a deprecated alias, and `checklistOf`/`CHECKLIST_WRITE` remain deprecated exports for one release (PROP-0045).
+- `continueFrom: <run id>` continues a run that stopped before it finished (interrupted or failed) as a new run. `harness.recovery.interruptedRunIds` lists the runs `open` marked interrupted, and `continuationOf(root, runId, sessionDir)` (`runs.continuation`) says whether one can be continued and what it left: todo list, unanswered approvals and questions, the last tool and whether it finished, unfinished subagents. The new run reopens the same native history, records `resumedFromRunId`, keeps the account, variant version and capability set (`continuation_mismatch` otherwise), and the model is told where the earlier run stopped. The harness never continues a run by itself; which runs to continue, and when, is the application's choice.
 - The first-party `lessons` plugin (off by default) reflects on a completed top-level run with enough tool calls and may keep one general lesson in the Wiki under `library/lessons/`, in refinement's cue/lesson shape. It uses the run's own account and model, read-only file tools, and is capped (`minToolCalls`, `maxLessons`, `maxChars`). See PROP-0008.
 
 Every session also gets `trajectory_search` and `trajectory_read` from the built-in History plugin.
@@ -178,9 +178,12 @@ working folder brings.
   against that before each delivery. `ctx.call(connection, tool, args)` reaches a connected app
   that is on for everyone, and only a tool marked to run without asking. A working folder's
   package cannot bring a hook. An embedding application adds no hook events of its own yet.
-- **An agent can propose a plugin, and only propose.** `plugin_propose` parks a set of files in
-  the Inbox. Accepting writes `<data root>/plugins/<name>/` with a `package.json` the harness
-  wrote, switched off and untrusted. No tool accepts, switches on or trusts.
+- **An agent can propose a plugin, and only propose.** `plugin_propose` stores a pending set of
+  text files; the release-owned `plugin-authoring` skill offers on-demand guidance. A trusted caller
+  can preview and accept or reject through `plugins.proposals.*` using the preview hash. Acceptance
+  writes `<data root>/plugins/<name>/` with a Harness-generated `package.json`, switched off and
+  without granting code trust. No model tool accepts, switches on or trusts. A terminal review UI
+  is pending; an App review UI is not claimed. See [plugin architecture](docs/architecture/06-plugins-and-capabilities.md#contracts).
 - **Two plugins ship with the harness, switched off.** `output-trim` cuts a tool result longer
   than its limit to its beginning and its end before the model reads it; `budget-guard` refuses
   tool calls once a run passed a limit of model requests or tokens, leaves the agent one request
@@ -272,6 +275,11 @@ The machine needs Node 22.19 or newer and Bun 1.3.14 or newer. Harness runs its 
 terminal frontend with Bun, using its pinned Pi SDK; no separate global `pi` installation is
 required. On first launch, it creates a `Default` isolated account. Use `/accounts` to sign in.
 
+On Windows the shell tool works without extra setup: it uses Git Bash when Git for Windows is
+installed and PowerShell otherwise. Windows has no sandbox the harness can use to keep commands
+inside the project, so each command asks for approval unless Full Permission is on, and plan mode
+does not run commands. File edits work as usual.
+
 Provider sign-in progress lives in the running Harness process. An embedding application can call
 `accounts.loginStatus` after reconnecting to recover the current device code or prompt by account;
 the status carries a revision so it can be safely merged with streamed login events. Progress is
@@ -313,10 +321,10 @@ as `run.worktreeId` and the session works in it. See
 
 ### Web annotations
 
-`/annotate:` (or `/annotate:annotate [url]`) opens a visible capture browser (its own window and profile, separate from the
+`/annotate: [url]` opens a visible capture browser (its own window and profile, separate from the
 agent's browser). Annotate the whole page, select a passage, or click an element there, then write a
-comment in the terminal. `/annotate:notes` lists, edits, resolves, reveals and deletes annotations. An annotation is private
-until you share it with the session; its agent then reads it with `page_notes_list` and
+comment. `/annotate:notes` lists, edits, resolves, reveals and deletes annotations. An annotation made in the inspector is
+shared with the session at once; others stay private until you share them; its agent then reads it with `page_notes_list` and
 `page_notes_read`, with quoted page text marked untrusted. Annotations live in `<data root>/annotations/`
 and the `annotations.*` server methods give a host the same store. A host with its own web view
 runs the same page helper (`annotations.pageScript`). See
@@ -324,13 +332,14 @@ runs the same page helper (`annotations.pageScript`). See
 
 `/annotate:` opens the inspector:
 - Hover a component in the browser or an app window, click it, and write a comment in the popover.
-- Then keep it as a note, add it to the agent's queue, or send it now. The agent reports back with `page_notes_mark_fixed`.
+- Choose **Annotate** (the agent can read it) or **Annotate & send** (sends every unsent annotation now). `s` in the page does the same as the second.
+- `/annotate:submit <request>` sends the unsent annotations with your request; `/annotate:clear` resolves the unsent ones.
 - App windows work two ways:
-  - **DevTools port:** start an Electron app with `--remote-debugging-port=9229` and run `/annotate:annotate --app 9229`.
-  - **Page bridge:** for a macOS web view such as Tauri, run `/annotate:annotate --bridge` and load the script tag it shows while developing the app. Allow `http://127.0.0.1:<port>` in the app's `script-src` and `connect-src`.
+  - **DevTools port:** press `a` in the page (or run `/annotate: --app`) to list the Electron and Chromium apps running with a DevTools port, type a port, or start an app with one. `/annotate: --app 9229` attaches directly.
+  - **Page bridge:** for a macOS web view such as Tauri, run `/annotate: --bridge` and load the script tag it shows while developing the app. Allow `http://127.0.0.1:<port>` in the app's `script-src` and `connect-src`.
 - A host drives the same flow with `annotations.capture.*`, and sends to its own sessions with `annotations.compose` and `annotations.delivered`.
 
-See [PROP-0018](docs/architecture/proposals/PROP-0018-annotation-queue-and-app-targets.md).
+See [PROP-0018](docs/architecture/proposals/PROP-0018-annotation-queue-and-app-targets.md) and [PROP-0048](docs/architecture/proposals/PROP-0048-simple-annotate.md).
 
 Building a checkout does not update an existing global `xagent` installation.
 To replace that command with this checkout, run `npm pack`, then install the exact tarball
@@ -350,8 +359,8 @@ remain behind the terminal. No Pi `InteractiveMode` is constructed.
 Harness terminal commands stay unprefixed: `/doctor`, `/worktree`, `/trajectory`, `/subagents`,
 `/agents`, and `/mcp`. `/history` continues to navigate session branches. These commands are
 registered independently of feature-plugin command metadata. Other plugin-owned commands use
-`/<owner-prefix>:<command>`; for example, annotate a page with `/annotate:annotate
-https://example.com`, or open the default annotation pane with `/annotate:`. Former owner-qualified
+`/<owner-prefix>:<command>`; for example, annotate a page with `/annotate:
+https://example.com`, or list every annotation with `/annotate:notes`. Former owner-qualified
 and `/plugin:<command>` routes for promoted Harness commands remain hidden compatibility aliases for
 one release; help and completion show only canonical forms.
 
@@ -517,6 +526,6 @@ A host providing its own browser tools sets `browser: false` on `createHarness` 
 generic backend and prevent tool-name collisions. The desktop App uses this for shared tabs.
 The default standalone Harness keeps its isolated browser backend enabled.
 
-See the [1.2.0 release notes](docs/releases/1.2.0.md), [1.1.1 release notes](docs/releases/1.1.1.md),
-and the [release procedure](docs/releases/README.md). Publication requires pre-tag review of the exact candidate, two-OS CI, a separate protected
+See the [1.3.0 release notes](docs/releases/1.3.0.md), [1.2.0 release notes](docs/releases/1.2.0.md),
+[1.1.1 release notes](docs/releases/1.1.1.md), and the [release procedure](docs/releases/README.md). Publication requires pre-tag review of the exact candidate, two-OS CI, a separate protected
 `npm-publish` approval, registry verification, and npm provenance.

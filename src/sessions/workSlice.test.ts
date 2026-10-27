@@ -14,9 +14,9 @@ import {
 const policy = (overrides: Partial<SlicePolicy> = {}): SlicePolicy => ({ ...DEFAULT_SLICE_POLICY, ...overrides })
 
 /** The guard as Pi calls it, without a Pi session. */
-function guardHarness(limits: SlicePolicy, state = createSliceState(limits)) {
+function guardHarness(limits: SlicePolicy, state = createSliceState(limits), checkpointAvailable = true) {
   const handlers = new Map<string, (event: unknown) => unknown>()
-  workSliceGuard({ policy: limits, state })({
+  workSliceGuard({ policy: limits, state, checkpointAvailable })({
     on: (name: string, handler: (event: unknown) => unknown) => {
       handlers.set(name, handler)
     }
@@ -32,7 +32,7 @@ afterEach(() => vi.unstubAllEnvs())
 describe('work slice policy', () => {
   it('uses the foundation defaults and accepts bounded overrides', () => {
     expect(parseWorkSlice(undefined)).toEqual(DEFAULT_SLICE_POLICY)
-    expect(DEFAULT_SLICE_POLICY).toMatchObject({ enabled: true, maxToolCalls: 160, maxMinutes: 40, maxNewTokens: 320_000, maxSlices: 8, continue: true })
+    expect(DEFAULT_SLICE_POLICY).toMatchObject({ enabled: true, maxToolCalls: 320, maxMinutes: 60, maxNewTokens: 0, maxSlices: 8, continue: true })
     expect(parseWorkSlice({ maxToolCalls: 10, maxMinutes: 5, maxNewTokens: 20_000, maxSlices: 2, continue: false })).toEqual({
       enabled: true, maxToolCalls: 10, maxMinutes: 5, maxNewTokens: 20_000, maxSlices: 2, continue: false
     })
@@ -61,14 +61,14 @@ describe('work slice policy', () => {
     state.steps = 1
     state.tokens = 60_000
     expect(sliceLimitReached(policy({ maxNewTokens: 60_000 }), state)).toBe('60k new tokens')
-    // The default cap is a generous safety net, well beyond a few large reads.
+    // No token cap by default: the tool calls and the clock are the bound.
     expect(sliceLimitReached(policy(), state)).toBeNull()
-    state.tokens = 320_000
-    expect(sliceLimitReached(policy(), state)).toBe('320k new tokens')
+    state.tokens = 1_000_000
+    expect(sliceLimitReached(policy(), state)).toBeNull()
     state.tokens = 0
     state.startedAt = Date.now() - 21 * 60_000
     expect(sliceLimitReached(policy({ maxMinutes: 20 }), state)).toBe('20 minutes')
-    // The defaults allow four times as long before a checkpoint.
+    // The defaults allow three times as long before a checkpoint.
     expect(sliceLimitReached(policy(), state)).toBeNull()
   })
 
@@ -140,28 +140,154 @@ describe('work slice guard', () => {
     expect(guard.state.endedBy).toBe('stuck')
   })
 
-  it('does not flag three different checklist updates in one reply', () => {
-    // The person follows progress from the checklist, so a reply rewrites it as steps complete.
+  it('allows more than 25 distinct reads without a no-progress stall', () => {
     const guard = guardHarness(policy())
     guard.start()
-    const checklist = (status: string) => ({ items: [{ text: 'Read the plan', status }, { text: 'Land the fix', status: 'pending' }] })
-    expect(guard.call('tool_call', toolCall('checklist_write', checklist('pending')))).toBeUndefined()
-    expect(guard.call('tool_call', toolCall('checklist_write', checklist('in_progress')))).toBeUndefined()
-    expect(guard.call('tool_call', toolCall('checklist_write', checklist('completed')))).toBeUndefined()
+    for (let step = 0; step < 40; step += 1) {
+      expect(guard.call('tool_call', toolCall('read', { path: `src/file-${step}.ts` }))).toBeUndefined()
+    }
     expect(guard.state.endedBy).toBeNull()
   })
 
-  it('flags three identical checklist updates once, then ends the reply', () => {
+  it('keeps repeated-call protection for plan research without checkpoint_write', () => {
+    const guard = guardHarness(policy(), undefined, false)
+    guard.start()
+    for (let step = 0; step < 30; step += 1) {
+      expect(guard.call('tool_call', toolCall('read', { path: `src/file-${step}.ts` }))).toBeUndefined()
+    }
+    expect(guard.state.endedBy).toBeNull()
+
+    expect(guard.call('tool_call', toolCall('get_capabilities'))).toBeUndefined()
+    expect(guard.call('tool_call', toolCall('get_capabilities'))).toBeUndefined()
+    const note = guard.call('tool_call', toolCall('get_capabilities')) as { block: boolean; reason: string }
+    expect(note.block).toBe(true)
+    expect(note.reason).toContain('final response')
+    expect(note.reason).not.toContain('checkpoint_write')
+    expect(guard.state.endedBy).toBe('stuck')
+    expect(guard.call('tool_call', toolCall('read', { path: 'src/next.ts' }))).toMatchObject({ terminate: true })
+  })
+
+  it('does not flag three different todo updates in one reply', () => {
+    // The person follows progress from the todo, so a reply rewrites it as steps complete.
+    const guard = guardHarness(policy())
+    guard.start()
+    const todo = (status: string) => ({ items: [{ text: 'Read the plan', status }, { text: 'Land the fix', status: 'pending' }] })
+    expect(guard.call('tool_call', toolCall('todo_write', todo('pending')))).toBeUndefined()
+    expect(guard.call('tool_call', toolCall('todo_write', todo('in_progress')))).toBeUndefined()
+    expect(guard.call('tool_call', toolCall('todo_write', todo('completed')))).toBeUndefined()
+    expect(guard.state.endedBy).toBeNull()
+  })
+
+  it('keeps todo updates out of repeated-call detection', () => {
     const guard = guardHarness(policy())
     guard.start()
     const same = { items: [{ text: 'One step', status: 'in_progress' }] }
-    expect(guard.call('tool_call', toolCall('checklist_write', same))).toBeUndefined()
-    expect(guard.call('tool_call', toolCall('checklist_write', same))).toBeUndefined()
-    const note = guard.call('tool_call', toolCall('checklist_write', same)) as { block: boolean; reason: string }
-    expect(note.reason).toContain('repeating work')
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      expect(guard.call('tool_call', toolCall('todo_write', same))).toBeUndefined()
+    }
+    expect(guard.state.steps).toBe(30)
     expect(guard.state.endedBy).toBeNull()
-    expect(guard.call('tool_call', toolCall('checklist_write', same))).toMatchObject({ terminate: true })
+  })
+
+  it('counts todo updates toward the tool budget without treating them as handoffs', () => {
+    const limits = policy({ maxToolCalls: 2 })
+    const guard = guardHarness(limits)
+    guard.start()
+    expect(guard.call('tool_call', toolCall('todo_write'))).toBeUndefined()
+    const refusal = guard.call('tool_call', toolCall('todo_write')) as { block: boolean; terminate?: boolean; reason: string }
+    expect(refusal).toMatchObject({ block: true })
+    expect(refusal.terminate).toBeUndefined()
+    expect(refusal.reason).toContain('2 tool calls')
+    expect(guard.state.endedBy).toBe('budget')
+  })
+
+  it('does not let todo updates reset repeated-call state or a stall nudge', () => {
+    const guard = guardHarness(policy())
+    guard.start()
+    const command = { command: 'git status --short' }
+    expect(guard.call('tool_call', toolCall('bash', command))).toBeUndefined()
+    expect(guard.call('tool_call', toolCall('bash', command))).toBeUndefined()
+    const note = guard.call('tool_call', toolCall('bash', command)) as { block: boolean; reason: string }
+    expect(note.block).toBe(true)
+    expect(note.reason).toContain('same Bash command')
+    expect(guard.state.endedBy).toBeNull()
+
+    const todo = { items: [{ text: 'Research', status: 'in_progress' }] }
+    expect(guard.call('tool_call', toolCall('todo_write', todo))).toBeUndefined()
+    expect(guard.call('tool_call', toolCall('bash', command))).toMatchObject({ terminate: true })
     expect(guard.state.endedBy).toBe('stuck')
+  })
+
+  it('does not let todo updates reset successful-edit churn or failing-check state', () => {
+    const guard = guardHarness(policy())
+    guard.start()
+    const edit = (step: number) => ({ path: 'src/a.ts', oldText: `old ${step}`, newText: `new ${step}` })
+    for (let step = 0; step < 3; step += 1) {
+      guard.call('tool_call', toolCall('edit', edit(step)))
+      guard.call('tool_result', { toolName: 'edit', isError: false, input: edit(step) })
+    }
+    const todo = { items: [{ text: 'Edit file', status: 'in_progress' }] }
+    guard.call('tool_call', toolCall('todo_write', todo))
+    guard.call('tool_call', toolCall('edit', edit(3)))
+    guard.call('tool_result', { toolName: 'edit', isError: false, input: edit(3) })
+    const editNote = guard.call('tool_call', toolCall('edit', edit(4))) as { block: boolean; reason: string }
+    expect(editNote.block).toBe(true)
+    expect(editNote.reason).toContain('edited 4 times')
+
+    guard.start()
+    const check = { command: 'npx vitest run src/a.test.ts' }
+    guard.call('tool_result', { toolName: 'bash', isError: true, input: check })
+    guard.call('tool_result', { toolName: 'bash', isError: true, input: check })
+    guard.call('tool_call', toolCall('todo_write', todo))
+    const failureNote = guard.call('tool_call', toolCall('bash', check)) as { block: boolean; reason: string }
+    expect(failureNote.block).toBe(true)
+    expect(failureNote.reason).toContain('failed 2 times')
+  })
+
+  it('counts only successful edit and write results toward per-file churn', () => {
+    const guard = guardHarness(policy())
+    guard.start()
+    const attempt = (step: number) => ({ path: 'src/a.ts', content: `version ${step}` })
+    guard.call('tool_call', toolCall('edit', attempt(0)))
+    guard.call('tool_result', { toolName: 'edit', isError: true, input: attempt(0) })
+    guard.call('tool_call', toolCall('write', attempt(1)))
+
+    for (let step = 2; step < 6; step += 1) {
+      const name = step % 2 === 0 ? 'edit' : 'write'
+      expect(guard.call('tool_call', toolCall(name, attempt(step)))).toBeUndefined()
+      guard.call('tool_result', { toolName: name, isError: false, input: attempt(step) })
+    }
+
+    const note = guard.call('tool_call', toolCall('edit', attempt(6))) as { block: boolean; reason: string }
+    expect(note.block).toBe(true)
+    expect(note.reason).toContain('edited 4 times')
+  })
+
+  it('resets failed checks and only Bash-check repeats after a successful edit', () => {
+    const guard = guardHarness(policy())
+    guard.start()
+    const check = { command: 'npm test' }
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      expect(guard.call('tool_call', toolCall('bash', check))).toBeUndefined()
+      guard.call('tool_result', { toolName: 'bash', isError: true, input: check })
+    }
+
+    const read = { path: 'src/unchanged.ts' }
+    guard.call('tool_call', toolCall('read', read))
+    guard.call('tool_call', toolCall('read', read))
+    const readNote = guard.call('tool_call', toolCall('read', read)) as { block: boolean }
+    expect(readNote.block).toBe(true)
+
+    const edit = { path: 'src/a.ts', oldText: 'before', newText: 'after' }
+    expect(guard.call('tool_call', toolCall('edit', edit))).toBeUndefined()
+    guard.call('tool_result', { toolName: 'edit', isError: false, input: edit })
+
+    expect(guard.call('tool_call', toolCall('bash', check))).toBeUndefined()
+    const unchangedRepeat = guard.call('tool_call', toolCall('read', read)) as { block: boolean; terminate?: boolean; reason: string }
+    expect(unchangedRepeat.block).toBe(true)
+    expect(unchangedRepeat.terminate).toBeUndefined()
+    expect(unchangedRepeat.reason).toContain('same read call')
+    expect(guard.call('tool_call', toolCall('read', read))).toMatchObject({ terminate: true })
   })
 
   it('starts the repetition counts fresh in each reply', () => {
@@ -268,6 +394,40 @@ describe('work slice guard', () => {
     expect(ended.terminate).toBe(true)
     expect(ended.reason).toContain('compaction')
     expect(guard.state.endedBy).toBe('compaction-thrash')
+  })
+
+  it('keeps targeted loop protections after 30 distinct plan research reads', () => {
+    const limits = policy({ maxToolCalls: 100 })
+    const guard = guardHarness(limits, undefined, false)
+    guard.start()
+    for (let step = 0; step < 30; step += 1) {
+      expect(guard.call('tool_call', toolCall('read', { path: `src/research-${step}.ts` }))).toBeUndefined()
+    }
+    expect(guard.state.endedBy).toBeNull()
+
+    const repeated = { command: 'git status --short' }
+    guard.call('tool_call', toolCall('bash', repeated))
+    guard.call('tool_call', toolCall('bash', repeated))
+    const repeatedNote = guard.call('tool_call', toolCall('bash', repeated)) as { block: boolean; reason: string }
+    expect(repeatedNote.block).toBe(true)
+    expect(repeatedNote.reason).toContain('same Bash command')
+
+    guard.start()
+    const check = { command: 'npm test' }
+    guard.call('tool_result', { toolName: 'bash', isError: true, input: check })
+    guard.call('tool_result', { toolName: 'bash', isError: true, input: check })
+    const failureNote = guard.call('tool_call', toolCall('bash', check)) as { block: boolean; reason: string }
+    expect(failureNote.reason).toContain('failed 2 times')
+
+    guard.start()
+    const edit = (step: number) => ({ path: 'src/a.ts', oldText: `old ${step}`, newText: `new ${step}` })
+    for (let step = 0; step < 4; step += 1) {
+      expect(guard.call('tool_call', toolCall('edit', edit(step)))).toBeUndefined()
+      guard.call('tool_result', { toolName: 'edit', isError: false, input: edit(step) })
+    }
+    const editNote = guard.call('tool_call', toolCall('edit', edit(4))) as { block: boolean; reason: string }
+    expect(editNote.block).toBe(true)
+    expect(editNote.reason).toContain('edited 4 times')
   })
 
   it('recognises the commands that count as a check', () => {

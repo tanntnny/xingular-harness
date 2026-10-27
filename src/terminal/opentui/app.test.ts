@@ -11,6 +11,7 @@ vi.mock('@earendil-works/pi-coding-agent', async importOriginal => {
   return { ...actual, copyToClipboard: vi.fn(async (_text: string) => {}) }
 })
 
+import type { LinkTarget } from '../../core/links'
 import { OpenTuiApplication, type KeyInput } from './app'
 import { PiDialogHost } from './dialogHost'
 import type { ComposerAttachments } from './attachments'
@@ -86,19 +87,23 @@ describe('OpenTuiApplication', () => {
   it('publishes and refreshes the active slash-command vocabulary', async () => {
     const app = new OpenTuiApplication([])
     let completions = [{ name: 'help', aliases: ['h'] }, { name: 'annotate:notes' }, { name: 'review' }]
+    let skills = [{ name: 'diagnose' }]
     let legacyAliases = ['plugin:notes', 'notes']
     const internals = app as unknown as {
-      commands: { completions(): typeof completions; skills(): { name: string }[]; legacyAliases(): string[] }
+      commands: { completions(): typeof completions; skills(): typeof skills; legacyAliases(): string[] }
       refresh(): void
     }
-    internals.commands = { completions: () => completions, skills: () => [{ name: 'diagnose' }], legacyAliases: () => legacyAliases }
+    internals.commands = { completions: () => completions, skills: () => skills, legacyAliases: () => legacyAliases }
 
     expect(app.view().slashCommandNames).toEqual(['help', 'h', 'annotate:notes', 'review', 'skill:diagnose', 'plugin:notes', 'notes'])
+    expect(app.view().skillNames).toEqual(['diagnose'])
 
     completions = [{ name: 'plan' }]
+    skills = [{ name: 'inspect' }]
     legacyAliases = ['plugin:doctor', 'doctor']
     internals.refresh()
-    expect(app.view().slashCommandNames).toEqual(['plan', 'skill:diagnose', 'plugin:doctor', 'doctor'])
+    expect(app.view().slashCommandNames).toEqual(['plan', 'skill:inspect', 'plugin:doctor', 'doctor'])
+    expect(app.view().skillNames).toEqual(['inspect'])
     await app.shutdown()
   })
 
@@ -325,7 +330,7 @@ describe('OpenTuiApplication', () => {
     internals.subagents = [{
       id: 'child', parentRunId: 'parent', relation: 'subagent', goal: 'Inspect auth flow', status: 'running',
       startedAt: new Date(Date.now() - 3000).toISOString(), endedAt: null, activity: 'read',
-      profile: { name: 'explorer', color: 'cyan' }, title: 'Map the auth flow', checklist: { done: 1, total: 3 }, usage: null
+      profile: { name: 'explorer', color: 'cyan' }, title: 'Map the auth flow', todo: { done: 1, total: 3 }, usage: null
     }]
 
     expect(app.view().widgets.above).toEqual([])
@@ -341,6 +346,36 @@ describe('OpenTuiApplication', () => {
     await app.shutdown()
   })
 
+  it('shows a reopened conversation’s restored rows with no run active, the main row only on the page', async () => {
+    const app = new OpenTuiApplication([])
+    const internals = app as unknown as {
+      subagents: TerminalSubagentActivity[]
+      runtime?: TerminalRuntime
+      accept(event: AgentSessionEvent): void
+      refreshSubagents(settled?: boolean): Promise<void>
+      readSubagentMonitor(): Promise<{ children: TerminalSubagentActivity[] }>
+    }
+    internals.runtime = {
+      session: { getActiveToolNames: () => ['spawn_subagent'], messages: [], state: {} },
+      snapshot: () => undefined,
+      dispose: async () => {}
+    } as unknown as TerminalRuntime
+    const stopped: TerminalSubagentActivity = {
+      id: 'child', parentRunId: 'parent', relation: 'subagent', goal: 'Inspect auth flow', status: 'interrupted',
+      startedAt: '2026-10-23T00:00:01.000Z', endedAt: '2026-10-23T00:00:09.000Z', activity: 'Interrupted',
+      profile: { name: 'worker', color: 'green' }, title: 'Map the auth flow', todo: null, usage: null
+    }
+    const main: TerminalSubagentActivity = { ...stopped, id: 'parent', parentRunId: null, relation: 'main', profile: { name: 'main', color: 'main' }, title: 'Fix login' }
+    internals.readSubagentMonitor = async () => ({ children: [main, stopped] })
+
+    await internals.refreshSubagents(true)
+    expect(internals.subagents.map(item => item.id)).toEqual(['parent', 'child'])
+    expect(app.view().subagents?.rows).toEqual([expect.objectContaining({ id: 'child', mark: '!', title: 'Map the auth flow' })])
+    internals.accept({ type: 'agent_start' } as AgentSessionEvent)
+    expect(app.view().subagents).toBeNull()
+    await app.shutdown()
+  })
+
   it('refreshes final child statuses without applying an older in-flight poll', async () => {
     const app = new OpenTuiApplication([])
     let resolvePoll!: (value: { children: TerminalSubagentActivity[] }) => void
@@ -350,7 +385,7 @@ describe('OpenTuiApplication', () => {
     const running: TerminalSubagentActivity = {
       id: 'child', parentRunId: 'parent', relation: 'subagent', goal: 'Inspect auth flow', status: 'running',
       startedAt: new Date(Date.now() - 3000).toISOString(), endedAt: null, activity: 'read',
-      profile: { name: 'explorer', color: 'cyan' }, title: 'Map the auth flow', checklist: null, usage: null
+      profile: { name: 'explorer', color: 'cyan' }, title: 'Map the auth flow', todo: null, usage: null
     }
     const completed: TerminalSubagentActivity = {
       ...running, status: 'completed', endedAt: new Date().toISOString(), activity: 'Completed'
@@ -571,11 +606,36 @@ describe('OpenTuiApplication', () => {
       expect(execute).toHaveBeenCalledWith('/plugin:annotate')
       expect(app.handleKey(key('up', '\x1b[A'))).toBe(true)
       expect(app.view().draft).toBe('/plugin:annotate')
-      expect(app.view().palette?.items).toMatchObject([{ name: 'plugin:annotate' }])
+      expect(app.view().palette).toBeNull()
       expect(app.handleKey({ ...key('up', '\x1b[A'), atFirstVisualLine: true, cursorOffset: 16 })).toBe(true)
       expect(app.view().draft).toBe('saved request')
-      expect(app.handleKey({ ...key('down', '\x1b[B'), atFirstVisualLine: true, cursorOffset: 0 })).toBe(true)
+      expect(app.handleKey({ ...key('down', '\x1b[B'), ctrl: true })).toBe(true)
       expect(app.view().draft).toBe('/plugin:annotate')
+      expect(app.view().palette).toBeNull()
+      app.setDraft('/plugin:annotatex')
+      app.setDraft('/plugin:annotate')
+      expect(app.view().palette?.items).toMatchObject([{ name: 'plugin:annotate' }])
+    } finally {
+      await app.shutdown()
+    }
+  })
+
+  it('hides skill suggestions when recalling history and restores them when editing', async () => {
+    const app = new OpenTuiApplication([])
+    const internals = app as unknown as {
+      commands: { skills(): { name: string }[]; completions(): { name: string }[] }
+      slashCommandHistory: { text: string; timestamp: number }[]
+      syncDraft(text: string): void
+    }
+    internals.commands = { skills: () => [{ name: 'example' }], completions: () => [] }
+    internals.slashCommandHistory = [{ text: '$example', timestamp: 1 }]
+    internals.syncDraft = () => {}
+    try {
+      expect(app.handleKey(key('up', '\x1b[A'))).toBe(true)
+      expect(app.view().draft).toBe('$example')
+      expect(app.view().palette).toBeNull()
+      app.setDraft('$exampl')
+      expect(app.view().palette?.items).toMatchObject([{ name: 'example' }])
     } finally {
       await app.shutdown()
     }
@@ -980,6 +1040,32 @@ describe('OpenTuiApplication', () => {
     await app.shutdown()
   })
 
+  it('navigates all command and skill suggestions without recalling history', async () => {
+    const app = new OpenTuiApplication([])
+    const internals = app as unknown as {
+      commands: { completions(): { name: string }[]; skills(): { name: string }[] }
+      syncDraft(text: string): void
+    }
+    const items = Array.from({ length: 12 }, (_, index) => ({ name: `item${String(index).padStart(2, '0')}` }))
+    internals.commands = { completions: () => items, skills: () => items }
+    internals.syncDraft = () => {}
+    try {
+      for (const prefix of ['/', '$']) {
+        app.setDraft(prefix)
+        expect(app.view().palette?.items).toHaveLength(12)
+        for (let index = 0; index < 9; index++) {
+          expect(app.handleKey({ ...key('down', '\x1b[B'), cursorOffset: 1, atLastVisualLine: true })).toBe(true)
+        }
+        expect(app.view().palette?.index).toBe(9)
+        expect(app.view().draft).toBe(prefix)
+        expect(app.handleKey({ ...key('up', '\x1b[A'), cursorOffset: 1, atFirstVisualLine: true })).toBe(true)
+        expect(app.view().palette?.index).toBe(8)
+      }
+    } finally {
+      await app.shutdown()
+    }
+  })
+
   it('routes pointer hover and click actions through the command palette', async () => {
     const app = new OpenTuiApplication([])
     const internals = app as unknown as {
@@ -1095,28 +1181,39 @@ describe('OpenTuiApplication', () => {
     await app.shutdown()
   })
 
-  it('opens only safe Markdown links and exposes a hover affordance', async () => {
-    const openLink = vi.fn(async (_url: string) => {})
+  it('opens the link under the pointer, names the action, and reports a link it will not open', async () => {
+    const opened: LinkTarget[] = []
+    const openLink = vi.fn(async (target: LinkTarget) => { opened.push(target) })
     const setMousePointer = vi.fn()
+    const getLinkIdAt = vi.fn(() => 7)
     let target: string | null = 'https://example.test/docs'
     const app = new OpenTuiApplication([], openLink)
     app.attachRenderer({
       suspend: async () => {}, resume: async () => {}, setTitle: () => {}, destroy: () => {},
-      getLinkAt: () => target, setMousePointer
+      getLinkAt: () => target, getLinkIdAt, setMousePointer, requestRender: () => undefined
     })
 
     app.updateLinkHover(12, 4)
     expect(app.view().linkHovered).toBe(true)
+    expect(app.linkHighlight).toEqual({ id: 7, x: 12, y: 4 })
     expect(setMousePointer).toHaveBeenLastCalledWith('pointer')
     expect(app.activateLinkAt(12, 4)).toBe(true)
-    await vi.waitFor(() => expect(openLink).toHaveBeenCalledWith('https://example.test/docs'))
+    await vi.waitFor(() => expect(opened).toEqual([{ kind: 'web', url: 'https://example.test/docs' }]))
     expect(app.view().linkHovered).toBe(false)
+    expect(app.linkHighlight).toBeNull()
 
+    // A link this harness refuses is still a link: the click is answered, not passed to the composer.
     target = 'javascript:alert(1)'
+    app.updateLinkHover(12, 4)
+    expect(app.view().linkHovered).toBe(true)
+    expect(app.activateLinkAt(12, 4)).toBe(true)
+    expect(openLink).toHaveBeenCalledOnce()
+    expect(app.view().items.some(item => item.kind === 'notice' && item.text.includes('cannot be opened here'))).toBe(true)
+
+    target = null
     app.updateLinkHover(12, 4)
     expect(app.view().linkHovered).toBe(false)
     expect(app.activateLinkAt(12, 4)).toBe(false)
-    expect(openLink).toHaveBeenCalledOnce()
     await app.shutdown()
   })
 
@@ -1133,6 +1230,26 @@ describe('OpenTuiApplication', () => {
     app.selectPlanChoice(1)
     expect(app.view().planChoice).toMatchObject({ title: 'Verified plan', index: 1 })
     expect(app.activatePlanChoice(1)).toBe(true)
+    expect(editPlan).toHaveBeenCalledOnce()
+
+    await app.shutdown()
+  })
+
+  it('gives plan-choice navigation precedence over prompt history', async () => {
+    const app = new OpenTuiApplication([])
+    const internals = app as unknown as {
+      planChoice: { show(title: string): void; view: { index: number } | null }
+      historyIndex?: number
+      editPlan(): void
+    }
+    internals.planChoice.show('Verified plan')
+    internals.historyIndex = 0
+    const editPlan = vi.fn()
+    internals.editPlan = editPlan
+
+    expect(app.handleKey(key('down', '\x1b[B'))).toBe(true)
+    expect(internals.planChoice.view).toMatchObject({ index: 1 })
+    expect(app.handleKey(key('return', '\r'))).toBe(true)
     expect(editPlan).toHaveBeenCalledOnce()
 
     await app.shutdown()

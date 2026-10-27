@@ -1,6 +1,6 @@
 name: Release
 
-# The candidate is reviewed before tagging; this workflow retests it and waits at the separate publish gate.
+# Stable and unstable candidates are reviewed before tagging; this workflow retests the exact candidate and waits at the separate publish gate.
 on:
   push:
     tags: ['v*']
@@ -108,7 +108,8 @@ jobs:
       - name: Publish the tested tarball with provenance
         run: |
           version=$(node -p "require('./package.json').version")
-          npm publish "./outputs/release/xingular-harness-${version}.tgz" --ignore-scripts --provenance --access public --tag latest
+          if [[ "$version" == *-unstable.* ]]; then npm_tag=unstable; else npm_tag=latest; fi
+          npm publish "./outputs/release/xingular-harness-${version}.tgz" --ignore-scripts --provenance --access public --tag "$npm_tag"
       - name: Verify published package
         run: node scripts/release-verify.mjs outputs/release/candidate.json
       - name: Create GitHub release
@@ -116,4 +117,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           version=$(node -p "require('./package.json').version")
-          gh release create "$GITHUB_REF_NAME" "outputs/release/xingular-harness-${version}.tgz" outputs/release/SHA256SUMS --verify-tag --title "Xingular Harness ${version}" --notes-file "docs/releases/${version}.md"
+          release_options=()
+          if [[ "$version" == *-unstable.* ]]; then release_options+=(--prerelease); fi
+          gh release create "$GITHUB_REF_NAME" "outputs/release/xingular-harness-${version}.tgz" outputs/release/SHA256SUMS --verify-tag --title "Xingular Harness ${version}" --notes-file "docs/releases/${version}.md" "${release_options[@]}"

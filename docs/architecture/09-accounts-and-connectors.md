@@ -38,7 +38,10 @@ skills, prompts, rules and Pi packages.
 - **`apps.expose(tools)`** offers the application's own tools through the broker, which is how a
   terminal session reaches them.
 - **Hub.** `hub.list`, `get`, `preview`, `install`, `uninstall`, `readDocument`. Pi packages need
-  an exact npm version or a full Git commit. Documents are saved as inert JSON.
+  an exact npm version or a full Git commit. Documents are saved as inert JSON. The `/hub` Catalog
+  view filters Community entries for display; the service and other callers retain the full catalog.
+  Installed shows receipts from every channel. On page entry, cached/bundled content is shown before
+  a remote refresh, and origin, refresh time and failure status remain visible (PROP-0047).
 
 ## Invariants
 
@@ -62,7 +65,10 @@ skills, prompts, rules and Pi packages.
   nothing of it is stored.
 - **INV-MCP-4** Hub installation grants no attachment, trust, credential or permission. Writes
   are serialized; existing registry files are never overwritten; uninstall removes only the exact
-  receipt's resources and revokes its attachment choices.
+  receipt's resources and revokes its attachment choices. Every removal route for a Hub-owned Pi
+  package, including `plugins.remove`, goes through Hub's receipt-owning uninstall operation. A
+  floating plugin-package update must not change a Hub-owned package; replacement uses an explicit
+  exact catalog version (PROP-0047).
 
 ## Data
 

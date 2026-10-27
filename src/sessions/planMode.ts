@@ -3,7 +3,7 @@
 // gate refuses everything else, and the instruction arrives as a context update.
 import { deliveredSnapshot, type HostSection } from '../prompt/compile'
 import { ASK_USER } from '../tools/askUser'
-import { CHECKLIST_WRITE } from '../tools/checklist'
+import { TODO_WRITE } from '../tools/todo'
 import { SESSION_NAME } from '../tools/sessionName'
 import { GET_CAPABILITIES } from '../tools/getCapabilities'
 import { PLAN_RESEARCH_TOOLS } from '../agents/planResearch'
@@ -22,7 +22,7 @@ export function normalModeTools(tools: readonly string[]): string[] {
 }
 
 export const PLAN_READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
-  'read', 'grep', 'find', 'ls', SESSION_NAME, CHECKLIST_WRITE, ASK_USER, 'ask_user_question', GET_CAPABILITIES,
+  'read', 'grep', 'find', 'ls', SESSION_NAME, TODO_WRITE, ASK_USER, 'ask_user_question', GET_CAPABILITIES,
   'history_search', 'history_read', 'trajectory_search', 'trajectory_read',
   'wiki_entrypoint', 'wiki_search', 'wiki_read', 'wiki_list', 'memory_facts', 'skill_load', 'mcp_list_tools', WAIT_SUBAGENTS
 ])

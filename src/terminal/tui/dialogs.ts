@@ -305,6 +305,8 @@ export class TerminalDialogs {
           : { ...defaults, ...source }
         handle = this.tui.showOverlay(component, overlayOptions)
         options?.onHandle?.(handle)
+        // A component may open dialogs as it starts; they have to stack above it.
+        ;(component as { mounted?(): void }).mounted?.()
         this.changed()
       }).catch(error => {
         if (!settled) {

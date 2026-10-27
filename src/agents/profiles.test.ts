@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 import type { CapabilitySet } from '../capabilities/types'
+import { HARNESS_PLUGINS } from '../plugins/builtin'
 import type { PluginDescriptor } from '../plugins/types'
 import { narrowForProfile } from './narrow'
 import { createProfile, listProfiles, parseProfile, profileDirs, profileSection, projectRoot, removeProfile, resolveProfile } from './profiles'
@@ -84,6 +85,21 @@ describe('agent profiles', () => {
     expect(planProfiles).not.toContain('- reader —')
   })
 
+  it('lists only research profiles with an effective evidence tool in the parent', () => {
+    const { root, cwd } = folders()
+    const noEvidence = profileSection(root, cwd, null, true, {
+      frozenTools: ['spawn_subagent', 'wait_subagents', 'todo_write'], contributions: [], descriptors: HARNESS_PLUGINS
+    }).body
+    expect(noEvidence).toContain('No eligible read-only research profiles')
+    expect(noEvidence).not.toContain('- explorer —')
+    const withEvidence = profileSection(root, cwd, null, true, {
+      frozenTools: ['spawn_subagent', 'wait_subagents', 'read'], contributions: [], descriptors: HARNESS_PLUGINS
+    }).body
+    expect(withEvidence).toContain('- explorer —')
+    expect(withEvidence).toContain('- researcher —')
+    expect(withEvidence).not.toContain('- worker —')
+  })
+
   it('creates profiles from the template or a copy, never over one, and removes only files', () => {
     const { root, cwd, project } = folders()
     const copy = createProfile(root, cwd, { name: 'builder', scope: 'project', from: 'worker' })
@@ -97,6 +113,15 @@ describe('agent profiles', () => {
     removeProfile(root, cwd, { name: 'helper', scope: 'global' })
     expect(resolveProfile(root, cwd, 'helper')).toBeNull()
     expect(() => removeProfile(root, cwd, { name: 'worker', scope: 'global' })).toThrow('was not found')
+  })
+
+  it('keeps main for the main agent', () => {
+    const { root, cwd, project } = folders()
+    expect(() => createProfile(root, cwd, { name: 'main', scope: 'project' })).toThrow('reserved for the main agent')
+    mkdirSync(join(project, '.xingular', 'agents'), { recursive: true })
+    writeFileSync(join(project, '.xingular', 'agents', 'main.md'), '---\ndescription: not allowed\n---\n')
+    expect(resolveProfile(root, cwd, 'main')).toBeNull()
+    expect(listProfiles(root, cwd).problems).toEqual([expect.objectContaining({ name: 'main', error: expect.stringContaining('reserved for the main agent') })])
   })
 })
 

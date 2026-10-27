@@ -1,4 +1,4 @@
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -92,6 +92,28 @@ describe('the harness served to a host', () => {
     await expect(request('agents.get', { cwd, name: 'scout' })).rejects.toMatchObject({ code: 'not_found' })
   })
 
+  it('opens a link with the system handler, and refuses one a click would run', async () => {
+    const { transport, request } = host()
+    const opened: unknown[] = []
+    const harness = createHarness({
+      dataRoot: rootWithProject(), stateDir: mkdtempSync(join(tmpdir(), 'hs-')), secrets: memorySecretStore(),
+      sessionFactory: async () => idle(), linkOpener: async (target) => void opened.push(target)
+    })
+    open.push(harness)
+    serve(harness, transport)
+    const folder = mkdtempSync(join(tmpdir(), 'hs-links-'))
+    writeFileSync(join(folder, 'plan.md'), '# Plan\n')
+    writeFileSync(join(folder, 'deploy.command'), '#!/bin/sh\n')
+
+    expect(await request('links.open', { target: 'plan.md', base: folder })).toMatchObject({ kind: 'file', path: join(folder, 'plan.md') })
+    expect(await request('links.open', { target: 'https://example.test/docs' })).toEqual({ kind: 'web', url: 'https://example.test/docs' })
+    expect(opened).toHaveLength(2)
+    await expect(request('links.open', { target: 'deploy.command', base: folder })).rejects.toMatchObject({ code: 'link_not_openable' })
+    await expect(request('links.open', { target: 'javascript:alert(1)' })).rejects.toMatchObject({ code: 'link_not_openable' })
+    await expect(request('links.open', {})).rejects.toMatchObject({ code: 'invalid_request' })
+    expect(opened).toHaveLength(2)
+  })
+
   it('answers by method name, reports failures with their code, and forwards events and notices', async () => {
     const { transport, request, events, notices } = host()
     const harness = createHarness({ dataRoot: rootWithProject(), stateDir: mkdtempSync(join(tmpdir(), 'hs-')), secrets: memorySecretStore(), sessionFactory: async () => idle() })
@@ -127,6 +149,7 @@ describe('the harness served to a host', () => {
     expect(events.map((event) => event.type)).toEqual(['started', 'status.changed', 'context.snapshot', 'completed'])
     expect((await request('runs.load', { runId: 'r1' })).run).toMatchObject({ id: 'r1', status: 'completed' })
     expect((await request<any[]>('runs.list', { filter: { sessionId: 'a1' } })).map((run) => run.id)).toEqual(['r1'])
+    expect(await request('runs.todo', { runId: 'r1' })).toEqual([])
     expect(await request('runs.checklist', { runId: 'r1' })).toEqual([])
     expect(await request('runs.continuation', { runId: 'r1' })).toMatchObject({ runId: 'r1', resumable: false, reason: 'completed' })
     expect((await request('context.runPack', { runId: 'r1' })).sections.map((section: { id: string }) => section.id)).toContain('tools')

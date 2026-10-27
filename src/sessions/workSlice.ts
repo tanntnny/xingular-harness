@@ -16,7 +16,7 @@ export interface WorkSliceInput {
   maxToolCalls?: number
   /** Minutes in one reply; 0 disables this limit. */
   maxMinutes?: number
-  /** New tokens in one reply (input + cache read + output); 0 disables this limit. */
+  /** New tokens in one reply (new input + cache writes + output); 0 disables this limit, and no limit is the default. */
   maxNewTokens?: number
   /** Slices one task may use before it is handed back to the person; 0 disables the cap. */
   maxSlices?: number
@@ -36,14 +36,15 @@ export interface SlicePolicy {
 /** The foundation defaults: enough for one meaningful step of work, short enough to report. */
 export const DEFAULT_SLICE_POLICY: SlicePolicy = {
   enabled: true,
-  // Roughly 40 minutes of ordinary work (about 15 s a call), so a checkpoint is a chapter of a
-  // task, not an interruption every few edits. A task still gets eight of them before the cap.
-  maxToolCalls: 160,
-  maxMinutes: 40,
-  // A generous cost ceiling, counted on new input, cache writes and output only: heavy reading at
-  // a large context can add tens of thousands of tokens a request, so a small cap stopped useful
-  // work (see the "Confirm plan model support" thread). 320k is a safety net, not the bound.
-  maxNewTokens: 320_000,
+  // A chapter of a task, not an interruption every few edits: roughly 80 minutes of ordinary work
+  // (about 15 s a call), with 60 minutes of wall clock as the ceiling, whichever comes first. A task
+  // still gets eight slices before it returns to the person.
+  maxToolCalls: 320,
+  maxMinutes: 60,
+  // No token cap: the tool calls and the clock are the bound. Counting new input, cache writes and
+  // output made a few large reads end a reply before useful work (see the "Confirm plan model
+  // support" thread), so a cap is available to whoever asks for one and off unless they do.
+  maxNewTokens: 0,
   maxSlices: 8,
   continue: true
 }
@@ -145,7 +146,7 @@ const HANDOFF_TOOLS = new Set(['checkpoint_write', 'session_name'])
 /** Tools whose repetition is how waiting works, not a loop. */
 const POLLING_TOOLS = new Set(['wait_subagents', 'subagents.list', 'subagents.status'])
 
-/** Commands that read as a check, for "no progress" and "still failing" rules. */
+/** Commands that read as a check for the repeated-failure rule. */
 export function looksLikeCheck(command: string): boolean {
   return /\b(test|tests|typecheck|tsc|vitest|jest|cargo|check:|prove|lint|ci|build)\b/u.test(command)
 }
@@ -166,7 +167,7 @@ function canonical(value: unknown, depth = 0): string {
 /**
  * A call's identity: its name and every argument, hashed so the key stays small even when an
  * argument is a whole file. A changed argument is a different call; only an identical one repeats.
- * Reading a fixed handful of fields made every `checklist_write` look identical, so a reply that
+ * Reading a fixed handful of fields made every `todo_write` look identical, so a reply that
  * reported its progress was told it was repeating work.
  */
 const signature = (name: string, input: unknown): string =>
@@ -174,18 +175,18 @@ const signature = (name: string, input: unknown): string =>
 
 const clip = (value: string, limit: number): string => (value.length <= limit ? value : `${value.slice(0, limit - 1)}…`)
 
-function handoffRequest(limit: string, state: SliceState): string {
-  return clip(
-    `This reply reached its work-slice limit (${limit}; step ${state.steps}). Call checkpoint_write now with what is done, the single next step, anything blocking, the files you touched and the checks that matter. Then tell the user in a few lines where you stopped. Do not call other tools.`,
-    600
-  )
+function handoffRequest(limit: string, state: SliceState, checkpointAvailable = true): string {
+  const handoff = checkpointAvailable
+    ? 'Call checkpoint_write now with what is done, the single next step, anything blocking, the files you touched and the checks that matter. Then tell the user in a few lines where you stopped.'
+    : 'Stop using tools and return a concise partial research report with findings, blockers and the next useful research step. The Harness records an evidence-derived checkpoint.'
+  return clip(`This reply reached its work-slice limit (${limit}; step ${state.steps}). ${handoff} Do not call other tools.`, 600)
 }
 
-function stalledNote(reason: string): string {
-  return clip(
-    `You are repeating work: ${reason}. Do not repeat it. Choose a different approach, read what the earlier attempt returned, or call checkpoint_write with the blocker so the next slice can decide.`,
-    600
-  )
+function stalledNote(reason: string, checkpointAvailable = true): string {
+  const handoff = checkpointAvailable
+    ? 'Choose a different approach, read what the earlier attempt returned, or call checkpoint_write with the blocker so the next slice can decide.'
+    : 'Do not use more tools. Return concise findings and blockers in your final response; the Harness records an evidence-derived checkpoint.'
+  return clip(`You are repeating work: ${reason}. Do not repeat it. ${handoff}`, 600)
 }
 
 interface ToolCall {
@@ -209,28 +210,35 @@ interface GuardApi {
 export interface WorkSliceGuardOptions {
   policy: SlicePolicy
   state: SliceState
-  /** Called once the guard has decided the reply must stop; the runner ends it. */
+  /** Whether checkpoint_write is active; a function supports the terminal's live plan-mode switch. */
+  checkpointAvailable?: boolean | (() => boolean)
+  /** Called when a triggering call terminates the reply; the runner ends it. */
   onEnd?: (end: SliceEnd, limit: string) => void
 }
 
 /**
- * Bounds one reply and names repeated work. The first refusal asks for a checkpoint; a tool call
- * after that refusal ends the reply. A repeated call or failing command is named once, then ends it.
+ * Bounds one reply and names repeated work. Refusals request a checkpoint when available; without
+ * one, they ask for a partial report and prohibit further tools. A repeated call or failing command
+ * is named once, then ends the reply.
  */
 export function workSliceGuard(options: WorkSliceGuardOptions): (pi: GuardApi) => void {
   const { policy, state } = options
   const calls = new Map<string, number>()
+  const checkCalls = new Set<string>()
   const edits = new Map<string, number>()
   const failures = new Map<string, number>()
-  let stepsSinceProgress = 0
   let nudged = false
+
+  const checkpointAvailable = (): boolean => typeof options.checkpointAvailable === 'function'
+    ? options.checkpointAvailable()
+    : options.checkpointAvailable !== false
 
   /** Repetition is judged inside one reply; the next reply starts from a clean count. */
   const resetRepetition = (): void => {
     calls.clear()
+    checkCalls.clear()
     edits.clear()
     failures.clear()
-    stepsSinceProgress = 0
     nudged = false
   }
 
@@ -238,17 +246,33 @@ export function workSliceGuard(options: WorkSliceGuardOptions): (pi: GuardApi) =
     state.endedBy = kind
     state.endedByLimit = limit
     options.onEnd?.(kind, limit)
+    const canCheckpoint = checkpointAvailable()
     const reason = kind === 'stuck'
-      ? stalledNote(limit)
+      ? stalledNote(limit, canCheckpoint)
       : kind === 'compaction-thrash'
-        ? handoffRequest('three context compactions in one reply', state)
-        : handoffRequest(limit, state)
+        ? handoffRequest('three context compactions in one reply', state, canCheckpoint)
+        : handoffRequest(limit, state, canCheckpoint)
     return { block: true, terminate: true, reason }
+  }
+
+  const nudge = (reason: string): { block: true; reason: string } | { block: true; terminate: true; reason: string } => {
+    if (nudged) return end('stuck', reason)
+    nudged = true
+    const canCheckpoint = checkpointAvailable()
+    if (!canCheckpoint) {
+      state.endedBy = 'stuck'
+      state.endedByLimit = reason
+    }
+    return { block: true, reason: stalledNote(reason, canCheckpoint) }
   }
 
   const repeated = (name: string, input: unknown): string | null => {
     if (POLLING_TOOLS.has(name)) return null
     const key = signature(name, input)
+    if (name === 'bash') {
+      const command = input && typeof input === 'object' ? String((input as { command?: unknown }).command ?? '') : ''
+      if (command && looksLikeCheck(command)) checkCalls.add(key)
+    }
     const count = (calls.get(key) ?? 0) + 1
     calls.set(key, count)
     if (count < 3) return null
@@ -277,8 +301,17 @@ export function workSliceGuard(options: WorkSliceGuardOptions): (pi: GuardApi) =
     pi.on('tool_result', (event) => {
       if (event.toolName === 'checkpoint_write' && !event.isError) {
         state.checkpointWritten = true
-        stepsSinceProgress = 0
         nudged = false
+      }
+      if ((event.toolName === 'edit' || event.toolName === 'write') && event.isError === false) {
+        const path = event.input && typeof event.input === 'object' ? String((event.input as { path?: unknown }).path ?? '') : ''
+        if (path) {
+          edits.set(path, (edits.get(path) ?? 0) + 1)
+          failures.clear()
+          for (const key of checkCalls) calls.delete(key)
+          checkCalls.clear()
+          nudged = false
+        }
       }
       if (event.toolName !== 'bash') return
       const command = event.input && typeof event.input === 'object' ? String((event.input as { command?: unknown }).command ?? '') : ''
@@ -291,17 +324,21 @@ export function workSliceGuard(options: WorkSliceGuardOptions): (pi: GuardApi) =
       failures.delete(command)
       edits.clear()
       calls.clear()
-      stepsSinceProgress = 0
+      checkCalls.clear()
       nudged = false
     })
     pi.on('tool_call', (event) => {
       const name = event.toolName
       state.steps += 1
       state.lastTool = name
-      const handoff = HANDOFF_TOOLS.has(name)
-      // A handoff is always callable; after the slice ended it is the only thing that is.
+      const canCheckpoint = checkpointAvailable()
+      const handoff = canCheckpoint && HANDOFF_TOOLS.has(name)
+      // A handoff is callable only when checkpoint_write is active; after the slice ended it is the only one.
       if (state.endedBy) {
-        return handoff ? undefined : { block: true, terminate: true, reason: 'This reply is over. Its checkpoint is recorded; nothing else runs.' }
+        const reason = state.checkpointWritten
+          ? 'This reply is over. Its checkpoint is recorded; nothing else runs.'
+          : 'This reply is over. The Harness will record an evidence-derived checkpoint; nothing else runs.'
+        return handoff ? undefined : { block: true, terminate: true, reason }
       }
       if (state.compactions >= 3) {
         if (handoff) {
@@ -318,34 +355,26 @@ export function workSliceGuard(options: WorkSliceGuardOptions): (pi: GuardApi) =
         state.endedBy = 'budget'
         state.endedByLimit = limit
         state.refusedAt ??= state.steps
-        stepsSinceProgress = 0
-        return handoff ? undefined : { block: true, reason: handoffRequest(limit, state) }
+        return handoff ? undefined : { block: true, reason: handoffRequest(limit, state, canCheckpoint) }
       }
       if (handoff) return undefined
+      // Todo updates are bookkeeping, not evidence of progress or a stall. They still count above
+      // toward the reply's overall tool-call budget.
+      if (name === 'todo_write') return undefined
       const edit = name === 'edit' || name === 'write'
       const path = edit && event.input && typeof event.input === 'object' ? String((event.input as { path?: unknown }).path ?? '') : ''
       if (edit && path) {
-        const count = (edits.get(path) ?? 0) + 1
-        edits.set(path, count)
-        stepsSinceProgress = 0
+        const count = edits.get(path) ?? 0
         if (count >= 4) {
           const reason = `${path} was edited ${count} times with no passing check between`
-          if (nudged) return end('stuck', reason)
-          nudged = true
-          return { block: true, reason: stalledNote(reason) }
+          return nudge(reason)
         }
-      } else {
-        stepsSinceProgress += 1
       }
       const repeat = repeated(name, event.input)
       const failure = failing(name, event.input)
-      const noProgress = stepsSinceProgress >= 25 ? `${stepsSinceProgress} steps with no file change and no passing check` : null
-      const reason = repeat ?? failure ?? noProgress
+      const reason = repeat ?? failure
       if (!reason) return undefined
-      if (nudged) return end('stuck', reason)
-      nudged = true
-      stepsSinceProgress = 0
-      return { block: true, reason: stalledNote(reason) }
+      return nudge(reason)
     })
   }
 }

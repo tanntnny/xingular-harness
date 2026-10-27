@@ -18,7 +18,7 @@ try {
   const entries = execFileSync('tar', ['-tzf', tarball], { encoding: 'utf8' }).trim().split('\n')
   if (entries.some(entry => !entry.startsWith('package/') || entry.split('/').includes('..'))) throw new Error('Unexpected tarball paths.')
   const pkg = JSON.parse(execFileSync('tar', ['-xOf', tarball, 'package/package.json'], { encoding: 'utf8' }))
-  if (pkg.name !== '@xingular/harness' || !/^\d+\.\d+\.\d+$/.test(pkg.version)) throw new Error('Unexpected package identity or version.')
+  if (pkg.name !== '@xingular/harness' || !/^\d+\.\d+\.\d+(?:-unstable\.\d+)?$/.test(pkg.version)) throw new Error('Unexpected package identity or version.')
   writeFileSync(join(scratch, 'package.json'), JSON.stringify({ private: true, type: 'module' }))
   if (offline) {
     mkdirSync(candidate, { recursive: true })

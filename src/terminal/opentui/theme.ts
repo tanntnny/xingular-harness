@@ -20,6 +20,8 @@ export interface OpenTuiTheme {
   questionActionText: string
   primary: string
   accent: string
+  /** A link under the pointer, one step brighter than the link itself. */
+  linkHover: string
   success: string
   warning: string
   error: string
@@ -50,6 +52,7 @@ export const opentuiTheme: OpenTuiTheme = {
   questionActionText: '#f7fff8',
   primary: '#fab283',
   accent: '#8ab4f8',
+  linkHover: '#c9ddff',
   success: '#a6da95',
   warning: '#eed49f',
   error: '#ed8796',
@@ -71,6 +74,7 @@ export function profileColor(theme: OpenTuiTheme, name: string): string {
     case 'cyan': return theme.cyan
     case 'orange': return theme.primary
     case 'purple': return theme.purple
+    case 'main': return theme.primary
     default: return theme.accent
   }
 }

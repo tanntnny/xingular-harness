@@ -14,12 +14,12 @@ export interface InspectStep extends Omit<InspectState, 'result'> {
   message: string | null
 }
 
-function message(action: 'save' | 'queue' | 'send', note: Note, send: SendResult | null, sessionId: string | null): string {
-  if (action === 'save' || !sessionId) return 'Annotation saved'
-  if (action === 'queue') return 'Added to the agent\'s queue'
-  if (note.delivery?.confirm) return 'Queued — confirm sending it in the panel'
+function message(action: 'save' | 'send', note: Note, send: SendResult | null, sessionId: string | null): string {
+  if (!sessionId) return 'Annotation saved'
+  if (note.delivery?.confirm) return action === 'send' ? 'Annotated — confirm sending it in the terminal' : 'Annotated — confirm it in the terminal before it is sent'
+  if (action === 'save') return 'Annotated — the agent can read it'
   if (send?.state === 'sent') return 'Sent to the agent'
-  if (send?.state === 'busy') return 'Queued — it goes to the agent when it finishes'
+  if (send?.state === 'busy') return 'Annotated — it goes to the agent when it finishes'
   return 'Sending to the agent'
 }
 
@@ -27,7 +27,8 @@ export async function inspectStep(capture: AnnotationCapture, notes: NoteDeliver
   const state = await capture.next(key)
   const { result, ...rest } = state
   if (!result) return { ...rest, note: null, send: null, message: null }
-  const action = sessionId ? result.action : 'save'
+  // Anything but a send is a save, whatever the page reports.
+  const action = sessionId && result.action === 'send' ? 'send' : 'save'
   const { note, send } = await notes.createAndAct({
     source: { url: result.url, title: result.title, capturedAt: now(), surface, representationHint: result.documentId, ...(state.app ? { app: state.app } : {}) },
     target: result.target,

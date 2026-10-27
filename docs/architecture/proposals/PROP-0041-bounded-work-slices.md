@@ -59,8 +59,9 @@ mechanism below is **run execution**, which the harness owns.
 
 A foundation policy, on by default for every run (interactive, automatic, plan, probe, subagent):
 
-- `workSlice.enabled` true; `workSlice.maxToolCalls` 160, `workSlice.maxMinutes` 40,
-  `workSlice.maxNewTokens` 320 000. `enabled: false`, or `XINGULAR_WORK_SLICE=off` at launch,
+- `workSlice.enabled` true; `workSlice.maxToolCalls` 320, `workSlice.maxMinutes` 60,
+  `workSlice.maxNewTokens` 0, so no token cap by default (the values were raised by PROP-0044).
+  `enabled: false`, or `XINGULAR_WORK_SLICE=off` at launch,
   removes the guard from a run: no budget, no stall notes, no continuation. Any
   limit reached, or `0` to disable that one, ends the slice. A token cap counts new input, cache
   writes and output; counting the cached prefix made one large read end a reply before any work
@@ -120,20 +121,29 @@ A foundation extension (`src/sessions/workSlice.ts`), registered where the compa
 - Signatures are `toolName + canonicalised args`, hashed, so every argument participates and a
   changed argument (a checklist whose steps moved on, a different path) is a different call. Detect,
   per reply:
-  - the same signature 3 times (`checkpoint_write`, `session_name`, `wait_subagents` and
-    `subagents.*` polling exempt);
-  - the same Bash command failing twice;
-  - 25 tool calls with no `file.changed` and no passing check;
-  - one file edited 4 times with no intervening passing check.
-- The counts and the nudge start fresh in each reply, because each reply is one slice: progress a
-  later reply reports cannot make an earlier reply's call look repeated. Reading a fixed handful of
-  field names instead of all arguments once made every `checklist_write` look identical, which is
-  how a reply that reported its progress was told it was repeating work.
-- First hit: block that call once and inject a compiler-rendered, bounded evidence note (the earlier
-  timestamps, exit codes and paths). This is the Manus "keep the failure visible" rule.
-- Second hit for the same signature, or any hit after one nudge in the same slice: force a
-  checkpoint, end the slice with `blocked`, and report the evidence instead of continuing. Never a
-  silent kill, never an unbounded retry.
+  - the same signature 3 times (`checkpoint_write` and `session_name` are handoff calls when a
+    checkpoint is available; `todo_write`, `wait_subagents` and `subagents.*` polling are exempt);
+  - the same Bash check failing twice;
+  - four successful native `edit`/`write` results on one path without an intervening passing check;
+    the next edit attempt is refused, and a further trigger ends the slice;
+  - context-compaction thrash at the third compaction.
+- Only a `tool_result` with `isError === false` and a path counts as a successful edit or write. A
+  failed or blocked attempt consumes no edit-churn allowance. A successful edit/write clears failed
+  check counts, exact-repeat counts for Bash check calls, and the pending nudge so that a fixed check
+  may run against changed code. It leaves per-file edit counts and exact-repeat counts for other
+  calls intact. A passing check clears edit churn and the reply's repetition state.
+- There is no general 25-call file-change/check no-progress trigger. The work-slice call/time budget
+  and the targeted repeated-call, repeated-failing-check, edit-churn and compaction-thrash protections
+  remain. `todo_write` is excluded from repeated-call detection and does not reset loop state, but it
+  remains subject to the tool-call budget. Counts and the nudge start fresh in each reply, because
+  each reply is one slice.
+- With `checkpoint_write`, the first targeted trigger is refused with a bounded nudge; repeating the
+  trigger ends the reply as `stalled` and the runner derives a checkpoint when the model wrote none.
+  A plan-research child keeps its frozen read-only capability set even though it lacks
+  `checkpoint_write`: it receives the same configured work-slice bound, is told to stop and return a
+  concise partial research report on its first budget or stall refusal, and a further tool call ends
+  the reply. The runner records an evidence-derived checkpoint; the child is not auto-continued and
+  receives no additional tool or connector permission.
 
 ### 5. Command budget
 
@@ -194,7 +204,7 @@ A foundation extension (`src/sessions/workSlice.ts`), registered where the compa
 ## Consequences
 
 - More runs per long task, each with its own record and pins. Continuation already supports this, so
-  session and thread views group them; a person sees a checkpoint every ≤ 40 minutes instead of
+  session and thread views group them; a person sees a checkpoint every ≤ 60 minutes instead of
   nothing.
 - Two new tools/events and two new settings, which the App must present for parity. The compiled tool
   manifest gains one entry, which changes the provider-cache prefix once (INV-PRM-8: measure with real
@@ -230,10 +240,11 @@ Implemented in this tree:
 
 - `checkpoint_write` (`src/tools/checkpoint.ts`) with its plugin descriptor, frozen capability entry,
   prompt group and terminal socket bridge; the run records `checkpoint`.
-- The slice guard (`src/sessions/workSlice.ts`): budget refusal, checkpoint allowance (including the
-  first call past the limit), termination,
-  repeated-call, repeated-failure, edit-churn and no-progress notes, compaction-thrash guard, and
-  per-reply reset. Wired for structured and terminal replies.
+- The slice guard (`src/sessions/workSlice.ts`): budget refusal, checkpoint-aware handoff, targeted
+  repeated-call and repeated-failure notes, success-only edit churn with progress-aware check retry
+  resets, compaction-thrash guard, and per-reply reset. The broad file/check no-progress trigger is
+  removed; plan-research children without `checkpoint_write` use the derived-checkpoint handoff and
+  the same configured bounds without gaining tools. Wired for structured and terminal replies.
 - The runner's `heartbeat`, derived fallback checkpoint, `slice_complete`/`stalled` terminal reasons
   and the third `finish` argument.
 - Auto-continue with `maxSlices` 8, a fruitless-slice stop and a blocked stop, off for automatic,

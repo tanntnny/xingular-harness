@@ -32,9 +32,11 @@ function extension() {
       })
     },
     registerCommand: (name: string, command: unknown) => commands.set(name, command),
-    registerTool: vi.fn()
+    registerTool: vi.fn(),
+    appendEntry: vi.fn(),
+    getThinkingLevel: () => 'medium'
   } as unknown as ExtensionAPI
-  const ctx = { cwd: process.cwd(), sessionManager: { getSessionFile: () => '/history/session.jsonl' }, ui: { getEditorText: () => '' }, abort: vi.fn() } as unknown as ExtensionContext
+  const ctx = { cwd: process.cwd(), sessionManager: { getSessionFile: () => '/history/session.jsonl', getBranch: () => [] }, ui: { getEditorText: () => '' }, abort: vi.fn() } as unknown as ExtensionContext
   return { api, ctx, handlers, commands }
 }
 
@@ -89,27 +91,27 @@ describe('terminal bridge lifecycle', () => {
     await expect(naming.execute('name-3', { name: 'Add web browser integrations for all agents' }, undefined, undefined, {} as ExtensionToolContext)).rejects.toThrow('six words')
   })
 
-  it('registers the shared checklist tool and records each list on the harness run', async () => {
+  it('registers the shared todo tool and records each list on the harness run', async () => {
     const { api } = extension()
     await terminalExtension(api)
-    const checklist = vi.mocked(api.registerTool).mock.calls.map(([tool]) => tool).find(tool => tool.name === 'checklist_write')!
-    expect(checklist.description).toContain('The user watches this list')
-    const result = await checklist.execute('c-1', { items: [{ text: 'Fix it', status: 'in_progress' }] }, undefined, undefined, {} as ExtensionToolContext)
+    const todo = vi.mocked(api.registerTool).mock.calls.map(([tool]) => tool).find(tool => tool.name === 'todo_write')!
+    expect(todo.description).toContain('The user watches this list')
+    const result = await todo.execute('c-1', { items: [{ text: 'Fix it', status: 'in_progress' }] }, undefined, undefined, {} as ExtensionToolContext)
     expect(result.content).toEqual([{ type: 'text', text: '[~] Fix it' }])
-    expect(transport.telemetry).toHaveBeenCalledWith('checklist', { items: [{ text: 'Fix it', status: 'in_progress' }] })
+    expect(transport.telemetry).toHaveBeenCalledWith('todo', { items: [{ text: 'Fix it', status: 'in_progress' }] })
     transport.telemetry.mockClear()
-    await checklist.execute('c-2', { items: [{ text: '', status: 'pending' }] }, undefined, undefined, {} as ExtensionToolContext)
-    expect(transport.telemetry).not.toHaveBeenCalledWith('checklist', expect.anything())
+    await todo.execute('c-2', { items: [{ text: '', status: 'pending' }] }, undefined, undefined, {} as ExtensionToolContext)
+    expect(transport.telemetry).not.toHaveBeenCalledWith('todo', expect.anything())
   })
 
-  it('rehydrates the current plan and checklist in context after compaction', async () => {
-    const state: TerminalPlanRunState = { active: true, allowedTools: new Set(['read', 'checklist_write']) }
+  it('rehydrates the current plan and todo in context after compaction', async () => {
+    const state: TerminalPlanRunState = { active: true, allowedTools: new Set(['read', 'todo_write']) }
     const { api, ctx, handlers } = extension()
     await terminalExtension(api, state)
     await handlers.get('before_agent_start')!({ messageType: 'user', prompt: 'Plan the migration', systemPromptOptions: { sections: {} } }, ctx)
     await handlers.get('context')!({ messages: [{ role: 'user', content: 'Plan the migration', timestamp: 1 }] }, ctx)
     await handlers.get('tool_result')!({
-      toolName: 'checklist_write', isError: false,
+      toolName: 'todo_write', isError: false,
       input: { items: [{ text: 'Inspect compatibility', status: 'completed' }, { text: 'Resolve the API question', status: 'in_progress' }] },
       content: []
     }, ctx)
@@ -124,7 +126,31 @@ describe('terminal bridge lifecycle', () => {
 
     state.active = false
     await handlers.get('agent_settled')!({}, ctx)
-    expect(await handlers.get('context')!(compacted, ctx)).toBeUndefined()
+    const after = await handlers.get('context')!(compacted, ctx) as { messages: { content?: string }[] } | undefined
+    expect(after?.messages.some(message => message.content?.includes('Plan mode is on')) ?? false).toBe(false)
+  })
+
+  it('derives a provisional name and adds the session state to the request', async () => {
+    const { api, ctx, handlers } = extension()
+    let name: string | undefined
+    api.getSessionName = () => name
+    api.setSessionName = vi.fn((value: string) => { name = value })
+    const original = transport.socket.getMockImplementation()
+    transport.socket.mockImplementation(async (_connection, call) => {
+      if (call === 'terminal.policy') return { allowed: true }
+      return call === 'control.claim' ? { key: 'lexical-key' } : { tools: [] }
+    })
+    try {
+      await terminalExtension(api)
+      await handlers.get('before_agent_start')!({ messageType: 'user', prompt: 'Please fix the login redirect before release', systemPromptOptions: { sections: {} } }, ctx)
+      expect(name).toBe('Fix the login redirect before release')
+      const result = await handlers.get('context')!({ messages: [{ role: 'user', content: 'Please fix the login redirect before release', timestamp: 1 }] }, ctx) as { messages: { content?: string }[] }
+      expect(result.messages.at(-1)?.content).toContain('Name: "Fix the login redirect before release".')
+      expect(result.messages.at(-1)?.content).toContain('Todo for this run: The todo list is empty.')
+      expect(result.messages.at(-1)?.content).toContain('This is the first turn')
+    } finally {
+      transport.socket.mockImplementation(original!)
+    }
   })
 
   it('adds plan instructions and eligible profiles for one request, then restores the normal profile list', async () => {
@@ -163,15 +189,16 @@ describe('terminal bridge lifecycle', () => {
       if (call === 'terminal.policy') return { allowed: true }
       return call === 'control.claim' ? { key: 'lexical-key' } : { tools: [] }
     })
+    const policyCalls = transport.socket.mock.calls.filter(([, call]) => call === 'terminal.policy').length
 
     const denied = await handlers.get('tool_call')!({ toolName: 'spawn_subagent', toolCallId: 'call-unsafe', input: { agent: 'worker' } }, ctx)
     expect(denied).toEqual({ block: true, reason: 'Unsafe plan profile.' })
-    expect(transport.socket.mock.calls.filter(([, call]) => call === 'terminal.policy')).toHaveLength(0)
+    expect(transport.socket.mock.calls.filter(([, call]) => call === 'terminal.policy')).toHaveLength(policyCalls)
 
     const allowed = await handlers.get('tool_call')!({ toolName: 'spawn_subagent', toolCallId: 'call-safe', input: { agent: 'explorer' } }, ctx)
     expect(allowed).toBeUndefined()
     const calls = transport.socket.mock.calls.map(([, call]) => call)
-    expect(calls.indexOf('terminal.subagents.planSafe')).toBeLessThan(calls.indexOf('terminal.policy'))
+    expect(calls.lastIndexOf('terminal.subagents.planSafe')).toBeLessThan(calls.lastIndexOf('terminal.policy'))
   })
 
   it('passes plan-mode Bash to policy only when it stays read-only', async () => {

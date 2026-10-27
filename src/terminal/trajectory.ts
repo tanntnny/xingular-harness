@@ -1,6 +1,7 @@
 import { notFound } from '../core/errors'
-import type { RunEvent, RunRecord } from '../sessions/contracts'
+import type { RunEvent, RunRecord, TodoItem } from '../sessions/contracts'
 import { findRun, listRuns, readEvents } from '../sessions/runStore'
+import { todoOf } from '../tools/todo'
 
 export type TerminalTrajectoryRun = Pick<RunRecord, 'id' | 'mode' | 'goal' | 'startedAt' | 'endedAt' | 'status'>
 
@@ -26,6 +27,13 @@ export function listTerminalTrajectoryRuns(root: string, sessionId: string, nati
   return listRuns(root, { sessionId })
     .filter(run => run.nativeSessionId === nativeSessionId || run.trigger === 'side-question' && run.sessionId === sessionId)
     .map(summary)
+}
+
+/** The todo of the latest reply in this native conversation, for a host's /todo view. */
+export function latestTerminalTodo(root: string, sessionId: string, nativeSessionId: string | null): { runId: string; todo: TodoItem[] } {
+  if (!nativeSessionId) return { runId: '', todo: [] }
+  const run = listRuns(root, { sessionId }).find(candidate => candidate.nativeSessionId === nativeSessionId && candidate.trigger !== 'side-question')
+  return run ? { runId: run.id, todo: todoOf(readEvents(root, run.id)) } : { runId: '', todo: [] }
 }
 
 /** Read a run only when it belongs to both this terminal and its current native conversation. */

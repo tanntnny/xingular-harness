@@ -30,23 +30,20 @@ export interface NoteApp {
 }
 
 /**
- * Where a note stands on its way to an agent (PROP-0018). `queued` waits for the person to send it;
- * `sent` went to the session as part of a run; `fixed` is the agent's claim that it is done. Only a
- * person resolves a note.
+ * Where a note stands for the session it is shared with (PROP-0048). `pending` is shared but not yet
+ * sent; `sent` went to the session as part of a run. Only a person resolves a note.
  */
 export interface NoteDelivery {
-  state: 'queued' | 'sent' | 'fixed'
+  state: 'pending' | 'sent'
   sessionId: string
+  /** When it became pending for the session. */
   queuedAt: string
-  /** Send it as soon as the session is idle ("Proceed now" while the agent was still working). */
+  /** Send it as soon as the session is idle (a send while the agent was still working). */
   autoSend?: boolean
   /** The person still has to confirm sending: it came from a page script the page could have forged. */
   confirm?: boolean
   sentAt?: string
   runId?: string
-  fixedAt?: string
-  /** The agent's own words on what it changed. */
-  summary?: string
 }
 
 /**
@@ -73,7 +70,8 @@ export interface NoteGrant {
   grantedAt: string
 }
 
-export type NoteOperation = 'create' | 'import' | 'update' | 'share' | 'unshare' | 'revoke_binding' | 'queue' | 'dequeue' | 'deliver' | 'mark_fixed'
+// `queue`, `dequeue` and `mark_fixed` appear only in the history of notes written before PROP-0048.
+export type NoteOperation = 'create' | 'import' | 'update' | 'share' | 'unshare' | 'revoke_binding' | 'pending' | 'clear' | 'deliver' | 'queue' | 'dequeue' | 'mark_fixed'
 
 export interface Note {
   id: string
@@ -254,6 +252,21 @@ function validNote(note: Note | null, id: string): Note {
   if (!note || note.id !== id || note.author !== 'user' || !Number.isSafeInteger(note.version) || note.version < 1 || !Array.isArray(note.grants) || !Array.isArray(note.history)) {
     throw new HarnessError('invalid_data', `Note ${id} is not a valid note.`)
   }
+  return upgradeDelivery(note)
+}
+
+/** Notes written before PROP-0048 had a queue and a "fixed" claim: read them as pending or sent. */
+function upgradeDelivery(note: Note): Note {
+  const delivery = note.delivery as unknown as (Omit<NoteDelivery, 'state'> & { state: string; fixedAt?: string; summary?: string }) | null | undefined
+  if (!delivery) return note
+  if (delivery.state === 'queued') delivery.state = 'pending'
+  else if (delivery.state === 'fixed') {
+    delivery.state = 'sent'
+    delivery.sentAt ??= delivery.fixedAt
+  }
+  delete delivery.fixedAt
+  delete delivery.summary
+  if (delivery.state !== 'pending' && delivery.state !== 'sent') note.delivery = null
   return note
 }
 
@@ -342,7 +355,7 @@ export function update(root: string, id: string, expectedVersion: number, patch:
   if (patch.status !== undefined) {
     if (patch.status !== 'open' && patch.status !== 'resolved') throw invalid('A note is open or resolved.')
     note.status = patch.status
-    if (patch.status === 'resolved' && note.delivery?.state === 'queued') note.delivery = null
+    if (patch.status === 'resolved' && note.delivery?.state === 'pending') note.delivery = null
   }
   if (patch.target !== undefined) note.target = validateTarget(patch.target)
   return save(root, note, 'update')
@@ -366,6 +379,8 @@ export function unshare(root: string, id: string, principal: NotePrincipal): Not
   const who = validatePrincipal(principal)
   const note = current(root, id, undefined)
   note.grants = note.grants.filter((grant) => !samePrincipal(grant.principal, who))
+  // A session that may no longer read the note is not sent it either.
+  if (note.delivery?.state === 'pending' && who.sessionId && note.delivery.sessionId === who.sessionId) note.delivery = null
   return save(root, note, 'unshare')
 }
 
@@ -420,44 +435,48 @@ export function importNotes(root: string, notes: unknown[]): { imported: string[
   return { imported, skipped }
 }
 
-// ---- Delivery to an agent (PROP-0018) ----------------------------------------------------------
+// ---- Delivery to a session (PROP-0048) ----------------------------------------------------------
 
 /**
- * A person asks a session to act on the note: it is shared with that session (if it was not) and
- * waits in the session's queue until it is sent.
+ * The note is shared with the session and waits there, unsent, until the person sends it. Calling it
+ * again keeps the original time, so the send order stays the order the notes were made.
  */
-export function queue(root: string, id: string, expectedVersion: number | undefined, sessionId: string, options: { autoSend?: boolean; confirm?: boolean; confirmed?: boolean } = {}): Note {
+export function markPending(root: string, id: string, expectedVersion: number | undefined, sessionId: string, options: { autoSend?: boolean; confirm?: boolean; confirmed?: boolean } = {}): Note {
   const session = safeId(sessionId)
   const note = current(root, id, expectedVersion)
-  if (note.status === 'resolved') throw invalid('Reopen this note before queueing it.')
+  if (note.status === 'resolved') throw invalid('Reopen this note before sending it.')
   if (!note.grants.some((grant) => grant.principal.sessionId === session)) note.grants.push({ principal: { sessionId: session }, grantedAt: now() })
-  const confirmationRequired = options.confirm === true || (note.delivery?.confirm === true && options.confirmed !== true)
+  const previous = note.delivery?.state === 'pending' && note.delivery.sessionId === session ? note.delivery : null
+  const confirmationRequired = options.confirm === true || (previous?.confirm === true && options.confirmed !== true)
   note.delivery = {
-    state: 'queued',
+    state: 'pending',
     sessionId: session,
-    queuedAt: now(),
-    ...(options.autoSend ? { autoSend: true } : {}),
+    queuedAt: previous?.queuedAt ?? now(),
+    ...(options.autoSend || previous?.autoSend ? { autoSend: true } : {}),
     ...(confirmationRequired ? { confirm: true } : {})
   }
-  return save(root, note, 'queue')
+  return save(root, note, 'pending')
 }
 
-/** Takes the note out of the queue. It stays shared; unshare withdraws that. */
-export function dequeue(root: string, id: string, expectedVersion: number | undefined): Note {
-  const note = current(root, id, expectedVersion)
-  if (note.delivery?.state !== 'queued') throw invalid('This note is not waiting to be sent.')
-  note.delivery = null
-  return save(root, note, 'dequeue')
-}
-
-/** The notes waiting for one session, oldest first. `auto` keeps only those to send when it is idle. */
-export function queued(root: string, sessionId: string, filter: { auto?: boolean; ids?: string[] | null } = {}): Note[] {
+/** The unsent notes of one session, oldest first. `auto` keeps only those to send when it is idle. */
+export function pending(root: string, sessionId: string, filter: { auto?: boolean; ids?: string[] | null } = {}): Note[] {
   const ids = filter.ids ? new Set(filter.ids) : null
   return all(root)
-    .filter((note) => note.status === 'open' && note.delivery?.state === 'queued' && note.delivery.sessionId === sessionId)
+    .filter((note) => note.status === 'open' && note.delivery?.state === 'pending' && note.delivery.sessionId === sessionId)
     .filter((note) => !filter.auto || (note.delivery?.autoSend === true && note.delivery.confirm !== true))
     .filter((note) => !ids || ids.has(note.id))
     .sort((left, right) => (left.delivery!.queuedAt).localeCompare(right.delivery!.queuedAt) || left.id.localeCompare(right.id))
+}
+
+/** `/annotate:clear`: the session's unsent notes are resolved and no longer shared with it. They can be reopened. */
+export function clearPending(root: string, sessionId: string): Note[] {
+  const session = safeId(sessionId)
+  return pending(root, session).map((note) => {
+    note.status = 'resolved'
+    note.delivery = null
+    note.grants = note.grants.filter((grant) => grant.principal.sessionId !== session)
+    return save(root, note, 'clear')
+  })
 }
 
 /** The notes went to the session as part of `runId`. */
@@ -467,7 +486,7 @@ export function markSent(root: string, ids: readonly string[], sessionId: string
   const notes = [...new Set(ids)].map((id) => current(root, id, undefined))
   for (const note of notes) {
     if (note.status !== 'open') throw invalid('Resolved notes cannot be sent.')
-    if (note.delivery?.state !== 'queued' || note.delivery.sessionId !== session) throw invalid('This note is not queued for this session.')
+    if (note.delivery?.state !== 'pending' || note.delivery.sessionId !== session) throw invalid('This note is not waiting to be sent to this session.')
     if (note.delivery.confirm) throw invalid('Confirm this note before sending it.')
   }
   return notes.map((note) => {
@@ -476,16 +495,4 @@ export function markSent(root: string, ids: readonly string[], sessionId: string
     delete note.delivery.confirm
     return save(root, note, 'deliver')
   })
-}
-
-/** The agent says it acted on a note shared with it. The note stays open until a person resolves it. */
-export function markFixed(root: string, id: string, caller: { sessionId?: string | null; agentId?: string | null }, summary: string): Note {
-  const note = current(root, id, undefined)
-  if (!visibleTo(note, caller)) throw notFound('Note')
-  const sessionId = note.delivery?.sessionId ?? caller.sessionId ?? note.grants.find((grant) => grant.principal.sessionId)?.principal.sessionId
-  if (!sessionId) throw invalid('This note was never sent to a session.')
-  note.delivery = { ...(note.delivery ?? { queuedAt: now() }), state: 'fixed', sessionId, fixedAt: now(), summary: bounded(summary.trim(), 2000, true, 'summary') }
-  delete note.delivery.autoSend
-  delete note.delivery.confirm
-  return save(root, note, 'mark_fixed')
 }

@@ -7,10 +7,14 @@ export interface TerminalSubagentProfile {
   color: string
 }
 
+/** The main agent's row: the parent run itself, shown by name rather than by a profile. */
+export const MAIN_PROFILE: TerminalSubagentProfile = { name: 'main', color: 'main' }
+
 export interface TerminalSubagentRun {
   id: string
   parentRunId: string | null
-  relation: 'subagent'
+  /** `main` is the parent run itself; every other row is a child or nested child. */
+  relation: 'main' | 'subagent'
   /** The short name the parent gave the child (PROP-0030). */
   title: string
   goal: string | null
@@ -34,8 +38,8 @@ export interface TerminalSubagentActivity extends TerminalSubagentRun {
   activity: string
   /** Cumulative run usage only; provider reasoning summaries and request details stay private. */
   usage: TerminalSubagentUsage | null
-  /** How far the child's own checklist is: counts only, never the items. */
-  checklist: { done: number; total: number } | null
+  /** How far the child's own todo is: counts only, never the items. */
+  todo: { done: number; total: number } | null
 }
 
 export const ACTIVE_SUBAGENT_STATUSES = new Set<RunStatus>(['queued', 'running', 'waiting_for_approval', 'waiting_for_input'])
@@ -102,8 +106,10 @@ export class SubagentMonitor {
     this.activities.clear()
   }
 
-  observe(parentRunId: string, run: TerminalSubagentRun, event: RunEvent): void {
-    if (this.parentRunId !== parentRunId || run.relation !== 'subagent') return
+  /** Folds one event of the tracked parent (`main`) or one of its descendants; `null` seeds the row. */
+  observe(parentRunId: string, run: TerminalSubagentRun, event: RunEvent | null): void {
+    if (this.parentRunId !== parentRunId) return
+    if ((run.relation === 'main') !== (run.id === parentRunId)) return
 
     const row = this.activities.get(run.id) ?? {
       id: run.id,
@@ -115,7 +121,7 @@ export class SubagentMonitor {
       startedAt: run.startedAt,
       endedAt: run.endedAt,
       activity: statusActivity(run.status),
-      checklist: null,
+      todo: null,
       profile: run.profile ?? null,
       accountLabel: run.accountLabel ?? null,
       model: run.model ?? null,
@@ -135,8 +141,10 @@ export class SubagentMonitor {
     row.startedAt = run.startedAt
     row.endedAt = run.endedAt
 
-    const payload = payloadOf(event)
-    if (event.type === 'tool.started') {
+    const payload = event ? payloadOf(event) : {}
+    if (!event) {
+      // A seeded row keeps what it already folded.
+    } else if (event.type === 'tool.started') {
       const toolCallId = stringOf(payload.toolCallId)
       const name = stringOf(payload.name) ?? 'Tool'
       if (toolCallId) row.tools.set(toolCallId, { sequence: event.sequence, text: name })
@@ -167,22 +175,35 @@ export class SubagentMonitor {
           ...(usage.contextWindow === undefined ? {} : { contextWindow: usage.contextWindow })
         }
       }
-    } else if (event.type === 'checklist.updated') {
+    } else if (event.type === 'todo.updated' || event.type === 'checklist.updated') {
       const items = Array.isArray(payload.items) ? payload.items as { status?: unknown }[] : []
-      row.checklist = items.length ? { done: items.filter(item => item?.status === 'completed').length, total: items.length } : null
+      row.todo = items.length ? { done: items.filter(item => item?.status === 'completed').length, total: items.length } : null
     }
 
     if (run.status !== 'running') row.tools.clear()
     row.activity = run.status === 'running'
-      ? latestTool(row.tools) ?? row.lastTool?.text ?? (event.type === 'message.delta' ? 'Responding' : 'Working')
+      ? latestTool(row.tools) ?? row.lastTool?.text ?? (event?.type === 'message.delta' || (!event && row.activity === 'Responding') ? 'Responding' : 'Working')
       : statusActivity(run.status)
     this.activities.set(run.id, row)
   }
 
+  /**
+   * Rebuilds the rows of a parent run that is no longer live, such as the latest one of a reopened
+   * conversation, by folding each run's saved events. Rows keep their final status.
+   */
+  restore(parentRunId: string, runs: readonly { run: TerminalSubagentRun; events: readonly RunEvent[] }[]): void {
+    this.begin(parentRunId)
+    for (const { run, events } of runs) {
+      this.observe(parentRunId, run, null)
+      for (const event of events) this.observe(parentRunId, run, event)
+    }
+  }
+
+  /** The main row first, then children in start order. */
   snapshot(parentRunId: string): TerminalSubagentActivity[] {
     if (this.parentRunId !== parentRunId) return []
     return [...this.activities.values()]
-      .sort((left, right) => left.startedAt.localeCompare(right.startedAt) || left.id.localeCompare(right.id))
+      .sort((left, right) => Number(right.relation === 'main') - Number(left.relation === 'main') || left.startedAt.localeCompare(right.startedAt) || left.id.localeCompare(right.id))
       .map(({ tools: _tools, lastTool: _lastTool, ...activity }) => activity)
   }
 

@@ -1,9 +1,11 @@
-import { createCliRenderer } from '@opentui/core'
+import { createCliRenderer, RGBA } from '@opentui/core'
 import { render, RendererContext } from '@opentui/solid'
 
 import { DEFAULT_PRODUCT_NAME } from '../../core/env'
 import { OpenTuiApplication } from './app'
+import { hoveredLinkCells, paintLinkCells } from './linkHover'
 import { OpenTuiRoot } from './root'
+import { opentuiTheme } from './theme'
 
 const app = new OpenTuiApplication(process.argv.slice(2))
 const productName = (process.env.XINGULAR_HARNESS_NAME ?? '')
@@ -37,9 +39,19 @@ app.attachRenderer({
   setTitle: title => renderer.setTerminalTitle(title),
   setMousePointer: style => renderer.setMousePointer(style),
   getLinkAt: (x, y) => renderer.getLinkAt(x, y),
+  getLinkIdAt: (x, y) => renderer.getLinkIdAt(x, y),
+  requestRender: () => renderer.requestRender(),
   destroy: () => renderer.destroy()
 })
 app.setStopHandler(() => renderer.destroy())
+// A link under the pointer is repainted in the hover colour once the frame is composed.
+const linkHoverColor = RGBA.fromHex(opentuiTheme.linkHover)
+renderer.addPostProcessFn(buffer => {
+  const highlight = app.linkHighlight
+  if (!highlight) return
+  const cells = hoveredLinkCells((x, y) => renderer.getLinkIdAt(x, y), highlight.id, highlight, buffer.width, buffer.height)
+  paintLinkCells(buffer, cells, linkHoverColor)
+})
 // Solid loses the renderer context when a reactive branch creates a renderable. A default
 // keeps one renderer reachable for every branch in this single-renderer application.
 RendererContext.defaultValue = renderer

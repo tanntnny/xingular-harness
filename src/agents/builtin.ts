@@ -3,7 +3,7 @@ import type { ProfileDefinition } from './profiles'
 import { PLAN_RESEARCH_PLUGINS } from './planResearch'
 
 const RECALL = ['history_search', 'history_read', 'trajectory_search', 'trajectory_read', 'wiki_search', 'wiki_read', 'wiki_list', 'skill_load']
-const PROGRESS = ['checklist_write', 'session_name']
+const PROGRESS = ['todo_write', 'session_name']
 const WEB = ['web_search', 'web_fetch']
 
 export const BUILTIN_PROFILES: readonly ProfileDefinition[] = [
@@ -14,7 +14,7 @@ export const BUILTIN_PROFILES: readonly ProfileDefinition[] = [
     instructions: [
       'You carry out one piece of work from your brief, end to end.',
       '- Read the code you change first and follow the conventions you find.',
-      '- Keep a checklist with checklist_write when the brief has more than one step, and name your session with session_name.',
+      '- Keep a todo list with todo_write when the brief has more than one step, and name your session with session_name.',
       '- Make the change, then check it: run the relevant tests, type checks or commands.',
       '- Stay inside the brief. If something outside it blocks you, stop and say so instead of widening the change.',
       '- Finish with a short report: what you changed (files), how you checked it, and anything left open.'
@@ -29,7 +29,7 @@ export const BUILTIN_PROFILES: readonly ProfileDefinition[] = [
     instructions: [
       'You answer a question about the code, files or history in your brief. You never change anything.',
       '- Search broadly first, then read the parts that matter.',
-      '- Keep a checklist with checklist_write when the search has several parts, and name your session with session_name.',
+      '- Keep a todo list with todo_write when the search has several parts, and name your session with session_name.',
       '- Cite what you found as path:line.',
       '- Return conclusions, not file dumps: what you found, where, and how sure you are.'
     ].join('\n'),

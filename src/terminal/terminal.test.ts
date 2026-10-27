@@ -11,7 +11,7 @@ import { createHarness, type Harness } from '../harness'
 import type { RunEvent } from '../sessions/contracts'
 import type { ToolPolicy } from '../sessions/policy'
 import { loadRun, readEvents } from '../sessions/runStore'
-import { checklistOf } from '../tools/checklist'
+import { todoOf } from '../tools/todo'
 import type { Found } from '../plugins/discover'
 import { rootWithProject, writeFile } from '../../tests/helpers'
 import { parseCli } from './cli'
@@ -80,6 +80,7 @@ describe('a pi terminal session', () => {
     // load them, so the terminal does not either (PROP-0039). The harness's extension comes last.
     expect(launch.args.slice(4)).toEqual([
       '--model', 'chosen-model', '--no-extensions', '--no-skills', '--no-prompt-templates', '--no-themes',
+      '--skill', (await import('../tools/defaultSkills')).defaultSkillPath(),
       '--extension', '/opt/harness/terminal-pi.js', '--session-dir', join(sessionFolder, 'pi')
     ])
     expect(launch.env.PI_CODING_AGENT_DIR).toBe(join(harness.accounts.dir, account.id, 'home', 'pi'))
@@ -135,7 +136,7 @@ describe('a pi terminal session', () => {
 
     const loaded = [
       '--extension', '/shared/extensions/mine.ts', '--extension', join(version, 'plugins/guard.ts'),
-      '--skill', join(version, 'skills'), '--skill', '/shared/skills/alpha/SKILL.md',
+      '--skill', join(version, 'skills'), '--skill', (await import('../tools/defaultSkills')).defaultSkillPath(), '--skill', '/shared/skills/alpha/SKILL.md',
       '--prompt-template', '/shared/prompts/p.md',
       '--theme', '/shared/themes/dark.json',
       '--extension', '/opt/harness/terminal-pi.js', '--session-dir', join(root, 'sessions', 'p1', 'term-1', 'pi')
@@ -168,7 +169,9 @@ describe('a pi terminal session', () => {
     await socketCall(connection, 'terminal.subagents.register', params, 1000, key)
     const { loadRun: capabilities } = await import('../capabilities/runSnapshot')
     expect(capabilities(root, begun.runId)).toMatchObject({ tools: ['read'], caller: { projectId: 'p1' } })
-    await expect(socketCall(connection, 'terminal.subagents.register', params, 1000, key)).resolves.toEqual({ runId: begun.runId, connectors: [] })
+    await expect(socketCall(connection, 'terminal.subagents.register', params, 1000, key)).resolves.toMatchObject({
+      runId: begun.runId, connectors: [], subagentProfiles: { plan: expect.stringContaining('- explorer —') }
+    })
     await expect(socketCall(connection, 'terminal.subagents.register', { ...params, tools: ['write'] }, 1000, key)).rejects.toThrow('frozen capability')
     await tellOn(connection, 'settled', { aborted: false })
     const sent = harness.terminals.send({ sessionId: 'term-1', text: 'Reserved turn' })
@@ -240,11 +243,11 @@ describe('a pi terminal session', () => {
     await tell('tool', { phase: 'end', id: 't1', name: 'read', ok: true, durationMs: 4, resultChars: 12 })
     await tell('message', { text: 'Done.' })
     await tell('usage', { inputTokens: 5, outputTokens: 2, cacheReadTokens: 0, cacheWriteTokens: 0, requests: 1 })
-    await tell('checklist', { items: [{ text: 'Fix the build', status: 'completed' }] })
-    await tell('checklist', { items: [{ text: 'x', status: 'unknown' }] })
+    await tell('todo', { items: [{ text: 'Fix the build', status: 'completed' }] })
+    await tell('todo', { items: [{ text: 'x', status: 'unknown' }] })
     await tell('settled', {})
-    expect(events.map((event) => event.type)).toEqual(['started', 'status.changed', 'message.completed', 'tool.started', 'tool.completed', 'message.completed', 'usage.updated', 'checklist.updated', 'completed'])
-    expect(checklistOf(readEvents(root, runId))).toEqual([{ text: 'Fix the build', status: 'completed' }])
+    expect(events.map((event) => event.type)).toEqual(['started', 'status.changed', 'message.completed', 'tool.started', 'tool.completed', 'message.completed', 'usage.updated', 'todo.updated', 'completed'])
+    expect(todoOf(readEvents(root, runId))).toEqual([{ text: 'Fix the build', status: 'completed' }])
     expect(loadRun(root, runId).status).toBe('completed')
     expect(harness.terminals.state('term-1')).toEqual({ ready: true, dirty: false, active: false })
     // The run has the pack its session started with.
@@ -266,14 +269,14 @@ describe('a pi terminal session', () => {
     expect(loadRun(root, 'reserved').status).toBe('interrupted')
   })
 
-  it('queues page notes for the terminal, sends them as one run, and sends a busy "proceed now" when the run ends', async () => {
+  it('shares page notes with the terminal, sends them as one run, and sends a busy "annotate & send" when the run ends', async () => {
     const { tell, harness, connection, root } = await setup()
     const readNote = (id: string) => readPageNote(root, id)
     await tell('ready', {})
     const { key } = await socketCall<{ key: string }>(connection, 'control.claim')
     const input = { source: { url: 'http://localhost:5173/', title: 'Dev', capturedAt: '' }, target: { kind: 'page' as const }, body: 'Fix the header' }
-    const queued = await harness.pageNotes.createAndAct(input, 'queue', 'term-1', true)
-    expect(queued.note.delivery).toMatchObject({ state: 'queued', sessionId: 'term-1' })
+    const queued = await harness.pageNotes.createAndAct(input, 'save', 'term-1', true)
+    expect(queued.note.delivery).toMatchObject({ state: 'pending', sessionId: 'term-1' })
     const sent = socketCall<{ state: string; runId: string }>(connection, 'terminal.annotations.send', {}, 5000, key)
     let command: { command: { text: string } } | null = null
     await vi.waitFor(async () => {
@@ -283,7 +286,7 @@ describe('a pi terminal session', () => {
     await tell('begin', { text: command!.command.text })
     expect(await sent).toMatchObject({ state: 'sent' })
 
-    // The agent is working: "Proceed now" waits, then goes out when the run ends.
+    // The agent is working: "Annotate & send" waits, then goes out when the run ends.
     const later = await harness.pageNotes.createAndAct({ ...input, body: 'Then the footer' }, 'send', 'term-1', true)
     expect(later.send).toMatchObject({ state: 'busy' })
     await tell('settled', {})
@@ -320,7 +323,7 @@ describe('a pi terminal session', () => {
     await tell('begin', { text: 'Edit' })
     expect(await tell('policy', { tool: 'read', args: { path: 'a' } })).toMatchObject({ allowed: true })
     expect(await tell('policy', { tool: 'session_name', args: { name: 'Inspect browser tools' } })).toMatchObject({ allowed: true })
-    expect(await tell('policy', { tool: 'checklist_write', args: { items: [] } })).toMatchObject({ allowed: true })
+    expect(await tell('policy', { tool: 'todo_write', args: { items: [] } })).toMatchObject({ allowed: true })
     expect(await tell('policy', { tool: 'bash', args: { command: 'rm -rf x' } })).toMatchObject({ allowed: true })
     const outside = join(root, '..', 'outside-workspace.txt')
     expect(await tell('policy', { tool: 'write', args: { path: outside } })).toMatchObject({ allowed: false, requiresApproval: true, rememberable: false, standing: 'switch' })
@@ -540,10 +543,10 @@ describe('a pi terminal session', () => {
   it('serves the Wiki, skills and connected apps to the session over the socket, until the terminal ends', async () => {
     const { connection, harness, tell } = await setup()
     await tell('ready', {})
-    expect(await socketCall<string>(connection, 'skill.load')).toBe('You have no skills.')
+    expect(await socketCall<string>(connection, 'skill.load')).toContain('plugin-authoring')
     expect(await socketCall<string>(connection, 'wiki.list')).toContain('home')
     const listed = await socketCall<{ tools: { name: string; parameters: { type: string } }[] }>(connection, 'tools.list')
-    expect(listed.tools.map((tool) => tool.name)).toEqual(['history_search', 'history_read', 'trajectory_search', 'trajectory_read', 'wiki_search', 'wiki_read', 'wiki_list', 'skill_load', 'mcp_list_tools', 'mcp_call_tool', 'web_search', 'web_fetch', 'browser_navigate', 'browser_snapshot', 'browser_read', 'browser_screenshot', 'browser_click', 'browser_type', 'browser_select', 'browser_press', 'browser_scroll', 'browser_wait', 'browser_tabs', 'page_notes_list', 'page_notes_read', 'page_notes_mark_fixed'])
+    expect(listed.tools.map((tool) => tool.name)).toEqual(['history_search', 'history_read', 'trajectory_search', 'trajectory_read', 'wiki_search', 'wiki_read', 'wiki_list', 'skill_load', 'plugin_propose', 'mcp_list_tools', 'mcp_call_tool', 'web_search', 'web_fetch', 'browser_navigate', 'browser_snapshot', 'browser_read', 'browser_screenshot', 'browser_click', 'browser_type', 'browser_select', 'browser_press', 'browser_scroll', 'browser_wait', 'browser_tabs', 'page_notes_list', 'page_notes_read'])
     expect(listed.tools[0].parameters.type).toBe('object')
     // Account calls exist, but only the session's extension holds the key that unlocks them.
     await expect(socketCall(connection, 'accounts.list')).rejects.toMatchObject({ code: 'unauthorized' })

@@ -74,8 +74,8 @@ function installed(plugins: readonly Plugin[], pluginId: string): Plugin & { ins
   return plugin as Plugin & { install: NonNullable<Plugin['install']> }
 }
 
-/** Removes an installed package. One kept as a folder beside a person's data is moved to the trash there. */
-export async function remove(harness: Harness, params: PluginScope & { pluginId: string }): Promise<Plugin[]> {
+/** Removes an installed package without consulting Hub. Hub calls this while it owns the receipt transaction. */
+export async function removeDirect(harness: Harness, params: PluginScope & { pluginId: string }): Promise<Plugin[]> {
   const plugin = installed(await list(harness, params), params.pluginId)
   if (plugin.install.kind === 'folder') {
     const trash = join(harness.env.root, 'trash', 'plugins')
@@ -96,12 +96,35 @@ export async function remove(harness: Harness, params: PluginScope & { pluginId:
   return list(harness, params)
 }
 
-/** Fetches a newer version of one installed package, or of all of them. Changed code waits for trust again. */
+async function hubReceiptForPackage(harness: Harness, pluginId: string) {
+  const receipts = (await harness.hub.list()).installed.filter((receipt) => receipt.entry.delivery.kind === 'pi-package' && receipt.resourceIds.includes(pluginId))
+  if (receipts.length > 1) throw invalid('More than one Hub receipt owns this package. Review the Hub receipts before changing it.')
+  return receipts[0]
+}
+
+/** Removes an installed package, delegating Hub-owned packages to their receipt owner. */
+export async function remove(harness: Harness, params: PluginScope & { pluginId: string }): Promise<Plugin[]> {
+  const receipt = await hubReceiptForPackage(harness, params.pluginId)
+  if (receipt) {
+    await harness.hub.uninstall(receipt.entry.id, receipt.entry.version)
+    return list(harness, params)
+  }
+  return removeDirect(harness, params)
+}
+
+/** Fetches newer versions of local packages. Hub-owned packages remain pinned to catalog versions. */
 export async function update(harness: Harness, params: PluginScope & { pluginId?: string | null }): Promise<Plugin[]> {
-  const plugin = params.pluginId ? installed(await list(harness, params), params.pluginId) : null
+  const plugins = await list(harness, params)
+  const plugin = params.pluginId ? installed(plugins, params.pluginId) : null
   if (plugin?.install.kind === 'folder') throw invalid(`${plugin.title} is a folder on this machine. Change its files to update it.`)
+  const receipts = (await harness.hub.list()).installed.filter((receipt) => receipt.entry.delivery.kind === 'pi-package')
+  const hubOwned = new Set(receipts.flatMap((receipt) => receipt.resourceIds))
+  if (plugin && hubOwned.has(plugin.id)) throw invalid(`${plugin.title} is managed by Hub. Uninstall its receipt before installing another exact catalog version.`)
+  const sources = plugin
+    ? [plugin.install.source]
+    : [...new Set(plugins.filter((candidate) => candidate.install && candidate.install.kind !== 'folder' && !hubOwned.has(candidate.id)).map((candidate) => candidate.install!.source))]
   const { packages } = await manager(harness)
-  await withoutInstallScripts(() => packages.update(plugin?.install.source))
+  for (const source of sources) await withoutInstallScripts(() => packages.update(source))
   changed(harness)
   return list(harness, params)
 }

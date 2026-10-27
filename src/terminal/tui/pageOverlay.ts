@@ -27,9 +27,20 @@ export class PageOverlay implements Component, Focusable {
   private disposed = false
   private pointerLayout?: PointerLayout
   private hoveredTab?: string
+  private activated = false
 
   constructor(readonly options: PageOverlayOptions) {
-    options.page.activate?.()
+    // A page may open a dialog as it starts. It starts once its own overlay is showing, so the dialog
+    // lands above it; a host that never reports mounting still starts it on the next turn.
+    const fallback = setTimeout(() => this.mounted(), 0)
+    fallback.unref?.()
+  }
+
+  /** The host shows this overlay now: the page starts. */
+  mounted(): void {
+    if (this.activated || this.disposed) return
+    this.activated = true
+    this.options.page.activate?.()
   }
 
   get page(): TerminalPage { return this.options.page }
@@ -144,20 +155,27 @@ export class PageOverlay implements Component, Focusable {
       contentWidth: contentWidth(width),
       centered
     }
-    const escapeHint = page.ownsNavigation ? 'Esc back/close' : 'Esc close'
-    const fullFooter = page.ownsNavigation ? `${escapeHint} · ${page.hint()}` : [
-      page.hint(),
+    const pageHint = page.hint()
+    const returnsToPage = pageHint.split(' · ').includes('Esc back')
+    const escapeHint = page.ownsNavigation ? 'Esc back/close' : returnsToPage ? 'Esc back' : 'Esc close'
+    const fullFooter = page.ownsNavigation ? `${escapeHint} · ${pageHint}` : [
+      pageHint,
       tabs.length > 1 ? 'Tab/Shift+Tab sections' : '',
-      escapeHint
+      returnsToPage ? '' : escapeHint
     ].filter(Boolean).join(' · ')
     const footerWidth = Math.max(0, width - CHROME_PAD * 2)
-    const primaryHint = page.hint().split(' · ')[0] ?? ''
+    const primaryHint = pageHint.split(' · ')[0] ?? ''
     const compactFooter = [
       primaryHint,
       !page.ownsNavigation && tabs.length > 1 ? 'Tab/⇧Tab' : '',
       escapeHint
     ].filter(Boolean).join(' · ')
-    const footer = visibleWidth(fullFooter) <= footerWidth ? fullFooter : compactFooter
+    const navigationFooter = [!page.ownsNavigation && tabs.length > 1 ? 'Tab/⇧Tab' : '', escapeHint].filter(Boolean).join(' · ')
+    const footer = visibleWidth(fullFooter) <= footerWidth
+      ? fullFooter
+      : visibleWidth(compactFooter) <= footerWidth
+        ? compactFooter
+        : visibleWidth(navigationFooter) <= footerWidth ? navigationFooter : escapeHint
     return pageFrame({
       title: '',
       headerLine: tabStrip(tabs, page.activeTab(), inner, theme, 'top', this.hoveredTab),

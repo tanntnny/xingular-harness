@@ -50,7 +50,7 @@ harness forwards to the policy and never reads.
 ## Invariants
 
 - **INV-EXT-1** There are seven extension points. Adding, removing or changing the shape of one is
-  an architecture change (proposal required).
+  an architecture change; update this page and affected contracts in the same change.
 - **INV-EXT-2** Every extension point is optional. The harness runs with none of them supplied.
 - **INV-EXT-3** An extension point carries data or decisions the application owns. It never
   carries an application's name or a branch for one application (`INV-BND-3`).

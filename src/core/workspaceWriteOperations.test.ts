@@ -1,11 +1,12 @@
 import { accessSync, chmodSync, constants, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { createEditTool, createWriteTool } from '@earendil-works/pi-coding-agent'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { resolveWritePath, resolveWorkspaceRoot } from './workspace'
-import { withWorkspaceWriteAuthorization, workspaceEditOperations, workspaceWriteOperations, type WorkspaceWriteAuthorization } from './workspaceWriteOperations'
+import { atomicWriteLaunch, withWorkspaceWriteAuthorization, workspaceEditOperations, workspaceWriteOperations, type WorkspaceWriteAuthorization } from './workspaceWriteOperations'
 
 const fixtures: string[] = []
 const sandboxExecutables = process.platform === 'darwin'
@@ -142,5 +143,24 @@ describe('workspace-contained native write operations', () => {
     const { root } = workspaceFixture()
     const target = join(root, 'target.txt')
     expect(resolveWritePath(target, root)).toBe(target)
+  })
+})
+
+describe('atomic write helper on Windows', () => {
+  it('starts Node directly, without a shell or sandbox, and still replaces the file atomically', () => {
+    const base = realpathSync(mkdtempSync(join(tmpdir(), 'harness-windows-write-')))
+    try {
+      const target = join(base, 'nested', 'file.txt')
+      const launch = atomicWriteLaunch('win32', base, [])
+      expect(launch.executable).toBe(process.execPath)
+      expect(launch.args[0]).toBe('-e')
+      expect(launch.env.PATH).toBeUndefined()
+
+      const result = spawnSync(launch.executable, launch.args, { input: JSON.stringify({ path: target, content: 'written' }), env: { ...launch.env, PATH: process.env.PATH } })
+      expect(result.status, result.stderr.toString()).toBe(0)
+      expect(readFileSync(target, 'utf8')).toBe('written')
+    } finally {
+      rmSync(base, { recursive: true, force: true })
+    }
   })
 })

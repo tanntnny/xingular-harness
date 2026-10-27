@@ -564,8 +564,8 @@ export const PAGE_SCRIPT = String.raw`(() => {
           const shadow = host.attachShadow({ mode: 'closed' })
           shadow.innerHTML = '<style>' + INSPECT_CSS + '</style><div class="layer"><div class="box"></div><div class="chip"></div>' +
             '<div class="pop" role="dialog" aria-label="Annotate"><p class="what"></p><textarea placeholder="What should change?" aria-label="Comment"></textarea>' +
-            '<div class="row"><button data-action="save">Create annotation</button><button data-action="queue">Ask agent to fix</button><button class="primary" data-action="send">Proceed now</button></div>' +
-            '<div class="hint">Esc to cancel · ⌘↵ proceed now</div></div><div class="toast" role="status"></div></div>'
+            '<div class="row"><button data-action="save">Annotate</button><button class="primary" data-action="send">Annotate &amp; send</button></div>' +
+            '<div class="hint">Esc cancel · ⌘↵ annotate &amp; send · the agent can read every annotation</div></div><div class="toast" role="status"></div></div>'
           const $ = selector => shadow.querySelector(selector)
           const state = { captureId, host, shadow, listeners: [], hovered: null, refusal: null, pointer: null, frozen: null, frame: 0, results: [], box: $('.box'), chip: $('.chip'), pop: $('.pop'), what: $('.what'), input: $('textarea'), toast: $('.toast'), toastTimer: 0 }
           inspect = state
@@ -652,11 +652,11 @@ export const PAGE_SCRIPT = String.raw`(() => {
           }
           on(state.pop, 'click', event => {
             const button = event.composedPath().find(node => node instanceof HTMLElement && node.dataset?.action)
-            if (button) submit(button.dataset.action)
+            if (button) submit(button.dataset.action === 'send' ? 'send' : 'save')
           }, false)
           on(state.input, 'keydown', event => {
             if (event.key === 'Escape') { event.preventDefault(); closePopover() }
-            if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); submit(event.shiftKey ? 'queue' : 'send') }
+            if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); submit('send') }
           }, false)
           const inPopover = event => event.composedPath().includes(host)
           on(window, 'pointermove', event => {

@@ -66,6 +66,35 @@ try {
 }
 `
 
+export interface AtomicWriteLaunch {
+  executable: string
+  args: string[]
+  env: NodeJS.ProcessEnv
+}
+
+/**
+ * How the atomic write helper starts. macOS and Linux run it inside the write-boundary sandbox.
+ * Windows has none, so Node runs the helper directly; the target was still canonicalized and
+ * authorized, and the rename replaces the directory entry rather than writing through an alias.
+ */
+export function atomicWriteLaunch(platform: NodeJS.Platform, root: string, additionalRoots: readonly string[]): AtomicWriteLaunch {
+  if (platform === 'win32') {
+    // Node needs SystemRoot to start on Windows; keep only what the helper requires.
+    const env: NodeJS.ProcessEnv = {}
+    for (const name of ['SystemRoot', 'windir', 'TEMP', 'TMP', 'USERPROFILE']) {
+      if (process.env[name]) env[name] = process.env[name]
+    }
+    return { executable: process.execPath, args: ['-e', atomicWriteScript], env }
+  }
+  const command = `exec ${shellQuote(process.execPath)} -e ${shellQuote(atomicWriteScript)}`
+  const spec = workspaceSandboxCommand(platform, root, root, command, additionalRoots)
+  return {
+    executable: spec.executable,
+    args: spec.args,
+    env: { PATH: '/usr/bin:/bin', ...(process.env.HOME ? { HOME: process.env.HOME } : {}) }
+  }
+}
+
 function shellQuote(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`
 }
@@ -108,18 +137,13 @@ async function runAtomicWrite(authorization: WorkspaceWriteAuthorization, path: 
   }
 
   const additionalRoots = outside ? [nearestExistingDirectory(canonicalPath)] : []
-  const command = `exec ${shellQuote(process.execPath)} -e ${shellQuote(atomicWriteScript)}`
-  const spec = workspaceSandboxCommand(process.platform, root, root, command, additionalRoots)
-  const env: NodeJS.ProcessEnv = {
-    PATH: '/usr/bin:/bin',
-    ...(process.env.HOME ? { HOME: process.env.HOME } : {})
-  }
+  const launch = atomicWriteLaunch(process.platform, root, additionalRoots)
 
   await new Promise<void>((resolvePromise, rejectPromise) => {
-    const child = spawn(spec.executable, spec.args, {
+    const child = spawn(launch.executable, launch.args, {
       cwd: root,
       detached: process.platform !== 'win32',
-      env,
+      env: launch.env,
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true
     })

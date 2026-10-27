@@ -11,7 +11,7 @@ const theme = createHarnessTheme({ getColorMode: () => 'truecolor' } as Theme)
 function fixture(overrides: Partial<TerminalSubagentActivity> = {}): TerminalSubagentActivity {
   return {
     id: 'child', parentRunId: 'parent', relation: 'subagent', goal: 'Inspect auth flow', status: 'running',
-    startedAt: '2026-10-23T00:00:00.000Z', endedAt: null, activity: 'read', title: 'Inspect auth flow', checklist: null,
+    startedAt: '2026-10-23T00:00:00.000Z', endedAt: null, activity: 'read', title: 'Inspect auth flow', todo: null,
     accountLabel: 'Main', model: 'openai/gpt-5', effort: 'low', usage: null, ...overrides
   }
 }
@@ -21,6 +21,20 @@ function plain(page: SubagentsPage, rows = 24): string {
 }
 
 describe('SubagentsPage', () => {
+  it('pins the main agent first with the same details, and counts only children', () => {
+    const page = new SubagentsPage({ theme: () => theme, changed: vi.fn(), snapshot: () => [
+      fixture({ id: 'child', status: 'running', startedAt: '2026-10-23T00:00:01.000Z' }),
+      fixture({ id: 'parent', parentRunId: null, relation: 'main', profile: { name: 'main', color: 'main' }, title: 'Fix the login', goal: 'Fix the login bug', status: 'completed', startedAt: '2026-10-23T00:00:00.000Z', activity: 'Completed' })
+    ] })
+    const output = plain(page)
+    const lines = output.split('\n')
+    expect(lines.findIndex(line => line.includes('main  Fix the login'))).toBeLessThan(lines.findIndex(line => line.includes('Inspect auth flow')))
+    expect(output).toContain('1 active · 1 total')
+    expect(output).toContain('Profile: main')
+    expect(output).toContain('Fix the login bug')
+    expect(output).toContain('acct Main · model openai/gpt-5 · eff low')
+  })
+
   it('shows a flat roster and selected task/activity details without event payloads', () => {
     const snapshot = vi.fn(() => [
       fixture(),
@@ -47,7 +61,7 @@ describe('SubagentsPage', () => {
   it('shows an animated status glyph, a normal-color title, and runtime details', () => {
     const page = new SubagentsPage({
       theme: () => theme,
-      snapshot: () => [fixture({ profile: { name: 'explorer', color: 'cyan' }, title: 'Map the auth flow', checklist: { done: 2, total: 5 }, usage: {
+      snapshot: () => [fixture({ profile: { name: 'explorer', color: 'cyan' }, title: 'Map the auth flow', todo: { done: 2, total: 5 }, usage: {
         provider: 'openai', model: 'gpt-5', inputTokens: 1_200, outputTokens: 300, cacheReadTokens: 500, costUsd: 0.004, costSource: 'estimate'
       } })],
       changed: vi.fn()

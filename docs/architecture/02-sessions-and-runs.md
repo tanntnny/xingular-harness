@@ -13,7 +13,7 @@ records everything the run does as validated events.
 |---|---|---|
 | `Sessions` | `sessions/sessions.ts` | Starts a turn: `run(input: SessionRunInput)`, `provide(provider)`. Builds the gate. |
 | `runTurn`, `piSessionFactory`, `loadResources` | `sessions/runner.ts` | Opens the Pi session, loads resources in a fixed order, streams events, settles the run. |
-| compaction checkpoint | `sessions/compactionCheckpoint.ts` | Restores the active request's bounded goal, checklist and plan instructions to model context after compaction. |
+| compaction checkpoint | `sessions/compactionCheckpoint.ts` | Restores the active request's bounded goal, todo list and plan instructions to model context after compaction. |
 | `RunRegistry`, `ActiveRun` | `sessions/registry.ts` | Live runs: `emit`, `requestApproval`, `requestAnswer(s)`, `onInterrupt`, `onSteer`, `finish`; `listen` for observers. |
 | run store functions | `sessions/runStore.ts` | `saveRun`, `updateRun`, `persistEvent`, `appendEvent`, `readEvents`, `markInterruptedRuns`, `runFamily`, `listRuns`. |
 | `RunRecord`, `RunEvent`, schemas | `sessions/contracts.ts` | The one contract every session shares. |
@@ -55,7 +55,7 @@ A session that cannot open ends its run as `failed` and returns `nativeSessionId
   `message.completed`, `message.steered`, `tool.started`, `tool.completed`, `retry.started`,
   `retry.ended`, `compaction.started`, `compaction.ended`, `approval.requested`,
   `approval.resolved`, `question.requested`, `question.answered`, `extension.notice`,
-  `reaction.added`, `agent.message`, `checklist.updated`, `artifact.added`, `file.changed`, `usage.updated`,
+  `reaction.added`, `agent.message`, `todo.updated`, `artifact.added`, `file.changed`, `usage.updated`,
   `account.status`, `status.changed`, `failed`, `completed`. Each has a payload schema in
   `runEventPayloadSchemas`.
 - **Workspace root** (`RunRecord.workspaceRoot`) is the canonical root whose filesystem effects
@@ -76,9 +76,10 @@ A session that cannot open ends its run as `failed` and returns `nativeSessionId
   across alternatives; generation quality is guidance, not a schema guarantee. Old events remain
   valid without a data rewrite; readers with the old bounds must update before accepting larger
   sketches. `question.answered` and `QuestionAnswer` are unchanged.
-- **Checklist** (PROP-0006): `checklist.updated` carries the whole list the model last wrote with
-  `checklist_write`, `{ items: { text, status: pending | in_progress | completed }[] }`, at most 50
-  items. The latest event replaces every earlier one; `checklistOf(events)` reads it.
+- **Todo list** (PROP-0006, renamed by PROP-0045): `todo.updated` carries the whole list the model
+  last wrote with `todo_write`, `{ items: { text, status: pending | in_progress | completed }[] }`, at
+  most 50 items. The latest event replaces every earlier one; `todoOf(events)` reads it. The
+  pre-rename `checklist.updated` is still read so old runs keep their list, and is never written.
 - **`RunRecord`** fields are listed in `sessions/contracts.ts`. `mode`, `harness`, `sessionType`,
   `worktreeId`, `attachmentCount`, `exitCode`, `handoffId` and `trigger` belong to the
   application: stored and returned, and only `mode` and `trigger` are read.
@@ -97,12 +98,24 @@ A session that cannot open ends its run as `failed` and returns `nativeSessionId
   `results` for the host (`sessions.spawnSubagent` is a compatibility alias). Child runs have
   `relation: 'subagent'` and `parentRunId`. Nesting defaults to 1, at most 3 (`subagentDepth`).
   The child's record carries `title`, the short name the parent gave it (PROP-0030).
+  `spawn_subagent { continue: <runId> }` (`subagents.spawn { continue }`) continues a child that
+  stopped before finishing as a new child run with `continueFrom`. It reopens the first link's
+  history folder and keeps the earlier child's session id, profile, title, account, variant version
+  and frozen capability set, which must still lie within the parent's; `agent` and `tools` are
+  refused with it, and the newest link of a chain is the one continued (ADR-0043). Children an
+  earlier reply left stopped are delivered before the next reply's first request, each with a
+  note that it can be continued; a stopped child that was continued is reported through its
+  continuation. Every run record carries the launch `model` and `effort`, superseded by the model
+  the session opened with.
 - **Agent profiles** (PROP-0029). `agent` names a profile: built-in (`worker`, `explorer`),
   `<data root>/agents/<name>.md`, `<project>/.xingular/agents/<name>.md`, or a c5 definition of
-  the parent's variant, later sources winning (`agents/profiles.ts`). A profile narrows the
+  the parent's variant, later sources winning (`agents/profiles.ts`). A switched-on package's
+  profiles (page 06) then fill names nobody else took; the run resolves them once at start into
+  `packageProfiles`, and its children resolve their profiles from that list. A profile narrows the
   child's tools and plugins (`agents/narrow.ts`), may choose its variant, model and effort, and
   frames it with a "Your role" section. The child's record carries `profile`; the spawn result
-  carries `agent` and any `unavailableTools`. A run that may spawn lists every profile in its
+  carries `agent` and any `unavailableTools`. `main` is reserved for the main agent's row: no
+  profile file or variant definition may take it. A run that may spawn lists every profile in its
   `subagents` section.
 - **Plan mode** (`plan: true`). The stable system prompt is unchanged. An attended plan run may
   include `ask_user` and `spawn_subagent` / `wait_subagents`, subject to the caller's frozen
@@ -122,15 +135,15 @@ A session that cannot open ends its run as `failed` and returns `nativeSessionId
   The reply ends with one `<proposed_plan>` block.
 - **Compaction checkpoint** (PROP-0033, ADR-0032). After compaction, an active run's model context
   receives a bounded, ephemeral checkpoint with the current user request and the latest validated
-  checklist or applicable plan instructions, when either is available to restore. It is re-added to
+  todo list or applicable plan instructions, when either is available to restore. It is re-added to
   each request while that run continues;
   its state is cleared when the run settles or the session branch changes. The message changes no
   tools, permissions, run events or native history. An interrupted run still uses the durable
-  checklist and normal continuation path.
+  todo list and normal continuation path.
 - **Continuation** (PROP-0007). `continuationOf(root, runId, sessionDir?)` (`runs.continuation`)
   says whether a stopped run can be continued: `resumable`, a `reason` when not (`not_found`,
   `active`, `completed`, `no_history`, `history_missing`), the exact native history to reopen,
-  the pinned account, variant version and capability set, the checklist, unanswered approvals and
+  the pinned account, variant version and capability set, the todo list, unanswered approvals and
   questions, the last tool and whether it finished, and subagents that did not finish.
   `SessionRunInput.continueFrom` starts a **new** run from it: it reopens that history, records
   `resumedFromRunId`, pins the same account, variant version and capability set (anything different
@@ -138,7 +151,8 @@ A session that cannot open ends its run as `failed` and returns `nativeSessionId
   `continuation_unavailable`). If the earlier snapshot includes `ask_user`, an automatic or
   refinement-triggered continuation fails with `continuation_mismatch` rather than narrowing it.
   Empty text defaults to "Continue from where you stopped.", and the new run adds
-  a dynamic `continuation` section (order 26) saying where the earlier run stopped. The next run
+  a dynamic `continuation` section (order 26) saying where the earlier run stopped and that its
+  unfinished subagents can be continued with `spawn_subagent { continue }`. The next run
   without `continueFrom` withdraws it. `Recovery.interruptedRunIds` lists the runs `open` marked
   interrupted.
 - **Worktrees** (PROP-0016). When `run.worktreeId` names a worktree in the Harness registry
@@ -203,7 +217,9 @@ is approved but remains in progress; no completed cross-surface catalog is impli
   and never applied or relayed.
 - **INV-RUN-4** A restarted harness never restarts model work. On `open`, runs left active are
   marked `interrupted` unless another live process owns them (`owner.json`). Recovery of a
-  subagent needs the same account, caller, working folder and history branch. Continuing is always
+  subagent needs the same account, caller, working folder and history branch; the history branch
+  (owner marker and native history id), not the host's session id, ties a parent to an earlier
+  one. A stopped subagent is continued only by its parent, through `spawn_subagent { continue }`. Continuing is always
   a new run with `continueFrom`; it pins the earlier run's account, variant version and capability
   set, and the earlier run's record is never reopened. The application asks for it, or the earlier
   run's work-slice policy does when the reply stopped at its budget (PROP-0041); a run started
@@ -225,11 +241,15 @@ is approved but remains in progress; no completed cross-surface catalog is impli
   plan may include `ask_user`, `spawn_subagent` and `wait_subagents`, subject to the frozen caller
   capabilities; newly resolved normal, automatic, probe, improver and reflection runs omit
   `ask_user`. Plan-mode spawning requires a named profile whose effective explicit tool and plugin
-  allowlists qualify for read-only research. The child inherits plan mode and is narrowed to the
-  intersection of the parent's frozen capabilities, the profile and the plan research set; it has no
+  allowlists qualify for read-only research. The prompt lists only profiles whose intersection with
+  the parent's frozen tools and plugin contributions includes a research evidence tool. An omitted
+  `tools` override inherits that safe intersection; an explicit override can only narrow it. The
+  child inherits plan mode and is narrowed to the intersection of the parent's frozen capabilities,
+  the profile and the plan research set; it has no
   connectors, user questions, writes, commands or nested subagents. The plan run itself may run
-  Bash only in the OS-enforced read-only scope (PROP-0043, ADR-0038). The gate refuses unsafe calls
-  before approvals, and the service rechecks before launch. The terminal activates plan-eligible
+  Bash only in the OS-enforced read-only scope (PROP-0043, ADR-0038); research children cannot run
+  commands. Generic browser actions and connected-app calls remain unavailable in plan mode. The
+  gate refuses unsafe calls before approvals, and the service rechecks before launch. The terminal activates plan-eligible
   tools only for a plan request, then restores its normal set. Provider-cache effects of the tool-list
   difference are not assumed (page 04, `INV-PRM-8`).
 - **INV-RUN-9** Subagent results reach the parent at native turn boundaries, at most once
@@ -245,28 +265,39 @@ is approved but remains in progress; no completed cross-surface catalog is impli
   surface's visible transcript and selected references. It excludes hidden reasoning and attachment
   bytes, never reads the main native history, and never changes or steers the parent. Its own run
   record and events use the normal store contract (PROP-0019).
-- **INV-RUN-13** A reply is a bounded work slice (PROP-0041). The foundation defaults are 160 tool
-  calls, 40 minutes and 320 000 new tokens, whichever comes first. The token count covers new input,
-  cache writes and output, never the cached prefix: a few large reads pass any small cap before
-  useful work, so the cap is a safety net, not the bound. At the limit the guard ends the slice and
-  refuses the next tool call with a request for `checkpoint_write`; a handoff call is never refused,
-  including when it is the first call past the limit, and another tool ends the reply. A reply that ends this way is `interrupted` with terminal reason `slice_complete`, and one
-  the stall guard ends is `stalled`. The stall guard identifies a call by its name and every
-  argument, names a repeated call once and ends the reply on the next repeat, and counts afresh in
-  each reply, so a checklist a reply rewrites as its steps complete is not a repeat. A new run
-  continues it only up to the policy's slice cap, only
-  after a slice that changed a file, passed a check or recorded a finished item, and never after a
-  checkpoint that is `blocked`. A run may turn the guard off with `workSlice.enabled: false`, and a
-  launch may set `XINGULAR_WORK_SLICE=off` for every run in that process; with it off a reply has no
-  boundary — no checkpoint, no continuation, no stall notes — and ends only when the model stops or a
-  person interrupts.
+- **INV-RUN-13** A reply is a bounded work slice (PROP-0041). The foundation defaults are 320 tool
+  calls and 60 minutes, whichever comes first, with no new-token limit (PROP-0044). A token cap is
+  available with `workSlice.maxNewTokens`, counted on new input, cache writes and output and never on
+  the cached prefix: a few large reads pass any small cap before useful work, so the tool calls and
+  the clock are the bound and the token count is only a ceiling for whoever asks for one. At the
+  limit the guard refuses the next tool call. When `checkpoint_write` is available, it requests a
+  checkpoint and leaves handoff calls callable; otherwise a plan-research child must stop with a
+  concise partial research report, and the runner derives a checkpoint from run evidence. A
+  non-handoff tool call after the refusal ends the reply. A budget-ended reply is `interrupted` with
+  terminal reason `slice_complete`; a reply ended by a stall guard is `stalled`.
+  The targeted stall guard identifies calls by name and every argument; three identical calls cause
+  one refusal, and a repeated trigger ends the reply. A Bash check that fails twice is a trigger. The
+  guard counts only successful native `edit`/`write` results (`isError === false`) with a path toward
+  the four-edit per-path churn limit; the next edit is refused, and a repeated trigger ends the
+  reply. Failed or blocked edits do not count. A successful edit/write clears failed-check counts,
+  identical Bash-check repeat counts and the pending nudge, but leaves edit counts and other
+  repeated-call counts intact. A passing check clears edit counts. The general 25-call file/check
+  no-progress trigger is removed. `todo_write` is bookkeeping: it is exempt from repeated-call
+  detection and does not reset loop state, but counts toward the tool-call budget. Third-compaction
+  thrash detection remains. Plan-research children without `checkpoint_write` receive the configured
+  bound without a new capability and do not auto-continue. A new run continues it only up to the
+  policy's slice cap, only after a slice that changed a file, passed a check or recorded a finished
+  item, and never after a checkpoint that is `blocked`. A run may turn the guard off with
+  `workSlice.enabled: false`, and a launch may set `XINGULAR_WORK_SLICE=off` for every run in that
+  process; with it off a reply has no boundary — no checkpoint, no continuation, no stall notes — and
+  ends only when the model stops or a person interrupts.
 - **INV-RUN-14** A run event stream carries `checkpoint` (the handoff `checkpoint_write` records or
   the harness derives from the run's own evidence when the model wrote none) and `heartbeat`
   (steps, elapsed time, last tool, compactions, slice, and the call budget). A heartbeat older than
   five minutes while the owner process lives marks the run `interrupted` with reason `stalled`; a
   run that never emitted one keeps the 30-minute silence rule. The watchdog never restarts work.
 - **INV-RUN-12** A post-compaction checkpoint is a bounded context projection of the active request,
-  the latest validated checklist and applicable plan instructions. It is compiled by
+  the latest validated todo list and applicable plan instructions. It is compiled by
   `prompt/compile.ts`, supplied only to model requests in the active run, and never persists hidden
   reasoning or changes permissions, stable prompt text, native history or run-event schemas. Its
   in-memory state is cleared when the run settles or the active session branch changes
@@ -290,16 +321,22 @@ Decisions: [ADR-0002](../decisions/ADR-0002-native-subagent-lifecycle.md) (super
 [ADR-0022](../decisions/ADR-0022-plan-only-question-tools.md),
 [ADR-0023](../decisions/ADR-0023-contextual-side-question-runs.md),
 [ADR-0026](../decisions/ADR-0026-contextual-question-wireframes.md),
-[ADR-0033](../decisions/ADR-0033-plan-mode-research-delegation.md).
+[ADR-0033](../decisions/ADR-0033-plan-mode-research-delegation.md),
+[ADR-0039](../decisions/ADR-0039-progress-aware-stall-guards.md).
 
 ## Native session names (PROP-0010)
 
 `session_name({ name: string })` adds or revises the current Pi session's name in embedded
-and terminal execution. The agent names meaningful work early and revises it when the overall
-objective changes, including a manual name. Agent-submitted names are imperative sentences
+and terminal execution. The agent normally calls it once before its first other tool call when a
+request needs tools or changes state, and revises it only when the overall objective changes,
+including a manual name. When a top-level attended session starts unnamed, the harness also
+derives a provisional name from a substantive first request before the first model request;
+greetings, thanks and short conversational replies stay unnamed. The model may revise the
+provisional name. Agent-submitted names are imperative sentences
 of at most six whitespace-separated words; whitespace is normalized, and empty names,
 terminal escapes, non-whitespace controls and longer names fail without writing. Identical
 names are a no-op. Pi's native session-info history is the only storage; continuation and
 reopen preserve it. Each child names only itself. There is no additional model request or
-run-event schema. The normal capability selection and host gate apply; `harnessTools: false`
+run-event schema. The normal capability selection and host gate apply; a refused or failed
+provisional name leaves the session unnamed and never fails the run. `harnessTools: false`
 omits the tool. Plan mode permits it as session metadata maintenance.

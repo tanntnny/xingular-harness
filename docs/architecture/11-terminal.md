@@ -43,7 +43,7 @@ Screen: transcript above the composer, centred dialogs, full-screen resource bro
   per-tool grants do not widen it, and command output never triggers approval or replay.
 - The terminal compiles its prompt once (`compile` + `render`) and keeps that pack; each run
   records a copy (page 04). The shared compaction checkpoint extension reintroduces the active
-  request and latest checklist into post-compaction model context until the run settles.
+  request and latest todo list into post-compaction model context until the run settles.
 - Normal mode keeps `ask_user` out of the active tool set. An attended plan request enables the
   shared tool alongside its read-only set and restores the normal set on success, failure or
   interruption. There is no terminal-only question alias (PROP-0040).
@@ -77,13 +77,17 @@ Screen: transcript above the composer, centred dialogs, full-screen resource bro
   leaves the main conversation untouched. The dock streams, scrolls and copies the complete answer.
   Aliases remain callable and searchable, but help and palette show only the canonical
   entry. `/usage:` and `/usage:analysis` open the usage page's Analysis tab, and `/usage:limit`
-  opens its Limits tab (PROP-0042); both are plugin-owned namespaced routes. The usage page is a
-  centered dialog: each window is a label and reset line above a quota-left bar coloured green at
+  opens its Limits tab (PROP-0042); `/usage:accounts` opens the All accounts limits tab. These are plugin-owned namespaced routes. All-account refresh reads due providers using their own account credentials without switching the session account. The usage page is a
+  full-screen page with a top tab strip: each window is a label and reset line above a quota-left bar coloured green at
   50% or more left, amber from 20–49%, and red below 20%. `commands.list`
   publishes the effective routes; the browser-safe core catalogue is `commands/registry.ts`. First-class Harness commands are unprefixed and live in that registry,
   independently of plugin command metadata. Every plugin-owned command uses
   `/<owner-prefix>:<command>`; the namespace root is offered only by plugins that declare a default
   command. Prompt templates and `/skill:<name>` keep their existing forms.
+
+The `/plugins` Proposals tab previews the complete stored files and generated manifest before
+confirmation. Accept and reject pass the preview hash through the control-key-protected socket;
+the proposal service checks it again. Acceptance leaves the package switched off and untrusted.
 
 ## Invariants
 
@@ -96,7 +100,7 @@ Screen: transcript above the composer, centred dialogs, full-screen resource bro
   their existing layers. The terminal adds no second path for any of them; its runs are written
   through the controller and the run store.
 - **INV-TUI-4** Changes made through the session socket (`plugins.attach|detach|trust|untrust|configure`,
-  `accounts.*`, Hub installs, `terminal.browser.*`, `terminal.worktrees.*`,
+  `plugins.proposals.*`, `accounts.*`, Hub installs, `terminal.browser.*`, `terminal.worktrees.*`,
   `terminal.annotations.*`, `terminal.sideQuestions.*`) require the control key the trusted terminal process claimed once
   (`control.claim`). The session's shell can read the session token, so the token alone is never
   enough.
@@ -144,6 +148,13 @@ The native `session_info_changed` event invalidates the frontend's cached snapsh
 refreshes the working line. Both the active and retained completion line append
 ` – <name>` after duration and token rate, for example
 `Working (2m, 50 tok/s) – Add web browser integrations`. Unnamed sessions omit the suffix.
+A substantive first turn also receives a provisional name through the terminal policy; a refused
+or failed name leaves the session unnamed.
+
+Each user turn appends a hidden `xingular-session-state` custom message with the current name,
+this run's empty todo, and the previous run's todo as context. The message is request-only and
+never changes the compiled stable pack. A first turn is marked as such; later turns say the todo
+list resets for each run.
 Names use the existing terminal text sanitization, remain outside the verb shimmer, and
 truncate at the right edge. Manual `/name` and existing long names remain supported.
 
@@ -156,19 +167,29 @@ on close. No command text is sent to the conversation model. See [Doctor](../doc
 
 ## Resource browser (PROP-0013)
 
-`/harness` owns shared navigation for Foundation, Variant, Skills, Plugins, Connections, Tools
-and Library. `/skills`, `/plugins`, `/connections` (`/mcp`), `/tools`, `/hub` and `/components`
-are shortcuts into that browser. Current availability comes from the live resource loader and
-active tool registry, independently of saved configuration and the latest variant head.
+`/harness` owns broad navigation for Foundation, Variant, Skills, Plugins, Connections, Tools and
+Library. `/skills`, `/connections` (`/mcp`), `/tools` and `/components` are shortcuts into that
+browser. `/plugins` opens the focused local plugin manager (Plugins, Trust and Packages tabs); `/hub`
+opens the separate Community catalog (Catalog and Installed tabs). The Hub Catalog shows Community
+entries across supported types; Installed retains receipts from every channel with its channel
+visible. Registry/document entries offer bounded payload Preview; Pi packages do not. Current
+availability in `/harness` comes from the live resource loader and active tool registry,
+independently of saved configuration and the latest variant head.
 
 Every `terminal.browser.*` call requires the private control key, including bounded resource
-inspection, local imports, connection management and browser settings. Package install/remove use protected
-`plugins.install|remove`. These are adapters to the existing services, not another loader,
-attachment store, gate or secret store. Browsing neither executes plugin code nor connects MCP.
+inspection, local imports, connection management and browser settings. Direct plugin package
+install/update/remove and attachment/trust/settings actions use protected `plugins.*`; Hub catalog
+list/install/uninstall use protected `hub.*`. Hub-owned package removal keeps the receipt and
+resource ownership in the Hub service. These routes are adapters to the existing services, not
+another loader, attachment store, gate or secret store. Browsing neither executes plugin code nor
+connects MCP.
 The browser uses the full terminal with persistent section tabs (PROP-0014); wide screens keep
 inventory beside details, actions and content, while compact screens keep inline details under
-the same tabs. Other command pages remain centered except `/settings` and `/accounts`, which use
-full-screen page layouts. Accounts keeps Accounts/Pools tabs, search and account-service operations.
+the same tabs. The separate `/plugins` and `/hub` pages also use full-screen layouts with persistent
+section tabs, responsive inventory/details panes and their existing protected operations. Other
+command pages remain centered except `/settings`, `/accounts`, `/plugins`, `/hub` and `/usage:`, which use
+full-screen page layouts.
+Accounts keeps Accounts/Pools tabs, search and account-service operations.
 Wide terminals show selected-account details beside the list; Enter or a primary click opens grouped
 actions in that inspector. Compact terminals replace the list with a full-page account detail view
 and its grouped actions. Enter opens the selected account; Escape returns to the list while
@@ -243,39 +264,56 @@ contract is unchanged. See [PROP-0025](proposals/PROP-0025-contextual-question-w
 PTY verification is retained in `docs/evidence/terminal-wireframe-normalization/`; it establishes
 cell topology for bounded fixtures, not every emulator/font or live-model sketch quality.
 
-## Web annotations commands (PROP-0017)
+## Web annotations commands (PROP-0017, PROP-0018, PROP-0048)
 
-`/annotate:notes` lists the Web annotations kept in the data root, with search, and offers reveal, edit, resolve or
-reopen, share with this session or stop sharing, and delete. `/annotate:` opens the default capture pane;
-`/annotate:annotate [url]` is its explicit command form. It opens a visible capture browser (its own window and profile, separate from the agent's browser), where the person can annotate the whole page,
-select text, or click an element there. An annotation is private until shared; this session's agent then reads it with `page_notes_list`
-and `page_notes_read`.
+`/annotate:` opens the annotate page, a full-screen page with two tabs. `/annotate:notes` opens it on
+**All annotations**: every annotation in the data root, with search, and reveal, edit, resolve or
+reopen, share with this session or stop sharing, and delete. An annotation is private until shared;
+this session's agent then reads it with `page_notes_list` and `page_notes_read`.
 
-The annotate pane (PROP-0018) is a full-screen page beside the window being inspected.
+The **Annotate** tab is the panel beside the window being inspected.
 
 - **Ways to start it:**
-  - `/annotate:` or `/annotate:annotate [url]`: the capture browser
-  - `/annotate:annotate --app <DevTools address | port> [name]`: an app's own windows over its DevTools port
-  - `/annotate:annotate --bridge [name]`: app windows that load the page bridge script, which the pane shows
-- **The inspector** (`i`) outlines components on hover. A click or a text drag opens a popover in the page with Create annotation, Ask agent to fix, and Proceed now.
-- **Sections:** Queue, Sent and fixed (with the agent's summary), and Saved.
-- **Other keys:** `s` sends the queue as one run of this session, confirming notes that came from a page-world script first; `x` takes a note out of the queue; `t` picks a window.
-- **Routes:** `terminal.annotations.target|attach|windows|selectWindow|inspect|stopInspect|next|queue|dequeue|confirm|send` act only on this terminal's session and need the control key.
+  - `/annotate: [url]`: the capture browser (its own window and profile, separate from the agent's
+    browser). With no address, the page returns to the window that is still open, with its URL and
+    the inspector on, and asks for one in its own inline field only when no window is open.
+  - `/annotate: --app [port | address] [name]`: an app's own windows over its DevTools port. With no
+    port, the page lists the apps answering on one (`annotations.capture.discover`).
+  - `/annotate: --bridge [name]`: app windows that load the page bridge script, which the page shows.
+- **The inspector** (`i`) outlines components on hover. A click or a text drag opens a popover in
+  the page with **Annotate** and **Annotate & send**. Every annotation is shared with this session
+  at once.
+- **Groups:** Unsent (n) and Sent, for this session.
+- **Other keys:** `s` sends every unsent annotation as one run of this session, confirming the
+  page-origin ones once first; `o` types a page address; `a` lists apps with a DevTools port, with
+  *Start an app with a DevTools port*, *Type a DevTools port*, *Use the page bridge*; `t` picks a
+  window; `Tab` switches tab. A key pressed while the page is busy gets a notice, never nothing.
+- **Commands:** `/annotate:submit <request>` sends the unsent annotations with the request after
+  them; `/annotate:clear` resolves the unsent ones and stops sharing them.
+- **Routes:** `terminal.annotations.target|attach|windows|selectWindow|inspect|stopInspect|next|confirm|confirmAll|send|clear|discover|launch`
+  act only on this terminal's session and need the control key.
 
-## Checklist (PROP-0006, PAR-001)
+A page that opens a dialog as it starts gets it above itself: `PageOverlay` starts its page when the
+host reports the overlay mounted.
 
-Terminal sessions register the shared `checklist_write` tool. The extension validates each list
-with the same tool code and sends it as `checklist` telemetry; the controller emits it as
-`checklist.updated` on the active run, so `runs.checklist` and continuation read terminal runs too.
-The gate treats it as read-only, plan mode allows it, and terminal children inherit it. The
-transcript shows each write as a checklist block (`✓` done, `●` in progress (warning yellow), `○` pending) under a
-`Checklist · n of m done` header instead of a tool row; a failed or malformed call stays a tool row.
+## Todo list (PROP-0006, PROP-0045, PAR-001)
+
+Terminal sessions register the shared `todo_write` tool. The extension validates each list with
+the same tool code and sends it as `todo` telemetry; the controller emits it as `todo.updated` on the
+active run, so `runs.todo` and continuation read terminal runs too. The gate treats it as read-only,
+plan mode allows it, and terminal children inherit it. The transcript shows each write as a todo
+block (`✓` done, `●` in progress (warning yellow), `○` pending) under a `Todo · n of m done` header
+instead of a tool row; a failed or malformed call stays a tool row. `/todo` reads the latest
+non-side-question run of this terminal's native session and appends the same card as a snapshot,
+without a model request; an empty list is a one-line notice. `/checklist` remains its alias for one
+release.
 
 ## Work-slice checkpoint (PROP-0041)
 
-Terminal replies carry the same work-slice guard as structured runs: 160 tool calls, 40 minutes or
-320 000 new tokens, then a refusal that asks for `checkpoint_write`. The extension registers the shared
-tool and sends it as `checkpoint` telemetry, which the controller records as `checkpoint` on the
+Terminal replies carry the same work-slice guard as structured runs: 320 tool calls or 60 minutes,
+with no new-token limit by default (PROP-0044), then a refusal that asks for `checkpoint_write`. The
+extension registers the shared tool and sends it as `checkpoint` telemetry, which the controller
+records as `checkpoint` on the
 active run, so an App reading the same session sees the handoff. Terminal replies are not
 auto-continued: at the boundary the person decides, which is what the terminal's own turn model
 already does. The run record says `interrupted` with terminal reason `slice_complete` (or `stalled`
@@ -288,13 +326,13 @@ boundary at all; it is not persisted, so the next launch without it restores the
 During an active parent run, the terminal polls a private read-only monitor once per second. It
 projects the flat set of child and nested-child runs with task, status, elapsed time, the latest
 tool name, the child's agent profile (name and colour, PROP-0029), the title the parent gave it
-(PROP-0030), counts from the child's own checklist, the pinned account label, effective model and
+(PROP-0030), counts from the child's own todo list, the pinned account label, effective model and
 effort, and cumulative usage totals. Model and effort come from the volatile launch selection; the
 latest provider-reported model supersedes the launch model when usage is available. Usage is an
 explicit projection of token, cache, cost, request-count and context-window totals. Per-request
 payloads and reasoning summaries do not enter the monitor. The child's own `session_name` is not
 projected; it names the child's session, not its row. Tool summaries, other arguments, output and
-checklist item text never enter the monitor. The latest completed tool name remains visible across
+todo item text never enter the monitor. The latest completed tool name remains visible across
 one-second snapshots until new tool or response activity replaces it. The monitor exposes no
 controls to steer or stop children.
 
@@ -302,15 +340,26 @@ The live rows sit under the status line, after one blank row, with no heading. E
 order: the status mark (`○` queued, a running row that shows the working spinner's frame in the profile's colour (warning for a copy of the parent), `●` waiting in the accent,
 `✓` done, `✕` failed, `!` stopped), the profile name in its colour (`subagent`, muted, for a copy
 of the parent), the title the parent gave the child (PROP-0030), and `n of m tasks` when the child
-keeps a checklist. Active rows come first, at most three, then `+N more · /subagents`; a narrow
+keeps a todo list. Active rows come first, at most three, then `+N more · /subagents`; a narrow
 terminal cuts the title first. `/subagents` opens the searchable full roster, with a colored
 profile and normal-color title on its first line, then muted account, model, effort and usage
 metadata on its second line. One blank row separates each two-line entry. Narrow rows truncate this
 lower-priority summary without hiding the title.
 At parent settlement, the terminal makes a final monitor read and keeps the latest parent's rows
-visible until the next parent run starts. The projection remains volatile and read-only, is scoped to
-the latest parent run in the terminal session, and is cleared on session replacement or terminal
-disposal. It is not a persisted event or public server method.
+visible until the next parent run starts.
+
+The monitor also projects the parent run itself as a `main` row (profile `main`, a reserved name,
+in the theme's primary colour) with the same account, model, effort, usage, activity and todo
+fields. The `/subagents` page pins it first and counts only children in its header; the rows under
+the status line omit it, since the status line already describes the main agent.
+
+Every turn marks its run on the native branch (`xingular-subagent-owner`), and `ready` sends those
+owners. When a conversation opens or is switched to with no run active, the monitor is rebuilt from
+the branch's latest top-level run in this folder and its descendants, by folding their saved events
+with their final status. Runs a stopped process left active were already marked `interrupted`.
+The rows show under the status line and on the page until the next parent run starts (ADR-0043).
+The projection remains read-only and scoped to one parent run; a switch to a conversation with no
+such run clears it, as does terminal disposal. It is not a persisted event or public server method.
 
 ## Agent profiles (PROP-0029)
 

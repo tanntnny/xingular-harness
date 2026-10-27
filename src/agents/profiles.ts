@@ -1,9 +1,10 @@
 // Agent profiles (PROP-0029): named bundles a subagent starts from, with its instructions, colour,
 // tools, plugins, variant, model and effort. They come from four places, later ones winning:
 // built-ins in code, `<data root>/agents/*.md`, `<project>/.xingular/agents/*.md`; a variant's own
-// c5 subagents fill in names nobody else took. Profiles only narrow what the parent has.
+// c5 subagents, then the profiles of switched-on packages, fill in names nobody else took.
+// Profiles only narrow what the parent has.
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 
 import { EFFORTS, type Effort } from '../core/effort'
 import { invalid, notFound } from '../core/errors'
@@ -11,12 +12,15 @@ import { parse, serialize } from '../core/frontmatter'
 import { atomicWrite } from '../core/fs'
 import { subagentOf } from '../variant/materialise'
 import { BUILTIN_PROFILES } from './builtin'
-import { planResearchProfile } from './planResearch'
+import { planResearchEligibility, planResearchProfile, type PlanResearchContext } from './planResearch'
 
 export const PROFILE_NAME = /^[a-z0-9][a-z0-9_-]*$/
+/** Names a profile cannot take: `main` is how rosters show the agent a person talks to. */
+export const RESERVED_PROFILE_NAMES: readonly string[] = ['main']
+const reservedRefusal = (name: string): string => `${name} is reserved for the main agent; choose another profile name.`
 export const PROFILE_COLORS = ['blue', 'green', 'yellow', 'red', 'magenta', 'cyan', 'orange', 'purple'] as const
 export type ProfileColor = (typeof PROFILE_COLORS)[number]
-export type ProfileSource = 'builtin' | 'global' | 'project' | 'variant'
+export type ProfileSource = 'builtin' | 'global' | 'project' | 'variant' | 'plugin'
 /** Where a person's own profile file lives. */
 export type ProfileScope = 'global' | 'project'
 
@@ -102,6 +106,7 @@ export function formatVariant(variant: ProfileVariant): string | null {
 /** Reads one profile file. Throws an `invalid_request` error that names what is wrong. */
 export function parseProfile(text: string, name: string, source: ProfileSource, path: string | null): AgentProfile {
   if (!PROFILE_NAME.test(name)) throw invalid('A profile name uses lowercase letters, digits, - and _, and starts with a letter or digit.')
+  if (RESERVED_PROFILE_NAMES.includes(name)) throw invalid(reservedRefusal(name))
   const parsed = parse(text)
   if (!parsed) throw invalid('The profile needs a frontmatter block between --- lines.')
   const front = parsed.front
@@ -150,7 +155,7 @@ function variantDefinitions(variantDir: string | null | undefined): AgentProfile
   const folder = variantDir ? join(variantDir, 'sub_agents') : null
   if (!folder || !existsSync(folder)) return []
   return readdirSync(folder).sort().flatMap(name => {
-    const definition = subagentOf(variantDir!, name)
+    const definition = RESERVED_PROFILE_NAMES.includes(name) ? null : subagentOf(variantDir!, name)
     if (!definition) return []
     return [{
       name, description: definition.description || name, color: 'blue' as const, instructions: definition.instructions || definition.description,
@@ -160,11 +165,47 @@ function variantDefinitions(variantDir: string | null | undefined): AgentProfile
   })
 }
 
+// Tool names that agent plugins written for other harnesses use, as this harness names them.
+const FOREIGN_TOOLS: Readonly<Record<string, string>> = {
+  Read: 'read', Grep: 'grep', Glob: 'find', LS: 'ls', Edit: 'edit', MultiEdit: 'edit', Write: 'write', Bash: 'bash',
+  WebSearch: 'web_search', WebFetch: 'web_fetch', TodoWrite: 'todo_write'
+}
+const READ_ONLY_TOOLS = ['read', 'grep', 'find', 'ls']
+
+/**
+ * A profile a package brings. It is named by its frontmatter, since such packages are often written
+ * for other agent harnesses whose files are not named after their agents. What only those
+ * harnesses understand is dropped: their tool names are translated, a model without a provider
+ * (`inherit`, `sonnet`) is left to the parent, and a package never pins a variant or plugins. A
+ * tool list of which nothing translates keeps the subagent read-only rather than widening it.
+ */
+export function parsePackageProfile(text: string, path: string): AgentProfile {
+  const parsed = parse(text)
+  if (!parsed) throw invalid('The profile needs a frontmatter block between --- lines.')
+  const front = parsed.front
+  const name = optionalText(front.name, 'name')
+  if (!name || !PROFILE_NAME.test(name)) throw invalid('A profile name uses lowercase letters, digits, - and _, and starts with a letter or digit.')
+  if (RESERVED_PROFILE_NAMES.includes(name)) throw invalid(reservedRefusal(name))
+  const description = optionalText(front.description, 'description')
+  if (!description) throw invalid('The profile needs a description.')
+  const declared = stringList(front.tools, 'tools')
+  const tools = declared ? [...new Set(declared.flatMap((tool) => FOREIGN_TOOLS[tool] ?? (/^[a-z][a-z0-9_]*$/.test(tool) ? [tool] : [])))] : null
+  const color = typeof front.color === 'string' && (PROFILE_COLORS as readonly string[]).includes(front.color) ? front.color as ProfileColor : 'blue'
+  const model = typeof front.model === 'string' && front.model.includes('/') ? front.model : null
+  const effort = typeof front.effort === 'string' && (EFFORTS as readonly string[]).includes(front.effort) ? front.effort as Effort : null
+  return {
+    name, description, color, instructions: parsed.body.trim(),
+    tools: tools && !tools.length ? READ_ONLY_TOOLS : tools, plugins: null, variant: null, model, effort,
+    source: 'plugin', path
+  }
+}
+
 /**
  * Every profile a session in `cwd` can use. An unreadable file is reported in `problems`; it hides
  * nothing, so a broken project file leaves the global or built-in profile of that name in force.
+ * `packageProfiles` are the profile files of the session's switched-on packages.
  */
-export function listProfiles(root: string, cwd?: string | null, variantDir?: string | null): ProfileListing {
+export function listProfiles(root: string, cwd?: string | null, variantDir?: string | null, packageProfiles: readonly string[] = []): ProfileListing {
   const profiles = new Map<string, AgentProfile>()
   const problems: ProfileProblem[] = []
   for (const definition of BUILTIN_PROFILES) profiles.set(definition.name, { ...definition, source: 'builtin', path: null })
@@ -172,12 +213,22 @@ export function listProfiles(root: string, cwd?: string | null, variantDir?: str
   readFolder(dirs.global, 'global', profiles, problems)
   readFolder(dirs.project, 'project', profiles, problems)
   for (const definition of variantDefinitions(variantDir)) if (!profiles.has(definition.name)) profiles.set(definition.name, definition)
+  // A package cannot replace a profile a person, the harness or the variant already has.
+  for (const path of packageProfiles) {
+    try {
+      const profile = parsePackageProfile(readFileSync(path, 'utf8'), path)
+      if (!profiles.has(profile.name)) profiles.set(profile.name, profile)
+      else problems.push({ name: profile.name, source: 'plugin', path, error: `A ${profiles.get(profile.name)!.source} profile already has this name, so the package's is not used.` })
+    } catch (error) {
+      problems.push({ name: basename(path, '.md'), source: 'plugin', path, error: error instanceof Error ? error.message : String(error) })
+    }
+  }
   return { profiles: [...profiles.values()].sort((left, right) => left.name.localeCompare(right.name)), problems }
 }
 
-export function resolveProfile(root: string, cwd: string | null | undefined, name: string, variantDir?: string | null): AgentProfile | null {
+export function resolveProfile(root: string, cwd: string | null | undefined, name: string, variantDir?: string | null, packageProfiles: readonly string[] = []): AgentProfile | null {
   if (!PROFILE_NAME.test(name)) return null
-  return listProfiles(root, cwd, variantDir).profiles.find(profile => profile.name === name) ?? null
+  return listProfiles(root, cwd, variantDir, packageProfiles).profiles.find(profile => profile.name === name) ?? null
 }
 
 function scopeDir(root: string, cwd: string | null | undefined, scope: ProfileScope): string {
@@ -198,6 +249,7 @@ const TEMPLATE: Omit<ProfileDefinition, 'name'> = {
 export function createProfile(root: string, cwd: string | null | undefined, input: { name: string; scope: ProfileScope; from?: string | null }): AgentProfile {
   const name = typeof input.name === 'string' ? input.name.trim() : ''
   if (!PROFILE_NAME.test(name)) throw invalid('A profile name uses lowercase letters, digits, - and _, and starts with a letter or digit.')
+  if (RESERVED_PROFILE_NAMES.includes(name)) throw invalid(reservedRefusal(name))
   if (input.scope !== 'global' && input.scope !== 'project') throw invalid('scope must be global or project.')
   const dir = scopeDir(root, cwd, input.scope)
   const path = join(dir, `${name}.md`)
@@ -227,16 +279,20 @@ export function removeProfile(root: string, cwd: string | null | undefined, inpu
 export const PROFILE_SECTION_ORDER = 64
 
 /** The prompt section that lists the profiles a run can start subagents from. */
-export function profileSection(root: string, cwd: string | null | undefined, variantDir?: string | null, planResearchOnly = false): { id: string; title: string; body: string; budget: number; order: number; dynamic: true } {
-  const { profiles } = listProfiles(root, cwd, variantDir)
-  const listed = planResearchOnly ? profiles.filter(planResearchProfile) : profiles
+export function profileSection(root: string, cwd: string | null | undefined, variantDir?: string | null, planResearchOnly = false, researchContext?: PlanResearchContext, packageProfiles: readonly string[] = []): { id: string; title: string; body: string; budget: number; order: number; dynamic: true } {
+  const { profiles } = listProfiles(root, cwd, variantDir, packageProfiles)
+  const listed = planResearchOnly
+    ? profiles.filter(profile => researchContext
+      ? planResearchEligibility(profile, researchContext).eligible
+      : planResearchProfile(profile))
+    : profiles
   return {
     id: 'subagents',
     title: 'Subagents',
     body: [
       planResearchOnly
-        ? 'Plan mode may start only a named profile listed here, for read-only research. Do not omit agent or use a profile not listed.'
-        : 'Delegate when it meaningfully reduces work: choose a substantial, bounded task that can proceed independently, such as unfamiliar cross-file research likely to take several searches or a self-contained implementation. Do a known-file lookup, one or two simple tool calls, a tiny edit or tightly coupled work yourself. Prefer a named profile: explorer for repository research, researcher for public-source research, and worker for a defined change it can own end to end; omit agent only when no profile fits. Each child starts without this conversation, so give it the goal, relevant context or paths, non-goals, expected result and acceptance or verification; use its own checklist for multi-step work. Prefer context-heavy research with concise evidence-backed findings. Parallelize only independent tasks and never assign overlapping edits. Return without waiting only when useful independent work remains; otherwise wait. You own integration, verification and the user-facing report. A profile can only narrow your tools.',
+        ? 'Plan mode may start only a named profile listed here, for read-only research. Do not omit agent or use a profile not listed. Omit the optional tools field to inherit the safe available intersection; specify it only to narrow further.'
+        : 'Delegate when it meaningfully reduces work: choose a substantial, bounded task that can proceed independently, such as unfamiliar cross-file research likely to take several searches or a self-contained implementation. Do a known-file lookup, one or two simple tool calls, a tiny edit or tightly coupled work yourself. Prefer a named profile: explorer for repository research, researcher for public-source research, and worker for a defined change it can own end to end; omit agent only when no profile fits. Each child starts without this conversation, so give it the goal, relevant context or paths, non-goals, expected result and acceptance or verification; use its own todo list for multi-step work. Prefer context-heavy research with concise evidence-backed findings. Parallelize only independent tasks and never assign overlapping edits. Return without waiting only when useful independent work remains; otherwise wait. You own integration, verification and the user-facing report. A profile can only narrow your tools.',
       ...(listed.length ? listed.map((profile) => `- ${profile.name} — ${profile.description}`) : ['- No eligible read-only research profiles are configured.'])
     ].join('\n'),
     budget: 6_000,

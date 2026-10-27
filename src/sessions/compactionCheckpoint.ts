@@ -1,24 +1,24 @@
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
 
 import { renderCompactionCheckpoint } from '../prompt/compile'
-import { CHECKLIST_WRITE } from '../tools/checklist'
-import { checklistItemSchema, MAX_CHECKLIST_ITEMS, type ChecklistItem } from './contracts'
+import { TODO_WRITE } from '../tools/todo'
+import { todoItemSchema, MAX_TODO_ITEMS, type TodoItem } from './contracts'
 
 export const COMPACTION_CHECKPOINT_EXTENSION = 'compaction-checkpoint'
 
 export interface CompactionCheckpointOptions {
-  /** A stopped run's persisted checklist, when the active run is a continuation. */
-  initialChecklist?: readonly ChecklistItem[]
+  /** A stopped run's persisted todo, when the active run is a continuation. */
+  initialTodo?: readonly TodoItem[]
   /** The current dynamic plan instructions, if this request is in plan mode. */
   planInstructions?: () => string | null
 }
 
-function validatedChecklist(value: unknown): ChecklistItem[] | null {
-  if (!Array.isArray(value) || value.length > MAX_CHECKLIST_ITEMS) return null
-  const items: ChecklistItem[] = []
+function validatedTodo(value: unknown): TodoItem[] | null {
+  if (!Array.isArray(value) || value.length > MAX_TODO_ITEMS) return null
+  const items: TodoItem[] = []
   for (const valueItem of value) {
     const item = valueItem as { text?: unknown; status?: unknown } | null
-    const parsed = checklistItemSchema.safeParse({
+    const parsed = todoItemSchema.safeParse({
       text: typeof item?.text === 'string' ? item.text.trim() : item?.text,
       status: item?.status
     })
@@ -32,13 +32,13 @@ function validatedChecklist(value: unknown): ChecklistItem[] | null {
 export function compactionCheckpoint(options: CompactionCheckpointOptions = {}) {
   return (pi: ExtensionAPI): void => {
     let goal = ''
-    let checklist = validatedChecklist(options.initialChecklist ?? []) ?? []
+    let todo = validatedTodo(options.initialTodo ?? []) ?? []
     let lastCompactionKey: string | null = null
     let compacted = false
 
     const reset = (): void => {
       goal = ''
-      checklist = validatedChecklist(options.initialChecklist ?? []) ?? []
+      todo = validatedTodo(options.initialTodo ?? []) ?? []
       lastCompactionKey = null
       compacted = false
     }
@@ -46,15 +46,15 @@ export function compactionCheckpoint(options: CompactionCheckpointOptions = {}) 
     pi.on('before_agent_start', (event) => {
       if (event.messageType !== 'user') return
       goal = event.prompt
-      checklist = validatedChecklist(options.initialChecklist ?? []) ?? []
+      todo = validatedTodo(options.initialTodo ?? []) ?? []
       lastCompactionKey = null
       compacted = false
     })
 
     pi.on('tool_result', (event) => {
-      if (event.toolName !== CHECKLIST_WRITE || event.isError) return
-      const items = validatedChecklist(event.input.items)
-      if (items) checklist = items
+      if (event.toolName !== TODO_WRITE || event.isError) return
+      const items = validatedTodo(event.input.items)
+      if (items) todo = items
     })
 
     pi.on('context', (event) => {
@@ -71,7 +71,7 @@ export function compactionCheckpoint(options: CompactionCheckpointOptions = {}) 
       }
 
       if (!compacted) return
-      const content = renderCompactionCheckpoint({ goal, checklist, planInstructions })
+      const content = renderCompactionCheckpoint({ goal, todo, planInstructions })
       if (!content) return
       return {
         messages: [...event.messages, {

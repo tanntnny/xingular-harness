@@ -60,9 +60,7 @@ The surface is `PI_SURFACE` (`variant/surface.ts`), the one surface this harness
 - **INV-FND-2** A variant changes only by committing a new validated version (`commit` →
   `validate`, `INV-VAR-2`), and a refinement moves a head only when a person adopts
   (`INV-REF-6`). There is no other door.
-- **INV-VAR-1** A variant is the only thing in the harness that shapes an agent's
-  instructions. The application adds its own sections through `Launch` (page 01); no other
-  harness code adds instruction text.
+- **INV-VAR-1** Variant instructions are versioned per scope. The application adds its own sections through `Launch` (page 01). The release-owned `plugin-authoring` skill is also available on demand in structured and terminal sessions, including existing variants; its body is not always-on. A variant skill with the same name takes precedence. It is shipped as a package resource and does not mutate pinned versions.
 - **INV-VAR-2** Every saved version is validated (`commit` → `validate`). An invalid variant is
   refused with every problem listed.
 - **INV-VAR-3** A version is never edited. A change is a new version; `restore` moves the head

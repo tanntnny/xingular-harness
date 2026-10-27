@@ -1,6 +1,6 @@
 # Harness terminal frontend
 
-Status: current terminal behavior, checked against `@xingular/harness` 1.2.0. Last updated: 2026-11-19.
+Status: current terminal behavior, checked against `@xingular/harness` 1.3.0. Last updated: 2026-11-19.
 Decision: [ADR-0001](decisions/ADR-0001-owned-terminal.md),
 [ADR-0006](decisions/ADR-0006-opentui-only-terminal.md),
 [ADR-0009](decisions/ADR-0009-xharness-command.md),
@@ -93,9 +93,9 @@ The frontend is verified with a real isolated PTY and a loopback provider. Run
 `python3 scripts/verify-terminal.py --welcome-only --sizes 40x20,80x24,120x40` to check the empty
 welcome, product label, accent colors and `/help` transition. Run
 `python3 scripts/verify-terminal.py --composer-only` for recognized slash-command colors in the composer
-and a user bubble, unknown-command and argument colors, explicit-newline and soft-wrap checks of both
-prompt gutters, and normal/plan/Bash mode exclusivity. Run it with `--sizes 40x20,80x24,120x40` for
-compact through wide layouts. Use `--dialog-paste-only` to verify bracketed paste into a centered
+and a user bubble, enabled-skill colors in the composer, unknown-token and argument colors,
+explicit-newline and soft-wrap checks of both prompt gutters, and normal/plan/Bash mode exclusivity.
+Run it with `--sizes 40x20,80x24,120x40` for compact through wide layouts. Use `--dialog-paste-only` to verify bracketed paste into a centered
 input dialog, `--file-completion-only` for filesystem completion and insertion,
 `--history-only` for active-session history across `/new` and `/session`, `--resume-only` for the full-screen searchable, unnumbered two-line saved-session picker, `--help-only` for `/help` replacing the welcome screen with grouped two-column output that wraps without per-command gaps, `--questions-only` for multi-select marker glyphs, recommended choices,
 selected-row and Continue/Submit colors, `--jump-latest-only` for scroll-away badge visibility and click-to-latest (screen-level click assertions use optional `pyte`), and choice-backed “Something else” answers, or `--thinking-only` for `/thinking` visibility toggles. The full suite covers a complete turn, `read`, `bash` approval, `ask_user_question` approval and picker, plugin overlay/widget/status
@@ -124,16 +124,24 @@ and a searchable `/subagents` page. The rows poll a private monitor route once p
 during a turn and make a final read at settlement. They sit one blank row below the status line, with
 no heading, and each reads: the status mark, the agent profile name in its colour (`subagent` for a
 copy of the parent), the title the parent gave the child (PROP-0030), and `n of m tasks` from the
-child's own checklist. At most three show, active first, then `+N more · /subagents`. The
+child's own todo list. At most three show, active first, then `+N more · /subagents`. The
 `/subagents` page uses a colored profile and normal-color title on the first line, then muted account,
 effective model, effort and cumulative usage metadata on the second. One blank row separates each
 two-line entry. The page also shows status, elapsed time and the latest tool name. Runtime metadata
 stays in the private terminal projection.
 Usage contains safe token/cache/cost/context totals, not per-request payloads or reasoning summaries.
 The projection is read-only, flat across nested descendants, and scoped to the latest parent run in
-this terminal session; finished rows remain visible until the next parent run starts. It is cleared
-on session replacement or terminal disposal. It never includes tool arguments (beyond the title),
-output or checklist item text.
+this terminal session; finished rows remain visible until the next parent run starts. The page also
+pins a `main` row for the parent run itself, with the same details; the rows under the status line
+leave it out. Reopening a conversation (a new launch, `/resume`, or a switch) rebuilds the rows from
+the branch's latest parent run and its saved child runs, with their final status, until the next run
+starts. A switch to a conversation without one clears them, as does disposal. It never includes tool
+arguments (beyond the title), output or todo item text.
+
+An interrupted or failed child keeps its saved conversation. The next reply is told which children
+stopped before it answers, and the parent continues one with `spawn_subagent { continue: <runId> }`,
+which reopens that child's own history with its profile and tools (ADR-0043). Esc therefore does
+not lose a child's progress.
 
 `/agents` opens the Agents page (PROP-0029): built-in, global, project and variant profiles with
 their tools, plugins, variant, model and instructions. Enter on a row edits a person's own profile
@@ -215,7 +223,7 @@ rule; then the work that followed. The summary is shown by default. Clicking eit
 shows it, and Ctrl+O shows every summary again. On a narrow screen the rule drops the click hint, then
 the token count. Earlier compactions in the same session keep their own rules and summary in place.
 Notices stay after the message they followed. The model sees the summary and recent messages plus a
-bounded, hidden checkpoint of the active request, checklist and plan instructions when available;
+bounded, hidden checkpoint of the active request, todo list and plan instructions when available;
 the checkpoint is regenerated for each post-compaction request until the run settles. The visible
 transcript remains a presentation of the full history, not the model context.
 Transcript entry ids follow positions in the displayed message list, so when a rebuilt list moves a
@@ -260,23 +268,36 @@ restores the terminal's alternate-screen state when the application exits.
 
 Assistant replies, plan-card bodies and Markdown image-result text share one style map. Heading
 levels use the Harness palette; links are blue and underlined, and only their labels appear in the
-transcript. Hovering a supported link changes the terminal pointer to a hand and shows a `Click to
-open link` hint in the status bar. A primary click opens it with the system browser; only valid
-HTTP and HTTPS destinations are accepted, and the launcher receives the URL as an argument without
-a shell. OSC 8 metadata is emitted where available, but link activation does not depend on terminal
-OSC 8 support. Inline and fenced code use a subtle panel fill with syntax colors. Emphasis, quotes,
-list markers, tables, dividers and task-list markers use the existing titanium palette. Images
-display their alt text and are not fetched or rendered as image files.
+transcript. Hovering a link changes the terminal pointer to a hand and recolours the link's own
+text (`theme.linkHover`); the status line says nothing about it. The gesture that opens a link is
+the one the platform uses: **Ctrl+click** where the terminal reports the modifier, and on macOS the
+**primary click**, because ⌘ is not part of the terminal mouse protocol (a macOS terminal opens an
+OSC 8 link itself on ⌘+click). Either way the link opens with the operating system's handler for
+its kind: a web address in the browser, `mailto:` in the mail client, a file in its default
+application, a folder in Finder. A click that opens a link leaves the composer focused. `core/links.ts` decides what
+may open (ADR-0047): a relative path resolves against the session's folder, and an application
+bundle, an installer, a launchable script or an executable file is refused with a notice instead of
+being run. The launcher receives the address as one argument without a shell. OSC 8 metadata is
+emitted where available, but link activation does not depend on terminal OSC 8 support; a terminal
+that opens OSC 8 links itself acts on its own modifier, so the Harness keeps the primary click.
+Inline and fenced code use a subtle panel fill with syntax colors. Emphasis, quotes, list markers,
+tables, dividers and task-list markers use the existing titanium palette. Images display their alt
+text and are not fetched or rendered as image files.
 
-## Checklist block
+## Todo block
 
-`checklist_write` is registered in terminal sessions (PAR-001). Each call renders in the
-transcript as a checklist block: a status mark, `Checklist · n of m done`, then one line per item
-with `✓` (done, success colour), `●` (in progress, warning yellow, bold) or `○` (pending, dim).
-Each row reserves a one-cell status column and one-cell gap; item text and wrapped lines share the
-same starting column. A call whose arguments are not a checklist, or that failed, stays an ordinary
-tool row. The prompt's Progress group asks the model to keep the list current and write a final
-update before replying; unfinished work remains unfinished rather than being marked complete.
+`todo_write` is registered in terminal sessions (PAR-001). Each call renders in the transcript as
+a todo block: a status mark, `Todo · n of m done`, then one line per item with `✓` (done, success
+colour), `●` (in progress, warning yellow, bold) or `○` (pending, dim). Each row reserves a one-cell
+status column and one-cell gap; item text and wrapped lines share the same starting column. A call
+whose arguments are not a todo list, or that failed, stays an ordinary tool row. The prompt's
+Progress group asks the model to keep the list current and write a final update before replying;
+unfinished work remains unfinished rather than being marked complete.
+
+`/todo` (alias `/checklist`) appends a snapshot of the current list: the same header and rows, with
+no status mark on the header, because it is not a tool call. It reads the latest non-side-question
+run of this terminal's native session and makes no model request; an empty list is a one-line
+notice.
 
 ## Blocks and pages
 
@@ -301,20 +322,36 @@ frontends draw that field from the same muted-blue selection palette (`selection
 explicit high-contrast text on it instead of the accent colour, so a choice reads the same in every
 list. Rules use the theme's `warning` and `dim` colors, so a custom theme restyles them.
 
-The Harness resource browser (PROP-0013) unifies Overview, Foundation, Variant, Skills, Plugins,
-Connections, Tools and Library. `/harness` opens Overview; `/skills`, `/plugins`, `/connections`
-(`/mcp`) and `/tools` open sections. `/hub` selects Discover and `/components` selects Library.
-The existing Accounts, Permissions, Settings, Trajectory and Log pages retain their own tabs.
+The broad Harness resource browser (PROP-0013) unifies Overview, Foundation, Variant, Skills,
+Plugins, Connections, Tools and Library. `/harness` opens Overview; `/skills`, `/connections`
+(`/mcp`), `/tools` and `/components` open sections. `/plugins` is a separate
+full-screen local manager with Plugins, Trust and Packages tabs; `/hub` is a separate
+full-screen Community catalog with Catalog and Installed tabs. Both keep a searchable
+inventory beside selected-item details on wide terminals, stacking details below the list
+on compact terminals. The existing Accounts, Permissions, Settings, Trajectory and Log
+pages retain their own tabs.
 
 `/settings` includes a Browser tab with the device-local **Private address access** setting. It is
 off by default. Enabling it asks for confirmation and allows agent browsing and annotation capture
 to reach localhost and private networks.
 
-Resource sections share Installed/Discover and source filters. Installed includes locally present
-resources; current-session availability comes only from the runtime loader and active tool registry.
-Discover uses the existing Hub with All/Community/Official filtering and an explicit remote refresh.
-No matching community entries is an empty result, never replaced with built-in resources.
-The view preserves search across source switches and restores section selection on return.
+Within the broad `/harness` browser, resource sections share Installed/Discover and source filters.
+Installed includes locally present resources; current-session availability comes only from the runtime
+loader and active tool registry. Discover uses the unfiltered Hub service with All/Community/Official
+filters and an explicit refresh. No matching Community entries is an empty result, never replaced with
+built-in resources. The view preserves search across source switches and restores section selection.
+
+The dedicated `/hub` Catalog shows Community entries across supported types only. Its Installed tab
+shows receipts from every channel with the channel labeled. On each page entry, cached/bundled entries
+appear first, then the remote catalog refreshes; the status keeps the origin, last-refresh time and any
+stale/error feedback visible. Manual refresh remains available. Catalog installs are pinned to the
+selected version, and Hub uninstalls remove only receipt-owned resources. Registry/document entries
+offer a bounded payload Preview; Pi packages have no JSON payload Preview.
+
+The `/plugins` manager keeps local switching, code trust and settings separate from public discovery.
+Its Packages tab adds local package installation, update and removal. Hub-owned packages remain pinned
+to exact catalog versions; removal goes through Hub receipt cleanup, and updating requires an explicit
+Hub version replacement.
 
 The browser fills the terminal (PROP-0014), with Overview, Foundation, Variant, Skills, Plugins,
 Connections, Tools and Library as persistent top tabs. The section dropdown and sidebar are removed.
@@ -329,8 +366,8 @@ Left/Right changes the focused tab or control; Enter on the tab strip returns to
 Ctrl+F focuses search. Escape returns from content to actions, returns to the list, clears search,
 then closes. Mouse clicks select tabs directly, activate resource actions and focus filters;
 wheel scrolling targets the list or inspector under the pointer. Other command pages keep their
-centered presentation; `/settings` and `/accounts` use full-screen page layouts. Closing the browser preserves
-the composer draft and attachments.
+centered presentation; `/settings`, `/accounts`, `/plugins` and `/hub` use full-screen page layouts.
+Closing the browser preserves the composer draft and attachments.
 
 Foundation explains fixed runtime ownership; it is read-only. Variant shows c1–c8 with the
 prepared version and current head separately. It previews pinned files from the preparation
@@ -359,24 +396,34 @@ skill import rejects symbolic links and limits bytes, files and traversal. See
 [PROP-0013](architecture/proposals/PROP-0013-resource-browser.md) and
 [ADR-0015](decisions/ADR-0015-resource-browser.md).
 
-## Annotate pane (PROP-0018)
+## Annotate page (PROP-0018, PROP-0048)
 
-`/annotate:` opens the full-screen capture pane (equivalent to `/annotate:annotate`) beside the window being inspected. Add a page address with `/annotate:annotate [url]`. The target window is one of:
+`/annotate:` opens the full-screen annotate page beside the window being inspected. It has two tabs:
+**Annotate** and **All annotations** (`/annotate:notes` opens on the second). Add a page address with
+`/annotate: [url]`; without one, the page returns to the window that is still open, with its URL and
+the inspector on, and asks for an address only when no window is open. The target window is one of:
 - the visible capture browser
-- an app's own windows attached over its DevTools port (`--app`)
+- an app's own windows over its DevTools port (`--app [port]`, or `a` in the page)
 - app windows that loaded the page bridge script (`--bridge`)
 
-The header shows the target and window and whether the inspector is on. The list has three groups: Queue, Sent and fixed, and Saved. While the inspector is on, the page polls for the next popover comment every 400 ms, shows the result as a notice, and refreshes the list.
+The header shows the target and window and whether the inspector is on. Click a component in the
+window and choose **Annotate** or **Annotate & send** (Cmd/Ctrl+Enter). Every annotation is shared
+with this session; the list groups them as Unsent and Sent. While the inspector is on, the page polls
+for the next popover comment every 400 ms, shows the result as a notice, and refreshes the list.
 
 | Key | Action |
 |---|---|
 | `i` | inspector on/off |
-| `s` | send the queue |
-| `x` | unqueue the selected note |
+| `s` | send every unsent annotation (page-origin ones are confirmed once first) |
+| `o` | type a page address |
+| `a` | apps with a DevTools port: pick one, type a port, start an app with one, or use the bridge |
 | `t` | choose a window |
-| `Enter` | the note menu |
+| `Enter` | the annotation menu |
+| `Tab` | switch tab |
 
-The page has no search row, so these letters are free for actions. `/annotate:notes` opens the searchable Web annotations list.
+The Annotate tab has no search row, so these letters are free for actions. `/annotate:submit <request>`
+sends the unsent annotations with your request after them; `/annotate:clear` resolves the unsent ones
+and stops sharing them.
 
 ## Plan mode and thinking keys
 
@@ -384,16 +431,21 @@ Use `/plan <brief>` for one read-only planning request. A plan waits outside Pi'
 queue until the active response settles, then runs by itself. Later messages remain behind it, even
 when Pi's follow-up mode is `all`. During that run the session narrows to read-only inspection
 (`read`, `grep`, `find`, `ls`), web search/page reading, questions (`ask_user`, `ask_user_question`)
-and recall (history and Wiki reads, `memory_facts`). It may also delegate bounded research to a
-named profile whose effective tool and plugin allowlists qualify for research; the child inherits
-plan mode and receives only the intersection of the parent's frozen capabilities, profile and
-plan-research set. Children cannot write, run commands, ask the user, use connectors or spawn more
-children. Normal mode omits both question tools from the active set; the plan request enables
-registered questions and research delegation temporarily and restores the normal set when it settles,
-including on failure or interruption. Providers may mark individual calls as safe for research; every
-other call is blocked before approval. Edits, writes, shell commands, memory writes and connected-app
-tools remain unavailable to the parent and child. The plan instructions arrive as a request-scoped
-prompt section, which the next ordinary request withdraws.
+and recall (history and Wiki reads, `memory_facts`). The parent may also run Bash in the
+OS-enforced read-only sandbox: no network and no writes except a discarded per-command temporary
+directory (PROP-0043). It may delegate bounded research to a named profile whose effective tool and
+plugin allowlists qualify for research; the child inherits plan mode and receives only the
+intersection of the parent's frozen capabilities, profile and plan-research set. Children cannot
+write, run commands, ask the user, use connectors or spawn more children; they remain bounded by the
+configured work-slice policy without gaining `checkpoint_write`, and the Harness records an
+evidence-derived checkpoint if the child stops at a boundary. Normal mode omits both question tools
+from the active set; the plan request enables registered questions and research delegation
+temporarily and restores the normal set when it settles, including on failure or interruption.
+Providers may mark individual calls as safe for research; every other call is blocked before
+approval. Edits, writes, memory writes and connected-app tools remain unavailable to parent and
+child; generic browser controls are also blocked. Sandboxed read-only Bash is the parent's only
+plan-mode shell exception; children cannot run commands. The plan instructions arrive as a
+request-scoped prompt section, which the next ordinary request withdraws.
 
 Each mode keeps its own model and effort for the account. Every selection the person makes (the model
 picker, `/effort`, Shift+Up/Down, Ctrl+P) is saved against the mode it was made in, so Shift+Tab switches to that
@@ -699,12 +751,16 @@ normal-color title and a muted second line with relative activity time, `<projec
 file size separated by ` · `. One blank line separates each session. Enter resumes the selected
 session; account and folder scope checks
 remain enforced. Supplying an explicit path continues directly without opening the picker.
-The separate `$` palette completes enabled skill invocations; `/skills` always browses skills. `/help`
-renders the command list as one transcript entry, grouped under Core, Run, Model, Session, Inspect,
-Harness, Plugins and Prompts; command names and descriptions wrap in aligned columns, with no
-blank rows between choices. `/plugins` opens the browser with protected code trust and plugin settings actions. Settings use
-`plugins.configure`; on/off settings and bounded whole-number settings keep their existing ranges.
-Saved settings are read when the plugin next uses them and do not require a restart. The standalone
+The `$` palette completes enabled skill invocations using the same two-column palette as slash
+commands; `/skills` always browses skills. Choosing a skill inserts `$name ` without submitting.
+A recognized leading `$name` uses the blue accent in the composer, while its arguments, unavailable
+names and ordinary currency text keep the normal color. `/help` renders the command list as one
+transcript entry, grouped under Core, Run, Model, Session, Inspect, Harness, Plugins and Prompts;
+command names and descriptions wrap in aligned columns, with no blank rows between choices. `/plugins`
+opens the focused local manager; its Packages tab installs, updates and removes packages with protected
+Harness operations. Settings use `plugins.configure`; on/off settings and bounded whole-number settings
+keep their existing ranges. Saved settings are read when the plugin next uses them and do not require a
+restart. The standalone
 terminal no longer has separate `/login`, `/trust`, `/bug`, `/changelog`, `/share`, `/scoped-mode` or
 `/import` commands. `/btw <question>` (or `/side <question>`) starts a separate Harness run with the
 main run's effective instructions, visible conversation and redacted public tool inputs/results.
@@ -738,8 +794,8 @@ of feature-plugin command metadata: `/doctor`, `/worktree`, `/trajectory`, `/sub
 `/history` (also `/tree`) continues to navigate session branches. `/mcp` and `/connections` open the
 Connections browser. Feature descriptors and their services remain registered; only these terminal
 routes move out of the plugin command registry. Other plugin-owned commands continue to use
-`/<owner-prefix>:<command>`. The annotations plugin uses `/annotate:annotate` and `/annotate:notes`;
-`/annotate:` opens its default capture pane. Pi package extensions use their normalized package name
+`/<owner-prefix>:<command>`. The annotations plugin uses `/annotate:notes`, `/annotate:submit` and
+`/annotate:clear`; `/annotate:` opens its annotate page (a root-only command with no named route). Pi package extensions use their normalized package name
 as owner prefix unless `harness.commandPrefix` overrides it; loose extensions use their normalized
 extension name. A plugin prefix collision or a duplicate command within one owner is rejected with
 owner paths in the diagnostic. The former owner-qualified and `/plugin:<command>` routes of promoted
@@ -894,11 +950,17 @@ inherit that retained ledger.
 
 ## Agent-managed session names
 
-Agents can use `session_name({ name: string })` to name meaningful work early and revise
-its name when the objective changes. Names submitted by agents are short imperative
+Agents can use `session_name({ name: string })` to name work before their first other tool call
+when a request needs tools or changes state, and revise the name only when the objective changes.
+Names submitted by agents are short imperative
 sentences with at most six words. The agent may revise a manual name; `/name` remains
 available and manual names have no new word limit. Pi stores the name in native history,
 so resuming the same conversation restores it without another model request.
+
+A substantive first turn also gets a provisional name through the terminal policy when the
+session is unnamed; a refused or failed name leaves it unnamed. Each turn appends a hidden
+`xingular-session-state` message with the current name and this run's empty todo, with the
+previous run's list as context; the message is request-only and does not enter the stable pack.
 
 The working line shows `Working (2m, 50 tok/s) – Add web browser integrations`; the name
 also stays on the completion line. Unnamed sessions have no separator, and narrow terminals

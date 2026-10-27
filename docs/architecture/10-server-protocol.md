@@ -40,7 +40,9 @@ harness → host   { v: 1, id, call, params }          host → harness   { v: 1
   `plugins.describe`.
 - `refine.start` takes `{ task, k?, mode?, improver?, executor?, baseVersion?, retainWorkspaces?, id? }`;
   `refine.candidates` returns each execution with `workspace: string | null` (page 05, PROP-0002, PROP-0003).
-- `runs.checklist { runId }` returns the run's latest checklist, `[]` when it wrote none (PROP-0006).
+- `runs.todo { runId }` returns the run's latest todo list, `[]` when it wrote none (PROP-0006,
+  renamed by PROP-0045). `runs.checklist` is the deprecated pre-rename alias.
+- `runs.continuation` returns `todo`; `checklist` remains a deprecated mirror of it for one release.
 - Run records include optional nullable `workspaceRoot`, the canonical root whose files a run may
   modify by default (page 02). New Harness runs set it; older records may omit it. Hosts must
   tolerate the additive field and must not nominate or widen the root.
@@ -49,21 +51,42 @@ harness → host   { v: 1, id, call, params }          host → harness   { v: 1
   and refuses an existing file; `agents.remove { cwd?, name, scope }` deletes a person's own file.
   `subagents.spawn` takes `agent` as a profile name and returns `agent` and `unavailableTools`
   (PROP-0029). It takes an optional `title` (at most six words); without one the child's title is
-  the first line of its brief (PROP-0030).
+  the first line of its brief (PROP-0030). With `continue: <runId>` it continues a stopped child of
+  this conversation instead (no `agent` or `tools`; `brief` and `title` optional) and returns
+  `continued`, the run it continued (ADR-0043).
 - `runs.continuation { runId, sessionDir? }` returns a `Continuation` (its `checkpoint` is the last
   work-slice handoff), and `sessions.run` accepts `continueFrom` (page 02, PROP-0007) and `workSlice`
   (PROP-0041). `harness.status` reports `recovery.interruptedRunIds`.
 - `workSlice { enabled?, maxToolCalls?, maxMinutes?, maxNewTokens?, maxSlices?, continue? }` on
-  `sessions.run` bounds that reply; absent uses 160 calls, 40 minutes, 320 000 new tokens, 8 slices and
-  automatic continuation. A token cap counts new input, cache writes and output, never the cached
-  prefix. `enabled: false` turns the guard off for that run; `XINGULAR_WORK_SLICE=off` in the
-  launching process turns it off for every run in it, and nothing is persisted. The policy is
+  `sessions.run` bounds that reply; absent uses 320 calls, 60 minutes, no new-token cap, 8 slices and
+  automatic continuation. A token cap, when set, counts new input, cache writes and output, never the
+  cached prefix (PROP-0044). `enabled: false` turns the guard off for that run;
+  `XINGULAR_WORK_SLICE=off` in the launching process turns it off for every run in it, and nothing is
+  persisted. The policy is
   carried into the continuation. A value outside its range is refused with `invalid_request` before
   the run record is written.
 - The run-event stream adds `checkpoint` (the bounded handoff) and `heartbeat` (steps, elapsed time,
   last tool, compactions, slice, call budget). Hosts must accept both; an unknown event type is still
   relayed in order (INV-RUN-3).
 - Errors carry a stable `code`, a message and an optional hint (`core/errors.ts`).
+
+## Plugin proposals
+
+| Method | Input | Reply |
+|---|---|---|
+| `plugins.proposals.create` | `{ name, description, files }` (path-to-text object) | pending `Proposal` |
+| `plugins.proposals.list` | `{}` | `Proposal[]`, including decided records |
+| `plugins.proposals.preview` | `{ id }` | revalidated `Proposal` with current content hash |
+| `plugins.proposals.accept` | `{ id, hash }` | accepted `Proposal` |
+| `plugins.proposals.reject` | `{ id, hash }` | rejected `Proposal` |
+
+A `Proposal` has `id`, `name`, `description`, `files`, generated `manifest`, `hash`, `createdAt`,
+`status` and optional `decidedAt`. Both decisions require the pending proposal's current preview
+hash; acceptance installs it switched off without trusting code. These methods expose trusted host
+operations, not an assertion that a host has built a review UI. Protected terminal control routes
+`plugins.proposals.list|preview|accept|reject` delegate to the same service when configured; they
+require the terminal control key. The model tool can create only. Validation and trust details are
+on page 06.
 
 ## Usage (PROP-0042)
 
@@ -183,11 +206,14 @@ from preparation, never from the request.
 | `terminal.browser.connections.save` | `{ input: ConnectionInput }` | Existing safe `Connection` record |
 | `terminal.browser.connections.test\|signIn\|signOut\|remove` | `{ id }` | Existing connection service result |
 | `terminal.usage.summary\|limits` | `{ scope, period, timezoneOffsetMinutes }` / `{ refresh? }` | Existing usage service result, scoped to this terminal's account and project |
+| `terminal.usage.allLimits` | `{ refresh? }` | All-account provider limits; refresh reads providers due under the configured cache interval, without changing the pinned account |
 | `terminal.usage.headers` | `{ provider, status, headers }` | `{}`; only limit-bearing headers, throttled, stored as an account limit reading |
 
-Protected `plugins.install { source }` and `plugins.remove { pluginId }` delegate to the package
-service. Optional matching callbacks extend `PluginControl`; hosts without them receive a clear
-unsupported-operation error. No protocol version or persisted schema changes.
+Protected `plugins.install { source }`, `plugins.update { pluginId? }` and
+`plugins.remove { pluginId }` delegate to the package service. Removing a Hub-owned package routes
+through Hub's receipt-aware uninstall; a floating update refuses Hub-owned packages, while an
+update-all skips them. Optional matching callbacks extend `PluginControl`; hosts without them
+receive a clear unsupported-operation error. No protocol version or persisted schema changes.
 
 ## Worktrees (PROP-0016)
 
@@ -224,14 +250,18 @@ same service through `terminal.worktrees.*` routes, which need the control key (
 | `annotations.revokeBinding` | `{ binding }` | `{ revoked }` |
 | `annotations.import` | `{ notes }` | `{ imported, skipped }` (ids kept) |
 | `annotations.pageScript` | `{}` | `{ script }`: the page helper, with `__ARGS__` for one operation |
-| `annotations.queue` | `{ id, sessionId, expectedVersion?, autoSend? }` | `Note`, shared with the session and queued (PROP-0018) |
-| `annotations.dequeue` / `annotations.confirm` | `{ id, expectedVersion? }` | `Note` |
-| `annotations.queued` | `{ sessionId }` | `{ notes }`, oldest first |
-| `annotations.createAndAct` | `{ note, action: save \| queue \| send, sessionId?, trusted? }` | `{ note, send }`; an untrusted send waits for `confirm` |
-| `annotations.compose` | `{ sessionId, ids? }` | `{ text, ids }`: one instruction for a host's own `sessions.run` |
+| `annotations.markPending` | `{ id, sessionId, expectedVersion? }` | `Note`, shared with the session and unsent (PROP-0018, PROP-0048) |
+| `annotations.confirm` | `{ id, expectedVersion? }` | `Note` |
+| `annotations.confirmAll` | `{ sessionId }` | `{ notes }`: every page-origin note of the session, confirmed |
+| `annotations.pending` | `{ sessionId }` | `{ notes }`, unsent, oldest first |
+| `annotations.clear` | `{ sessionId }` | `{ notes }`: the session's unsent notes, resolved and no longer shared with it |
+| `annotations.createAndAct` | `{ note, action: save \| send, sessionId?, trusted? }` | `{ note, send }`; with a session the note is always shared; `send` sends all unsent notes; an untrusted note waits for `confirm` |
+| `annotations.compose` | `{ sessionId, ids?, prompt? }` | `{ text, ids }`: one message for a host's own `sessions.run`, with the person's request last |
 | `annotations.delivered` | `{ ids, sessionId, runId }` | `{ notes }`, marked sent |
-| `annotations.send` | `{ sessionId, ids? }` | `{ state: sent \| busy \| host \| empty, … }` |
+| `annotations.send` | `{ sessionId, ids?, prompt? }` | `{ state: sent \| busy \| host \| empty, …; empty has unconfirmed }` |
 | `annotations.capture.attach` | `{ key, kind: web \| cdp \| bridge, endpoint?, name? }` | `{ kind, app, windows, bridge? }` |
+| `annotations.capture.discover` | `{}` | `{ apps: [{ endpoint, port, name, browser, electron, windows }] }`: apps on a loopback DevTools port |
+| `annotations.capture.launch` | `{ key, path, args? }` | `{ kind: cdp, app, windows, endpoint }`: starts the app with a DevTools port and attaches |
 | `annotations.capture.target` | `{ key }` | `{ kind, app, inspecting, windows }` |
 | `annotations.capture.selectWindow` | `{ key, window }` | `{}` |
 | `annotations.capture.open` | `{ key, url? }` | `{ url, title }` |
@@ -240,9 +270,31 @@ same service through `terminal.worktrees.*` routes, which need the control key (
 | `annotations.capture.release` | `{ key }` | `{}` |
 | `annotations.bridge.start` | `{}` | `{ port, token, scriptUrl, snippet }` |
 
-Notices: `annotations.changed { sessionId, ids }` after any queue, send or fix;
+Notices: `annotations.changed { sessionId, ids }` after any share, send or clear;
 `annotations.ready { sessionId, ids }` when a host session's waiting notes should be sent now.
 
 Errors: `version_conflict`, `not_found`, `annotation_limit`, `invalid_request`, `invalid_data`. The
 terminal reaches the same store through `terminal.annotations.*`, which shares only with its own
 session and needs the control key (`INV-TUI-4`).
+
+## Links (ADR-0047)
+
+A link a person clicks is a person's action, not a model tool call: nothing here is in
+`HARNESS_TOOLS`, so the gate, standing approvals and redaction never see it. `core/links.ts` holds
+the one allowlist both front ends use, and `openLink` is the only door into the operating system.
+
+| Method | Input | Reply |
+|---|---|---|
+| `links.open` | `{ target, base? }` | `OpenedTarget`: `{ kind: "web", url }`, `{ kind: "mail", address }`, `{ kind: "file", path }` or `{ kind: "directory", path }` |
+
+`target` is what the link says; `base` is the absolute folder a relative target is resolved
+against, and without it a relative target is refused. `linkTarget` classifies without touching the
+filesystem (`http`/`https`, `mailto`, `file`, an absolute path, or a relative path under `base`),
+and `openableTarget` then checks what it names: a regular file or a directory, never an application
+bundle, an installer, or a launchable script, and never a file with an executable bit set, because
+`xdg-open` runs one. The address is passed to `open`/`xdg-open`/`rundll32` as one argument, never
+through a shell.
+
+Errors: `link_not_openable`, with a message a person can read, and `invalid_request` when `target`
+is missing. The opener is `HarnessOptions.linkOpener`, so a host with its own native opener keeps
+the policy and replaces only the spawn.

@@ -3,7 +3,7 @@
 ## Purpose
 
 A *plugin* is a bundle with a title, a description and contributions: instructions, skills,
-commands, tools, connections, code (a Pi extension) and themes. A Pi package is a plugin as it is;
+commands, subagent profiles (`agent`), tools, connections, code (a Pi extension) and themes. A Pi package is a plugin as it is;
 so are the harness's own parts, the application's parts, a person's registry, the folder every
 account shares, and what a working folder brings. This part decides what a session loads, who has
 what switched on, which code may run, and what reaches one caller. A *capability set* is the
@@ -22,6 +22,7 @@ callable result for one run.
 | `FIRST_PARTY_PLUGINS` | `plugins/firstParty.ts` | `output-trim`, `budget-guard`: inline extensions shipped switched off. `lessons`: switched off; its contribution turns on reflection after a run (page 08, PROP-0008) and loads no Pi code. |
 | `Hooks` | `plugins/hooks.ts` | Runs a package's hooks file after a write. |
 | install / trust | `plugins/install.ts`, `plugins/trust.ts` | Install through Pi's package manager with scripts off; trust code by hash. |
+| proposals | `plugins/proposals.ts` | Validate and store inert proposals; preview, reject or accept a hash-bound review. |
 | inventory / api | `plugins/inventory.ts`, `plugins/api.ts` | `plugins.list`, `plugins.inventory`, attach, trust. |
 | capability api | `capabilities/api.ts`, `capabilities/types.ts` | `list`, `resolve`, `toolIntersection`, `inventory`, `attach`. |
 | run snapshot | `capabilities/runSnapshot.ts` | `freezeRun`, `loadRun`, `capabilitySet`. |
@@ -29,8 +30,9 @@ callable result for one run.
 ## Contracts
 
 - **Loading.** `Plugins.loading({ cwd, agentDir, caller, contributions, install? })` returns
-  `extensionPaths`, `skillPaths`, `promptPaths`, `themePaths`, `builtins` (legacy shape; no Pi CLI built-ins selected), `hooks`,
-  `found`, `detached`, `projectCode`, `packageCode`. A session opens Pi with its own discovery off
+  `extensionPaths`, `skillPaths`, `promptPaths`, `themePaths`, `profilePaths`, `builtins` (legacy shape; no Pi CLI built-ins selected), `hooks`,
+  `found`, `detached`, `projectCode`, `packageCode`. `profilePaths` are read by the harness for
+  subagent profiles (page 02); Pi is never given them. A session opens Pi with its own discovery off
   and only these paths; a terminal receives them as `--extension`, `--skill`,
   `--prompt-template` and `--theme` after `--no-extensions --no-skills --no-prompt-templates
   --no-themes`. Pi still reads `AGENTS.md` and `SYSTEM.md` itself.
@@ -45,10 +47,39 @@ callable result for one run.
 - **Attachments.** `config/plugin-attachments.json` holds `global`, `agents`, `projects` (each
   `{ on, off }`) and `settings` per plugin. The narrowest scope that says something wins: agent,
   then project, then everywhere. With no entry an item keeps its default.
-- **Package metadata.** A Pi package may declare `"harness": { "extends": [...], "hooks": "./hooks.mjs", "commandPrefix": "my-tools" }`.
+- **Package metadata.** A Pi package may declare `"harness": { "extends": [...], "hooks": "./hooks.mjs", "commandPrefix": "my-tools", "agents": "./agents" }`.
+  A package without a `package.json` name is named, described and versioned by the first of
+  `plugin.json`, `.claude-plugin/plugin.json`, `.codex-plugin/plugin.json`, so an agent plugin
+  written for other harnesses installs as it is.
+- **Package subagent profiles.** An installed package's agents folder (`agents/` unless
+  `harness.agents` names another) brings each Markdown file whose frontmatter has a `name` and a
+  `description` as an `agent` contribution (at most 50). It is text: it needs no trust and follows
+  its switch like a skill. The profile is named by its frontmatter, not its file. Fields only other
+  harnesses understand are dropped (`agents/profiles.ts`, `parsePackageProfile`): their tool names
+  are translated (`Read`→`read`, `Glob`→`find`, …), a model without a provider is left to the
+  parent, `plugins` and `variant` are never taken, and a tool list of which nothing translates
+  keeps the child read-only. A package profile never replaces a built-in, person's, project's or
+  variant's profile of the same name; the listing reports it as a problem instead.
   `commandPrefix` is optional; in the terminal, commands otherwise use a normalized package name as
   their owner prefix. Prefixes use lowercase letters, digits and hyphens, starting with a letter;
   `plugin` and `skill` are reserved. See page 11 for the command route and collision rules.
+- **Plugin authoring.** `plugin_propose` creates a pending proposal, not an installation. The
+  release-owned `plugin-authoring` skill is available on demand in structured and terminal sessions;
+  a pinned variant's skill of the same name wins. It adds no trust or permission
+  ([ADR-0045](../decisions/ADR-0045-default-plugin-authoring-skill.md)).
+- **Proposal review.** `plugins/proposals.ts` validates a lowercase package name, nonempty description,
+  and 1–100 UTF-8 text files (256 KiB each, 1 MiB total). It accepts `README.md`, extensions
+  (`.ts`, `.js`, `.mjs`), Markdown skills, prompts and agents, and JSON themes in their respective
+  directories; paths must be safe and cannot contain `.git` or `node_modules`. A
+  `skills/<name>/SKILL.md` needs matching name and nonempty description frontmatter. The Harness
+  generates `package.json`; it is not supplied by the proposal. Preview revalidates the stored data
+  and computes SHA-256 over name, description, generated manifest and sorted file entries. Accept
+  and reject require the current preview hash and pending status; stale reviews fail.
+  Acceptance rechecks after adoption and listing, refuses an existing package name or already-trusted
+  identical package code, stages and publishes under `<data root>/plugins/<name>`, clears old
+  attachment decisions for that package and explicitly switches it off globally. It grants no code
+  trust or permission; reject retains the proposal as rejected. These are trusted caller review
+  operations, not model tools. See [ADR-0046](../decisions/ADR-0046-hash-bound-plugin-proposals.md).
 - **Hooks.** A package declares `"harness": { "extends": [...], "hooks": "./hooks.mjs" }`. Events:
   `wiki.page.saved`, `history.run.ended`. A hook has 30 seconds; its errors are kept in
   `plugin-hooks.json`. `ctx.call(connection, tool, args)` reaches only a connected app that is on
@@ -114,6 +145,7 @@ callable result for one run.
 ```text
 <data root>/config/plugin-attachments.json     (registry-enabled.json read until the first change)
 <data root>/plugins/<name>/                     packages kept with the data; removal moves to trash/plugins/
+<data root>/plugin-proposals/<id>.json          proposed text, hash and review status
 <state dir>/plugin-trust.json                   trusted code, by hash
 <state dir>/plugin-registered.json              what each extension registered last time
 <state dir>/plugin-hooks.json                   hooks and their last run
@@ -134,13 +166,17 @@ metadata or availability:
 | Foundation | Accounts, sessions and run recording, prompt and variant validation, gate, plugin loading/trust/attachments, resource browser, server and terminal frameworks | Release-owned infrastructure and security contracts |
 | World | Web search/read tools, browser tools, page annotations | The isolated browser engine and network policy remain Foundation services |
 | Memory | Wiki, history and trajectory | Storage and run records remain Foundation-owned services |
-| Automation | Subagents, ask-user, checklist, lessons and refinement | Run lifecycle, capability narrowing and approval gate remain Foundation-owned |
+| Automation | Subagents, ask-user, todo, lessons and refinement | Run lifecycle, capability narrowing and approval gate remain Foundation-owned |
 | Integrations | Connected apps/MCP and Hub | Connector credentials and plugin installation remain behind Foundation services |
 | Operations | Doctor, worktrees and usage | Diagnostics, repository operations and usage analytics remain Harness-managed services |
 
-## Terminal resource inspection
+## Terminal plugin and resource inspection
 
-The unified browser joins saved plugin/contribution metadata with actual session skills and tool
-registration. A saved on/off state does not prove a resource loaded; origins and owners distinguish
-same-name resources. Protected install/remove, settings, attachment and trust actions call the
-existing services. No second discovery or enablement mechanism is introduced (PROP-0013).
+The broad `/harness` browser joins saved plugin/contribution metadata with actual session skills and
+tool registration. A saved on/off state does not prove a resource loaded; origins and owners
+distinguish same-name resources. `/plugins` is a focused local manager with Plugins, Trust and
+Packages tabs. It uses the existing plugin services for switching, trust, settings, package install,
+update and removal. `/hub` is a distinct Community catalog surface; it does not load code or add a
+second loader. Hub-owned package removal through `plugins.remove` delegates to Hub so the exact
+receipt and its resources stay consistent. No second discovery or enablement mechanism is
+introduced (PROP-0013, PROP-0047).

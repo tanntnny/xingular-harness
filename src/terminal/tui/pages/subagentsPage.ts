@@ -102,9 +102,11 @@ export class SubagentsPage implements TerminalPage {
   hint(): string { return '↑↓ select · type to search' }
 
   private rows(width = 80, now = this.options.now?.() ?? Date.now()): ListRow<TerminalSubagentActivity>[] {
+    // The main agent is pinned first so its children read against it.
     const ordered = [...this.options.snapshot()].sort((left, right) => {
+      const main = Number(right.relation === 'main') - Number(left.relation === 'main')
       const active = Number(ACTIVE_SUBAGENT_STATUSES.has(right.status)) - Number(ACTIVE_SUBAGENT_STATUSES.has(left.status))
-      return active || left.startedAt.localeCompare(right.startedAt) || left.id.localeCompare(right.id)
+      return main || active || left.startedAt.localeCompare(right.startedAt) || left.id.localeCompare(right.id)
     })
     return ordered.map(item => {
       const profile = clean(item.profile?.name ?? '') || 'subagent'
@@ -130,9 +132,10 @@ export class SubagentsPage implements TerminalPage {
   render(width: number, rows: number): string[] {
     const items = this.rows(width, this.options.now?.() ?? Date.now())
     this.list.setRows(items)
-    const active = items.filter(item => item.data && ACTIVE_SUBAGENT_STATUSES.has(item.data.status)).length
+    const children = items.filter(item => item.data?.relation !== 'main')
+    const active = children.filter(item => item.data && ACTIVE_SUBAGENT_STATUSES.has(item.data.status)).length
     const selected = this.list.selected?.data
-    const header = headerRow('Subagents', `${active} active · ${items.length} total`, width, this.options.theme())
+    const header = headerRow('Subagents', `${active} active · ${children.length} total`, width, this.options.theme())
     const bodyRows = Math.max(0, rows - 7)
     const listRows = Math.max(1, Math.min(this.list.height, Math.floor(bodyRows * 0.6)))
     const output = [header, '', ...this.list.render(width, listRows), '']
@@ -144,8 +147,8 @@ export class SubagentsPage implements TerminalPage {
       output.push(neutralRule(width, theme))
       output.push(padded(theme.fg('muted', `Profile: ${clean(selected.profile?.name ?? '') || 'copy of the parent'}`), width))
       output.push(padded(theme.fg('accent', 'Task'), width))
-      output.push(...detailLines(selected.goal || 'Subagent'))
-      output.push(padded(theme.fg('muted', `Status: ${[selected.status.replaceAll('_', ' '), subagentTasks(selected.checklist), terminalSubagentDuration(selected)].filter(Boolean).join(' · ')}`), width))
+      output.push(...detailLines(selected.goal || (selected.relation === 'main' ? 'Main agent' : 'Subagent')))
+      output.push(padded(theme.fg('muted', `Status: ${[selected.status.replaceAll('_', ' '), subagentTasks(selected.todo), terminalSubagentDuration(selected)].filter(Boolean).join(' · ')}`), width))
       output.push(padded(theme.fg('accent', 'Current activity'), width))
       output.push(...detailLines(selected.activity))
     } else {

@@ -1,13 +1,13 @@
 // Built-in feature modules register their contributions here; this registry never loads Pi code.
 import { CONNECTION_TOOLS, NATIVE_GROUP } from '../prompt/compile'
 import { ASK_USER, askUserTool } from '../tools/askUser'
-import { CHECKLIST_WRITE, checklistTool } from '../tools/checklist'
+import { TODO_WRITE, todoTool } from '../tools/todo'
 import { CHECKPOINT_WRITE, checkpointTool } from '../tools/checkpoint'
 import { sliceOf } from '../sessions/workSlice'
 import { SPAWN_SUBAGENT, WAIT_SUBAGENTS } from '../sessions/subagents'
 import { subagentTools } from '../tools/spawnSubagent'
 import { SESSION_NAME } from '../tools/sessionName'
-import { RECALL_TOOLS, SKILL_TOOLS, TRAJECTORY_TOOLS, WIKI_READ_TOOLS, WIKI_WRITE_TOOLS, type HarnessToolDefinition } from '../tools/definitions'
+import { PLUGIN_PROPOSAL_TOOLS, RECALL_TOOLS, SKILL_TOOLS, TRAJECTORY_TOOLS, WIKI_READ_TOOLS, WIKI_WRITE_TOOLS, type HarnessToolDefinition } from '../tools/definitions'
 import { FIRST_PARTY_PLUGINS } from './firstParty'
 import { WEB_PLUGIN } from '../web/tools'
 import { KEYLESS_SEARCH, webPart } from '../web/part'
@@ -84,7 +84,7 @@ const WIKI_PLUGIN: PluginDescriptor = {
   }
 const HISTORY_PLUGIN: PluginDescriptor = { id: 'history', title: 'History', description: 'Search earlier conversations and inspect recorded run trajectories.', required: 'Earlier runs are how an agent picks up where work stopped.', tools: tools([...RECALL_TOOLS, ...TRAJECTORY_TOOLS]), toolGroups: ['History'] }
 const ASK_USER_PLUGIN: PluginDescriptor = { id: 'ask-user', title: 'Ask the user', description: 'Lets the agent stop and ask a question with choices.', required: 'An agent must be able to stop and ask you.', tools: [{ name: ASK_USER }] }
-const CHECKLIST_PLUGIN: PluginDescriptor = { id: 'checklist', title: 'Checklist', description: 'Lets the agent keep a checklist of the steps of its work, recorded with the run so progress can be shown and picked up again.', required: 'Progress of longer work is kept through it.', tools: [{ name: CHECKLIST_WRITE, description: 'Write the checklist' }] }
+const TODO_PLUGIN: PluginDescriptor = { id: 'todo', title: 'Todo', description: 'Lets the agent keep a todo list of the steps of its work, recorded with the run so progress can be shown and picked up again.', required: 'Progress of longer work is kept through it.', tools: [{ name: TODO_WRITE, description: 'Write the todo list' }] }
 const CHECKPOINT_PLUGIN: PluginDescriptor = { id: 'checkpoint', title: 'Checkpoint', description: 'Lets a bounded reply record a handoff at a work-slice boundary so the next slice starts from it.', required: 'A reply that stops at its budget leaves the state the next one resumes from.', tools: [{ name: CHECKPOINT_WRITE, description: 'Write the handoff checkpoint' }] }
 const CONNECTED_APPS_PLUGIN: PluginDescriptor = {
     id: 'connected-apps',
@@ -98,6 +98,7 @@ const CONNECTED_APPS_PLUGIN: PluginDescriptor = {
 const DOCTOR_PLUGIN: PluginDescriptor = { id: 'doctor', title: 'Doctor', description: 'Local readiness checks and explicitly confirmed live probes for accounts, models and tools.', required: 'Every local terminal has readiness diagnostics.' }
 const WORKTREES_PLUGIN: PluginDescriptor = { id: 'worktrees', title: 'Worktrees', description: 'Create and manage isolated git worktrees, move changes between them, and restore removed worktrees.', required: 'Managed worktrees are available to every local terminal.' }
 const HUB_PLUGIN: PluginDescriptor = { id: 'hub', title: 'Hub', description: 'Browse and install reviewed skills, plugins and documents from configured registries.', required: 'Reviewed Harness resources are available to every host.' }
+const PLUGIN_AUTHORING: PluginDescriptor = { id: 'plugin-authoring', title: 'Plugin authoring', description: 'Propose plugins for a person to review.', required: 'Plugin proposals are reviewed before installation.', tools: tools(PLUGIN_PROPOSAL_TOOLS) }
 const REFINEMENT_PLUGIN: PluginDescriptor = { id: 'refinement', title: 'Refinement', description: 'Improve variants from recorded evidence through isolated refinement runs and reviewed candidates.', required: 'Variant refinement is available to every host.' }
 const CAPABILITIES_PLUGIN: PluginDescriptor = { id: 'capabilities', title: 'Capability discovery', description: 'Inspect the callable tools of the current run, including their input schemas. Discovery never grants access.', required: 'Every interactive session can inspect its own registered capabilities.', tools: [{ name: GET_CAPABILITIES, description: 'Inspect current capabilities' }] }
 const USAGE_PLUGIN: PluginDescriptor = {
@@ -137,7 +138,7 @@ export const BUILTIN_PLUGIN_REGISTRY = createBuiltinPluginRegistry([
     serverMethods: historyServerMethods
   },
   { descriptor: ASK_USER_PLUGIN, toolOrder: 40, tools: context => context.harnessTools && context.allowedTools.includes(ASK_USER) ? [askUserTool(context.run)] : [] },
-  { descriptor: CHECKLIST_PLUGIN, toolOrder: 50, tools: context => context.harnessTools ? [checklistTool(context.run)] : [] },
+  { descriptor: TODO_PLUGIN, toolOrder: 50, tools: context => context.harnessTools ? [todoTool(context.run)] : [] },
   { descriptor: CHECKPOINT_PLUGIN, toolOrder: 51, tools: context => context.harnessTools && context.allowedTools.includes(CHECKPOINT_WRITE) ? [checkpointTool(context.run, () => sliceOf(context.env.root, context.runId))] : [] },
   {
     descriptor: CONNECTED_APPS_PLUGIN,
@@ -146,6 +147,7 @@ export const BUILTIN_PLUGIN_REGISTRY = createBuiltinPluginRegistry([
     serverMethods: connectedAppServerMethods
   },
   { descriptor: HUB_PLUGIN, serverMethods: hubServerMethods },
+  { descriptor: PLUGIN_AUTHORING, ...toolContribution(PLUGIN_PROPOSAL_TOOLS, 31) },
   { descriptor: REFINEMENT_PLUGIN, serverMethods: refinementServerMethods },
   { descriptor: SIDE_QUESTIONS_PLUGIN, serverMethods: sideQuestionServerMethods },
   {
@@ -161,12 +163,14 @@ export const BUILTIN_PLUGIN_REGISTRY = createBuiltinPluginRegistry([
   {
     descriptor: ANNOTATIONS_PLUGIN,
     commandPrefix: 'annotate',
-    defaultCommand: 'annotate',
+    defaultCommand: 'open',
     commands: [
-      { name: 'notes', description: 'Review web annotations saved from pages and apps' },
-      { name: 'annotate', description: 'Inspect a page or app, comment on components, and send fixes: /annotate:annotate [url | --app <devtools address> | --bridge]' }
+      { name: 'open', rootOnly: true, description: 'Annotate a page or app and send it to the agent: /annotate: [url | --app <port> | --bridge]' },
+      { name: 'notes', description: 'Every saved web annotation, searchable' },
+      { name: 'submit', description: 'Send this session\'s unsent annotations with your request: /annotate:submit <request>' },
+      { name: 'clear', description: 'Resolve this session\'s unsent annotations and stop sharing them' }
     ],
-    createWorldPart: ({ options }) => annotationsPart({ root: options.root, changed: options.notesChanged }),
+    createWorldPart: ({ options }) => annotationsPart({ root: options.root }),
     serverMethods: annotationServerMethods
   },
   { descriptor: CAPABILITIES_PLUGIN },
@@ -176,7 +180,8 @@ export const BUILTIN_PLUGIN_REGISTRY = createBuiltinPluginRegistry([
     defaultCommand: 'analysis',
     commands: [
       { name: 'analysis', description: 'Token, cost and latency totals: /usage:analysis [today | 7d | 30d | all]' },
-      { name: 'limit', description: 'Provider plan windows, balances and rate limits: /usage:limit' }
+      { name: 'limit', description: 'Provider plan windows, balances and rate limits: /usage:limit' },
+      { name: 'accounts', description: 'Provider limits across all accounts: /usage:accounts' }
     ],
     serverMethods: usageServerMethods
   },

@@ -9,6 +9,8 @@ affects: [02-sessions-and-runs.md, 06-plugins-and-capabilities.md, 07-tools-and-
 
 # PROP-0006: A run checklist the model writes, recorded as a run event
 
+> Renamed to todo by [PROP-0045](PROP-0045-rename-checklist-to-todo.md). The names below are historical.
+
 ## Problem
 
 A run has no structured record of progress. `goal` on a run is opaque text, and plan mode ends

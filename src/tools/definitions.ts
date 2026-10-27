@@ -6,7 +6,7 @@ export type HarnessCall =
   | 'recall.search' | 'recall.read'
   | 'trajectory.search' | 'trajectory.read'
   | 'wiki.search' | 'wiki.read' | 'wiki.list' | 'wiki.write'
-  | 'skill.load'
+  | 'skill.load' | 'plugin.propose'
 
 /** A JSON Schema object, kept loose so TypeBox, MCP, and the CLI can all use it. */
 export type JsonSchema = { type: string; properties?: Record<string, unknown>; required?: string[]; [key: string]: unknown }
@@ -136,8 +136,25 @@ export const SKILL_TOOLS: HarnessToolDefinition[] = [
   }
 ]
 
+/** Propose a package for a person to review; this never installs or enables it. */
+export const PLUGIN_PROPOSAL_TOOLS: HarnessToolDefinition[] = [{
+  name: 'plugin_propose',
+  call: 'plugin.propose',
+  label: 'Propose a plugin',
+  description: 'Propose a plugin for a person to review. This does not install, enable, or trust it. Use the plugin-authoring skill first. Provide text files as a map from relative paths to their complete contents.',
+  parameters: {
+    type: 'object',
+    properties: {
+      name: text('Lowercase plugin package name, using letters, numbers, hyphens or underscores'),
+      description: text('A short description of the plugin'),
+      files: { type: 'object', additionalProperties: { type: 'string' }, description: 'Relative file paths and complete UTF-8 text contents; omit package.json' }
+    },
+    required: ['name', 'description', 'files']
+  }
+}]
+
 /** Every harness tool. */
-export const HARNESS_TOOLS: HarnessToolDefinition[] = [...RECALL_TOOLS, ...TRAJECTORY_TOOLS, ...WIKI_READ_TOOLS, ...WIKI_WRITE_TOOLS, ...SKILL_TOOLS]
+export const HARNESS_TOOLS: HarnessToolDefinition[] = [...RECALL_TOOLS, ...TRAJECTORY_TOOLS, ...WIKI_READ_TOOLS, ...WIKI_WRITE_TOOLS, ...SKILL_TOOLS, ...PLUGIN_PROPOSAL_TOOLS]
 
 /** The harness tools every session has; `wiki_write` is added only when the caller switches it on. */
 export const DEFAULT_TOOL_NAMES = HARNESS_TOOLS.filter((tool) => tool.name !== WIKI_WRITE).map((tool) => tool.name)

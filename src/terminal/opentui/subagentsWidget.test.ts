@@ -7,15 +7,20 @@ function child(index: number, extra: Partial<TerminalSubagentActivity> = {}): Te
   return {
     id: `run-${index}`, parentRunId: 'parent', relation: 'subagent', goal: `Task ${index}`, status: 'completed',
     startedAt: `2026-10-23T00:00:0${index}.000Z`, endedAt: '2026-10-23T00:00:09.000Z', activity: 'Completed',
-    title: `Task ${index}`, checklist: null, usage: null, ...extra
+    title: `Task ${index}`, todo: null, usage: null, ...extra
   }
 }
 
 describe('subagentRoster', () => {
+  it('leaves the main agent’s row to the /subagents page', () => {
+    expect(subagentRoster([child(1, { relation: 'main', profile: { name: 'main', color: 'main' } })], 80)).toBeNull()
+    expect(subagentRoster([child(1, { relation: 'main' }), child(2)], 80)?.rows.map(row => row.id)).toEqual(['run-2'])
+  })
+
   it('has no heading; each row is mark, profile, title, then tasks', () => {
     const roster = subagentRoster([
       child(0),
-      child(1, { status: 'running', profile: { name: 'worker', color: 'green' }, title: 'Fix login redirect', checklist: { done: 2, total: 5 } }),
+      child(1, { status: 'running', profile: { name: 'worker', color: 'green' }, title: 'Fix login redirect', todo: { done: 2, total: 5 } }),
       child(2, { status: 'waiting_for_approval', profile: { name: 'explorer', color: 'cyan' } }),
       child(3, { status: 'failed' }),
       child(4, { status: 'queued' })
@@ -37,8 +42,8 @@ describe('subagentRoster', () => {
     expect(roster.rows.map(row => row.mark)).toEqual(['●', '○'])
   })
 
-  it('marks finished rows and leaves out tasks when there is no checklist', () => {
-    const roster = subagentRoster([child(0, { checklist: { done: 3, total: 3 } }), child(1, { status: 'failed' }), child(2, { status: 'interrupted' })], 100)!
+  it('marks finished rows and leaves out tasks when there is no todo', () => {
+    const roster = subagentRoster([child(0, { todo: { done: 3, total: 3 } }), child(1, { status: 'failed' }), child(2, { status: 'interrupted' })], 100)!
     expect(roster.rows.map(row => [row.mark, row.tone, row.tasks])).toEqual([['✓', 'success', '3 of 3 tasks'], ['✕', 'error', null], ['!', 'muted', null]])
     expect(roster.overflow).toBeNull()
     expect(subagentRoster([], 100)).toBeNull()
@@ -46,7 +51,7 @@ describe('subagentRoster', () => {
 
   it('cleans titles and cuts the title first on a narrow terminal', () => {
     const roster = subagentRoster([child(0, {
-      status: 'running', profile: { name: 'worker', color: 'green' }, title: '\u001b[31mA very long title\nhere\u001b[0m', checklist: { done: 1, total: 4 }
+      status: 'running', profile: { name: 'worker', color: 'green' }, title: '\u001b[31mA very long title\nhere\u001b[0m', todo: { done: 1, total: 4 }
     })], 34)!
     const text = subagentRowText(roster.rows[0]!)
     expect(text).not.toContain('\u001b')

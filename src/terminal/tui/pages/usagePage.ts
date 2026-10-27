@@ -1,4 +1,4 @@
-// `/usage:analysis` and `/usage:limit`: one centered dialog with two tabs. It reads the derived
+// Usage analysis and provider limits in one full-screen page. It reads the derived
 // usage ledger and the provider readings the accounts already hold; the page never touches a run
 // file, a credential or the network itself.
 import type { Theme } from '@earendil-works/pi-coding-agent'
@@ -9,7 +9,7 @@ import type { UsagePeriod, UsageRow, UsageScope, UsageSummary, UsageTotals } fro
 import type { TabInfo } from '../chrome'
 import type { TerminalPage } from '../page'
 
-type UsageTab = 'analysis' | 'limits'
+type UsageTab = 'analysis' | 'limits' | 'accounts'
 
 interface UsagePageOptions {
   theme(): Theme
@@ -132,7 +132,7 @@ function spread(left: string, right: string, width: number): string {
 }
 
 export class UsagePage implements TerminalPage {
-  presentation = 'centered' as const
+  presentation = 'fullscreen' as const
   focused = false
   private tab: UsageTab
   private period: UsagePeriod = '7d'
@@ -140,7 +140,9 @@ export class UsagePage implements TerminalPage {
   private summary?: UsageSummary
   private limitsSummary?: UsageSummary
   private limits?: UsageLimitsReport
+  private allLimits?: UsageLimitsReport
   private busy = false
+  private reloadPending = false
   private error?: string
   private refreshLimits: boolean
   private offset = 0
@@ -155,7 +157,7 @@ export class UsagePage implements TerminalPage {
   }
 
   tabs(): readonly TabInfo[] {
-    return [{ id: 'analysis', title: 'Analysis' }, { id: 'limits', title: 'Limits' }]
+    return [{ id: 'analysis', title: 'Analysis' }, { id: 'limits', title: 'Limits' }, { id: 'accounts', title: 'All accounts' }]
   }
 
   activeTab(): string {
@@ -163,11 +165,12 @@ export class UsagePage implements TerminalPage {
   }
 
   selectTab(id: string): void {
-    if ((id === 'analysis' || id === 'limits') && id !== this.tab) {
+    if ((id === 'analysis' || id === 'limits' || id === 'accounts') && id !== this.tab) {
       this.tab = id
       this.offset = 0
       this.options.changed()
-      if (id === 'limits' && !this.limits) {
+      if (id === 'accounts') void this.load()
+      else if (id === 'limits' && !this.limits) {
         this.refreshLimits = true
         void this.load()
       }
@@ -178,12 +181,12 @@ export class UsagePage implements TerminalPage {
 
   hint(): string {
     return this.tab === 'analysis'
-      ? '↑/↓ scroll · PgUp/PgDn page · 1 today 2 7d 3 30d 0 all · c account s session p project a all accounts · r refresh · Tab limits · Esc close'
-      : '↑/↓ scroll · PgUp/PgDn page · r read provider limits · Tab analysis · Esc close'
+      ? '↑/↓ scroll · PgUp/PgDn page · 1 today 2 7d 3 30d 0 all · c account s session p project a all accounts · r refresh'
+      : '↑/↓ scroll · PgUp/PgDn page · r read provider limits'
   }
 
   activate(): void {
-    if (!this.summary && !this.limits) void this.load()
+    if (!this.summary && !this.limits && !this.allLimits) void this.load()
   }
 
   dispose(): void {
@@ -191,7 +194,11 @@ export class UsagePage implements TerminalPage {
   }
 
   private async load(): Promise<void> {
-    if (this.busy || this.disposed) return
+    if (this.disposed) return
+    if (this.busy) {
+      this.reloadPending = true
+      return
+    }
     this.busy = true
     this.error = undefined
     this.options.changed()
@@ -202,6 +209,12 @@ export class UsagePage implements TerminalPage {
           period: this.period,
           timezoneOffsetMinutes: -new Date().getTimezoneOffset()
         }) as UsageSummary
+      } else if (this.tab === 'accounts') {
+        if (!this.allLimits) {
+          this.allLimits = await this.options.call('terminal.usage.allLimits', { refresh: false }) as UsageLimitsReport
+          if (!this.disposed) this.options.changed()
+        }
+        this.allLimits = await this.options.call('terminal.usage.allLimits', { refresh: true }) as UsageLimitsReport
       } else {
         // The provider's windows and this app's own ledger answer different questions; show both.
         const [limits, summary] = await Promise.all([
@@ -221,12 +234,24 @@ export class UsagePage implements TerminalPage {
       this.error = error instanceof Error ? error.message : 'Usage could not be read.'
     } finally {
       this.busy = false
-      if (!this.disposed) this.options.changed()
+      if (!this.disposed) {
+        this.options.changed()
+        if (this.reloadPending) {
+          this.reloadPending = false
+          void this.load()
+        }
+      }
     }
   }
 
   handleInput(data: string): boolean {
     const page = Math.max(1, this.scrollRows - 1)
+    if (matchesKey(data, 'tab') || matchesKey(data, 'shift+tab')) {
+      const tabs: UsageTab[] = ['analysis', 'limits', 'accounts']
+      const direction = matchesKey(data, 'shift+tab') ? -1 : 1
+      this.selectTab(tabs[(tabs.indexOf(this.tab) + direction + tabs.length) % tabs.length]!)
+      return true
+    }
     if (matchesKey(data, 'up')) this.offset = Math.max(0, this.offset - 1)
     else if (matchesKey(data, 'down')) this.offset = Math.min(this.maxOffset, this.offset + 1)
     else if (matchesKey(data, 'pageUp')) this.offset = Math.max(0, this.offset - page)
@@ -298,7 +323,7 @@ export class UsagePage implements TerminalPage {
   }
 
   private limitsContent(width: number, theme: Theme): { header: string[]; body: string[] } {
-    const report = this.limits
+    const report = this.tab === 'accounts' ? this.allLimits : this.limits
     const header: string[] = []
     if (!report) {
       header.push(theme.fg(this.error ? 'error' : 'dim', this.error ?? (this.busy ? 'Reading provider limits…' : 'No limit readings yet.')))
@@ -316,7 +341,7 @@ export class UsagePage implements TerminalPage {
       }
       for (const provider of account.providers) {
         body.push('')
-        const source = provider.source === 'provider' ? '' : provider.source
+        const source = this.tab === 'accounts' ? `cached · ${provider.source}` : provider.source === 'provider' ? '' : provider.source
         const meta = [source, ago(provider.observedAt)].filter(Boolean).join(' · ')
         const tone = provider.source === 'unavailable' ? 'warning' : 'muted'
         body.push(...wrapTextWithAnsi(theme.fg(tone, `  ${provider.provider}${meta ? ` · ${meta}` : ''}${provider.reason ? ` · ${oneLine(provider.reason)}` : ''}`), width))
@@ -345,7 +370,7 @@ export class UsagePage implements TerminalPage {
       }
     }
     if (!report.accounts.length) body.push(theme.fg('dim', 'No accounts.'))
-    const local = this.limitsSummary?.totals
+    const local = this.tab === 'limits' ? this.limitsSummary?.totals : undefined
     if (local) {
       if (body.length) body.push('')
       body.push(...wrapTextWithAnsi(theme.fg('dim', `7d · ${count(local.inputTokens + local.cacheReadTokens + local.outputTokens)} tokens · ${count(local.requests)} requests · ${money(local.costUsd)}`), width))

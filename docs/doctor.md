@@ -8,10 +8,23 @@ provider requests, token refreshes, browser launch, permission prompts or comput
 pass does not establish live connectivity. Other accounts show their saved status and timestamp.
 Providers without diagnostics report unverified. Disabled capabilities are not failures.
 
+The shell check reports which `bash` the session would run and whether the platform's
+write-boundary sandbox (sandbox-exec on macOS, bubblewrap on Linux) is installed, because a missing
+backend stops every Bash call before the command starts. It runs nothing. On Windows it reports a
+warning naming the shell (Git Bash or PowerShell) and that each command asks for approval, because
+Windows has no write-boundary sandbox; the live shell check reports unverified there, since a
+command would need a person to approve it.
+
 Press `l` to choose live checks, then review the account/model, destinations, possible charges and
 isolation notice. The model check makes one synthetic request with at most 64 output tokens;
 usage appears on a separate diagnostic run. Web checks fetch example.com and search for “example
-domain”. MCP checks connect/list only. Browser checks use a disposable headless profile and an
+domain”. The shell check runs one fixed command written by the harness (`printf`) in the working
+folder through the same root, hard-link scan and write-boundary sandbox a normal Bash call uses, and
+reports only the exit status: no model input is sent, no file is written and no network request is
+made. A diagnostic never widens the boundary, so Full Permission cannot change its result; when the
+boundary refuses before the shell starts (for example a hard-link alias in the workspace), the
+finding is blocked with that reason instead of claiming the shell is broken. MCP checks
+connect/list only. Browser checks use a disposable headless profile and an
 offline synthetic page; configured CDP attachment is blocked. Computer input is blocked unless the
 host supplies a disposable diagnostic surface; the current desktop host supplies readiness only.
 
