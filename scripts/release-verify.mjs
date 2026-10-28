@@ -9,9 +9,13 @@ const read = async url => {
   return response.json()
 }
 let last
-for (let attempt = 0; attempt < 6; attempt++) {
+// The registry announces a fresh version before its packument serves it, so wait rather than fail:
+// publication itself has already succeeded by the time this runs.
+const deadline = Date.now() + 5 * 60_000
+while (Date.now() < deadline) {
   try {
-    const metadata = await read('https://registry.npmjs.org/@xingular%2fharness')
+    // A cache-buster keeps a CDN copy of the old packument from looking like a missing version.
+    const metadata = await read(`https://registry.npmjs.org/@xingular%2fharness?ts=${Date.now()}`)
     const published = metadata.versions?.[candidate.version]
     assert.ok(published)
     const npmTag = candidate.version.includes('-unstable.') ? 'unstable' : 'latest'
@@ -21,6 +25,6 @@ for (let attempt = 0; attempt < 6; attempt++) {
     assert.ok(published.dist.attestations?.url, 'Published provenance is missing.')
     console.log(`Verified @xingular/harness@${candidate.version}, ${npmTag}, tarball integrity and provenance.`)
     process.exit(0)
-  } catch (error) { last = error; if (attempt < 5) await new Promise(resolve => setTimeout(resolve, 5000)) }
+  } catch (error) { last = error; await new Promise(resolve => setTimeout(resolve, 10_000)) }
 }
 throw last

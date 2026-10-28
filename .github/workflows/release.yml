@@ -1,8 +1,6 @@
 name: Release
 
 # Stable and unstable candidates are reviewed before tagging; this workflow retests the exact candidate and waits at the separate publish gate.
-# Temporary for 1.3.1-unstable.3: the `check` job is removed and publication does not wait for the
-# smoke job, so this tag publishes without the suites by request. Restore both right after publication.
 on:
   push:
     tags: ['v*']
@@ -11,7 +9,37 @@ permissions:
   contents: read
 
 jobs:
+  check:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.19.0'
+          cache: npm
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.2'
+      - name: Match the release tag
+        run: node --input-type=module -e "import p from './package.json' with {type:'json'}; if (process.env.GITHUB_REF_NAME !== 'v' + p.version) process.exit(1)"
+      - run: npm ci
+      - run: npx --no-install playwright-core install --with-deps chromium
+      - name: Install bubblewrap for Linux sandbox verification
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes bubblewrap
+          test -x /usr/bin/bwrap
+          # Ubuntu 24.04 runners block unprivileged user namespaces, so bwrap cannot start without this.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - run: npm run ci
+
   candidate:
+    needs: check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -32,7 +60,6 @@ jobs:
 
   smoke:
     needs: candidate
-    # Evidence only for this tag: publish does not wait for it.
     strategy:
       fail-fast: false
       matrix:
@@ -57,7 +84,7 @@ jobs:
           npm run release:smoke -- "outputs/release/xingular-harness-${version}.tgz" --terminal
 
   publish:
-    needs: [candidate]
+    needs: [candidate, smoke]
     # Configure required reviewers here; this approval gates publication, not pre-tag candidate review.
     environment: npm-publish
     runs-on: ubuntu-latest
