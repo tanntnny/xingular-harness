@@ -50,8 +50,8 @@ Screen: transcript above the composer, centred dialogs, full-screen resource bro
 - A plan request keeps `bash` in its active set; each call runs in the sandbox's read-only scope
   (PROP-0043). A user `!` command submitted during a plan request waits as a separate turn; it
   cannot run inside the plan's read-only request.
-- The terminal message-delivery contract is Enter to send or steer an active reply, and
-  Cmd/Ctrl/Alt+Enter to queue a follow-up. Pending steering, follow-up and deferred plan/Bash
+- The terminal message-delivery contract is Enter to send or queue a follow-up, and
+  Cmd/Ctrl/Alt+Enter to steer an active reply. Pending steering, follow-up and deferred plan/Bash
   inputs are projected above the working line from Pi's queues and the deferred barrier. Pi's
   projection may briefly include an item already taken for delivery. A queued plan or Bash command
   runs separately after the active reply, and later inputs cannot bypass it through Pi's native
@@ -65,6 +65,12 @@ Screen: transcript above the composer, centred dialogs, full-screen resource bro
   matching roots/scopes is explicit and matching roots alone does not share host Keychain secrets.
 - `Launch.standard` supplies the shared role and folder text. History, Wiki and skill model tools
   use the session socket; enabled output-trim/budget-guard hooks load through `firstParty.list`.
+- `$name` is a skill invocation at any word start in the composer: the palette opens at the caret
+  and inserts the chosen skill there, keeping the rest of the draft, and every `$name` naming a
+  loaded skill is required for that request. The terminal builds the request-scoped text with
+  `requiredSkillsText` from Pi's loaded skills and appends it as a hidden `xingular-required-skills`
+  custom message. A required skill changes no tool or permission, and the person's message reaches
+  the model unchanged.
   Pi CLI built-ins (llama.cpp, codemode, tool-search and MCP) are not loaded as a terminal-only
   resource path. Harness MCP remains available.
 - An empty conversation shows a centered welcome using `env.productName` (default `Xingular Agent`):
@@ -111,6 +117,10 @@ the proposal service checks it again. Acceptance leaves the package switched off
   `terminal.annotations.*`, `terminal.sideQuestions.*`) require the control key the trusted terminal process claimed once
   (`control.claim`). The session's shell can read the session token, so the token alone is never
   enough.
+- The terminal watches decisions through the control-key-protected `terminal.pending.wait` revision
+  snapshot. It returns immediately for a changed revision and otherwise waits at most 20 seconds;
+  additions, removals and disposal wake waiters. `terminal.pending` remains available. The terminal
+  reconnects and resynchronizes after errors, and cancels its outstanding request on shutdown.
 - **INV-TUI-5** Every resource reload revalidates the original trusted selection; changed or
   revoked code needs review and a fresh terminal.
 - **INV-TUI-6** `sessions.run` stays the embedding and unattended path. The terminal keeps a

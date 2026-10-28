@@ -20,7 +20,7 @@ import type { TodoEntry, CommandHelpItem, CompactionItem, ToolItem, TranscriptIt
 import { commandHelpColumnWidth } from './commandHelpLayout'
 import { terminalSelectionText } from './terminalSelection'
 import { paletteCommandColumnWidth, paletteTextLines } from './palette'
-import { syncAttachmentMarks, syncSkillInvocationMark, syncSlashCommandMark } from './composerMarks'
+import { indexForBufferOffset, syncAttachmentMarks, syncSkillInvocationMark, syncSlashCommandMark } from './composerMarks'
 import { splitUserMessageText } from './slashCommandHighlight'
 import { blendHexColor, composerRuleColor, opentuiTheme, noticeColor, profileColor, toolColor, type OpenTuiTheme } from './theme'
 import type { SubagentRosterView, SubagentRowView } from './subagentsWidget'
@@ -267,10 +267,11 @@ function TranscriptItemView(props: { item: TranscriptItem; expanded: boolean; sy
   if (item.kind === 'plan') {
     return (
       <box border={['left']} borderColor={t.planMode} backgroundColor={t.panel} flexDirection='column' paddingLeft={1} paddingRight={1} paddingTop={1} paddingBottom={1} flexShrink={0}>
-        <text fg={t.planMode} attributes={TextAttributes.BOLD} wrapMode='word'>
-          Plan · {item.title}
-          <Show when={item.streaming}><Span fg={t.dim} attributes={0}> · streaming…</Span></Show>
+        <text fg={t.planMode} attributes={TextAttributes.BOLD | TextAttributes.UNDERLINE} wrapMode='word'>
+          {item.title}
+          <Show when={item.streaming}><Span fg={t.dim} attributes={0}> streaming…</Span></Show>
         </text>
+        <box height={1} flexShrink={0} />
         <markdown content={addHeadingOneSpacing(item.body)} streaming={item.streaming} syntaxStyle={props.syntax} fg={t.text} bg='transparent' conceal={true} tableOptions={{ borderColor: t.dim, cellPaddingX: 1 }} />
       </box>
     )
@@ -685,7 +686,7 @@ function Prompt(props: { app: OpenTuiApplication; view: OpenTuiView; syntax: Syn
     syncing = true
     try { syncMarks(area, view(), props.syntax) }
     finally { syncing = false }
-    props.app.setDraft(area.plainText)
+    props.app.setDraft(area.plainText, indexForBufferOffset(area.plainText, area.cursorOffset))
   }
   createEffect(() => {
     view().attachments
@@ -1019,6 +1020,12 @@ export function OpenTuiRoot(props: { app: OpenTuiApplication }) {
   const [state, setState] = createStore<OpenTuiView>(props.app.view())
   const off = props.app.subscribe(() => setState(reconcile(props.app.view())))
   onCleanup(off)
+  const offAnimation = props.app.subscribeAnimation(() => {
+    const animation = props.app.animationView()
+    setState('working', reconcile({ ...animation.working, sessionName: state.working.sessionName }))
+    setState('subagents', reconcile(animation.subagents))
+  })
+  onCleanup(offAnimation)
 
   useSelectionHandler(selection => {
     const selectedText = terminalSelectionText(selection)
@@ -1161,7 +1168,7 @@ export function OpenTuiRoot(props: { app: OpenTuiApplication }) {
     if (key.eventType !== 'press' || !key.sequence) return
     // The composer reports its text in a microtask, after every key of an input chunk has been
     // handled. Read it now, so Enter or a palette key sees what was typed in the same chunk.
-    if (prompt?.focused) props.app.setDraft(prompt.plainText)
+    if (prompt?.focused) props.app.setDraft(prompt.plainText, indexForBufferOffset(prompt.plainText, prompt.cursorOffset))
     const current = view()
     const page = Math.max(1, Math.floor((dimensions().height - 8) / 2))
     if (!current.overlay && !current.questionDock && (key.name === 'pageup' || key.name === 'pagedown' || (key.ctrl && (key.name === 'home' || key.name === 'end')))) {

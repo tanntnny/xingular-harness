@@ -20,8 +20,8 @@ export function claimTerminalControl(connection: SocketConnection = connectionFr
   return claim
 }
 
-export async function controlCall<T = unknown>(call: string, params: Record<string, unknown> = {}, timeoutMs = 120_000): Promise<T> {
+export async function controlCall<T = unknown>(call: string, params: Record<string, unknown> = {}, timeoutMs = 120_000, signal?: AbortSignal): Promise<T> {
   const connection = connectionFromEnv()
   const control = await claimTerminalControl(connection)
-  return socketCall<T>(connection, call, params, timeoutMs, control)
+  return signal ? socketCall<T>(connection, call, params, timeoutMs, control, signal) : socketCall<T>(connection, call, params, timeoutMs, control)
 }

@@ -29,10 +29,11 @@ overrides the Bun executable.
 [`app.ts`](../src/terminal/opentui/app.ts) owns the terminal lifecycle and reuses the shared
 `TerminalRuntime`, session replacement, commands, decisions, account pinning and run records. It
 projects the runtime's snapshot and transcript into an OpenCode-inspired view, with a native
-OpenTUI textarea for the prompt and `Ctrl+K` for the command palette. `Return` sends or steers a
-running reply; `Cmd+Return`, `Ctrl+Return` or `Alt+Return` queues a follow-up, and `Shift+Return`
-inserts a newline. Typing `/` or `$` filters
-matching commands or skills; `Tab` inserts the selected entry and leaves the cursor at the end of the inserted text.
+OpenTUI textarea for the prompt and `Ctrl+K` for the command palette. `Return` sends or queues a
+follow-up; `Cmd+Return`, `Ctrl+Return` or `Alt+Return` steers a running reply, and `Shift+Return`
+inserts a newline. Typing `/` at the start of the draft filters matching commands, and typing `$` at any word start
+filters matching skills; `Tab` inserts the selected entry and leaves the cursor after it. A `$`
+entry replaces only the token being typed, so text before and after it stays in place.
 With an empty composer, unmodified Up recalls the latest non-empty user message from the active session.
 With a draft, unmodified Up browses older history and Down browses newer history when the caret is at
 either absolute draft endpoint (start or end). Down past the newest entry restores the draft, cursor
@@ -95,7 +96,7 @@ The frontend is verified with a real isolated PTY and a loopback provider. Run
 `python3 scripts/verify-terminal.py --welcome-only --sizes 40x20,80x24,120x40` to check the empty
 welcome, product label, accent colors and `/help` transition. Run
 `python3 scripts/verify-terminal.py --composer-only` for recognized slash-command colors in the composer
-and a user bubble, enabled-skill colors in the composer, unknown-token and argument colors,
+and a user bubble, enabled-skill colors in the composer (leading and after text), unknown-token and argument colors,
 explicit-newline and soft-wrap checks of both prompt gutters, and normal/plan/Bash mode exclusivity.
 Run it with `--sizes 40x20,80x24,120x40` for compact through wide layouts. Use `--dialog-paste-only` to verify bracketed paste into a centered
 input dialog, `--file-completion-only` for filesystem completion and insertion,
@@ -246,8 +247,9 @@ end. A narrow `▕` thumb marks transcript position at the right edge; its mouse
 thinking, tools, image results, notices, summaries, custom messages, user messages, plan cards and
 Bash entries. User, plan and Bash bubbles also have one blank row of internal padding above and below
 their content; other entries have no internal vertical padding. Bubble padding is additional to the
-inter-entry gap. Internal lines within an entry stay together. The transcript stays pinned to the
-latest message until you scroll away. While scrolled away, a `↓ Jump to latest` badge overlays the
+inter-entry gap. A plan card carries its title as an underlined header in the plan blue, then one
+blank row before the plan body. Internal lines within an entry stay together. The transcript stays
+pinned to the latest message until you scroll away. While scrolled away, a `↓ Jump to latest` badge overlays the
 transcript's lower-right corner; clicking it returns to the newest message and hides the badge.
 `Ctrl+End` remains an alternate way to jump to the end. A primary click in the transcript or empty
 welcome area focuses the composer. Dragging to select text anywhere in the TUI—including the
@@ -262,6 +264,12 @@ an action runs the existing account flow. Question choices still stage their ans
 question's action is clicked. Dialogs preserve their existing confirmation safeguards. OpenTUI enables terminal mouse-motion reporting for
 hover; terminals or multiplexers that do not report motion retain keyboard navigation. ANSI-only
 custom UI without a mouse handler remains keyboard-driven.
+
+A mouse report the terminal delivers in two pieces across the input parser's timeout arrives as
+printable keys. The composer and every single-line field drop the report's `<button;column;row>`
+tail instead of keeping it, so a stray scroll never becomes a draft, a filter or a prompt; text typed
+at human speed is untouched even when it spells the same shape. Recorded text never prints a
+reported sequence on a page, and a bare tail that was recorded stays visible as recorded evidence.
 
 Page dialogs and blocks are absolute overlays, so the transcript stays behind them. The screen
 restores the terminal's alternate-screen state when the application exits.
@@ -377,10 +385,9 @@ snapshot and compares their text with the latest saved version. No in-place edit
 is added. Library skills and rules are added through `terminal.components.add`, which commits a
 validated future version. Directory-backed variants stay read-only.
 
-Skill browsing is independent of the Skill commands setting. Use inserts a leading `$name`
-without submitting. Ctrl+K opens a separate command filter; choosing a browser section keeps
+Skill browsing is independent of the Skill commands setting. Use inserts `$name` without submitting. Ctrl+K opens a separate command filter; choosing a browser section keeps
 the existing draft text and attachment labels. Canceling the filter restores that draft. OpenTUI completes
-loaded skills for a leading `$`; Enter or Tab inserts the selected skill rather than sending.
+loaded skills for a `$` at any word start; Enter or Tab inserts the selected skill rather than sending.
 Plugin contributions, settings, attachment and code trust share one detail flow. Package install
 and removal delegate to existing services; installing never trusts or activates code.
 
@@ -466,7 +473,8 @@ request-scoped prompt section, which the next ordinary request withdraws.
 Each mode keeps its own model and effort for the account. Every selection the person makes (the model
 picker, `/effort`, Shift+Up/Down, Ctrl+P) is saved against the mode it was made in, so Shift+Tab switches to that
 mode's model and effort, and a new conversation starts on the normal mode's latest choice. A mode with no
-choice of its own takes normal's, field by field. A resumed conversation keeps the model in its history,
+choice of its own takes normal's, field by field; when neither has a saved effort, the mode uses Pi's
+default level rather than keeping the level chosen in the other mode. A resumed conversation keeps the model in its history,
 and a saved model the account cannot use is skipped. The choices live in the account's `choices.json`,
 and the App reads and writes them through `accounts.choices` and `accounts.choose`.
 
@@ -652,12 +660,14 @@ second key once with `control.claim`, before plugin code loads. [`control.ts`](.
 retains it in a process-local promise shared with the bridge; it is never written to disk or
 placed in the environment. It survives `/new`, resume, fork and reload.
 
-The private key is required for `terminal.policy`, `terminal.approval`, `terminal.pending`,
+The private key is required for `terminal.policy`, `terminal.approval`, `terminal.pending`, `terminal.pending.wait`,
 `terminal.approve`, `terminal.answer`, `terminal.draft`, `terminal.interrupt` and
 `terminal.resources`, as well as existing account and plugin mutations. A model-spawned shell with
 only the environment token cannot submit policy or approval decisions, change permissions, or
 answer its own pending questions. The application renders decisions obtained from the existing
 controller and returns the person's answer through these calls.
+The frontend waits on revisioned decision snapshots instead of polling continuously; a bounded wait
+and reconnect resynchronize the inbox after a lost connection.
 
 Approval prompts offer **Allow once**, **Always allow this tool everywhere** when the host policy
 marks the decision rememberable, and **Deny**. A tool grant covers every call with that tool name
@@ -768,9 +778,12 @@ file size separated by ` · `. One blank line separates each session. Enter resu
 session; account and folder scope checks
 remain enforced. Supplying an explicit path continues directly without opening the picker.
 The `$` palette completes enabled skill invocations using the same two-column palette as slash
-commands; `/skills` always browses skills. Choosing a skill inserts `$name ` without submitting.
-A recognized leading `$name` uses the blue accent in the composer, while its arguments, unavailable
-names and ordinary currency text keep the normal color. `/help` renders the command list as one
+commands, at any word start in the draft; `/skills` always browses skills. Choosing a skill inserts
+`$name` at the caret without submitting. Every recognized `$name` that names a loaded skill uses the
+blue accent in the composer, while its arguments, unavailable names and ordinary currency text keep
+the normal color. Sending a message that contains `$name` makes that skill required for the request:
+the terminal appends its text and the requirement as a hidden request-scoped message, and the
+person's wording is sent unchanged. `/help` renders the command list as one
 transcript entry, grouped under Core, Run, Model, Session, Inspect, Harness, Plugins and Prompts;
 command names and descriptions wrap in aligned columns, with no blank rows between choices. `/plugins`
 opens the focused local manager; its Packages tab installs, updates and removes packages with protected

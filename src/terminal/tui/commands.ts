@@ -11,7 +11,7 @@ import type { AnnotateStart } from './pages/annotatePage'
 import { createCommandPage, type CommandPageId } from './commandPages'
 import { pageOverlayOptions } from './dialogGeometry'
 import { ResumeSessionsPage } from './sessionPicker'
-import { expandSkillInvocation, type SkillEntry } from './skillInvocation'
+import type { SkillEntry } from './skillInvocation'
 import type { TerminalRuntime } from './runtime'
 import type { TerminalTrajectoryRun, TerminalTrajectorySnapshot } from '../trajectory'
 import type { TodoEntry } from '../opentui/model'
@@ -87,8 +87,6 @@ export function createTerminalCommands(host: TerminalCommandHost) {
     if (!session.settingsManager.getEnableSkillCommands()) return []
     return session.resourceLoader.getSkills().skills.map((skill) => ({ name: skill.name, description: skill.description }))
   }
-  /** The text to send: a leading `$name` of a loaded skill becomes the `/skill:name` form Pi expands. */
-  const expandSkill = (text: string): string => expandSkillInvocation(text, new Set(skills().map((skill) => skill.name)))
 
   async function openPage(id: CommandPageId, options: { runId?: string; url?: string; annotate?: AnnotateStart; usageTab?: 'analysis' | 'limit' | 'accounts'; usagePeriod?: 'today' | '7d' | '30d' | 'all' } = {}) {
     let close = () => {}
@@ -450,5 +448,5 @@ export function createTerminalCommands(host: TerminalCommandHost) {
     } catch (error) { host.ui.notify(error instanceof Error ? error.message : String(error), 'error') }
     return true
   }
-  return { execute, completions, skills, expandSkill, legacyAliases }
+  return { execute, completions, skills, legacyAliases }
 }

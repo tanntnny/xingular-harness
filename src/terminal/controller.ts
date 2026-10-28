@@ -87,7 +87,10 @@ const ACK_TIMEOUT_MS = 25_000
 
 export class TerminalController {
   private run: ActiveRun | null = null
+  private lastRunId: string | null = null
   private readonly pending = new Map<string, Record<string, unknown>>()
+  private pendingRevision = 0
+  private readonly pendingWaiters = new Set<() => void>()
   private readonly subagents = new SubagentMonitor()
   private subagentParentRunId: string | null = null
   private ready = false
@@ -105,12 +108,42 @@ export class TerminalController {
     this.nativeId = hooks.nativeSessionId
   }
 
+  private pendingChanged(): void {
+    this.pendingRevision += 1
+    for (const wake of this.pendingWaiters) wake()
+  }
+
+  private setPending(key: string, value: Record<string, unknown>): void {
+    this.pending.set(key, value)
+    this.pendingChanged()
+  }
+
+  private deletePending(key: string): void {
+    if (this.pending.delete(key)) this.pendingChanged()
+  }
+
+  private async waitPending(revision: unknown): Promise<{ revision: number; requests: Record<string, unknown>[] }> {
+    if (revision === this.pendingRevision && !this.disposed) {
+      await new Promise<void>(resolve => {
+        const wake = () => { clearTimeout(timer); this.pendingWaiters.delete(wake); resolve() }
+        const timer = setTimeout(wake, 20_000)
+        this.pendingWaiters.add(wake)
+      })
+    }
+    return { revision: this.pendingRevision, requests: [...this.pending.values()] }
+  }
+
   get nativeSessionId(): string | null {
     return this.nativeId
   }
 
   get activeRun(): ActiveRun | null {
     return this.run && !this.run.finished ? this.run : null
+  }
+
+  /** The run this terminal is showing, or the last one it finished: `/context` reads it after a reply. */
+  get lastRun(): string | null {
+    return this.activeRun?.runId ?? this.lastRunId
   }
 
   state(): { ready: boolean; dirty: boolean; active: boolean } {
@@ -130,6 +163,7 @@ export class TerminalController {
     if (delivery && text && delivery.text !== text) throw new Error('The native prompt did not match the reserved delivery. Inspect the terminal before continuing.')
     const run = this.hooks.begin({ reservedRunId: delivery?.runId ?? null, nativeTurnId, text, ...launch })
     this.run = run
+    this.lastRunId = run.runId
     this.subagentParentRunId = run.runId
     this.subagents.begin(run.runId)
     run.onInterrupt(() => void this.commands.push({ type: 'interrupt' }))
@@ -143,7 +177,7 @@ export class TerminalController {
     this.run?.finish(outcome, message ? { code: 'terminal_attention', message } : undefined, reason)
     this.run = null
     this.seen.clear()
-    this.pending.clear()
+    if (this.pending.size) { this.pending.clear(); this.pendingChanged() }
   }
 
   /** Hands the native process an instruction and waits until it acknowledges the prompt. */
@@ -199,16 +233,16 @@ export class TerminalController {
     if (this.disposed || !this.activeRun || (!descendant && event.runId !== this.activeRun.runId)) return
     if (event.type === 'question.requested') {
       const payload = event.payload as Record<string, unknown>
-      this.pending.set(String(payload.questionId), { ...payload, type: 'question', requestId: payload.questionId, runId: event.runId })
+      this.setPending(String(payload.questionId), { ...payload, type: 'question', requestId: payload.questionId, runId: event.runId })
     } else if (event.type === 'approval.requested') {
       const payload = event.payload as Record<string, unknown>
       if (!payload.automatic && (descendant || payload.target === 'workspace-write')) {
-        this.pending.set(String(payload.approvalId), { ...payload, type: 'approval', requestId: payload.approvalId, runId: event.runId })
+        this.setPending(String(payload.approvalId), { ...payload, type: 'approval', requestId: payload.approvalId, runId: event.runId })
       }
     } else if (event.type === 'approval.resolved') {
-      this.pending.delete(String((event.payload as { approvalId: string }).approvalId))
+      this.deletePending(String((event.payload as { approvalId: string }).approvalId))
     } else if (event.type === 'question.answered') {
-      this.pending.delete(String((event.payload as { questionId: string }).questionId))
+      this.deletePending(String((event.payload as { questionId: string }).questionId))
     }
   }
 
@@ -254,6 +288,7 @@ export class TerminalController {
       return {}
     }
     if (call === 'terminal.pending') return { requests: [...this.pending.values()] }
+    if (call === 'terminal.pending.wait') return this.waitPending(data.revision)
     if (call === 'terminal.interrupt') return this.activeRun && this.hooks.interrupt ? this.hooks.interrupt(this.activeRun.runId) : {}
     if (call === 'terminal.policy') {
       const run = this.activeRun
@@ -334,7 +369,7 @@ export class TerminalController {
       rememberable: policy.rememberable === true,
       standing: policy.standing
     })
-    this.pending.set(key, {
+    this.setPending(key, {
       type: 'approval', requestId: key, runId: run.runId, target: tool, action,
       operation, rememberable: policy.rememberable === true, direct: true
     })
@@ -342,7 +377,7 @@ export class TerminalController {
     try {
       return { decision: await response }
     } finally {
-      this.pending.delete(key)
+      this.deletePending(key)
     }
   }
 
@@ -414,9 +449,9 @@ export class TerminalController {
         const summary = typeof data.summary === 'string' && data.summary.trim() ? data.summary.trim() : undefined
         const sketchMode = data.uiSketch === undefined ? {} : { uiSketch: data.uiSketch }
         const response: Promise<QuestionAnswer> = run.requestAnswer({ requestId: key, ...(summary ? { summary } : {}), ...sketchMode, question: String(data.question ?? ''), options: data.options ?? [], multiSelect: !!data.multiSelect, allowText: true })
-        this.pending.set(key, { type: 'question', requestId: key, ...(summary ? { summary } : {}), ...sketchMode, question: String(data.question ?? ''), options: data.options ?? [], multiSelect: !!data.multiSelect })
+        this.setPending(key, { type: 'question', requestId: key, ...(summary ? { summary } : {}), ...sketchMode, question: String(data.question ?? ''), options: data.options ?? [], multiSelect: !!data.multiSelect })
         this.seen.set(key, response)
-        return response.finally(() => this.pending.delete(key))
+        return response.finally(() => this.deletePending(key))
       }
       const response: Promise<ApprovalDecision> = run.requestApproval({
         requestId: key,
@@ -425,12 +460,12 @@ export class TerminalController {
         operation: { tool: String(data.tool ?? data.target), args: data.args ?? {} },
         rememberable: false
       })
-      this.pending.set(key, { type: 'approval', requestId: key, target: String(data.target ?? 'Action'), action: String(data.action ?? '{}') })
+      this.setPending(key, { type: 'approval', requestId: key, target: String(data.target ?? 'Action'), action: String(data.action ?? '{}') })
       this.seen.set(key, response)
       try {
         return { decision: await response }
       } finally {
-        this.pending.delete(key)
+        this.deletePending(key)
       }
     }
     if (event === 'usage') run.emit('usage.updated', data)
@@ -453,6 +488,7 @@ export class TerminalController {
   dispose(): void {
     if (this.disposed) return
     this.disposed = true
+    this.pendingChanged()
     this.ready = false
     this.delivery?.reject(new Error('The terminal stopped before prompt acknowledgement.'))
     this.delivery = null

@@ -78,6 +78,7 @@ it to the index and update its status as the work progresses.
 | [PROP-0046](PROP-0046-progress-aware-stall-guards.md) | Progress-aware stall guards and bounded plan research children | Implemented; ADR-0039 | INV-RUN-13, 02-sessions-and-runs.md, PROP-0041, terminal-tui.md, ADR-0039 | 2026-10-27 |
 | [PROP-0047](PROP-0047-plugins-hub-separation.md) | Separate local plugin management from Community Hub discovery | Implemented; ADR-0041 | INV-MCP-4, INV-TUI-2/4, INV-PAR-1/2, 06, 09, 10, 11, 14, terminal-tui.md, parity.md | 2026-10-27 |
 | [PROP-0048](PROP-0048-simple-annotate.md) | One annotate page, two actions, and easy app attach | Implemented; ADR-0044 | PROP-0018, 07, 10, 11, 13, terminal-tui.md, parity.md | 2026-10-27 |
+| [PROP-0049](PROP-0049-context-attribution.md) | Context attribution: what fills the context window, by foundation, variant and application | Proposed | INV-PRM-6, INV-SRV-1, INV-PAR-1/2, INV-RUN-7, 04, 10, 11, 14, parity.md | 2026-10-28 |
 
 Numbers are four digits, start at `0001`, and are never reused.
 

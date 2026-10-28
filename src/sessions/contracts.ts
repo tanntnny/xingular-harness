@@ -47,6 +47,8 @@ const contextSnapshotPayload = z.object({
   systemPrompt: z.string().max(100_000),
   contextUpdate: z.string().max(100_000).optional(),
   tools: z.array(z.object({ name: z.string(), description: z.string().max(2_000), parameters: z.unknown() })).max(120),
+  /** The headroom Pi held the run to when it measured compaction, as the session's own settings give it. */
+  compaction: z.object({ enabled: z.boolean(), reserveTokens: z.number().nonnegative() }).optional(),
   systemPromptTruncated: z.boolean().optional(),
   contextUpdateTruncated: z.boolean().optional(),
   toolsTruncated: z.boolean().optional()

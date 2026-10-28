@@ -64,6 +64,7 @@ export const VARIANT_PLUGIN: PluginDescriptor = {
     { id: 'memory', name: 'Memory', description: 'c3: durable facts about this kind of work.' },
     { id: 'subagents', name: 'Subagents', description: 'c5: the list of this variant\'s subagents.' },
     { id: 'scripts', name: 'Scripts', description: 'c7: where this variant\'s scripts are.' },
+    { id: 'required-skills', name: 'Required skills', description: 'Skills the person named as required for one request.' },
     { id: 'reporting', name: 'Reporting', description: 'Fixed foundation text, not part of the variant: how the final reply is shaped.' }
   ],
   tools: tools(SKILL_TOOLS)

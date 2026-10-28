@@ -158,6 +158,41 @@ test('selected notes are references for this request only', () => {
   expect(SECTION_ORDER.references).toBeLessThan(SECTION_ORDER.wiki)
 })
 
+test('a required skill is loaded into the request from the pinned variant', () => {
+  const env = setup()
+  const materialised = scoped(env)
+  const section = compile(env, agent(), hosted({ requiredSkills: [{ name: 'changelog' }] }), materialised).sections.find((entry) => entry.id === 'required-skills')!
+  expect(section.title).toBe('Required skills')
+  expect(section.body).toContain('The person required these skills for this request.')
+  expect(section.body).toContain('Group by type.')
+  expect(section.body).not.toContain('description: writing a changelog')
+  expect(section.body).toContain(materialised.dir)
+  expect(section.sources).toEqual([{ id: 'changelog', kind: 'skill', revision: materialised.fingerprint }])
+  expect(SECTION_ORDER.references).toBeLessThan(SECTION_ORDER.requiredSkills)
+  expect(SECTION_ORDER.requiredSkills).toBeLessThan(SECTION_ORDER.wiki)
+})
+
+test('a required skill that is not in the session is reported honestly and names are deduplicated', () => {
+  const env = setup()
+  const materialised = scoped(env)
+  const section = compile(env, agent(), hosted({ requiredSkills: [{ name: 'changelog' }, { name: 'changelog' }, { name: 'missing' }] }), materialised).sections.find((entry) => entry.id === 'required-skills')!
+  expect(section.body.match(/### changelog/g)).toHaveLength(1)
+  expect(section.body).toContain('missing: this skill is unavailable in this session.')
+  expect(section.sources.map((source) => source.id)).toEqual(['changelog'])
+})
+
+test('required skills belong to the request even when an identical one was delivered before', () => {
+  const env = setup()
+  const materialised = scoped(env)
+  const launch = hosted({ requiredSkills: [{ name: 'changelog' }] })
+  const history = join(mkdtempSync(join(tmpdir(), 'harness-required-skill-')), 'chat.jsonl')
+  delivered(history, sessionLaunch(env, agent(), launch, null, materialised).update!)
+  const next = sessionLaunch(env, agent(), launch, history, materialised)
+  expect(next.update!.content).toContain('## Required skills')
+  expect(next.update!.content).toContain('Group by type.')
+  expect(next.system).not.toContain('Group by type.')
+})
+
 function delivered(path: string, update: ContextUpdate): void {
   writeFileSync(path, `${JSON.stringify({ type: 'session', id: 'native-chat' })}\n${JSON.stringify({ type: 'custom_message', id: 'context-1', parentId: null, customType: 'xingular-context', content: update.content, details: { xingularContext: update.snapshot } })}\n`)
 }

@@ -17,6 +17,7 @@ change the binding architecture or describe implemented capabilities.
 
 | ID | Record | Type | Status | Related |
 |---|---|---|---|---|
+| ADR-0048 | [A skill named anywhere in a message is required for that request](decisions/ADR-0048-required-skills-from-a-message.md) | Decision | Harness compiler, terminal and App composer implemented; acceptance not certified | [04 Prompt](architecture/04-prompt.md), [11 Terminal](architecture/11-terminal.md), [parity register](parity.md) |
 | ADR-0047 | [A link a person clicks opens with the system's handler](decisions/ADR-0047-links-open-with-the-os-handler.md) | Decision | Implemented in the Harness, the terminal and the App; acceptance not certified | [10 Server protocol](architecture/10-server-protocol.md), [parity register](parity.md) |
 | ADR-0046 | [Hash-bound plugin proposal review](decisions/ADR-0046-hash-bound-plugin-proposals.md) | Decision | Harness API and model proposal tool implemented; review surfaces pending | [06 Plugins](architecture/06-plugins-and-capabilities.md), [parity register](parity.md) |
 | ADR-0045 | [Release-owned plugin-authoring skill](decisions/ADR-0045-default-plugin-authoring-skill.md) | Decision | Implemented as an on-demand resource | [06 Plugins](architecture/06-plugins-and-capabilities.md) |

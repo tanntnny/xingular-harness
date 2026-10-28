@@ -8,7 +8,7 @@ import { createHarness, type Harness } from '../harness'
 import type { SessionRunInput } from './sessions'
 import type { SessionFactory } from './runner'
 import { SUBAGENT_OWNER, SUBAGENT_RECEIPT, subagentHistory } from './subagents'
-import { loadRun, readEvents, recordSubagent, saveRun } from './runStore'
+import { loadRun, readEvents, recordSubagent, recordedSubagents, saveRun } from './runStore'
 import type { Resolver } from '../plugins/discover'
 
 const open: Harness[] = []
@@ -62,10 +62,68 @@ describe('subagents a harness defines (c5)', () => {
   })
 })
 
+describe('subagent budgets', () => {
+  const tools = { allow: ['read', 'spawn_subagent', 'wait_subagents'] }
+
+  it('caps each profile and reports the effective quota', async () => {
+    const { harness, start } = setup()
+    await start('parent', { tools, subagents: { maxChildren: 20 } })
+    expect(harness.subagents.quota('parent')).toEqual({ children: 20, profiles: { worker: 2, explorer: 3 }, other: 1, unprofiled: 1 })
+    await harness.subagents.spawn({ parentRunId: 'parent', brief: 'One', agent: 'worker' })
+    await harness.subagents.spawn({ parentRunId: 'parent', brief: 'Two', agent: 'worker' })
+    await expect(harness.subagents.spawn({ parentRunId: 'parent', brief: 'Three', agent: 'worker' })).rejects.toThrow('This run has used its 2 worker subagent slots.')
+    expect(recordedSubagents(harness.env.root, 'parent')).toHaveLength(2)
+    for (const brief of ['One', 'Two', 'Three']) await harness.subagents.spawn({ parentRunId: 'parent', brief, agent: 'explorer' })
+    await expect(harness.subagents.spawn({ parentRunId: 'parent', brief: 'Four', agent: 'explorer' })).rejects.toThrow('This run has used its 3 explorer subagent slots.')
+    await harness.subagents.spawn({ parentRunId: 'parent', brief: 'Review', agent: 'researcher' })
+    await expect(harness.subagents.spawn({ parentRunId: 'parent', brief: 'Review again', agent: 'researcher' })).rejects.toThrow('This run has used its 1 researcher subagent slot.')
+    await harness.subagents.spawn({ parentRunId: 'parent', brief: 'Unprofiled' })
+    await expect(harness.subagents.spawn({ parentRunId: 'parent', brief: 'Unprofiled again' })).rejects.toThrow('This run has used its 1 unprofiled subagent slot.')
+  })
+
+  it('caps the total at four by default', async () => {
+    const { harness, start } = setup()
+    await start('parent', { tools, subagents: { maxUnprofiled: 10 } })
+    for (const brief of ['1', '2', '3', '4']) await harness.subagents.spawn({ parentRunId: 'parent', brief })
+    await expect(harness.subagents.spawn({ parentRunId: 'parent', brief: '5' })).rejects.toThrow('This run has used its 4 subagent slots.')
+  })
+
+  it('honours an explicit total before a profile limit', async () => {
+    const { harness, start } = setup()
+    await start('parent', { tools, subagents: { maxChildren: 1 } })
+    await harness.subagents.spawn({ parentRunId: 'parent', brief: 'One', agent: 'worker' })
+    await expect(harness.subagents.spawn({ parentRunId: 'parent', brief: 'Two', agent: 'explorer' })).rejects.toThrow('This run has used its 1 subagent slot.')
+  })
+
+  it('cannot overspend when two spawns arrive together', async () => {
+    const { harness, start } = setup()
+    await start('parent', { tools, subagents: { maxChildren: 1 } })
+    const results = await Promise.allSettled([
+      harness.subagents.spawn({ parentRunId: 'parent', brief: 'One' }),
+      harness.subagents.spawn({ parentRunId: 'parent', brief: 'Two' })
+    ])
+    expect(results.filter(result => result.status === 'fulfilled')).toHaveLength(1)
+    expect(results.filter(result => result.status === 'rejected')).toHaveLength(1)
+    expect(recordedSubagents(harness.env.root, 'parent')).toHaveLength(1)
+  })
+
+  it('keeps the budget when a work slice continues the parent run', async () => {
+    const { harness, start, root } = setup()
+    await start('first', { tools, subagents: { maxChildren: 1 } })
+    await harness.subagents.spawn({ parentRunId: 'first', brief: 'One', title: 'One' })
+    await harness.runs.interrupt('first')
+    mkdirSync(join(root, 'history'), { recursive: true })
+    writeFileSync(join(root, 'history', 'parent.jsonl'), `${JSON.stringify({ type: 'session', id: 'native-history' })}\n`)
+    await start('second', { tools, subagents: { maxChildren: 1 }, continueFrom: 'first' })
+    expect(loadRun(harness.env.root, 'second').resumedFromRunId).toBe('first')
+    await expect(harness.subagents.spawn({ parentRunId: 'second', brief: 'Two', title: 'Two' })).rejects.toThrow('This run has used its 1 subagent slot.')
+  })
+})
+
 describe('native subagent ownership and delivery', () => {
   it('spawns asynchronously, joins selected children, and rejects foreign handles', async () => {
     const { harness, finish, start } = setup()
-    await start('parent')
+    await start('parent', { subagents: { maxChildren: 5, maxUnprofiled: 5 } })
     const a = await harness.subagents.spawn({ parentRunId: 'parent', brief: 'First', tools: ['read'] })
     const b = await harness.subagents.spawn({ parentRunId: 'parent', brief: 'Second', tools: [] })
     expect(harness.subagents.results({ parentRunId: 'parent' }).map(result => result.status)).toEqual(['running', 'running'])
@@ -170,7 +228,7 @@ describe('native subagent ownership and delivery', () => {
 
   it('does not acknowledge results omitted from a bounded delivery batch', async () => {
     const { harness, finish, start } = setup()
-    await start('parent')
+    await start('parent', { subagents: { maxChildren: 5, maxUnprofiled: 5 } })
     const children = await Promise.all([1, 2, 3].map(n => harness.subagents.spawn({ parentRunId: 'parent', brief: String(n) })))
     for (const child of children) finish.get(child.runId)!('x'.repeat(16_000))
     await harness.subagents.wait({ parentRunId: 'parent' })
@@ -337,7 +395,7 @@ describe('agent profiles (PROP-0029)', () => {
 describe('subagent titles (PROP-0030)', () => {
   it('stores the title the parent gave, or the first line of the brief when it gave none', async () => {
     const { harness, start } = setup()
-    await start('parent', { tools: { allow: ['read', 'spawn_subagent', 'wait_subagents'] } })
+    await start('parent', { tools: { allow: ['read', 'spawn_subagent', 'wait_subagents'] }, subagents: { maxChildren: 5, maxUnprofiled: 5 } })
     const named = await harness.subagents.spawn({ parentRunId: 'parent', title: '  Map   the auth flow ', brief: 'Find the login route' })
     expect(loadRun(harness.env.root, named.runId).title).toBe('Map the auth flow')
     const unnamed = await harness.subagents.spawn({ parentRunId: 'parent', brief: 'First line of a long brief\nsecond line with more detail' })
@@ -384,7 +442,7 @@ describe('continuing a stopped subagent', () => {
 
   it('refuses what it cannot continue', async () => {
     const { harness, finish, start, root } = setup()
-    await start('original', { tools })
+    await start('original', { tools, subagents: { maxChildren: 5, maxUnprofiled: 5 } })
     const done = await harness.subagents.spawn({ parentRunId: 'original', brief: 'Finish', title: 'Finish' })
     finish.get(done.runId)!('Finished')
     await harness.runs.wait(done.runId)
@@ -404,6 +462,20 @@ describe('continuing a stopped subagent', () => {
     await start('narrower', { tools: { allow: ['spawn_subagent', 'wait_subagents'] } })
     harness.subagents.restore('narrower', owner('original'))
     await expect(harness.subagents.spawn({ parentRunId: 'narrower', continue: stopped.runId })).rejects.toThrow('needs capabilities you do not have in this run: read')
+  })
+
+  it('continues a stopped child even when its run has used every slot', async () => {
+    const { harness, start, root } = setup()
+    await start('original', { tools, subagents: { maxChildren: 1, maxUnprofiled: 1 } })
+    const child = await harness.subagents.spawn({ parentRunId: 'original', brief: 'Map the auth flow', title: 'Map auth' })
+    await harness.runs.interrupt('original')
+    savedHistory(root, child.runId)
+    await start('resumed', { tools, subagents: { maxChildren: 1, maxUnprofiled: 1 } })
+    harness.subagents.restore('resumed', owner('original'))
+    await harness.subagents.spawn({ parentRunId: 'resumed', brief: 'Fill the budget', title: 'Fill' })
+    await expect(harness.subagents.spawn({ parentRunId: 'resumed', brief: 'Over budget', title: 'Over' })).rejects.toThrow('This run has used its 1 subagent slot.')
+    const continued = await harness.subagents.spawn({ parentRunId: 'resumed', continue: child.runId })
+    expect(continued.continued).toBe(child.runId)
   })
 
   it('tells a continued parent to continue its unfinished children rather than start them again', async () => {

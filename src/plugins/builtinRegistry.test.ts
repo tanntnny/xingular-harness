@@ -4,7 +4,7 @@ import type { Handler } from '../server/rpc'
 import type { WorldOptions, WorldPart } from '../world/world'
 import type { ToolSpec } from '../tools/types'
 import type { PluginDescriptor } from './types'
-import { SPAWN_SUBAGENT, WAIT_SUBAGENTS } from '../sessions/subagents'
+import { SPAWN_SUBAGENT, WAIT_SUBAGENTS, subagentQuota } from '../sessions/subagents'
 import { createBuiltinPluginRegistry, type BuiltinPluginModule, type BuiltinToolContext } from './builtinRegistry'
 import { BUILTIN_PLUGIN_REGISTRY } from './builtin'
 
@@ -110,7 +110,7 @@ describe('built-in plugin registry', () => {
       runId: 'run',
       allowedTools: [SPAWN_SUBAGENT, WAIT_SUBAGENTS],
       harnessTools: false,
-      subagents: {} as BuiltinToolContext['subagents'],
+      subagents: { quota: () => subagentQuota(undefined) } as unknown as BuiltinToolContext['subagents'],
       sessionName: {} as ToolSpec,
       connectionTools: () => [{ name: 'mcp_list_tools' } as ToolSpec]
     })

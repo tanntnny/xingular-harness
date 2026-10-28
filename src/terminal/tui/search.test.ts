@@ -1,6 +1,6 @@
 import type { Theme } from '@earendil-works/pi-coding-agent'
 import { stripTerminalSequences, visibleWidth } from '@earendil-works/pi-tui'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import { SEARCH_GLYPH, SearchField } from './search'
 import { createHarnessTheme } from './theme'
@@ -38,6 +38,34 @@ describe('the shared search field', () => {
     expect(search.value).toBe('pasted text')
     expect(search.clear()).toBe(true)
     expect(search.clear()).toBe(false)
+  })
+
+  it('drops a mouse report that a flushed prefix turned into keys', () => {
+    const search = field()
+    for (const char of '<65;56;29') search.handleInput(char)
+    expect(search.handleInput('M')).toBe(true)
+    expect(search.value).toBe('')
+  })
+
+  it('drops a whole report that arrived as one sequence', () => {
+    const search = field()
+    search.handleInput('<65;56;29M')
+    expect(search.value).toBe('')
+  })
+
+  it('keeps a report-shaped query typed at human speed', () => {
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(0)
+      const search = field()
+      for (const char of '<0;40;8M') {
+        search.handleInput(char)
+        vi.advanceTimersByTime(100)
+      }
+      expect(search.value).toBe('<0;40;8M')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('puts the note at the right edge, drops it when it would crowd the text, and never overflows', () => {

@@ -26,6 +26,7 @@ import type { SideQuestionContext, SideQuestionRead } from '../../sessions/sideQ
 import { createHarnessLightTheme, createHarnessTheme } from '../tui/theme'
 import { createTerminalUi, type TerminalUi } from '../tui/ui'
 import { centeredDialogHost, dialogFits } from '../tui/dialogGeometry'
+import { MouseReportTail } from '../tui/mouseReport'
 import { chooseCompletionVerb, chooseWorkingVerb, getWorkingSpinnerFrames, SPINNER_INTERVAL_MS, spinnerFrameAt } from '../tui/workingStatus'
 import { stageClipboardFiles } from '../tui/clipboardFiles'
 import { readHarnessLogSnapshot, type HarnessLogChunk, type HarnessLogInfo } from '../logs'
@@ -44,6 +45,7 @@ import { QuestionDockState, type QuestionDockAnswers, type QuestionDockQuestion,
 import { linkTarget, openLink as openWithDefaultHandler, type LinkTarget } from '../../core/links'
 import { subagentRoster, type SubagentRosterView } from './subagentsWidget'
 import type { PendingMessage } from './pendingMessages'
+import { skillTokenAt } from '../tui/skillInvocation'
 
 const exec = promisify(execFile)
 const COPY_TOAST_DURATION_MS = 2500
@@ -177,6 +179,7 @@ export class OpenTuiApplication {
   private readonly host = new PiDialogHost(() => this.change())
   private readonly transcript = new TranscriptModel()
   private readonly listeners = new Set<() => void>()
+  private readonly animationListeners = new Set<() => void>()
   private readonly cleanup: (() => void | Promise<void>)[] = []
   private readonly statuses = new Map<string, string>()
   private readonly widgets = new Map<string, { component: Mounted; placement: string }>()
@@ -206,8 +209,12 @@ export class OpenTuiApplication {
   private editorFactory?: EditorFactory
   private customEditor?: EditorComponent
   private draft = ''
+  /** Follows a mouse report the input parser flushed, so its tail is not typed into the draft. */
+  private readonly mouseTail = new MouseReportTail()
   private draftEpoch = 0
   private draftCursorOffset: number | null = null
+  /** Where the caret is in the draft, for a `$` palette that opens anywhere; null means its end. */
+  private paletteCaret: number | null = null
   private readonly attachments = new ComposerAttachments()
   private insertion: { epoch: number; text: string } | null = null
   private fileCompletion: FileCompletionView | null = null
@@ -251,8 +258,9 @@ export class OpenTuiApplication {
   private stopHandler?: () => void
   private finish!: () => void
   readonly done = new Promise<void>(resolve => { this.finish = resolve })
-  private pendingPolling = false
   private pendingBusy = false
+  private decisionWatch?: AbortController
+  private pendingRequests: TerminalDecision[] = []
   private pendingAbort?: AbortController
   private pendingId?: string
   private readonly dismissedDecisions = new Set<string>()
@@ -278,13 +286,16 @@ export class OpenTuiApplication {
     const target = raw ? linkTarget(raw, { base: this.runtime?.cwd }) : null
     const next = target ? `${target.kind}:${'url' in target ? target.url : 'address' in target ? target.address : target.path}` : raw
     const entered = next !== this.hoveredLink
+    if (!entered && !next) return
     // Moving inside one link moves the cells the frame pass recolours, so it counts as a change too.
     if (!entered && x === this.hoveredAt.x && y === this.hoveredAt.y) return
     this.hoveredLink = next
     this.hoveredLinkId = next ? this.renderer?.getLinkIdAt(x, y) ?? 0 : 0
     this.hoveredAt = { x, y }
-    if (entered) this.renderer?.setMousePointer(next ? 'pointer' : 'default')
-    this.change()
+    if (entered) {
+      this.renderer?.setMousePointer(next ? 'pointer' : 'default')
+      this.change()
+    }
     // The hover only changes the frame's colours, not the view, so the frame must be asked for.
     this.renderer?.requestRender()
   }
@@ -329,6 +340,27 @@ export class OpenTuiApplication {
   subscribe(listener: () => void): () => void {
     this.listeners.add(listener)
     return () => { this.listeners.delete(listener) }
+  }
+
+  subscribeAnimation(listener: () => void): () => void {
+    this.animationListeners.add(listener)
+    return () => { this.animationListeners.delete(listener) }
+  }
+
+  animationView(): Pick<OpenTuiView, 'working' | 'subagents'> {
+    return {
+      working: this.working(),
+      subagents: subagentRoster(this.subagents, Math.max(20, this.host.columns - 4), this.workingSpinnerFrame(this.startedAt ?? Date.now()))
+    }
+  }
+
+  private animate(): void {
+    if (this.startedAt !== null || this.compacting) {
+      for (const listener of this.animationListeners) {
+        try { listener() } catch { /* A renderer listener cannot change Harness state. */ }
+      }
+    }
+    if (this.sideQuestion?.state === 'thinking') this.change()
   }
 
   get hasFailure(): boolean { return !!this.failure }
@@ -562,15 +594,18 @@ export class OpenTuiApplication {
       this.initialized = true
       this.refresh()
       void this.refreshSubagents(true)
+      const decisionWatch = new AbortController()
+      this.decisionWatch = decisionWatch
+      this.cleanup.push(() => decisionWatch.abort())
+      void this.watchDecisions(decisionWatch.signal)
       let lastSubagentPoll = 0
       const tick = setInterval(() => {
-        if (this.startedAt !== null || this.compacting || this.sideQuestion?.state === 'thinking') this.change()
+        this.animate()
         const now = Date.now()
         if (this.startedAt !== null && now - lastSubagentPoll >= 1000) {
           lastSubagentPoll = now
           void this.refreshSubagents()
         }
-        void this.decisions()
       }, 100)
       const git = setInterval(() => { void this.refreshBranch() }, 3000)
       this.cleanup.push(() => { clearInterval(tick); clearInterval(git) })
@@ -855,16 +890,31 @@ export class OpenTuiApplication {
     this.change()
   }
 
-  private async decisions(): Promise<void> {
-    if (this.pendingPolling || !this.runtime || this.stopped) return
-    this.pendingPolling = true
-    let requests: TerminalDecision[]
-    try {
-      requests = await this.runtime.pending()
-    } catch (error) {
-      if (!this.stopped) this.notify(error instanceof Error ? error.message : String(error), 'error')
-      return
-    } finally { this.pendingPolling = false }
+  private async watchDecisions(signal: AbortSignal): Promise<void> {
+    let revision: number | undefined
+    while (!signal.aborted && !this.stopped) {
+      try {
+        const snapshot = await controlCall<{ revision: number; requests: TerminalDecision[] }>('terminal.pending.wait', { revision }, 25_000, signal)
+        revision = snapshot.revision
+        void this.decisions(snapshot.requests)
+      } catch (error) {
+        if (signal.aborted || this.stopped) return
+        this.notify(error instanceof Error ? error.message : String(error), 'error')
+        revision = undefined
+        await new Promise<void>(resolve => {
+          const timer = setTimeout(done, 1000)
+          function done() { clearTimeout(timer); signal.removeEventListener('abort', done); resolve() }
+          signal.addEventListener('abort', done, { once: true })
+          if (signal.aborted) done()
+        })
+      }
+    }
+  }
+
+  private async decisions(requests?: TerminalDecision[]): Promise<void> {
+    if (!this.runtime || this.stopped) return
+    requests ??= await this.runtime.pending()
+    this.pendingRequests = requests
     if (this.pendingId && !requests.some(request => request.requestId === this.pendingId)) this.pendingAbort?.abort()
     if (this.pendingBusy) return
     this.pendingBusy = true
@@ -895,6 +945,9 @@ export class OpenTuiApplication {
       this.pendingBusy = false
       this.pendingId = undefined
       this.pendingAbort = undefined
+      if (!this.stopped && this.pendingRequests.some(item => !this.dismissedDecisions.has(item.requestId))) {
+        setTimeout(() => { void this.decisions(this.pendingRequests) }, 100)
+      }
     }
   }
 
@@ -1169,7 +1222,7 @@ export class OpenTuiApplication {
   private paletteView(): PaletteView | null {
     if (this.paletteSuppressed) return null
     const slash = /^\/([^\s]*)$/u.exec(this.draft)
-    const skill = /^\$([^\s]*)$/u.exec(this.draft)
+    const skill = this.bashMode ? null : skillTokenAt(this.draft, this.paletteCaret ?? this.draft.length)
     if (!this.paletteOpen && (this.bashMode || (!slash && !skill))) return null
     let items: PaletteItem[] = []
     try {
@@ -1181,7 +1234,7 @@ export class OpenTuiApplication {
             description: item.description
           })) ?? []
     } catch { return null }
-    const filter = this.paletteOpen ? this.paletteFilter : skill?.[1] ?? slash?.[1] ?? ''
+    const filter = this.paletteOpen ? this.paletteFilter : skill?.query ?? slash?.[1] ?? ''
     const matched = matchPalette(items, filter)
     if (!matched.length) return null
     const index = Math.min(Math.max(0, this.paletteIndex), matched.length - 1)
@@ -1238,6 +1291,14 @@ export class OpenTuiApplication {
     this.paletteOpen = false
     this.paletteSuppressed = true
     this.paletteIndex = 0
+    const token = this.bashMode ? null : skillTokenAt(this.draft, this.paletteCaret ?? this.draft.length)
+    if (token) {
+      const tail = this.draft.slice(token.to)
+      const suffix = tail === '' ? ' ' : /^[\s.,;:!?)]/u.test(tail) ? '' : ' '
+      const inserted = `${item.prefix ?? '$'}${item.name}${suffix}`
+      this.setDraftExternal(`${this.draft.slice(0, token.from)}${inserted}${tail}`, token.from + inserted.length)
+      return true
+    }
     const text = `${item.prefix ?? '/'}${item.name} `
     this.setDraftExternal(text, text.length)
     return true
@@ -1253,7 +1314,7 @@ export class OpenTuiApplication {
     this.change()
   }
 
-  setDraft(value: string): void {
+  setDraft(value: string, caret?: number): void {
     if (this.paletteOpen) {
       this.paletteFilter = value.startsWith('/') && !/\s/u.test(value) ? value.slice(1) : value
       this.paletteIndex = 0
@@ -1261,15 +1322,18 @@ export class OpenTuiApplication {
       this.change()
       return
     }
+    let nextCaret = caret
     let modeChanged = false
     if (!this.bashMode) {
       const bash = splitBashDraft(value)
       if (bash.bashMode) {
         modeChanged = true
         this.applyComposerMode('bash')
+        if (nextCaret !== undefined) nextCaret = Math.max(0, nextCaret - (value.length - bash.body.length))
       }
       value = bash.body
     }
+    if (nextCaret !== undefined) this.paletteCaret = nextCaret
     if (value === this.draft) {
       if (modeChanged) this.change()
       return
@@ -1287,12 +1351,14 @@ export class OpenTuiApplication {
   }
 
   setDraftExternal(value: string, cursorOffset?: number, preserveBashMode = false): void {
+    this.mouseTail.reset()
     this.resetHistoryBrowse()
     const bash = preserveBashMode ? { body: value, bashMode: this.bashMode } : splitBashDraft(value)
     this.invalidateFileCompletion()
     this.applyComposerMode(bash.bashMode ? 'bash' : this.planMode ? 'plan' : 'normal')
     const body = bash.body
     this.draft = body
+    this.paletteCaret = null
     this.attachments.retain(body)
     this.draftCursorOffset = cursorOffset ?? null
     this.draftEpoch += 1
@@ -1320,6 +1386,7 @@ export class OpenTuiApplication {
     this.invalidateFileCompletion()
     this.applyComposerMode('bash')
     this.draft = body
+    this.paletteCaret = null
     this.draftCursorOffset = null
     this.draftEpoch += 1
     this.paletteSuppressed = false
@@ -1337,11 +1404,13 @@ export class OpenTuiApplication {
   }
 
   private clearDraft(): void {
+    this.mouseTail.reset()
     this.resetHistoryBrowse()
     this.invalidateFileCompletion()
     this.applyComposerMode(this.planMode ? 'plan' : 'normal')
     this.draft = ''
     this.attachments.clear()
+    this.paletteCaret = null
     this.draftCursorOffset = null
     this.draftEpoch += 1
     this.paletteSuppressed = false
@@ -1377,13 +1446,14 @@ export class OpenTuiApplication {
     }
   }
 
-  /** Enter steers a running reply; modified Enter queues a follow-up. */
+  /** Enter queues a follow-up; modified Enter steers a running reply. */
   submitPrompt(): void {
     this.input(() => this.onSubmitPrompt())
   }
 
   private onSubmitPrompt(): void {
-    this.submit(this.bashMode ? `!${this.draft}` : this.draft, false)
+    this.mouseTail.reset()
+    this.submit(this.bashMode ? `!${this.draft}` : this.draft, true)
   }
 
   private async runBash(text: string): Promise<void> {
@@ -1438,15 +1508,14 @@ export class OpenTuiApplication {
           return
         }
         if (this.planMode && !command) { this.enqueuePlan(text, images); return }
-        const expanded = this.commands!.expandSkill(text)
         if (this.planBarrierOpen) {
-          this.deferredInputs.push({ kind: 'prompt', text: expanded, followUp, images })
+          this.deferredInputs.push({ kind: 'prompt', text, followUp, images })
           this.notify('Message queued to run after the current response.')
           this.change()
           return
         }
         if (!this.session.isIdle) this.notify(followUp ? 'Follow-up message queued.' : 'Steering message queued.')
-        await this.runtime!.submit(expanded, followUp, images)
+        await this.runtime!.submit(text, followUp, images)
       } finally {
         if (command) this.commandBusy = false
         this.change()
@@ -1589,6 +1658,7 @@ export class OpenTuiApplication {
     this.applyComposerMode(mode)
     this.draft = parsed.body
     this.attachments.clearForDraft(this.draft)
+    this.paletteCaret = null
     this.draftCursorOffset = this.draft.length
     this.draftEpoch += 1
     this.paletteSuppressed = true
@@ -1785,9 +1855,9 @@ export class OpenTuiApplication {
       const hidden = !this.session.settingsManager.getHideThinkingBlock()
       this.session.settingsManager.setHideThinkingBlock(hidden)
       this.transcript.setThinkingHidden(hidden)
-    } else if (is('app.message.followUp')) {
+    } else if (is('app.message.steer')) {
       const editor = this.customEditor as (EditorComponent & { getExpandedText?(): string }) | undefined
-      this.submit(editor?.getExpandedText?.() ?? (this.bashMode ? `!${this.draft}` : this.draft), true)
+      this.submit(editor?.getExpandedText?.() ?? (this.bashMode ? `!${this.draft}` : this.draft), false)
     }
     else if (is('app.message.dequeue')) {
       const pending = this.session.clearQueue()
@@ -1806,8 +1876,30 @@ export class OpenTuiApplication {
     else if (is('app.suspend')) this.attempt(() => this.suspend())
     else if (is('app.session.new')) this.attempt(() => this.commands!.execute('/new'))
     else if (data === '?' && this.draft === '') this.notify(this.hotkeys())
+    else if (this.dropMouseReportTail(key, data)) return true
     else if (!this.extensionShortcut(data)) return false
     this.change()
+    return true
+  }
+
+  /**
+   * A mouse report split across the input parser's timeout arrives as printable keys. Drop it once it
+   * is complete instead of typing it into the draft; anything that does not line up stays text.
+   */
+  private dropMouseReportTail(key: KeyInput, data: string): boolean {
+    const match = this.mouseTail.push(data)
+    if (!match) return false
+    if (!match.inserted) {
+      this.change()
+      return true
+    }
+    const caret = key.cursorOffset ?? this.draft.length
+    const start = caret - match.inserted.length
+    const at = start >= 0 && this.draft.slice(start, caret) === match.inserted
+      ? start
+      : this.draft.endsWith(match.inserted) ? this.draft.length - match.inserted.length : -1
+    if (at < 0) return false
+    this.setDraftExternal(this.draft.slice(0, at) + this.draft.slice(at + match.inserted.length), at)
     return true
   }
 
@@ -1815,7 +1907,7 @@ export class OpenTuiApplication {
     return [
       'Tab files/folders · Shift+Tab plan mode', 'Shift+↑/↓ effort · /effort · Ctrl+K commands', 'Ctrl+O expand details · Ctrl+T thinking',
       'Ctrl+L model', 'Ctrl+N new session', '↑/↓ at either draft endpoint browse older/newer history · Ctrl+↑/↓ anywhere',
-      'Enter send or steer · Cmd/Ctrl/Alt+Enter queue · Esc dismisses btw or stops reply', 'Ctrl+C clear or quit · Ctrl+D quit',
+      'Enter send or queue · Cmd/Ctrl/Alt+Enter steer · Esc dismisses btw or stops reply', 'Ctrl+C clear or quit · Ctrl+D quit',
       'PgUp/PgDn transcript'
     ].join('\n')
   }
@@ -2008,6 +2100,7 @@ export class OpenTuiApplication {
   /** Inserts at the composer's cursor; the composer reports the new draft back. */
   private insert(text: string): void {
     if (!text) return
+    this.mouseTail.reset()
     if (this.customEditor?.getExpandedText) {
       const editor = this.customEditor as { insertTextAtCursor?(value: string): void }
       if (editor.insertTextAtCursor) { editor.insertTextAtCursor(text); this.change(); return }
@@ -2063,6 +2156,8 @@ export class OpenTuiApplication {
         } catch (error) { this.failure ??= error instanceof Error ? error : new Error(String(error)) }
       }
       this.stopped = true
+      this.mouseTail.reset()
+      this.decisionWatch?.abort()
       protect(() => this.renderer?.setMousePointer('default'))
       this.hoveredLink = null
       if (this.toastTimer) clearTimeout(this.toastTimer)

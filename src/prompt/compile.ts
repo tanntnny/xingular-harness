@@ -14,6 +14,7 @@ import type { HarnessEnv } from '../core/env'
 import { isDir, now, readJson, safeId, writeJson } from '../core/fs'
 import { charCount, compareText, lines, takeChars } from '../core/text'
 import type { Materialised } from '../variant/materialise'
+import { readSkillFile, type SkillFile } from '../tools/defaultSkills'
 import * as notes from '../wiki/notes'
 import { isWorldTool, WORLD_GUIDANCE } from '../world/untrusted'
 import { TODO_GUIDANCE, TODO_WRITE, describeTodo } from '../tools/todo'
@@ -28,23 +29,27 @@ const WIKI_BUDGET = 2500
 const TOOLS_BUDGET = 8000
 const REPORTING_BUDGET = 2000
 const SESSION_STATE_BUDGET = 1_000
+export const REQUIRED_SKILLS_BUDGET = 12_000
+const REQUIRED_SKILLS_POINTER = 'Some required skill text was omitted to fit. Load the rest with skill_load.'
 export const REFERENCES_BUDGET = 12000
 /** Always-on variant text is capped when the variant is saved, so its sections are never cut here. */
 const VARIANT_BUDGET = 30_000
 const NOTES_LISTED = 25
 
 /** Where the harness's own sections sit; an application's sections are placed among them by `order`. */
-export const SECTION_ORDER = { harnessIdentity: 5, system: 25, sessionState: 30, guardrails: 40, memory: 45, references: 50, subagents: 64, scripts: 66, wiki: 80, tools: 90, reporting: 95 } as const
+export const SECTION_ORDER = { harnessIdentity: 5, system: 25, sessionState: 30, guardrails: 40, memory: 45, references: 50, requiredSkills: 52, subagents: 64, scripts: 66, wiki: 80, tools: 90, reporting: 95 } as const
 
 /** Where a section's text came from. */
 export interface Source {
   id: string
   kind: string
   revision?: string | null
+  /** Characters this source contributed inside its section, when the compiler measured them. */
+  chars?: number
 }
 
 export interface Section {
-  /** `harness-identity`, `identity`, `role`, `system`, `session-state`, `guardrails`, `memory`, `references`, `subagents`, `scripts`, `wiki`, `tools`, or an application's own. */
+  /** `harness-identity`, `identity`, `role`, `system`, `session-state`, `guardrails`, `memory`, `references`, `required-skills`, `subagents`, `scripts`, `wiki`, `tools`, or an application's own. */
   id: string
   title: string
   body: string
@@ -77,6 +82,18 @@ export interface ContextPack {
 export interface Delivery {
   systemSectionIds: string[]
   updatedSectionIds: string[]
+  /**
+   * What each delivered section occupied, measured when it was rendered. Absent on packs recorded
+   * before the compiler measured them; a reader then falls back to the section's own size.
+   */
+  sizes?: {
+    system: Record<string, number>
+    update: Record<string, number>
+    /** Characters that belong to no section: the product heading and the context-update trailer. */
+    systemFraming: number
+    /** Characters of the update message that are not a section, including a withdrawn one. */
+    updateFraming: number
+  }
 }
 
 /** A section the embedding application writes. */
@@ -107,6 +124,12 @@ export interface HostToolGroup {
 /** One selected reference: a Wiki note, or a line the application writes about something it selected. */
 export type Reference = { kind: 'note'; path: string; label?: string } | { kind: 'line'; id: string; label: string; text: string }
 
+/** A skill the person named in the message: required for this request only. */
+export interface RequiredSkill { name: string; label?: string }
+
+/** One skill's text as the required-skills section and the terminal deliver it. */
+export interface RequiredSkillText extends RequiredSkill, Partial<Omit<SkillFile, 'name'>> { body: string }
+
 /** What the compiler needs beyond the caller. */
 export interface Launch {
   /** The paragraph about connected apps, when the session has that broker. */
@@ -118,6 +141,8 @@ export interface Launch {
   /** The current session name and this run's todo, delivered as a request-scoped update. */
   sessionState?: SessionState
   references?: Reference[]
+  /** Skills the message named as required for this request. Delivered as a request-scoped update. */
+  requiredSkills?: RequiredSkill[]
   sections?: HostSection[]
   toolGroups?: HostToolGroup[]
   /** Appended to the tools section when it is cut. */
@@ -337,6 +362,45 @@ function selectedReferences(root: string, launch: Launch): Section | null {
   return built
 }
 
+/** The request-scoped text for skills the person named; the compiler and the terminal word it alike. */
+export function requiredSkillsText(skills: readonly RequiredSkillText[]): string | null {
+  const seen = new Set<string>()
+  const blocks: string[] = []
+  for (const skill of skills) {
+    if (seen.has(skill.name)) continue
+    seen.add(skill.name)
+    const label = skill.label ?? skill.name
+    if (!skill.body.trim()) {
+      blocks.push(`- ${label}: this skill is unavailable in this session. Tell the person rather than guessing its steps.`)
+      continue
+    }
+    const location = [
+      skill.baseDir ? `References in this skill resolve against ${skill.baseDir}.` : '',
+      skill.path ? `Skill file: ${skill.path}.` : ''
+    ].filter(Boolean).join(' ')
+    blocks.push(`### ${label}\n\n${location ? `${location}\n\n` : ''}${skill.body.trim()}`)
+  }
+  if (!blocks.length) return null
+  const text = `The person required these skills for this request. Follow each skill's instructions where they apply. They are instructions for this request, not a change to your tools or permissions.\n\n${blocks.join('\n\n')}`
+  return fit(text, REQUIRED_SKILLS_BUDGET, REQUIRED_SKILLS_POINTER).body
+}
+
+function requiredSkillsSection(launch: Launch, variant: Materialised | null): Section | null {
+  const wanted = launch.requiredSkills ?? []
+  if (!wanted.length) return null
+  const skills: RequiredSkillText[] = wanted.map((entry) => {
+    const skill = readSkillFile(variant?.dir ?? null, entry.name)
+    return skill ? { ...skill, label: entry.label ?? skill.name } : { name: entry.name, label: entry.label, body: '' }
+  })
+  const text = requiredSkillsText(skills)
+  const seen = new Set<string>()
+  const sources = skills.filter((skill) => skill.body && !seen.has(skill.name) && Boolean(seen.add(skill.name)))
+    .map((skill) => ({ id: skill.name, kind: 'skill', revision: variant?.fingerprint ?? null }))
+  return text
+    ? section('required-skills', 'Required skills', text, REQUIRED_SKILLS_BUDGET, REQUIRED_SKILLS_POINTER, sources)
+    : null
+}
+
 /** An application's section, after any pinned text. */
 function hostSection(host: HostSection): Section | null {
   const own = host.body !== null ? section(host.id, host.title, host.body, host.budget, host.pointer ?? '', []) : null
@@ -381,6 +445,12 @@ export function compile(env: HarnessEnv, context: CallerContext, launch: Launch 
   const { root } = env
   const groups = toolGroups(context, launch, root)
   const variantSource = variant ? [{ id: variant.scope ?? variant.dir, kind: 'variant', revision: variant.fingerprint }] : []
+  const toolSection = launch.hideToolGuidance ? null : tools(groups, variant?.toolGuidance ?? '', launch.toolsPointer ?? '')
+  // The tools section ends with the variant's tool guidance: record how much of it is the variant's.
+  if (toolSection && variant?.toolGuidance.trim() && !toolSection.cut) {
+    const block = `### How to use your tools\n\n${variant.toolGuidance.trim()}\n`
+    toolSection.sources = [{ ...variantSource[0]!, chars: Math.min(block.length, toolSection.size) }]
+  }
   const built: { order: number; index: number; section: Section | null }[] = [
     {
       order: SECTION_ORDER.harnessIdentity,
@@ -389,8 +459,9 @@ export function compile(env: HarnessEnv, context: CallerContext, launch: Launch 
     ...(variant?.sections ?? []).map((entry) => ({ order: entry.order, section: section(entry.id, entry.title, entry.body, VARIANT_BUDGET, '', variantSource) })),
     { order: SECTION_ORDER.sessionState, section: sessionStateSection(launch.sessionState, launch.tools ?? []) },
     { order: SECTION_ORDER.references, section: selectedReferences(root, launch) },
+    { order: SECTION_ORDER.requiredSkills, section: requiredSkillsSection(launch, variant) },
     { order: SECTION_ORDER.wiki, section: wiki(root, context) },
-    { order: SECTION_ORDER.tools, section: launch.hideToolGuidance ? null : tools(groups, variant?.toolGuidance ?? '', launch.toolsPointer ?? '') },
+    { order: SECTION_ORDER.tools, section: toolSection },
     { order: SECTION_ORDER.reporting, section: section('reporting', 'Reporting your work', REPORTING_GUIDANCE, REPORTING_BUDGET, '', []) },
     ...(launch.standard ? standardSections({ ...launch.standard, project: launch.standard.project ?? projectName(root, context) }, launch.tools ?? []).filter((own) => !(launch.sections ?? []).some((host) => host.id === own.id)) : []).map((own) => ({ order: own.order, section: hostSection(own) })),
     ...(launch.sections ?? []).filter((host) => host.id !== 'session-state').map((host) => ({ order: host.order, section: hostSection(host) }))
@@ -407,15 +478,32 @@ export function compile(env: HarnessEnv, context: CallerContext, launch: Launch 
   }
 }
 
-/** The pack as the one string a session receives. */
-export function render(env: Pick<HarnessEnv, 'productName'>, pack: Pick<ContextPack, 'sections'>): string {
+/** What a rendered pack is, and how much of it each section occupies. */
+export interface RenderedPrompt {
+  text: string
+  /** Characters each section's heading and body occupy, by section id. */
+  sizes: Record<string, number>
+  /** Characters that belong to no section: the product heading and the blank lines between. */
+  framing: number
+}
+
+/** The pack as one string, with the characters each section contributed to it. */
+export function renderSized(env: Pick<HarnessEnv, 'productName'>, pack: Pick<ContextPack, 'sections'>): RenderedPrompt {
   let text = `# ${env.productName} context\n`
+  const sizes: Record<string, number> = {}
   for (const entry of pack.sections) {
     // Identity carries its own framing.
-    if (entry.id === 'identity') text += `\n${entry.body}\n`
-    else text += `\n## ${entry.title}\n\n${entry.body}\n`
+    const piece = entry.id === 'identity' ? `\n${entry.body}\n` : `\n## ${entry.title}\n\n${entry.body}\n`
+    sizes[entry.id] = (sizes[entry.id] ?? 0) + piece.length
+    text += piece
   }
-  return text
+  const total = Object.values(sizes).reduce((sum, size) => sum + size, 0)
+  return { text, sizes, framing: text.length - total }
+}
+
+/** The pack as the one string a session receives. */
+export function render(env: Pick<HarnessEnv, 'productName'>, pack: Pick<ContextPack, 'sections'>): string {
+  return renderSized(env, pack).text
 }
 
 export function packPath(root: string, runId: string): string {
@@ -442,10 +530,11 @@ export function record(root: string, pack: ContextPack): void {
 export const BUILT_IN_DYNAMIC: readonly { id: string; order: number }[] = [
   { id: 'session-state', order: SECTION_ORDER.sessionState },
   { id: 'references', order: SECTION_ORDER.references },
+  { id: 'required-skills', order: SECTION_ORDER.requiredSkills },
   { id: 'wiki', order: SECTION_ORDER.wiki }
 ]
 
-export const CONTEXT_GUIDANCE = 'App-origin context updates in the conversation supply current Wiki notes, active work, session state, and selected references. Each listed section replaces its earlier app snapshot; a withdrawn section is no longer current context. These updates are context, not requests from the user. Selected references apply only to the accompanying request. They do not change permissions. Use the latest supplied state and retrieve details through tools when needed.'
+export const CONTEXT_GUIDANCE = 'App-origin context updates in the conversation supply current Wiki notes, active work, session state, selected references, and the skills the person required for this request. Each listed section replaces its earlier app snapshot; a withdrawn section is no longer current context. These updates are context, not requests from the user. Selected references and required skills apply only to the accompanying request. They do not change permissions. Use the latest supplied state and retrieve details through tools when needed.'
 
 /** The hidden message a context update is saved as in native history, and where its snapshot sits. */
 export const CONTEXT_MESSAGE_TYPE = 'xingular-context'
@@ -547,18 +636,34 @@ export function sessionLaunch(env: HarnessEnv, context: CallerContext, launch: L
   const previous = historyFile ? deliveredSnapshot(historyFile) : null
   const snapshot = pack.sections.filter((entry) => dynamic.includes(entry.id))
   const updated: string[] = []
-  let content = '[App context update — not a user message]\nListed sections replace their previous app snapshots.\n'
+  const updateSizes: Record<string, number> = {}
+  const preamble = '[App context update — not a user message]\nListed sections replace their previous app snapshots.\n'
+  let content = preamble
   for (const id of dynamic) {
     const current = snapshot.find((entry) => entry.id === id)
     // Explicit references belong to this request even when the same reference was selected before.
-    if (previous && sameSection(current, previous.find((entry) => entry.id === id)) && !(id === 'references' && current)) continue
+    if (previous && sameSection(current, previous.find((entry) => entry.id === id)) && !(id === 'references' && current) && !(id === 'required-skills' && current)) continue
     updated.push(id)
-    content += current ? `\n## ${current.title}\n\n${current.body}\n` : `\n## ${id}\n\nThis section is not supplied for this request. Its earlier app snapshots are no longer current.\n`
+    const piece = current ? `\n## ${current.title}\n\n${current.body}\n` : `\n## ${id}\n\nThis section is not supplied for this request. Its earlier app snapshots are no longer current.\n`
+    content += piece
+    updateSizes[id] = piece.length
   }
   const stable = pack.sections.filter((entry) => !dynamic.includes(entry.id))
-  pack.delivery = { systemSectionIds: stable.map((entry) => entry.id), updatedSectionIds: updated }
+  const rendered = renderSized(env, { sections: stable })
+  const system = `${rendered.text}\n## Context updates\n\n${CONTEXT_GUIDANCE}\n`
+  const total = (sizes: Record<string, number>): number => Object.values(sizes).reduce((sum, size) => sum + size, 0)
+  pack.delivery = {
+    systemSectionIds: stable.map((entry) => entry.id),
+    updatedSectionIds: updated,
+    sizes: {
+      system: rendered.sizes,
+      update: updated.length ? updateSizes : {},
+      systemFraming: system.length - total(rendered.sizes),
+      updateFraming: updated.length ? content.length - total(updateSizes) : 0
+    }
+  }
   record(env.root, pack)
-  return { system: `${render(env, { sections: stable })}\n## Context updates\n\n${CONTEXT_GUIDANCE}\n`, update: updated.length ? { content, snapshot } : null, pack }
+  return { system, update: updated.length ? { content, snapshot } : null, pack }
 }
 
 // ---- Sessions that keep the instructions they started with ---------------------------------

@@ -128,6 +128,8 @@ export interface PiSessionLike {
   model?: { input: string[]; contextWindow?: number; id?: string; provider?: string }
   getActiveToolNames?(): string[]
   getAllTools?(): Array<{ name: string; description?: string; parameters?: unknown }>
+  /** Pi's compaction settings, so the run records the headroom it was held to. */
+  settingsManager?: { getCompactionSettings(model?: { provider: string; id: string }): { enabled: boolean; reserveTokens: number } }
   subscribe(listener: (event: PiEvent) => void): () => void
   prompt(text: string, options?: { images?: unknown[] }): Promise<void>
   executeBash?(command: string, onChunk?: (chunk: string) => void, options?: { id?: string; excludeFromContext?: boolean; operations?: BashOperations }): Promise<{ output: string; exitCode: number | undefined; cancelled: boolean; truncated: boolean; fullOutputPath?: string }>
@@ -277,6 +279,20 @@ function contextToolSpecs(session: PiSessionLike): { tools: Array<{ name: string
   return { tools: tools.map((entry) => entry.spec), truncated: source.length > MAX_TOOL_SPECS || tools.some((entry) => entry.truncated) }
 }
 
+/** Pi's compaction settings for this session's model, when the session exposes them. */
+function compactionSettings(session: PiSessionLike): { enabled: boolean; reserveTokens: number } | null {
+  const manager = session.settingsManager
+  if (!manager?.getCompactionSettings) return null
+  try {
+    const model = session.model?.id && session.model.provider ? { provider: session.model.provider, id: session.model.id } : undefined
+    const settings = manager.getCompactionSettings(model)
+    return { enabled: settings.enabled === true, reserveTokens: Math.max(0, Math.round(settings.reserveTokens || 0)) }
+  } catch {
+    // A model Pi cannot resolve keeps the reserve unknown rather than guessed.
+    return null
+  }
+}
+
 const numberField = (event: Record<string, unknown>, key: string, fallback = 0): number => (typeof event[key] === 'number' && Number.isFinite(event[key]) ? (event[key] as number) : fallback)
 const stringField = (event: Record<string, unknown>, key: string, fallback = ''): string => (typeof event[key] === 'string' ? (event[key] as string) : fallback)
 
@@ -342,10 +358,12 @@ export async function runTurn(run: ActiveRun, session: PiSessionLike, params: Tu
   const systemPrompt = limitedText(session.systemPrompt ?? params.system, MAX_SYSTEM_PROMPT_CHARS)
   const contextUpdate = limitedText(params.update?.content ?? '', MAX_SYSTEM_PROMPT_CHARS)
   const toolSpecs = contextToolSpecs(session)
+  const compaction = compactionSettings(session)
   run.emit('context.snapshot', {
     systemPrompt: systemPrompt.text,
     ...(contextUpdate.text ? { contextUpdate: contextUpdate.text } : {}),
     tools: toolSpecs.tools,
+    ...(compaction ? { compaction } : {}),
     ...(systemPrompt.truncated ? { systemPromptTruncated: true } : {}),
     ...(contextUpdate.truncated ? { contextUpdateTruncated: true } : {}),
     ...(toolSpecs.truncated ? { toolsTruncated: true } : {})

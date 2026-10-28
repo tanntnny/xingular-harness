@@ -20,7 +20,7 @@ import type { PluginDescriptor } from '../plugins/types'
 import type { RunRecord } from './contracts'
 import { continuationOf } from './continuation'
 import { findRun, loadRun, readEvents, recordedSubagents, recordSubagent, saveRun } from './runStore'
-import { SPAWN_SUBAGENT, SUBAGENT_RELATION, SUBAGENT_OWNER, SUBAGENT_RECEIPT, SUBAGENT_RESULTS, briefTitle, continueHint, subagentHistory, subagentTitle, type SubagentInput, type SubagentReceipt, type SubagentResult, type SubagentSelection } from './subagents'
+import { SPAWN_SUBAGENT, SUBAGENT_RELATION, SUBAGENT_OWNER, SUBAGENT_RECEIPT, SUBAGENT_RESULTS, UNPROFILED_SUBAGENT, briefTitle, continueHint, subagentHistory, subagentProfileKey, subagentProfileLimit, subagentQuota, subagentTitle, type SubagentInput, type SubagentQuota, type SubagentReceipt, type SubagentResult, type SubagentSelection } from './subagents'
 
 type Started = { runId: string; nativeSessionId: string | null }
 /** What a spawn returns: the child, the profile it started from, and profile tools missing here. */
@@ -61,6 +61,8 @@ function until<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
 /** One owner of native child execution and delivery, shared by SDK and terminal adapters. */
 export class Subagents {
   private readonly parents = new Map<string, Parent>()
+  /** Child runs reserved synchronously at spawn, before their record exists, so parallel calls cannot overspend. */
+  private readonly reserved = new Map<string, Map<string, string>>()
   private readonly runtimeSettingsByRun = new Map<string, SubagentRuntimeSettings>()
 
   constructor(private readonly env: HarnessEnv, private readonly runs: RunRegistry, private readonly launch: (input: SessionRunInput) => Promise<Started>, private readonly options: SubagentServiceOptions = {}) {
@@ -95,6 +97,11 @@ export class Subagents {
 
   runtimeSettings(runId: string): SubagentRuntimeSettings | null {
     return this.runtimeSettingsByRun.get(runId) ?? null
+  }
+
+  /** The budget for a run, or the foundation defaults when it has not registered one. */
+  quota(runId: string): SubagentQuota {
+    return subagentQuota(this.parents.get(runId)?.input.subagents ?? undefined)
   }
 
   private rememberRuntimeSettings(runId: string, settings: SubagentRuntimeSettings): void {
@@ -186,40 +193,57 @@ export class Subagents {
         if (!profile) throw invalid(`There is no agent profile named ${request.agent.trim()}.`)
       }
     }
-    await until(parent.ready, parent.stopped.signal)
-    let variant: SessionRunInput['variant'] = input.variant ?? null
-    let launch = input.launch
-    let model = input.model
-    let effort = input.effort
-    if (profile) {
-      // A variant's own subagent works from its definition alone; a profile keeps the parent's
-      // variant unless it names another one, or none.
-      if (profile.source === 'variant' || profile.variant === 'none') variant = null
-      else if (profile.variant) variant = { scope: profile.variant.scope, version: profile.variant.version }
-      if (profile.model) model = profile.model
-      if (profile.effort) effort = profile.effort
-      launch = { ...(input.launch ?? {}), sections: [...(input.launch?.sections ?? []).filter((section) => section.id !== 'subagent'), { id: 'subagent', title: `Your role: ${profile.name}`, body: profile.instructions || profile.description, budget: 16_000, order: 22 }] }
-    }
-    const narrowed = input.plan
-      ? { capabilities: planEligibility!.capabilities, unavailable: planEligibility!.unavailableTools }
-      : narrowForProfile(capabilities, profile, request.tools, this.options.descriptors?.() ?? [])
-    const childCapabilities = narrowed.capabilities
-    const tools = childCapabilities.tools
+    const quota = subagentQuota(input.subagents ?? undefined)
     const runId = randomUUID()
-    const sessionId = randomUUID()
-    const child: SessionRunInput = {
-      ...input,
-      run: { ...input.run, ...(input.plan ? { worktreeId: null } : {}), id: runId, sessionId, parentRunId: request.parentRunId, relation: SUBAGENT_RELATION, goal: takeChars(brief, 4000), title, attachmentCount: 0, resumedFromRunId: null, handoffId: null, profile: profile?.name ?? null },
-      accountId, poolId: null, sessionDir: join(input.sessionDir, 'subagents', runId), resume: null,
-      text: brief, images: undefined, requiresImageInput: false, preamble: null,
-      caller: { ...input.caller, runId: undefined, sessionId },
-      tools: { allow: tools, gated: (input.tools.gated ?? []).filter((name) => tools.includes(name)) },
-      capabilities: childCapabilities, depth: (input.depth ?? 0) + 1,
-      variant, launch, model, effort,
-      ...(input.plan ? { connections: false, subagents: null } : {})
+    const usage = this.usage(request.parentRunId)
+    const slot = (count: number, of = '') => `${count} ${of}subagent slot${count === 1 ? '' : 's'}`
+    if (usage.total >= quota.children) throw invalid(`This run has used its ${slot(quota.children)}. Do the remaining work yourself.`)
+    const profileKey = subagentProfileKey(profile?.name)
+    const profileLimit = subagentProfileLimit(quota, profileKey)
+    const profileUsed = usage.byProfile.get(profileKey) ?? 0
+    if (profileUsed >= profileLimit) {
+      const label = profileKey === UNPROFILED_SUBAGENT ? 'unprofiled ' : `${profileKey} `
+      throw invalid(`This run has used its ${slot(profileLimit, label)}. Do the remaining work yourself.`)
     }
-    const result = await this.launchChild(parent, request, child)
-    return { ...result, ...(profile ? { agent: profile.name } : {}), ...(narrowed.unavailable.length ? { unavailableTools: narrowed.unavailable } : {}) }
+    // Reserve before the first await so two tool calls in one message cannot both pass the check.
+    this.reserve(request.parentRunId, runId, profileKey)
+    try {
+      await until(parent.ready, parent.stopped.signal)
+      let variant: SessionRunInput['variant'] = input.variant ?? null
+      let launch = input.launch
+      let model = input.model
+      let effort = input.effort
+      if (profile) {
+        // A variant's own subagent works from its definition alone; a profile keeps the parent's
+        // variant unless it names another one, or none.
+        if (profile.source === 'variant' || profile.variant === 'none') variant = null
+        else if (profile.variant) variant = { scope: profile.variant.scope, version: profile.variant.version }
+        if (profile.model) model = profile.model
+        if (profile.effort) effort = profile.effort
+        launch = { ...(input.launch ?? {}), sections: [...(input.launch?.sections ?? []).filter((section) => section.id !== 'subagent'), { id: 'subagent', title: `Your role: ${profile.name}`, body: profile.instructions || profile.description, budget: 16_000, order: 22 }] }
+      }
+      const narrowed = input.plan
+        ? { capabilities: planEligibility!.capabilities, unavailable: planEligibility!.unavailableTools }
+        : narrowForProfile(capabilities, profile, request.tools, this.options.descriptors?.() ?? [])
+      const childCapabilities = narrowed.capabilities
+      const tools = childCapabilities.tools
+      const sessionId = randomUUID()
+      const child: SessionRunInput = {
+        ...input,
+        run: { ...input.run, ...(input.plan ? { worktreeId: null } : {}), id: runId, sessionId, parentRunId: request.parentRunId, relation: SUBAGENT_RELATION, goal: takeChars(brief, 4000), title, attachmentCount: 0, resumedFromRunId: null, handoffId: null, profile: profile?.name ?? null },
+        accountId, poolId: null, sessionDir: join(input.sessionDir, 'subagents', runId), resume: null,
+        text: brief, images: undefined, requiresImageInput: false, preamble: null,
+        caller: { ...input.caller, runId: undefined, sessionId },
+        tools: { allow: tools, gated: (input.tools.gated ?? []).filter((name) => tools.includes(name)) },
+        capabilities: childCapabilities, depth: (input.depth ?? 0) + 1,
+        variant, launch, model, effort,
+        ...(input.plan ? { connections: false, subagents: null } : {})
+      }
+      const result = await this.launchChild(parent, request, child)
+      return { ...result, ...(profile ? { agent: profile.name } : {}), ...(narrowed.unavailable.length ? { unavailableTools: narrowed.unavailable } : {}) }
+    } finally {
+      this.release(request.parentRunId, runId)
+    }
   }
 
   /** Records ownership, starts the child, and writes a failed record when it never opened. */
@@ -244,6 +268,61 @@ export class Subagents {
   /** The children this parent may read or continue: its own, and those recovered from its history. */
   private owned(parentRunId: string, parent?: Parent): Set<string> {
     return new Set([...recordedSubagents(this.env.root, parentRunId), ...(parent?.recovered ?? [])])
+  }
+
+  /** The run and the runs it was continued from, so a work-slice continuation keeps the budget. */
+  private ancestry(runId: string): string[] {
+    const chain: string[] = []
+    const seen = new Set<string>()
+    let current: string | null = runId
+    while (current && !seen.has(current) && chain.length < 20) {
+      seen.add(current)
+      chain.push(current)
+      current = findRun(this.env.root, current)?.resumedFromRunId ?? null
+    }
+    return chain
+  }
+
+  /** Distinct child conversations this run has started, plus slots reserved before their record exists. */
+  private usage(parentRunId: string): { total: number; byProfile: Map<string, number> } {
+    const byProfile = new Map<string, number>()
+    const seen = new Set<string>()
+    let total = 0
+    const add = (key: string) => {
+      total += 1
+      byProfile.set(key, (byProfile.get(key) ?? 0) + 1)
+    }
+    for (const owner of this.ancestry(parentRunId)) {
+      for (const id of recordedSubagents(this.env.root, owner)) {
+        const record = findRun(this.env.root, id)
+        if (!record || record.relation !== SUBAGENT_RELATION) continue
+        // Continuing a stopped child opens a new run of the same conversation: one slot.
+        const first = this.firstLink(record).id
+        if (seen.has(first)) continue
+        seen.add(first)
+        add(subagentProfileKey(record.profile))
+      }
+    }
+    const reserved = this.reserved.get(parentRunId)
+    if (reserved) for (const [id, key] of reserved) {
+      if (seen.has(id) || findRun(this.env.root, id)) continue
+      seen.add(id)
+      add(key)
+    }
+    return { total, byProfile }
+  }
+
+  private reserve(parentRunId: string, runId: string, profile: string): void {
+    const reserved = this.reserved.get(parentRunId) ?? new Map<string, string>()
+    reserved.set(runId, profile)
+    this.reserved.set(parentRunId, reserved)
+  }
+
+  private release(parentRunId: string, runId: string): void {
+    const reserved = this.reserved.get(parentRunId)
+    if (!reserved) return
+    reserved.delete(runId)
+    if (!reserved.size) this.reserved.delete(parentRunId)
   }
 
   /** The newest run in a continued child's chain, among the runs this parent owns. */

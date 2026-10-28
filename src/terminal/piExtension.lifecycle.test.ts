@@ -1,5 +1,7 @@
 import type { ExtensionAPI, ExtensionContext, ExtensionToolContext } from '@earendil-works/pi-coding-agent'
-import { resolve } from 'node:path'
+import { mkdtempSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join, resolve } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 const transport = vi.hoisted(() => ({
@@ -262,6 +264,34 @@ describe('terminal bridge lifecycle', () => {
     await next.handlers.get('session_shutdown')!({ type: 'session_shutdown', reason: 'quit' }, next.ctx)
     expect(transport.telemetry.mock.calls.filter(([event]) => event === 'shutdown')).toHaveLength(2)
     expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('makes a $skill anywhere in the message required for that request', async () => {
+    const { api, ctx, handlers } = extension()
+    const folder = mkdtempSync(join(tmpdir(), 'harness-required-skill-'))
+    const path = join(folder, 'SKILL.md')
+    writeFileSync(path, '---\nname: review\ndescription: Review a change.\n---\n\nInspect the diff.\n')
+    Object.assign(api, {
+      getSettings: () => ({ enableSkillCommands: true }),
+      getCommands: () => [{ name: 'skill:review', description: 'Review a change.', source: 'skill', sourceInfo: { path, baseDir: folder, source: 'user', scope: 'user', origin: 'top-level' } }]
+    })
+    await terminalExtension(api)
+    const result = await handlers.get('before_agent_start')!({ messageType: 'user', prompt: 'Please $review this', systemPromptOptions: { sections: {} } }, ctx) as { message?: { customType?: string; content?: string; display?: boolean } } | undefined
+    expect(result?.message).toMatchObject({ customType: 'xingular-required-skills', display: false })
+    expect(result?.message?.content).toContain('The person required these skills for this request.')
+    expect(result?.message?.content).toContain('Inspect the diff.')
+    expect(result?.message?.content).toContain(folder)
+  })
+
+  it('does not make an unknown or disabled skill required', async () => {
+    const { api, ctx, handlers } = extension()
+    Object.assign(api, {
+      getSettings: () => ({ enableSkillCommands: false }),
+      getCommands: () => []
+    })
+    await terminalExtension(api)
+    const result = await handlers.get('before_agent_start')!({ messageType: 'user', prompt: 'Please $review this', systemPromptOptions: { sections: {} } }, ctx) as { message?: { customType?: string } } | undefined
+    expect(result?.message?.customType).not.toBe('xingular-required-skills')
   })
 
   it('canonicalizes native terminal write paths before policy and execution', async () => {

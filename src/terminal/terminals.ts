@@ -39,6 +39,7 @@ import type { Proposal } from '../plugins/proposals'
 import type { Loading, Plugins } from '../plugins/plugins'
 import type { Plugin } from '../plugins/types'
 import type { Hub } from '../hub/hub'
+import { attribution, rowText } from '../context/attribution'
 import { compile, copyToRun, record, render, saveForSession, type Launch } from '../prompt/compile'
 import type { RunRecord } from '../sessions/contracts'
 import { isActiveStatus } from '../sessions/contracts'
@@ -681,6 +682,14 @@ export class Terminals {
     }
   }
 
+  /** `/context`: what the session's latest request was made of, and one row's text on request. */
+  private contextCall(live: Live, params: Record<string, unknown>): unknown {
+    const runId = live.controller.lastRun
+    if (!runId) return { attribution: null, text: null }
+    const text = typeof params.section === 'string' && params.section ? rowText(this.options.env, runId, params.section) : null
+    return { attribution: attribution(this.options.env, runId), text }
+  }
+
   /** `/usage:analysis` and `/usage:limit`: usage for this session's own account, project or session. */
   private async usageCall(live: Live, call: string, params: Record<string, unknown>): Promise<unknown> {
     const usage = this.options.usage
@@ -1319,6 +1328,7 @@ export class Terminals {
             return { globalTools: policy.globalTools.pi ?? [] }
           }
           if (call.startsWith('terminal.usage.')) return this.usageCall(live, call, params)
+          if (call === 'terminal.context') return this.contextCall(live, params)
           if (call !== 'terminal.resources') return live.controller.control(call, params)
           const current = await this.options.plugins?.loading({ cwd: input.cwd, agentDir: configDir(accounts.dir, preparedAccount), install: false, caller: { projectId: input.projectId ?? null } }) ?? null
           const currentVariant = variant ? materialise(root, { dir: variant.dir, scope: variant.scope }, { trust: this.options.trust ?? null }) : null

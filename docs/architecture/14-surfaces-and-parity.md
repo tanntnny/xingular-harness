@@ -97,9 +97,9 @@ terminal command or page, a host screen.
   It is in the shared plan-mode allowlist and grants no permission. Hosts use this Harness tool rather
   than defining a duplicate.
 - `browser/contracts.ts` owns shared backend-neutral browser schemas. A native WebKit host backend
-  still lacks accessibility snapshots and snapshot-ref interactions, browser screenshots, waits and
-  keyboard input; unsupported calls return an explicit refusal before effects and do not trigger an
-  automatic backend switch (page 13, PAR-015).
+  lacks accessibility snapshots and snapshot-ref interactions, waits and keyboard input; it supports
+  page screenshots without refs in source, with live acceptance pending. Unsupported calls return an
+  explicit refusal before effects and do not trigger an automatic backend switch (page 13, PAR-015).
 - Shared interactive defaults, profile adoption, credentials and a cross-surface session catalog
   remain in progress under PROP-0040. Existing pins and explicit profile choices win; adoption must
   not merge stores, copy credentials or silently downgrade the secret backend.

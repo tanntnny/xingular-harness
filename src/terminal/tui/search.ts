@@ -1,7 +1,9 @@
 // The one search field every list uses. It sits under the title or tab strip and takes only text;
 // the keys a screen owns stay with the screen.
 import type { Theme } from '@earendil-works/pi-coding-agent'
-import { Input, matchesKey, truncateToWidth, visibleWidth, type KeyId } from '@earendil-works/pi-tui'
+import { matchesKey, truncateToWidth, visibleWidth, type KeyId } from '@earendil-works/pi-tui'
+
+import { MouseSafeInput } from './mouseReport'
 
 export const SEARCH_GLYPH = '⌕'
 export const SEARCH_PLACEHOLDER = 'Type to search'
@@ -16,10 +18,10 @@ export function searchFieldRowsFor(availableRows: number): number {
 const SCREEN_KEYS: KeyId[] = ['left', 'right', 'up', 'down', 'enter', 'tab', 'shift+tab', 'escape', 'pageUp', 'pageDown', 'home', 'end']
 
 export class SearchField {
-  private readonly input: Input
+  private readonly input: MouseSafeInput
 
   constructor(private readonly theme: () => Theme, placeholder = SEARCH_PLACEHOLDER) {
-    this.input = new Input({ prompt: '', placeholder, placeholderStyle: text => this.theme().fg('dim', text) })
+    this.input = new MouseSafeInput({ prompt: '', placeholder, placeholderStyle: text => this.theme().fg('dim', text) })
   }
 
   get value(): string { return this.input.getValue() }

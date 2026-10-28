@@ -233,7 +233,13 @@ export async function createTerminalRuntime(args: string[], host: TerminalRuntim
   // A selection is recorded against the mode it was made in; a one-shot plan run is always plan.
   const recordingMode = (): ComposerMode => (planRun.active ? 'plan' : currentMode)
   const modelFor = (reference: string): ChoiceModel | undefined => resolveCliModel({ cliModel: reference, modelRuntime }).model
-  const applyMode = (): Promise<void> => modeChoices.apply(native.session, currentMode, modelFor)
+  // The level Pi resolves when no mode has saved an effort: the model's own default, then the account's.
+  const defaultEffort = (session: AgentSession): AgentSession['thinkingLevel'] => {
+    const model = session.model
+    return ((model ? session.settingsManager.getModelThinkingLevel(model.provider, model.id) : undefined)
+      ?? session.settingsManager.getDefaultThinkingLevel() ?? 'medium') as AgentSession['thinkingLevel']
+  }
+  const applyMode = (): Promise<void> => modeChoices.apply(native.session, currentMode, modelFor, defaultEffort(native.session))
   const restoreChoice = async (session: AgentSession, previous: { model: AgentSession['model']; effort: AgentSession['thinkingLevel'] }): Promise<void> => {
     if (previous.model && (session.model?.provider !== previous.model.provider || session.model?.id !== previous.model.id)) {
       await session.setModel(previous.model, { persist: false }).catch(() => undefined)
@@ -394,7 +400,7 @@ export async function createTerminalRuntime(args: string[], host: TerminalRuntim
       planRun.active = true
       try {
         session.setActiveToolsByName(allowedTools)
-        await modeChoices.apply(session, 'plan', modelFor)
+        await modeChoices.apply(session, 'plan', modelFor, defaultEffort(session))
         await session.prompt(text, { expandPromptTemplates: false, ...(images?.length ? { images } : {}) })
       } finally {
         planRun.active = false

@@ -40,7 +40,7 @@ describe('mode choices', () => {
   it('applies a mode from its saved choice, not as a selection the person made', async () => {
     const { choices, written, session, calls, modelFor } = fixture({ normal: { model: 'anthropic/fast', effort: 'high', updatedAt: 'a' } })
     await choices.load()
-    await choices.apply(session, 'normal', modelFor)
+    await choices.apply(session, 'normal', modelFor, 'medium')
     expect(calls).toEqual(['setModel anthropic/fast persist=false', 'setThinkingLevel high persist=false'])
     expect(written).toEqual([])
   })
@@ -48,14 +48,14 @@ describe('mode choices', () => {
   it('starts plan from normal field by field until plan picks its own', async () => {
     const { choices, session, calls, modelFor } = fixture({ normal: { model: 'anthropic/fast', effort: 'high', updatedAt: 'a' }, plan: { effort: 'low', updatedAt: 'b' } })
     await choices.load()
-    await choices.apply(session, 'plan', modelFor)
+    await choices.apply(session, 'plan', modelFor, 'medium')
     expect(calls).toEqual(['setModel anthropic/fast persist=false', 'setThinkingLevel low persist=false'])
   })
 
   it('skips a saved model the account cannot use and still applies the effort', async () => {
     const { choices, session, calls, modelFor } = fixture({ normal: { model: 'anthropic/no-key', effort: 'medium', updatedAt: 'a' } })
     await choices.load()
-    await choices.apply(session, 'normal', modelFor)
+    await choices.apply(session, 'normal', modelFor, 'medium')
     expect(calls).toEqual(['setModel anthropic/no-key persist=false', 'setThinkingLevel medium persist=false'])
     expect(session.model).toEqual({ provider: 'anthropic', id: 'current' })
   })
@@ -63,7 +63,7 @@ describe('mode choices', () => {
   it('does not apply a model the session already has', async () => {
     const { choices, session, calls } = fixture({ normal: { model: 'anthropic/current', effort: 'low', updatedAt: 'a' } })
     await choices.load()
-    await choices.apply(session, 'normal', (reference) => (reference === 'anthropic/current' ? ({ provider: 'anthropic', id: 'current' } as ChoiceModel) : undefined))
+    await choices.apply(session, 'normal', (reference) => (reference === 'anthropic/current' ? ({ provider: 'anthropic', id: 'current' } as ChoiceModel) : undefined), 'medium')
     expect(calls).toEqual(['setThinkingLevel low persist=false'])
   })
 
@@ -84,7 +84,7 @@ describe('mode choices', () => {
       await choices.record('normal', { effort: 'low' })
     })
     expect(written).toEqual([])
-    await choices.apply(session, 'normal', modelFor)
+    await choices.apply(session, 'normal', modelFor, 'medium')
     expect(written).toEqual([])
   })
 
@@ -99,7 +99,17 @@ describe('mode choices', () => {
   it('starts with nothing known when the read fails', async () => {
     const { choices, session, calls, modelFor } = fixture({}, { failRead: true })
     await choices.load()
-    await choices.apply(session, 'normal', modelFor)
-    expect(calls).toEqual([])
+    await choices.apply(session, 'normal', modelFor, 'medium')
+    expect(calls).toEqual(['setThinkingLevel medium persist=false'])
+  })
+
+  it('does not keep a level chosen in plan mode when normal has no effort of its own', async () => {
+    const { choices, session, calls, written, modelFor } = fixture()
+    await choices.load()
+    await choices.record('plan', { effort: 'max' })
+    await choices.apply(session, 'plan', modelFor, 'medium')
+    await choices.apply(session, 'normal', modelFor, 'medium')
+    expect(calls).toEqual(['setThinkingLevel max persist=false', 'setThinkingLevel medium persist=false'])
+    expect(written).toEqual([{ mode: 'plan', patch: { effort: 'max' } }])
   })
 })

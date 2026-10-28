@@ -7,7 +7,9 @@
  * saved annotation.
  */
 import type { Theme } from '@earendil-works/pi-coding-agent'
-import { Input, matchesKey, truncateToWidth, visibleWidth } from '@earendil-works/pi-tui'
+import { matchesKey, truncateToWidth, visibleWidth } from '@earendil-works/pi-tui'
+
+import { MouseSafeInput } from '../mouseReport'
 
 import type { MenuCall, MenuUi } from '../../pluginMenu'
 import type { TabInfo } from '../chrome'
@@ -104,7 +106,7 @@ export class AnnotatePage implements TerminalPage {
   presentation = 'fullscreen' as const
   private tab: AnnotateTab
   private view: 'notes' | 'apps' = 'notes'
-  private field: { kind: FieldKind; input: Input } | null = null
+  private field: { kind: FieldKind; input: MouseSafeInput } | null = null
   private notes: Note[] | undefined
   private sessionId: string | null = null
   private target: TargetState | null = null
@@ -246,7 +248,7 @@ export class AnnotatePage implements TerminalPage {
   }
 
   private openField(kind: FieldKind): void {
-    const input = new Input({ prompt: '', placeholder: FIELDS[kind].placeholder, placeholderStyle: text => this.options.theme().fg('dim', text) })
+    const input = new MouseSafeInput({ prompt: '', placeholder: FIELDS[kind].placeholder, placeholderStyle: text => this.options.theme().fg('dim', text) })
     this.field = { kind, input }
     this.syncFocus()
     this.options.changed()

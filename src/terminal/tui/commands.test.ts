@@ -354,15 +354,11 @@ describe('owned terminal commands', () => {
     expect(commands.completions().find(item => item.name === 'plan')?.description).toContain('/plan <brief>')
   })
 
-  it('invokes a loaded skill as $name, and leaves other text for the SDK', () => {
+  it('lists the loaded skills for the composer and honours the Skill commands setting', () => {
     const { commands, session } = setup()
     expect(commands.skills()).toEqual([{ name: 'diagnose', description: 'Diagnose a problem' }])
-    expect(commands.expandSkill('$diagnose the trace')).toBe('/skill:diagnose the trace')
-    expect(commands.expandSkill('$unknown the trace')).toBe('$unknown the trace')
-    expect(commands.expandSkill('/skill:diagnose trace')).toBe('/skill:diagnose trace')
     vi.spyOn(session.settingsManager, 'getEnableSkillCommands').mockReturnValue(false)
     expect(commands.skills()).toEqual([])
-    expect(commands.expandSkill('$diagnose the trace')).toBe('$diagnose the trace')
   })
 
   it('uses a full-screen session picker for /session without changing explicit path resumes', async () => {

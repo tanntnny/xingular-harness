@@ -65,6 +65,30 @@ async function setup(policy: ToolPolicy = {}) {
 }
 
 describe('a pi terminal session', () => {
+  it('wakes a protected decision wait on creation and resolution', async () => {
+    const { connection, tell } = await setup()
+    await tell('ready')
+    await tell('begin', { text: 'Test decision notifications' })
+    await expect(socketCall(connection, 'terminal.pending.wait')).rejects.toMatchObject({ code: 'unauthorized' })
+    const { key } = await socketCall<{ key: string }>(connection, 'control.claim')
+    const first = await socketCall<{ revision: number; requests: unknown[] }>(connection, 'terminal.pending.wait', {}, 1000, key)
+    expect(first.requests).toEqual([])
+    const abort = new AbortController()
+    const cancelled = socketCall(connection, 'terminal.pending.wait', { revision: first.revision }, 3000, key, abort.signal)
+    abort.abort()
+    await expect(cancelled).rejects.toMatchObject({ code: 'aborted' })
+    const waiting = socketCall<{ revision: number; requests: Array<{ requestId: string }> }>(connection, 'terminal.pending.wait', { revision: first.revision }, 3000, key)
+    const question = tell('question', { requestId: 'q1', question: 'Continue?', options: [{ label: 'Yes', recommended: true }] })
+    const next = await waiting
+    expect(next.revision).toBeGreaterThan(first.revision)
+    expect(next.requests).toHaveLength(1)
+    const resolved = socketCall<{ revision: number; requests: unknown[] }>(connection, 'terminal.pending.wait', { revision: next.revision }, 3000, key)
+    await socketCall(connection, 'terminal.answer', { requestId: next.requests[0]!.requestId, answer: { selected: ['Yes'] } }, 1000, key)
+    await question
+    const final = await resolved
+    expect(final.revision).toBeGreaterThan(next.revision)
+    expect(final.requests).toEqual([])
+  })
   it('launches OpenTUI on the pinned account with compiled instructions, the extension, and the session socket', async () => {
     const { launch, account, harness, sessionFolder, root } = await setup()
     expect(launch.program).toBe(process.env.XINGULAR_HARNESS_BUN || 'bun')

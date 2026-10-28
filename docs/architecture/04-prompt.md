@@ -28,7 +28,7 @@ A `ContextPack` holds `sections: Section[]` (each with `id`, `title`,
 
 ## Section order
 
-`SECTION_ORDER`: `harnessIdentity` 5, `system` 25, `sessionState` 30, `guardrails` 40, `memory` 45, `references` 50, `subagents` 64, `scripts` 66, `wiki` 80, `tools` 90, `reporting` 95. Application sections
+`SECTION_ORDER`: `harnessIdentity` 5, `system` 25, `sessionState` 30, `guardrails` 40, `memory` 45, `references` 50, `requiredSkills` 52, `subagents` 64, `scripts` 66, `wiki` 80, `tools` 90, `reporting` 95. Application sections
 sit among them by their `order`; plan mode uses `plan` at 25. Ties keep insertion order.
 When a run may spawn, the dynamic `subagents` section lists every profile it can start (built-in,
 global, project and variant c5 names) and replaces the variant's own list (PROP-0029). Normal-mode
@@ -48,6 +48,15 @@ in the frozen set: the name line appears only with `session_name`, and the todo 
 `todo_write`. It never enters the stable prefix. Structured sessions deliver it through
 `sessionLaunch` and the changed-section rule; the terminal appends the same text as a request-time
 custom message.
+
+`required-skills` is a built-in dynamic section at order 52 when `Launch.requiredSkills` names any
+skill. Named in a message as `$name`, a skill is required for that request: the compiler reads its
+`SKILL.md` from the pinned variant (the built-in `plugin-authoring` skill fills in when the variant
+has none) through `readSkillFile`, and the section carries the skill's text and the directive to
+follow it. It is bounded like `references`, names an unavailable skill honestly, and changes no tool
+or permission. Structured sessions deliver it through `sessionLaunch`; the terminal builds the same
+text with `requiredSkillsText` from Pi's loaded skills and appends it as a hidden request-time custom
+message. The section belongs to the request, so an identical one is delivered again.
 
 The fixed `harness-identity` section says `You are an AI agent running in <productName>.` and uses
 `env.productName` (default `Xingular Agent`). `Launch.standard: { cwd, project?: { name } | null }` requests shared role and working-folder
@@ -83,10 +92,10 @@ compile ──► pack ──► stable sections ──► system prompt (+ "Con
                                                                               type xingular-context
 ```
 
-- Dynamic sections are the built-in `references` and `wiki`, plus every application section with
+- Dynamic sections are the built-in `references`, `required-skills` and `wiki`, plus every application section with
   `dynamic: true`.
 - An update lists only the dynamic sections that changed, and announces a withdrawn one.
-  `references` is always resent when present, because it belongs to the current request.
+  `references` and `required-skills` are always resent when present, because they belong to the current request.
 - After successful compaction, the foundation checkpoint extension detects the compacted context and
   uses `renderCompactionCheckpoint` to append one hidden, ephemeral context message to each model
   request while the active run continues, when a todo list or applicable plan instructions exist.
@@ -121,7 +130,7 @@ file SecretStore with a host Keychain. See [parity](../parity.md).
   instructions. SDK sessions use `sessionLaunch`; terminal sessions use `compile` + `render`.
 - **INV-PRM-2** The system prompt holds only stable text: identity, role, the variant's sections, the
   harness's reporting guidance, tool guidance and the tool manifest. Changing state never enters it.
-- **INV-PRM-3** `session-state`, `references`, `wiki`, and every section the application marks
+- **INV-PRM-3** `session-state`, `references`, `required-skills`, `wiki`, and every section the application marks
   `dynamic` are delivered as context updates in native history, never in the system prompt.
 - **INV-PRM-4** An update carries only changed dynamic sections, so an unchanged turn appends
   nothing. A compaction on the active branch forces the full snapshot again.

@@ -15,6 +15,7 @@ import * as plugins from '../plugins/api'
 import { BUILTIN_PLUGIN_REGISTRY } from '../plugins/builtin'
 import * as install from '../plugins/install'
 import * as proposals from '../plugins/proposals'
+import { attribution } from '../context/attribution'
 import { compile, load, render, type Launch } from '../prompt/compile'
 import { continuationOf } from '../sessions/continuation'
 import * as control from '../sessions/control'
@@ -210,6 +211,8 @@ export function methods(harness: Harness): Record<string, Handler> {
       return params.render ? { pack, text: render(env, pack) } : pack
     },
     'context.runPack': (params: Params) => load(root(), text(params, 'runId')),
+    // What the request was made of: one row per contributor, reconciled to the provider's figure.
+    'context.attribution': (params: Params) => attribution(env, text(params, 'runId')),
 
     // ---- Plugins: everything that shapes a session, and the trust a working folder's code needs ---
     // A host that is not a Node program describes its own parts here instead of in the options.

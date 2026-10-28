@@ -79,6 +79,26 @@ describe('the Trajectory page', () => {
     page.dispose()
   })
 
+  it('never prints a mouse report from recorded text', async () => {
+    const target = { ...run('run-1'), goal: 'goal\x1b[<0;40;8M' }
+    const events = [event(0, 'message.completed', { role: 'user', text: 'before\x1b[<65;56;29Mafter' })]
+    const { page } = await opened({ runs: [target], snapshot: { run: target, events } })
+    page.handleInput('\t')
+    const text = plain(page)
+    expect(text).not.toContain('65;56;29')
+    expect(text).not.toContain('40;8')
+    expect(text).toContain('beforeafter')
+    page.dispose()
+  })
+
+  it('keeps a bare mouse tail, which was recorded content', async () => {
+    const events = [event(0, 'message.completed', { role: 'user', text: 'why <65;56;29M here' })]
+    const { page } = await opened({ snapshot: { run: run('run-1'), events } })
+    page.handleInput('\t')
+    expect(plain(page)).toContain('why <65;56;29M here')
+    page.dispose()
+  })
+
   it('filters runs and events by goal, type, timestamp, summary, and payload text', async () => {
     const first = run('run-1')
     const second = { ...run('run-2'), goal: 'Ship the search feature' }

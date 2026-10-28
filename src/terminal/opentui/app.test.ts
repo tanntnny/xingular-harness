@@ -40,6 +40,24 @@ function key(name: string, sequence: string, shift = false): KeyInput {
   return { name, sequence, ctrl: false, meta: false, shift, option: false }
 }
 
+/** An application whose composer accepts printable keys; routing one asks the session for shortcuts. */
+function composerApp(): OpenTuiApplication {
+  const app = new OpenTuiApplication([])
+  const internals = app as unknown as {
+    syncDraft(text: string): void
+    runtime?: TerminalRuntime
+    keybindings?: { matches(data: string, action: string): boolean; getResolvedBindings(): object }
+  }
+  internals.syncDraft = () => {}
+  internals.runtime = {
+    session: { messages: [], state: {}, extensionRunner: { getShortcuts: () => new Map() } },
+    snapshot: () => undefined,
+    dispose: async () => {}
+  } as unknown as TerminalRuntime
+  internals.keybindings = { matches: () => false, getResolvedBindings: () => ({}) }
+  return app
+}
+
 describe('OpenTuiApplication', () => {
   it('puts temporary status text in the transcript instead of beside the working line', async () => {
     const app = new OpenTuiApplication([])
@@ -538,6 +556,80 @@ describe('OpenTuiApplication', () => {
     }
   })
 
+  it('drops a mouse report that reached the composer as keys', async () => {
+    vi.useFakeTimers()
+    const app = composerApp()
+    try {
+      vi.setSystemTime(0)
+      for (const char of '<65;56;29') {
+        app.setDraft(app.view().draft + char, app.view().draft.length + 1)
+        expect(app.handleKey({ ...key(char, char), cursorOffset: app.view().draft.length })).toBe(false)
+      }
+      expect(app.handleKey({ ...key('M', 'M'), cursorOffset: app.view().draft.length })).toBe(true)
+      expect(app.view().draft).toBe('')
+    } finally {
+      await app.shutdown()
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps the text before a leaked report and the character after it', async () => {
+    vi.useFakeTimers()
+    const app = composerApp()
+    try {
+      vi.setSystemTime(0)
+      app.setDraft('why input ', 'why input '.length)
+      for (const char of '<65;56;29') {
+        app.setDraft(app.view().draft + char, app.view().draft.length + 1)
+        expect(app.handleKey({ ...key(char, char), cursorOffset: app.view().draft.length })).toBe(false)
+      }
+      expect(app.handleKey({ ...key('M', 'M'), cursorOffset: app.view().draft.length })).toBe(true)
+      expect(app.view().draft).toBe('why input ')
+      app.setDraft(`${app.view().draft}a`, app.view().draft.length + 1)
+      expect(app.handleKey({ ...key('a', 'a'), cursorOffset: app.view().draft.length })).toBe(false)
+      expect(app.view().draft).toBe('why input a')
+    } finally {
+      await app.shutdown()
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps the same characters typed at human speed', async () => {
+    vi.useFakeTimers()
+    const app = composerApp()
+    try {
+      vi.setSystemTime(0)
+      for (const char of '<0;40;8') {
+        app.setDraft(app.view().draft + char, app.view().draft.length + 1)
+        expect(app.handleKey({ ...key(char, char), cursorOffset: app.view().draft.length })).toBe(false)
+        vi.advanceTimersByTime(100)
+      }
+      expect(app.handleKey({ ...key('M', 'M'), cursorOffset: app.view().draft.length })).toBe(false)
+      app.setDraft(`${app.view().draft}M`, app.view().draft.length + 1)
+      expect(app.view().draft).toBe('<0;40;8M')
+    } finally {
+      await app.shutdown()
+      vi.useRealTimers()
+    }
+  })
+
+  it('takes a whole report that arrives as one key without typing it', async () => {
+    const app = composerApp()
+    try {
+      app.setDraft('why input ', 'why input '.length)
+      expect(app.handleKey({ ...key('', '<65;56;29M'), cursorOffset: 10 })).toBe(true)
+      expect(app.handleKey({ ...key('', '\x1b[<0;40;8M'), cursorOffset: 10 })).toBe(true)
+      expect(app.view().draft).toBe('why input ')
+      expect(app.handleKey(key('<', '<'))).toBe(false)
+      app.setDraft('why input <', 11)
+      expect(app.handleKey(key('a', 'a'))).toBe(false)
+      app.setDraft('why input <a', 12)
+      expect(app.view().draft).toBe('why input <a')
+    } finally {
+      await app.shutdown()
+    }
+  })
+
   it('recalls user-entered Bash commands into the composer in Bash mode', async () => {
     const app = new OpenTuiApplication([])
     const session = {
@@ -582,7 +674,6 @@ describe('OpenTuiApplication', () => {
       runtime?: TerminalRuntime
       commands?: {
         execute(text: string): Promise<boolean>
-        expandSkill(text: string): string
         completions(): { name: string }[]
         skills(): { name: string }[]
         legacyAliases(): string[]
@@ -593,7 +684,7 @@ describe('OpenTuiApplication', () => {
     }
     internals.runtime = { session, snapshot: () => undefined, dispose: async () => {} } as unknown as TerminalRuntime
     internals.commands = {
-      execute, expandSkill: text => text,
+      execute,
       completions: () => [{ name: 'plugin:annotate' }], skills: () => [], legacyAliases: () => []
     }
     internals.syncDraft = () => {}
@@ -855,7 +946,7 @@ describe('OpenTuiApplication', () => {
     }
   })
 
-  it('shows live native and deferred queues and sends modified Enter as a follow-up', async () => {
+  it('shows live native and deferred queues and sends modified Enter as steering', async () => {
     const app = new OpenTuiApplication([])
     const steering = ['change direction']
     const followUp = ['later']
@@ -863,14 +954,14 @@ describe('OpenTuiApplication', () => {
     const session = { isIdle: false, getSessionStats: () => ({ tokens: {} }), getSteeringMessages: () => steering, getFollowUpMessages: () => followUp }
     const internals = app as unknown as {
       runtime: TerminalRuntime
-      commands: { expandSkill(text: string): string; execute(text: string): Promise<boolean> }
+      commands: { execute(text: string): Promise<boolean> }
       keybindings: ReturnType<typeof terminalKeybindings>
       syncDraft(text: string): void
       initialized: boolean
       deferredInputs: { kind: 'plan' | 'bash' | 'prompt'; text: string; followUp?: boolean }[]
     }
     internals.runtime = { session, snapshot: () => undefined, submit, dispose: async () => {} } as unknown as TerminalRuntime
-    internals.commands = { expandSkill: text => text, execute: async () => false }
+    internals.commands = { execute: async () => false }
     internals.keybindings = terminalKeybindings('/unused/isolated-account')
     internals.syncDraft = () => {}
     internals.initialized = true
@@ -885,7 +976,7 @@ describe('OpenTuiApplication', () => {
       internals.deferredInputs = []
       app.setDraft('next')
       expect(app.handleKey({ ...key('return', '\x1b[13;5u'), ctrl: true })).toBe(true)
-      await vi.waitFor(() => expect(submit).toHaveBeenCalledWith('next', true, undefined))
+      await vi.waitFor(() => expect(submit).toHaveBeenCalledWith('next', false, undefined))
     } finally { await app.shutdown() }
   })
 
@@ -898,12 +989,12 @@ describe('OpenTuiApplication', () => {
     const session = { model: { id: 'vision', name: 'Vision', input: ['text', 'image'] }, isIdle: true, getSessionStats: () => ({ tokens: {} }) }
     const internals = app as unknown as {
       runtime?: TerminalRuntime
-      commands?: { expandSkill(text: string): string; execute(text: string): Promise<boolean> }
+      commands?: { execute(text: string): Promise<boolean> }
       syncDraft(text: string): void
       initialized: boolean
     }
     internals.runtime = { session, snapshot: () => undefined, submit, dispose: async () => {} } as unknown as TerminalRuntime
-    internals.commands = { expandSkill: text => text, execute: async () => false }
+    internals.commands = { execute: async () => false }
     internals.syncDraft = () => {}
     internals.initialized = true
     const settle = () => vi.waitFor(() => expect(app.view().insertion).not.toBeNull())
@@ -927,7 +1018,7 @@ describe('OpenTuiApplication', () => {
       await vi.waitFor(() => expect(submit).toHaveBeenCalled())
       const [text, followUp, images] = submit.mock.calls[0]!
       expect(text).toBe('what is [Image #1] a\nb\nc\nd\ne')
-      expect(followUp).toBe(false)
+      expect(followUp).toBe(true)
       expect(images).toEqual([expect.objectContaining({ type: 'image', mimeType: expect.stringMatching(/^image\//u), data: expect.any(String) })])
       expect(app.view().attachments).toEqual([])
     } finally {
@@ -1216,6 +1307,36 @@ describe('OpenTuiApplication', () => {
     await app.shutdown()
   })
 
+  it('offers skills at any word start and inserts at the caret without losing the rest', async () => {
+    const app = new OpenTuiApplication([])
+    const internals = app as unknown as {
+      commands: { skills(): { name: string; description: string }[] }
+      syncDraft(text: string): void
+      submit(text: string): void
+    }
+    internals.commands = { skills: () => [{ name: 'review', description: 'Inspect changes' }] }
+    internals.syncDraft = () => {}
+    internals.submit = vi.fn()
+    try {
+      app.setDraft('review $rev and more', 11)
+      expect(app.view().palette?.items).toEqual([{ name: 'review', description: 'Inspect changes', prefix: '$' }])
+      expect(app.activatePaletteItem(0)).toBe(true)
+      expect(app.view().draft).toBe('review $review and more')
+      expect(app.view().draftCursorOffset).toBe('review $review'.length)
+      expect(internals.submit).not.toHaveBeenCalled()
+
+      app.setDraft('use ($re)', 8)
+      expect(app.view().palette?.items).toHaveLength(1)
+      expect(app.handleKey(key('tab', '\t'))).toBe(true)
+      expect(app.view().draft).toBe('use ($review)')
+
+      app.setDraft('!echo $re', 9)
+      expect(app.view().palette).toBeNull()
+    } finally {
+      await app.shutdown()
+    }
+  })
+
   it('opens the link under the pointer, names the action, and reports a link it will not open', async () => {
     const opened: LinkTarget[] = []
     const openLink = vi.fn(async (target: LinkTarget) => { opened.push(target) })
@@ -1249,6 +1370,51 @@ describe('OpenTuiApplication', () => {
     app.updateLinkHover(12, 4)
     expect(app.view().linkHovered).toBe(false)
     expect(app.activateLinkAt(12, 4)).toBe(false)
+    await app.shutdown()
+  })
+
+  it('does not repaint on mouse movement outside links and only republishes on hover transitions', async () => {
+    const app = new OpenTuiApplication([])
+    const requestRender = vi.fn()
+    const listener = vi.fn()
+    let target: string | null = null
+    app.attachRenderer({
+      suspend: async () => {}, resume: async () => {}, setTitle: () => {}, destroy: () => {},
+      getLinkAt: () => target, getLinkIdAt: () => 7, setMousePointer: () => {}, requestRender
+    })
+    app.subscribe(listener)
+    app.updateLinkHover(1, 1)
+    app.updateLinkHover(2, 1)
+    expect(requestRender).not.toHaveBeenCalled()
+    target = 'https://example.test'
+    app.updateLinkHover(3, 1)
+    await vi.waitFor(() => expect(listener).toHaveBeenCalledTimes(1))
+    app.updateLinkHover(4, 1)
+    await new Promise(resolve => setTimeout(resolve, 30))
+    expect(listener).toHaveBeenCalledTimes(1)
+    expect(requestRender).toHaveBeenCalledTimes(2)
+    target = null
+    app.updateLinkHover(5, 1)
+    await vi.waitFor(() => expect(listener).toHaveBeenCalledTimes(2))
+    await app.shutdown()
+  })
+
+  it('publishes active animation separately from the full application view', async () => {
+    const app = new OpenTuiApplication([])
+    const internals = app as unknown as { startedAt: number | null; animate(): void }
+    const view = vi.spyOn(app, 'view')
+    const full = vi.fn()
+    const animation = vi.fn(() => app.animationView())
+    app.subscribe(full)
+    app.subscribeAnimation(animation)
+    internals.animate()
+    expect(animation).not.toHaveBeenCalled()
+    internals.startedAt = Date.now()
+    internals.animate()
+    expect(animation).toHaveBeenCalledOnce()
+    expect(view).not.toHaveBeenCalled()
+    expect(full).not.toHaveBeenCalled()
+    expect(animation.mock.results[0]!.value.working.active).toBe(true)
     await app.shutdown()
   })
 

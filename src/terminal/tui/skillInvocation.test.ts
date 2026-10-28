@@ -1,7 +1,7 @@
 import type { AutocompleteProvider } from '@earendil-works/pi-tui'
 import { describe, expect, it } from 'vitest'
 
-import { expandSkillInvocation, skillCompletions, type SkillEntry } from './skillInvocation'
+import { skillCompletions, skillInvocations, skillTokenAt, type SkillEntry } from './skillInvocation'
 
 const skills: SkillEntry[] = [
   { name: 'review', description: 'Review a change' },
@@ -16,17 +16,31 @@ const base: AutocompleteProvider = {
   applyCompletion: (lines) => ({ lines, cursorLine: 0, cursorCol: 0 })
 }
 
-describe('invoking a skill with $name', () => {
-  it('rewrites a leading $name of a loaded skill into the form Pi expands', () => {
-    expect(expandSkillInvocation('$review the module', names)).toBe('/skill:review the module')
-    expect(expandSkillInvocation('  $deploy', names)).toBe('/skill:deploy')
+describe('invoking a skill with $name anywhere in a message', () => {
+  it('finds an invocation at the start and after text', () => {
+    expect(skillInvocations('$review the module', names)).toEqual(['review'])
+    expect(skillInvocations('Please $review this and then $deploy', names)).toEqual(['review', 'deploy'])
+    expect(skillInvocations('use ($refactor) first', names)).toEqual(['refactor'])
   })
 
-  it('leaves text alone when the name is not a loaded skill, or the $ is not a skill', () => {
-    expect(expandSkillInvocation('$unknown the module', names)).toBe('$unknown the module')
-    expect(expandSkillInvocation('It costs $5 today', names)).toBe('It costs $5 today')
-    expect(expandSkillInvocation('$5 budget', names)).toBe('$5 budget')
-    expect(expandSkillInvocation('/review module', names)).toBe('/review module')
+  it('leaves ordinary currency and unknown names alone', () => {
+    expect(skillInvocations('It costs $5 today', names)).toEqual([])
+    expect(skillInvocations('$unknown the module', names)).toEqual([])
+    expect(skillInvocations('cost$review', names)).toEqual([])
+    expect(skillInvocations('/review module', names)).toEqual([])
+  })
+
+  it('returns each skill once, in message order', () => {
+    expect(skillInvocations('$deploy then $review then $deploy', names)).toEqual(['deploy', 'review'])
+  })
+
+  it('finds the token under the caret, wherever it is in the message', () => {
+    expect(skillTokenAt('look at $rev', 12)).toEqual({ query: 'rev', from: 8, to: 12 })
+    expect(skillTokenAt('use ($re and more', 8)).toEqual({ query: 're', from: 5, to: 8 })
+    expect(skillTokenAt('$', 1)).toEqual({ query: '', from: 0, to: 1 })
+    expect(skillTokenAt('cost $5', 7)).toEqual({ query: '5', from: 5, to: 7 })
+    expect(skillTokenAt('cost$rev', 8)).toBeNull()
+    expect(skillTokenAt('$review this', 11)).toBeNull()
   })
 })
 

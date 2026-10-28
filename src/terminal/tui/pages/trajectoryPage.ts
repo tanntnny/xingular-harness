@@ -8,6 +8,7 @@ import { type TabInfo } from '../chrome'
 import type { TerminalPage } from '../page'
 import { FilterList, type ListRow } from '../list'
 import type { TerminalMouseInput } from '../mouse'
+import { stripMouseReports } from '../mouseReport'
 
 const ACTIVE = new Set(['queued', 'running', 'waiting_for_approval', 'waiting_for_input'])
 type Payload = Record<string, unknown>
@@ -17,7 +18,7 @@ const stringOf = (value: unknown): string | undefined => typeof value === 'strin
 const numberOf = (value: unknown): number | undefined => typeof value === 'number' && Number.isFinite(value) ? value : undefined
 
 function safe(value: string): string {
-  return stripTerminalSequences(value).replace(/[\x00-\x08\x0b-\x1f\x7f]/g, ' ')
+  return stripTerminalSequences(stripMouseReports(value)).replace(/[\x00-\x08\x0b-\x1f\x7f]/g, ' ')
 }
 
 function timeOf(value: string): string {
@@ -236,8 +237,8 @@ export class TrajectoryPage implements TerminalPage {
     return this.events.map(event => ({
       id: String(event.sequence),
       label: `${timeOf(event.timestamp)}  ${event.type}`,
-      detail: eventDescription(event),
-      searchText: `${event.timestamp} ${event.type} ${eventDescription(event)} ${safe(JSON.stringify(payloadOf(event)))}`,
+      detail: safe(eventDescription(event)),
+      searchText: `${event.timestamp} ${event.type} ${safe(eventDescription(event))} ${safe(JSON.stringify(payloadOf(event)))}`,
       data: event
     }))
   }
@@ -356,7 +357,7 @@ export class TrajectoryPage implements TerminalPage {
     const lines = [theme.bold(theme.fg('accent', `Run ${runPosition} · ${this.run.id} · ${this.run.status}${this.loading ? ' · loading' : ''}`))]
     if (rows >= 3) lines.push(theme.fg('muted', `${model} · ${durationLine(this.run)} · ${this.run.mode}`))
     if (rows >= 4) lines.push(theme.fg('muted', usageLine(this.events)))
-    if (rows >= 6) lines.push(theme.fg('dim', this.run.goal ? `Prompt: ${this.run.goal.replace(/\s+/g, ' ').slice(0, 140)}` : 'Prompt text unavailable'))
+    if (rows >= 6) lines.push(theme.fg('dim', this.run.goal ? `Prompt: ${safe(this.run.goal).replace(/\s+/g, ' ').slice(0, 140)}` : 'Prompt text unavailable'))
     if (this.error) lines.push(theme.fg('error', `Read error: ${this.error}`))
     return lines.slice(0, Math.min(rows, 5)).map(line => truncateToWidth(line, width, ''))
   }

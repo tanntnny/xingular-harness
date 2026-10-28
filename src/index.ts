@@ -58,6 +58,7 @@ export type { Effort } from './sessions/runner'
 
 export { describeTool, HARNESS_TOOLS, DEFAULT_TOOL_NAMES, WIKI_WRITE, type HarnessCall, type HarnessToolDefinition } from './tools/definitions'
 export type { ToolProvider, ToolResult, ToolSession, ToolSpec } from './tools/types'
+export { COMPUTER_SCREENSHOT, COMPUTER_SCREENSHOT_DEFINITION, COMPUTER_SCREENSHOT_UNAVAILABLE, computerScreenshotTool, type ComputerScreenshot, type ComputerScreenshotBackend } from './computer/screenshot'
 export { SPAWN_SUBAGENT, SUBAGENT_RELATION } from './tools/spawnSubagent'
 export { TODO_WRITE, todoOf, CHECKLIST_WRITE, checklistOf } from './tools/todo'
 export { BUILTIN_PROFILES } from './agents/builtin'
@@ -103,7 +104,7 @@ export { remoteDirectory, remotePolicy, remoteSecrets, remoteTools } from './ser
 export { PROTOCOL_VERSION, RpcPeer, stdioTransport, type Handler, type Transport } from './server/rpc'
 export { attach, serve, type Served } from './server/serve'
 
-export { DEFAULT_SUBAGENT_DEPTH, MAX_SUBAGENT_DEPTH, type SubagentOptions, type SubagentInput } from './sessions/subagents'
+export { DEFAULT_SUBAGENT_CHILDREN, DEFAULT_SUBAGENT_DEPTH, MAX_SUBAGENT_CHILDREN, MAX_SUBAGENT_DEPTH, subagentQuota, type SubagentOptions, type SubagentInput, type SubagentQuota } from './sessions/subagents'
 
 export { Subagents } from './sessions/subagentService'
 export { Worktrees } from './worktrees/service'

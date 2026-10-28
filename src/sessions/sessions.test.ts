@@ -1033,7 +1033,7 @@ describe('subagents', () => {
       seen.set(params.runId, [...allow])
       return fakeSession(async () => new Promise<void>(() => undefined), gate)
     })
-    const subagents = { maxDepth: 2 }
+    const subagents = { maxDepth: 2, maxChildren: 5, maxUnprofiled: 5 }
     const starting = run('parent', { subagents })
     subagents.maxDepth = 3
     await starting

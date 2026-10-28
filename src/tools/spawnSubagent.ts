@@ -3,7 +3,7 @@ import type { Subagents } from '../sessions/subagentService'
 import { SPAWN_SUBAGENT, WAIT_SUBAGENTS, SUBAGENT_RECEIPT, MAX_SUBAGENT_TITLE_WORDS, subagentTitle, type SubagentReceipt, type SubagentResult } from '../sessions/subagents'
 import type { ToolResult, ToolSpec } from './types'
 
-export { SPAWN_SUBAGENT, SUBAGENT_RELATION, DEFAULT_SUBAGENT_DEPTH, MAX_SUBAGENT_DEPTH, subagentDepth, subagentReport, type SubagentOptions } from '../sessions/subagents'
+export { SPAWN_SUBAGENT, SUBAGENT_RELATION, DEFAULT_SUBAGENT_CHILDREN, DEFAULT_SUBAGENT_DEPTH, MAX_SUBAGENT_CHILDREN, MAX_SUBAGENT_DEPTH, subagentDepth, subagentQuota, subagentReport, type SubagentOptions, type SubagentQuota } from '../sessions/subagents'
 
 function reported(parentRunId: string, results: SubagentResult[], spawned?: string[]): ToolResult {
   const included: SubagentResult[] = []
@@ -18,6 +18,8 @@ function reported(parentRunId: string, results: SubagentResult[], spawned?: stri
 }
 
 export function subagentTools(service: Subagents, parentRunId: string): ToolSpec[] {
+  const quota = service.quota(parentRunId)
+  const budget = `This run allows at most ${quota.children} children: ${Object.entries(quota.profiles).map(([name, value]) => `${value} ${name}`).join(', ')}, ${quota.other} of any other profile and ${quota.unprofiled} unprofiled; a refused spawn means do the work yourself.`
   const execute = (fn: (input: Record<string, unknown>) => Promise<ToolResult>): ToolSpec['execute'] => async (input) => {
     try { return await fn(input) } catch (error) {
       if (error instanceof HarnessError) return error.message
@@ -27,7 +29,7 @@ export function subagentTools(service: Subagents, parentRunId: string): ToolSpec
   return [{
     name: SPAWN_SUBAGENT,
     label: 'Start a subagent',
-    description: 'Start a fresh child run for independent work. Delegate substantial, bounded tasks that benefit from a separate context, not simple lookups, tiny edits or tightly coupled steps. Prefer a named specialist profile; omit agent only when no profile fits. Plan mode permits only eligible read-only research profiles. Give a short title and a self-contained brief: the child has no conversation history and no more capabilities than you. The optional tools field only narrows the profile and parent intersection; in plan mode, omit it unless you need a stricter subset. Returns its run ID immediately by default so you can continue other useful work. Results arrive automatically before you finish. Use wait_subagents when you need results before proceeding, or wait: true for an inline result. Avoid overlapping write assignments. Stopping you stops your children. To resume a child that stopped before finishing (interrupted or failed), pass continue with its run ID and no title, agent or tools: it reopens that child\'s own conversation with the same profile and tools, and brief becomes an optional extra instruction.',
+    description: 'Start a fresh child run for independent work. Delegate substantial, bounded tasks that benefit from a separate context, not simple lookups, tiny edits or tightly coupled steps. Prefer a named specialist profile; omit agent only when no profile fits. Plan mode permits only eligible read-only research profiles. Give a short title and a self-contained brief: the child has no conversation history and no more capabilities than you. The optional tools field only narrows the profile and parent intersection; in plan mode, omit it unless you need a stricter subset. Returns its run ID immediately by default so you can continue other useful work. Results arrive automatically before you finish. Use wait_subagents when you need results before proceeding, or wait: true for an inline result. Avoid overlapping write assignments. Stopping you stops your children. To resume a child that stopped before finishing (interrupted or failed), pass continue with its run ID and no title, agent or tools: it reopens that child\'s own conversation with the same profile and tools, and brief becomes an optional extra instruction. ' + budget,
     planModeSafe: input => service.planSpawnRefusal(parentRunId, input) === null,
     parameters: (Type) => Type.Object({
       title: Type.Optional(Type.String({ description: `Required for a new child: a short imperative title for the roster, at most ${MAX_SUBAGENT_TITLE_WORDS} words, such as "Map the auth flow"` })),

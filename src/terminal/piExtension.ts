@@ -2,8 +2,12 @@
 // session does to the harness, asks before each tool call, takes instructions the harness
 // queues for it, and gives the session the harness's own tools. It runs in the `pi` process,
 // so everything it knows about the harness comes through the session socket.
+import { readFileSync } from 'node:fs'
+
 import { createBashTool, createEditTool, createPowerShellTool, createWriteTool, type AgentSession, type ExtensionAPI, type ExtensionContext } from '@earendil-works/pi-coding-agent'
 import { Type } from 'typebox'
+
+import { bodyOf } from '../core/frontmatter'
 
 import { connectionFromEnv, socketCall, terminalCall } from './client'
 import { controlCall } from './control'
@@ -19,11 +23,12 @@ import { CAPABILITY_DISCOVERY, describeCapabilities } from '../tools/getCapabili
 import type { QuestionAnswer } from '../sessions/registry'
 import { PLAN_INSTRUCTIONS, planRefusal } from '../sessions/planMode'
 import { compactionCheckpoint } from '../sessions/compactionCheckpoint'
-import { sessionStateText } from '../prompt/compile'
+import { requiredSkillsText, sessionStateText, type RequiredSkillText } from '../prompt/compile'
 import type { SessionState } from '../sessions/sessionState'
 import type { TodoItem } from '../sessions/contracts'
 import { pruneToolImages } from '../world/images'
 import { parseInitialBashCommand } from '../sessions/initialBash'
+import { skillInvocations } from './tui/skillInvocation'
 import { inspectWorkspaceWrite } from '../sessions/workspaceBoundary'
 import { createWorkspaceShellTool } from '../core/workspaceBashTool'
 import { createWorkspaceBashOperations, runWithWorkspaceWriteScope } from '../core/workspaceSandbox'
@@ -291,6 +296,32 @@ export default async function (pi: ExtensionAPI, planRun?: TerminalPlanRunState,
     const notice = stoppedChildren
     stoppedChildren = null
     if (notice) return { message: { customType: SUBAGENT_RESULTS, content: notice.text, display: false, details: { [SUBAGENT_RECEIPT]: notice.receipt } } }
+  })
+  // A `$name` anywhere in the message makes that skill required for this request. The skill's text is
+  // delivered as a hidden request-scoped message, so the person's own wording reaches the model unchanged.
+  pi.on('before_agent_start', async (event) => {
+    if (event.messageType !== 'user' || /^\s*!/u.test(event.prompt)) return
+    if (pi.getSettings?.().enableSkillCommands === false) return
+    const skills = (pi.getCommands?.() ?? [])
+      .filter((command) => command.source === 'skill')
+      .map((command) => ({
+        name: command.name.replace(/^skill:/, ''),
+        path: command.sourceInfo.path,
+        ...(command.sourceInfo.baseDir ? { baseDir: command.sourceInfo.baseDir } : {})
+      }))
+    if (!skills.length) return
+    const names = skillInvocations(event.prompt, new Set(skills.map((skill) => skill.name)))
+    if (!names.length) return
+    const entries: RequiredSkillText[] = names.map((name) => {
+      const skill = skills.find((candidate) => candidate.name === name)!
+      try {
+        return { name, path: skill.path, baseDir: skill.baseDir, body: bodyOf(readFileSync(skill.path, 'utf8')) }
+      } catch {
+        return { name, path: skill.path, body: '' }
+      }
+    })
+    const content = requiredSkillsText(entries)
+    return content ? { message: { customType: 'xingular-required-skills', content, display: false, details: { skills: names } } } : undefined
   })
   // A new user turn starts with an empty todo. The previous list is context, not this run's list.
   // A substantive first turn also gets a provisional name when the terminal policy allows it.

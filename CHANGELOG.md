@@ -2,6 +2,55 @@
 
 ## Unreleased
 
+- Make a skill named in a message required for that request. `$name` is a skill invocation at any
+  word start, not only as the first token: `Launch.requiredSkills` carries it and the compiler
+  renders a built-in dynamic `required-skills` section (order 52, 12,000 characters) from the pinned
+  variant's `SKILL.md`, naming an unavailable skill honestly and falling back to the shipped
+  `plugin-authoring` skill. It changes no tool or permission, and it belongs to the request, so an
+  identical one is delivered again; structured sessions deliver it through `sessionLaunch` and the
+  terminal appends the same text as a hidden `xingular-required-skills` message
+  (`requiredSkillsText`). The terminal no longer rewrites a leading `$name` to `/skill:name`, and its
+  `$` palette opens at the caret and inserts there, keeping the rest of the draft (ADR-0048).
+
+- Bound delegation per run and per profile. `spawn_subagent` and `wait_subagents` still exist, but a
+  run now starts at most four distinct child conversations: two `worker`, three `explorer`, one of
+  any other named profile and one with no profile. The parent's `subagents` option overrides them
+  (`maxChildren`, `maxByProfile`, `maxOther`, `maxUnprofiled`, clamped to 0–50), so a host and the
+  terminal receive the same defaults; `Subagents.spawn` refuses a child past a limit with an
+  `invalid_request` that tells the model to do the work itself, and starts no run. The count covers
+  the runs the parent was continued from, continuing a stopped child costs no slot, and a concurrent
+  spawn reserves its slot before it launches (ADR-0052).
+
+- Record where a request's characters went. `renderSized` returns the prompt and each section's
+  size, `Delivery.sizes` stores them on the recorded pack, and `Source.chars` attributes a variant's
+  tool guidance inside the tools section, so `context.attribution` (`terminal.context` in the
+  terminal) can return one row per contributor with its estimated tokens and share of the window,
+  reconciled to the provider's measured total, plus one row's text. `context.snapshot` also records
+  the compaction headroom the run was held to (`compaction: { enabled, reserveTokens }`) from Pi's
+  own settings.
+
+- Define an opt-in approved-window screenshot contract. `computer_screenshot` in
+  `src/computer/screenshot.ts` takes a host backend that captures exactly one currently approved
+  window, excludes the desktop, other windows and overlapping overlays, and refuses with
+  `COMPUTER_SCREENSHOT_UNAVAILABLE` instead of falling back to a display capture. It goes through
+  the ordinary tool gate and is not plan-mode safe; the standalone terminal has no backend, and the
+  existing macOS host capture has not adopted the contract (ADR-0050).
+
+- Watch approvals and questions through `terminal.pending.wait`: a control-key-protected revision
+  snapshot that returns as soon as the pending set changes and otherwise waits at most 20 seconds,
+  waking on additions, removals and disposal. `terminal.pending` stays available, the client
+  resynchronizes after errors, and no persisted state or public protocol changes (ADR-0051).
+
+- Swap the OpenTUI send keys back. `Return` sends, or queues a follow-up behind a running reply, and
+  `Cmd+Return`, `Ctrl+Return` or `Alt+Return` steers that reply. The `app.message.followUp` action is
+  `app.message.steer` again, so a `keybindings.json` entry under the newer name needs renaming.
+
+- Keep a stray mouse report out of input. When the terminal delivers a mouse report in two pieces
+  across the input parser's timeout, its `<button;column;row>` tail is dropped instead of being
+  typed into the composer or a single-line field, so a scroll can never become a run's prompt or a
+  filter. Text typed at human speed is never touched, pastes are never rewritten, and the Trajectory
+  page no longer prints a recorded mouse report.
+
 - Give top-level sessions a name and a current-state prompt. An unnamed session derives a
   provisional six-word name from its first substantive request; greetings and short replies stay
   unnamed, and the model can revise the name. Each top-level run also receives a request-scoped

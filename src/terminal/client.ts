@@ -57,18 +57,18 @@ function putIdle(path: string, stream: Socket): void {
   idle.set(path, entries)
 }
 
-function request<T>(connection: SocketConnection, body: Record<string, unknown>, what: string, timeoutMs: number): Promise<T> {
+function request<T>(connection: SocketConnection, body: Record<string, unknown>, what: string, timeoutMs: number, signal?: AbortSignal): Promise<T> {
   const reused = takeIdle(connection.socket)
-  return attempt<T>(connection, body, what, timeoutMs, reused).catch((error: unknown) => {
+  return attempt<T>(connection, body, what, timeoutMs, reused, signal).catch((error: unknown) => {
     // An idle connection the harness had already closed fails before any reply; one fresh retry.
-    if (reused && error instanceof StaleConnection) return attempt<T>(connection, body, what, timeoutMs, undefined)
+    if (reused && error instanceof StaleConnection) return attempt<T>(connection, body, what, timeoutMs, undefined, signal)
     throw error
   })
 }
 
 class StaleConnection extends Error {}
 
-function attempt<T>(connection: SocketConnection, body: Record<string, unknown>, what: string, timeoutMs: number, reused: Socket | undefined): Promise<T> {
+function attempt<T>(connection: SocketConnection, body: Record<string, unknown>, what: string, timeoutMs: number, reused: Socket | undefined, signal?: AbortSignal): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const stream = reused ?? createConnection(connection.socket)
     let buffer = ''
@@ -101,6 +101,7 @@ function attempt<T>(connection: SocketConnection, body: Record<string, unknown>,
       if (settled) return
       settled = true
       clearTimeout(timer)
+      signal?.removeEventListener('abort', onAbort)
       stream.off('connect', send)
       stream.off('data', onData)
       stream.off('error', onError)
@@ -116,6 +117,9 @@ function attempt<T>(connection: SocketConnection, body: Record<string, unknown>,
       stream.destroy()
       finish(() => reject(new SocketError('timeout', `The harness did not answer ${what}.`)))
     }, timeoutMs)
+    const onAbort = () => { stream.destroy(); finish(() => reject(new SocketError('aborted', `${what} was cancelled.`))) }
+    if (signal?.aborted) { onAbort(); return }
+    signal?.addEventListener('abort', onAbort, { once: true })
     stream.on('data', onData)
     stream.on('error', onError)
     stream.on('close', onClose)
@@ -125,8 +129,8 @@ function attempt<T>(connection: SocketConnection, body: Record<string, unknown>,
 }
 
 /** A memory, Wiki, recall, or connected-app call made on behalf of the session that owns the token. */
-export function socketCall<T = unknown>(connection: SocketConnection, call: string, params: Record<string, unknown> = {}, timeoutMs = 120_000, control?: string): Promise<T> {
-  return request<T>(connection, { call, params, ...(control ? { control } : {}) }, call, timeoutMs)
+export function socketCall<T = unknown>(connection: SocketConnection, call: string, params: Record<string, unknown> = {}, timeoutMs = 120_000, control?: string, signal?: AbortSignal): Promise<T> {
+  return request<T>(connection, { call, params, ...(control ? { control } : {}) }, call, timeoutMs, signal)
 }
 
 /** Telemetry and decisions from the native `pi` process. Approvals may wait on a person, so the default wait is long. */

@@ -55,9 +55,10 @@ export class ModeChoices {
 
   /**
    * Applies a mode's saved model and effort to the session. A model the account cannot use is
-   * skipped, and Pi clamps an effort the model does not support.
+   * skipped, and Pi clamps an effort the model does not support. A mode with no effort of its own
+   * returns to `fallback`, so a level chosen in another mode does not stay with this one.
    */
-  async apply(session: ChoiceSession, mode: ComposerMode, modelFor: (reference: string) => ChoiceModel | undefined): Promise<void> {
+  async apply(session: ChoiceSession, mode: ComposerMode, modelFor: (reference: string) => ChoiceModel | undefined, fallback: AgentSession['thinkingLevel']): Promise<void> {
     const choice = this.resolve(mode)
     await this.quietly(async () => {
       const model = choice.model ? modelFor(choice.model) : undefined
@@ -68,7 +69,7 @@ export class ModeChoices {
           // Not usable on this account (no key, or no longer offered): keep the session's model.
         }
       }
-      if (choice.effort) session.setThinkingLevel(choice.effort as AgentSession['thinkingLevel'], { persist: false })
+      session.setThinkingLevel((choice.effort ?? fallback) as AgentSession['thinkingLevel'], { persist: false })
     })
   }
 

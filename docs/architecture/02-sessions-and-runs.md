@@ -97,6 +97,15 @@ A session that cannot open ends its run as `failed` and returns `nativeSessionId
 - **Subagents.** `spawn_subagent` / `wait_subagents` for the model; `subagents.spawn`, `wait`,
   `results` for the host (`sessions.spawnSubagent` is a compatibility alias). Child runs have
   `relation: 'subagent'` and `parentRunId`. Nesting defaults to 1, at most 3 (`subagentDepth`).
+  A run also starts only a few children: by default at most four distinct child conversations, at
+  most two `worker`, three `explorer`, one of any other named profile and one with no profile. The
+  parent's `subagents` option overrides them (`maxChildren`, `maxByProfile`, `maxOther`,
+  `maxUnprofiled`), clamped to 0–50. The count covers this run and the runs it was continued from
+  (`resumedFromRunId`), so a work-slice continuation keeps the budget; it counts distinct
+  conversations, so continuing a stopped child uses no new slot, while a child whose startup
+  failed still counts. A concurrent spawn reserves its slot before it launches. A refused spawn is
+  an `invalid_request` whose message tells the model to do the work itself; no child run is
+  created.
   The child's record carries `title`, the short name the parent gave it (PROP-0030).
   `spawn_subagent { continue: <runId> }` (`subagents.spawn { continue }`) continues a child that
   stopped before finishing as a new child run with `continueFrom`. It reopens the first link's

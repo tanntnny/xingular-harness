@@ -2,6 +2,7 @@ import { visibleWidth } from '@earendil-works/pi-tui'
 
 import type { AttachmentLabel } from './attachments'
 import { leadingSlashCommandRange } from './slashCommandHighlight'
+import { skillInvocationMatches } from '../tui/skillInvocation'
 
 /** The parts of an OpenTUI textarea used by composer marks and attachment edits. */
 export interface MarkTarget {
@@ -26,39 +27,49 @@ export function bufferOffset(text: string, index: number): number {
   return offset
 }
 
-function leadingSkillInvocationRange(text: string, names: readonly string[]): { start: number; end: number } | undefined {
-  const match = /^(\s*)\$(\S+)/u.exec(text)
-  if (!match || !names.includes(match[2]!)) return undefined
-  return { start: match[1]!.length, end: match[0].length }
+/** The string index at a cell offset, the inverse of `bufferOffset`. */
+export function indexForBufferOffset(text: string, offset: number): number {
+  let cells = 0
+  let index = 0
+  for (const character of text) {
+    if (cells >= offset) return index
+    cells += character === '\n' ? 1 : visibleWidth(character)
+    index += character.length
+  }
+  return text.length
 }
 
-function syncTextMark(
+function skillInvocationRanges(text: string, names: readonly string[]): { start: number; end: number }[] {
+  return skillInvocationMatches(text)
+    .filter((match) => names.includes(match.name))
+    .map((match) => ({ start: match.from, end: match.to }))
+}
+
+function syncTextMarks(
   target: MarkTarget,
-  range: { start: number; end: number } | undefined,
+  ranges: readonly { start: number; end: number }[],
   typeId: number,
   styleId: number
 ): void {
-  const marks = target.extmarks.getAllForTypeId(typeId)
-  if (!range) {
-    for (const mark of marks) target.extmarks.delete(mark.id)
-    return
-  }
-
-  const start = bufferOffset(target.plainText, range.start)
-  const end = start + visibleWidth(target.plainText.slice(range.start, range.end))
-  if (marks.length === 1 && marks[0]!.start === start && marks[0]!.end === end) return
+  const expected = ranges.map((range) => {
+    const start = bufferOffset(target.plainText, range.start)
+    return { start, end: start + visibleWidth(target.plainText.slice(range.start, range.end)) }
+  })
+  const marks = target.extmarks.getAllForTypeId(typeId).sort((left, right) => left.start - right.start)
+  if (marks.length === expected.length && expected.every((range, index) => marks[index]!.start === range.start && marks[index]!.end === range.end)) return
   for (const mark of marks) target.extmarks.delete(mark.id)
-  target.extmarks.create({ start, end, virtual: true, styleId, typeId })
+  for (const range of expected) target.extmarks.create({ start: range.start, end: range.end, virtual: true, styleId, typeId })
 }
 
 /** Keeps one virtual mark on the recognized leading slash command. */
 export function syncSlashCommandMark(target: MarkTarget, names: readonly string[], typeId: number, styleId: number): void {
-  syncTextMark(target, leadingSlashCommandRange(target.plainText, names), typeId, styleId)
+  const range = leadingSlashCommandRange(target.plainText, names)
+  syncTextMarks(target, range ? [range] : [], typeId, styleId)
 }
 
-/** Colors only a leading `$name` that names an enabled skill; its arguments remain normal text. */
+/** Colors every `$name` that names an enabled skill, wherever it is in the message. */
 export function syncSkillInvocationMark(target: MarkTarget, names: readonly string[], typeId: number, styleId: number): void {
-  syncTextMark(target, leadingSkillInvocationRange(target.plainText, names), typeId, styleId)
+  syncTextMarks(target, skillInvocationRanges(target.plainText, names), typeId, styleId)
 }
 
 export function syncAttachmentMarks(target: MarkTarget, labels: readonly AttachmentLabel[], typeId: number, styleId: number): boolean {

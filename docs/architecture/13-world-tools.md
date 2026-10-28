@@ -18,14 +18,28 @@ synthetic page. Their input runs only after live-check confirmation, and their r
 released on completion, timeout or cancellation. Computer interaction needs a host-provided
 isolated surface; without one it is blocked.
 
+## Approved-window screenshot contract
+
+`computer/screenshot.ts` defines an opt-in host provider adapter for `computer_screenshot`.
+The backend must capture exactly one currently approved window, excluding the desktop, other windows
+and overlays even when they overlap, and refuse if it cannot guarantee that scope. It must not
+fall back to a display capture. Coordinates supplied to a host's related interaction tools, if any,
+are relative to the returned image pixels. The tool goes through the ordinary provider and gate,
+returns an image to the model, and is not plan-mode safe by default. Image content is untrusted.
+The contract itself does not prove that a host implements these requirements. In particular, the
+existing macOS host capture has not yet adopted this contract and captures a display; it must not
+be represented as approved-window-only capture. The standalone terminal has no capture backend.
+
+
 ## Shared browser contract and native WebKit limits (PROP-0040)
 
 `browser/contracts.ts` owns the backend-neutral names and input schemas for `browser_*` tools;
 providers adapt those definitions rather than inventing host-specific selectors. The isolated Harness
 backend supports accessibility snapshots and snapshot-scoped refs. A native WebKit host backend
-currently supports navigation, tab management, visible-text reads and page-level scrolling without a
-ref. It does not support accessibility snapshots, snapshot refs or ref-based click/type/select/scroll,
-browser screenshots, browser waits or keyboard presses.
+supports navigation, tab management, visible-text reads, page screenshots and page-level scrolling
+without a ref. It does not support accessibility snapshots, snapshot refs or ref-based
+click/type/select/scroll/screenshot, browser waits or keyboard presses. Native page screenshot
+implementation and authorization checks are present, but live host capture acceptance remains open.
 
 For an unsupported operation the native provider returns an explicit `browser_unsupported` refusal
 with “Nothing was done”; it never treats a snapshot ref as a selector and never silently switches to

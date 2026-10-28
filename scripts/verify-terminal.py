@@ -1774,6 +1774,15 @@ def main():
                     terminal.send('\x15')
                     terminal.read(0.1)
 
+                    mid_skill_start = len(terminal.data)
+                    terminal.send('review $browser-active SKILL_ARGUMENT')
+                    terminal.read(0.2)
+                    terminal.snapshot('skill-invocation-mid-text')
+                    assert_command_highlighting(terminal, '$browser-active', 'SKILL_ARGUMENT', True, 'mid-text enabled skill token')
+                    assert has_truecolor_foreground(bytes(terminal.data[mid_skill_start:]), '#8ab4f8'), 'A mid-text skill token did not use the composer accent'
+                    terminal.send('\x15')
+                    terminal.read(0.1)
+
                     unknown_skill_start = len(terminal.data)
                     terminal.send('$not-a-skill UNKNOWN_SKILL_ARGUMENT')
                     terminal.read(0.2)

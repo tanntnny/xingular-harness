@@ -1,12 +1,13 @@
 // Dialogs are blocks or pages (see chrome.ts); the selector rows follow Oh My Pi 18.11.3 (MIT; see NOTICE-oh-my-pi).
 import type { ExtensionUIContext, ExtensionUIDialogOptions, KeybindingsManager, Theme } from '@earendil-works/pi-coding-agent'
-import { Editor, Input, matchesKey, stripTerminalSequences, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component, type Focusable, type OverlayHandle, type OverlayOptions, type SelectListTheme, type TUI, type TuiMouseEventResult } from '@earendil-works/pi-tui'
+import { Editor, matchesKey, stripTerminalSequences, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component, type Focusable, type OverlayHandle, type OverlayOptions, type SelectListTheme, type TUI, type TuiMouseEventResult } from '@earendil-works/pi-tui'
 
 import { CENTER_DIALOG_PAD, CHROME_ROWS, blockFrame, centerDialogChromeRows, centerDialogContentWidth, centerDialogFrame, centerDialogVerticalPad, contentWidth, pageFrame, safeText, selectionText } from './chrome'
 import { centeredDialogHost, dialogFits, pageOverlayOptions, pageRows } from './dialogGeometry'
 import { FilterList } from './list'
 import { searchFieldRowsFor } from './search'
 import type { TerminalMouseInput } from './mouse'
+import { MouseSafeInput } from './mouseReport'
 
 type DisposableComponent = Component & { dispose?(): void }
 export interface GroupedSelectOption {
@@ -25,7 +26,7 @@ export function selectTheme(theme: Theme): SelectListTheme {
 }
 
 /** Input keeps the original value; only its rendered cells are masked. */
-export class SecretInput extends Input {
+export class SecretInput extends MouseSafeInput {
   override render(width: number): string[] {
     const lines = super.render(width)
     if (!this.getValue()) return lines
@@ -250,7 +251,7 @@ export class TerminalDialogs {
 
   input(title: string, placeholder?: string, opts?: ExtensionUIDialogOptions, secret = false): Promise<string | undefined> {
     return this.show<string>(done => {
-      const InputType = secret ? SecretInput : Input
+      const InputType = secret ? SecretInput : MouseSafeInput
       const input = new InputType({ prompt: secret ? '' : '> ', placeholder, placeholderStyle: text => this.theme().fg('dim', text) })
       input.onSubmit = done
       input.onEscape = () => done(undefined)

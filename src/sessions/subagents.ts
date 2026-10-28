@@ -12,6 +12,69 @@ export const MAX_SUBAGENT_DEPTH = 3
 export interface SubagentOptions {
   /** Maximum consecutive native subagent levels below a caller (1 to 3). */
   maxDepth?: number
+  /** Distinct child conversations a run may start. */
+  maxChildren?: number
+  /** Children a run may start from one named profile; a name it omits uses `maxOther`. */
+  maxByProfile?: Record<string, number>
+  /** Children allowed from a named profile `maxByProfile` does not list. */
+  maxOther?: number
+  /** Children allowed when the caller starts one with no profile. */
+  maxUnprofiled?: number
+}
+
+/** How many distinct children a run may start when the caller does not say. */
+export const DEFAULT_SUBAGENT_CHILDREN = 4
+/** The most a host may allow, so a mistyped setting cannot lift the budget entirely. */
+export const MAX_SUBAGENT_CHILDREN = 50
+/** Foundation limits for the profiles the harness ships; `maxByProfile` overrides them. */
+export const DEFAULT_SUBAGENT_PROFILE_CHILDREN: Readonly<Record<string, number>> = { worker: 2, explorer: 3 }
+export const DEFAULT_SUBAGENT_OTHER_PROFILE = 1
+export const DEFAULT_SUBAGENT_UNPROFILED = 1
+/** The bucket a child with no profile counts against. No profile name can be `*`. */
+export const UNPROFILED_SUBAGENT = '*'
+
+/** The children one run may start, by profile and in total. */
+export interface SubagentQuota {
+  children: number
+  profiles: Readonly<Record<string, number>>
+  other: number
+  unprofiled: number
+}
+
+function limit(value: unknown, fallback: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback
+  return Math.min(MAX_SUBAGENT_CHILDREN, Math.max(0, Math.trunc(value)))
+}
+
+/** The effective budget: the caller's values merged over the foundation defaults. */
+export function subagentQuota(options: SubagentOptions | undefined): SubagentQuota {
+  const profiles: Record<string, number> = { ...DEFAULT_SUBAGENT_PROFILE_CHILDREN }
+  const given = options?.maxByProfile
+  if (given && typeof given === 'object' && !Array.isArray(given)) {
+    for (const [raw, value] of Object.entries(given)) {
+      const name = raw.trim()
+      if (!name || name.length > 64 || /[\x00-\x1f\x7f]/u.test(name)) continue
+      if (typeof value !== 'number' || !Number.isFinite(value)) continue
+      profiles[name] = limit(value, profiles[name] ?? DEFAULT_SUBAGENT_OTHER_PROFILE)
+    }
+  }
+  return {
+    children: limit(options?.maxChildren, DEFAULT_SUBAGENT_CHILDREN),
+    profiles,
+    other: limit(options?.maxOther, DEFAULT_SUBAGENT_OTHER_PROFILE),
+    unprofiled: limit(options?.maxUnprofiled, DEFAULT_SUBAGENT_UNPROFILED)
+  }
+}
+
+/** The bucket a child counts against: its profile name, or the unprofiled bucket. */
+export function subagentProfileKey(profile: string | null | undefined): string {
+  const name = typeof profile === 'string' ? profile.trim() : ''
+  return name || UNPROFILED_SUBAGENT
+}
+
+/** How many children this profile may still start under the quota. */
+export function subagentProfileLimit(quota: SubagentQuota, key: string): number {
+  return key === UNPROFILED_SUBAGENT ? quota.unprofiled : quota.profiles[key] ?? quota.other
 }
 
 export function subagentDepth(options: SubagentOptions | undefined): number {
