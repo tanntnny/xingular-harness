@@ -34,6 +34,7 @@ export const CORE_COMMANDS = [
   { name: 'session', aliases: ['resume'], args: '[path]', description: 'Choose a saved session in this account and folder', group: 'Session', kind: 'session' },
   { name: 'history', aliases: ['tree'], description: 'Navigate branches in the current session', group: 'Session', kind: 'session', methods: ['sessions.tree', 'sessions.navigate'] },
   { name: 'fork', description: 'Fork from an earlier message', group: 'Session', kind: 'session', methods: ['sessions.tree', 'sessions.fork'] },
+  { name: 'remote-control', aliases: ['rc'], args: '[off|tailscale|lan]', description: 'Continue this session from your phone or iPad', group: 'Session', kind: 'page', methods: ['terminal.remoteControl.start', 'terminal.remoteControl.stop', 'terminal.remoteControl.status'] },
   { name: 'clone', description: 'Clone this branch into a new session', group: 'Session', kind: 'session', methods: ['sessions.clone'] },
   { name: 'model', args: '[search]', description: 'Choose the model', group: 'Model', kind: 'session', methods: ['accounts.models'] },
   { name: 'effort', args: '[level]', description: 'Choose the thinking effort', group: 'Model', kind: 'session' },
@@ -61,6 +62,7 @@ export const CORE_COMMANDS = [
   { name: 'subagents', description: 'Watch current subagent tasks and activity', group: 'Harness', kind: 'page' },
   { name: 'agents', description: 'Browse and edit agent profiles', group: 'Harness', kind: 'page', methods: ['agents.list'] },
   { name: 'log', description: "Harness diagnostics and this conversation's run events", group: 'Inspect', kind: 'page' },
+  { name: 'context', args: '[growth]', description: 'What the latest request was made of, and where the rest of the window went', group: 'Inspect', kind: 'page', methods: ['context.attribution'] },
   { name: 'hotkeys', description: 'Keyboard controls', group: 'Core', kind: 'local' },
   { name: 'quit', description: 'Restore the terminal and exit', group: 'Core', kind: 'local' }
 ] as const satisfies readonly CoreCommand[]

@@ -27,8 +27,8 @@ index.
   trash/plugins/       removed packages   (06)
   hub/                 installed documents and provenance   (09)
   runs/<id>/           run.json (including optional legacy-compatible workspaceRoot), events.jsonl, owner.json, subagents.json, context.json, caller.json, capabilities.json, mcp-context.json   (02)
-  # `checkpoint` and `heartbeat` are run events in the same events.jsonl; a bounded reply emits one
-  # heartbeat per 30 seconds (about 60 KB an hour) and no side file (PROP-0041).
+  # `checkpoint` and `heartbeat` are run events in the same events.jsonl; every live reply emits one
+  # heartbeat per 30 seconds (about 60 KB an hour) and no side file (PROP-0041, ADR-0054).
   config/              plugin-attachments.json and settings the harness reads   (06)
   agents/<name>.md     a person's global agent profiles; agents/profiles.ts owns it   (02, PROP-0029)
   index.sqlite         derived index (FTS5, recall, usage ledger)   (08, PROP-0042)
@@ -50,6 +50,9 @@ index.
   notes-bridge.json    the page bridge's port and token, kept so an app's script tag stays valid   (13, PROP-0018)
   harness.log          standalone terminal diagnostics
 ```
+
+`/remote-control` (page 15) stores nothing here: its pairing and device keys live in memory and end
+with the session (INV-RC-2).
 
 The interactive profile is a credential-free, versioned selection file at
 `~/.xingular-harness/profile.json`, owned by `src/core/interactiveProfile.ts`. It selects the

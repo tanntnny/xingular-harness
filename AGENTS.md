@@ -62,6 +62,7 @@ two words in code, docs, data and the protocol; do not write "harness tree". See
 | Generic web and isolated browser tools | [13 World tools](docs/architecture/13-world-tools.md) |
 | Data root and state directory | [12 Storage](docs/architecture/12-storage.md) |
 | Terminal and host parity, host-backed capabilities, host-only surfaces | [14 Surfaces and parity](docs/architecture/14-surfaces-and-parity.md) |
+| `/remote-control`: a phone or iPad driving a terminal session | [15 Remote control](docs/architecture/15-remote-control.md) |
 
 The rules agents break most often, in brief (the pages are authoritative):
 

@@ -31,6 +31,16 @@ import { SELECTION_COLORS } from './selection'
 
 const orange = { dark: '#ffb347', light: '#9a7326' } as const
 
+/**
+ * Categorical colours for a bar that splits one reading by kind — the same values as the App's
+ * `--data-1..4` tokens, so a screen and a terminal show the same split in the same colours. They
+ * carry no severity: a red run is a category, not a problem.
+ */
+export const SERIES_COLORS = {
+  dark: ['#3987e5', '#d95926', '#199e70', '#c98500'],
+  light: ['#2a78d6', '#eb6834', '#1baf7a', '#eda100']
+} as const
+
 export const TITANIUM = {
   brushedTitanium: '#151820',
   darkTitanium: '#0f1216',

@@ -141,7 +141,29 @@ A session that cannot open ends its run as `failed` and returns `nativeSessionId
   steps and verification. A small fix stays concise without omitting its
   outcome or check; cross-cutting work uses ordered steps. It uses alternatives only when requested
   or materially useful; contextual `uiSketch` questions clarify real choices.
-  The reply ends with one `<proposed_plan>` block.
+  **Outcome contract (ADR-0058, superseding the clarification portion of ADR-0057).** Classify a
+  new final reply as exactly one of `plan_ready`, `blocked`, or `invalid`. `plan_ready` uses the
+  existing complete `<proposed_plan>` block and is the only outcome that offers a plan card and
+  Implement. When a required user decision cannot be obtained because `ask_user` is unavailable,
+  `blocked` uses a nonempty `<plan_blocked>` block to report the blocker without asking a free-text
+  question or inventing the decision; it
+  is not a plan and never offers Implement. New final replies must not use `<plan_clarification>`
+  or free-text questions as a clarification channel. Missing, incomplete, conflicting or otherwise
+  malformed outcomes are `invalid`, not a guessed plan. When clarification is needed and `ask_user`
+  is available, it blocks the active run for the answer, then that same run continues research and
+  planning.
+
+  Server and terminal use the same outcome classification and one bounded, hidden repair turn
+  in the same eligible attended top-level plan run, only for `invalid`. The repair requests a valid
+  outcome without inventing decisions or changing the substance; it may call `ask_user` when
+  available, blocking the active run for the answer, and may return either valid outcome.
+  It is not a new user request, does not bypass the plan gate, and is never attempted for a
+  plan-research child, command, probe, improver, reflection, other unattended run, interruption,
+  error or work-slice termination. A second invalid result ends repair: retain the original reply,
+  complete the run with a warning and no Implement choice. Preserve the existing plan tag, card,
+  run events, tool permissions and cached prompt boundary; old transcripts, including legacy
+  clarification blocks and untagged replies, remain intact and visible, not silently promoted to
+  plans. Do not require clients to understand a new event type.
 - **Compaction checkpoint** (PROP-0033, ADR-0032). After compaction, an active run's model context
   receives a bounded, ephemeral checkpoint with the current user request and the latest validated
   todo list or applicable plan instructions, when either is available to restore. It is re-added to
@@ -283,28 +305,28 @@ is approved but remains in progress; no completed cross-surface catalog is impli
   checkpoint and leaves handoff calls callable; otherwise a plan-research child must stop with a
   concise partial research report, and the runner derives a checkpoint from run evidence. A
   non-handoff tool call after the refusal ends the reply. A budget-ended reply is `interrupted` with
-  terminal reason `slice_complete`; a reply ended by a stall guard is `stalled`.
-  The targeted stall guard identifies calls by name and every argument; three identical calls cause
-  one refusal, and a repeated trigger ends the reply. A Bash check that fails twice is a trigger. The
-  guard counts only successful native `edit`/`write` results (`isError === false`) with a path toward
-  the four-edit per-path churn limit; the next edit is refused, and a repeated trigger ends the
-  reply. Failed or blocked edits do not count. A successful edit/write clears failed-check counts,
-  identical Bash-check repeat counts and the pending nudge, but leaves edit counts and other
-  repeated-call counts intact. A passing check clears edit counts. The general 25-call file/check
-  no-progress trigger is removed. `todo_write` is bookkeeping: it is exempt from repeated-call
-  detection and does not reset loop state, but counts toward the tool-call budget. Third-compaction
-  thrash detection remains. Plan-research children without `checkpoint_write` receive the configured
-  bound without a new capability and do not auto-continue. A new run continues it only up to the
-  policy's slice cap, only after a slice that changed a file, passed a check or recorded a finished
-  item, and never after a checkpoint that is `blocked`. A run may turn the guard off with
-  `workSlice.enabled: false`, and a launch may set `XINGULAR_WORK_SLICE=off` for every run in that
-  process; with it off a reply has no boundary — no checkpoint, no continuation, no stall notes — and
-  ends only when the model stops or a person interrupts.
+  terminal reason `slice_complete` (ADR-0053).
+  No call is refused for repeating: identical calls, a Bash check that keeps failing and repeated
+  `edit`/`write` results on one path are allowed as often as the work needs, because a distinct read
+  or another edit is not evidence of a loop. `todo_write` counts toward the tool-call budget and is
+  otherwise unconstrained. Third-compaction thrash detection remains: three context compactions in
+  one reply end it with the same handoff request. Plan-research children without `checkpoint_write`
+  receive the configured bound without a new capability and do not auto-continue. A new run
+  continues it only up to the policy's slice cap, only after a slice that changed a file, passed a
+  check or recorded a finished item, and never after a checkpoint that is `blocked`. A run may turn
+  the guard off with `workSlice.enabled: false`, and a launch may set `XINGULAR_WORK_SLICE=off` for
+  every run in that process; with it off a reply has no boundary — no checkpoint, no continuation —
+  and ends only when the model stops or a person interrupts.
 - **INV-RUN-14** A run event stream carries `checkpoint` (the handoff `checkpoint_write` records or
   the harness derives from the run's own evidence when the model wrote none) and `heartbeat`
-  (steps, elapsed time, last tool, compactions, slice, and the call budget). A heartbeat older than
-  five minutes while the owner process lives marks the run `interrupted` with reason `stalled`; a
-  run that never emitted one keeps the 30-minute silence rule. The watchdog never restarts work.
+  (steps, elapsed time, last tool, compactions, slice, and the call budget). Every live reply emits a
+  heartbeat every 30 seconds, terminal replies included. A heartbeat older than five minutes while
+  the owner process lives marks the run `interrupted` with reason `stalled`; a run that never emitted
+  one keeps the 30-minute silence rule. A reply whose heartbeat keeps arriving but which produces no
+  other event for fifteen minutes is a wedged turn, not a busy one: the terminal ends it through the
+  native abort and records `interrupted` with reason `stalled`, and grants a reply whose oldest
+  running tool has run for thirty minutes the same ending. An unanswered approval or question is
+  never cut short. The watchdog never restarts work (ADR-0054).
 - **INV-RUN-12** A post-compaction checkpoint is a bounded context projection of the active request,
   the latest validated todo list and applicable plan instructions. It is compiled by
   `prompt/compile.ts`, supplied only to model requests in the active run, and never persists hidden
@@ -331,7 +353,9 @@ Decisions: [ADR-0002](../decisions/ADR-0002-native-subagent-lifecycle.md) (super
 [ADR-0023](../decisions/ADR-0023-contextual-side-question-runs.md),
 [ADR-0026](../decisions/ADR-0026-contextual-question-wireframes.md),
 [ADR-0033](../decisions/ADR-0033-plan-mode-research-delegation.md),
-[ADR-0039](../decisions/ADR-0039-progress-aware-stall-guards.md).
+[ADR-0039](../decisions/ADR-0039-progress-aware-stall-guards.md),
+[ADR-0053](../decisions/ADR-0053-no-repeated-work-guard.md),
+[ADR-0054](../decisions/ADR-0054-terminal-reply-heartbeat-and-stall.md).
 
 ## Native session names (PROP-0010)
 

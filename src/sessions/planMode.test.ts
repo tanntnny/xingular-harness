@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest'
 
 import { CONTEXT_MESSAGE_TYPE, CONTEXT_SNAPSHOT_KEY } from '../prompt/compile'
 import { GET_CAPABILITIES } from '../tools/getCapabilities'
-import { deniedPlanBashCommand, normalModeTools, PLAN_INSTRUCTIONS, PLAN_SECTION_ID, parseProposedPlan, planModeTools, planRefusal, planSection, QUESTION_TOOL_NAMES } from './planMode'
+import { deniedPlanBashCommand, finalizePlanOutcome, normalModeTools, PLAN_INSTRUCTIONS, PLAN_REPAIR_INSTRUCTIONS, PLAN_SECTION_ID, parsePlanOutcome, parseProposedPlan, planModeTools, planRefusal, planSection, QUESTION_TOOL_NAMES } from './planMode'
 
 function history(sectionIds: string[]): string {
   const file = join(mkdtempSync(join(tmpdir(), 'plan-history-')), 'session.jsonl')
@@ -78,6 +78,38 @@ describe('plan mode', () => {
     expect(planSection(false, null)).toBeNull()
     expect(planSection(false, history(['blocks']))).toBeNull()
     expect(planSection(false, history(['blocks', PLAN_SECTION_ID]))).toMatchObject({ id: PLAN_SECTION_ID, body: null, dynamic: true })
+  })
+
+  it('requires ask_user for necessary input in planning and repair', () => {
+    for (const instructions of [PLAN_INSTRUCTIONS, PLAN_REPAIR_INSTRUCTIONS]) {
+      expect(instructions).toContain('ask_user')
+      expect(instructions).toContain('<plan_blocked>')
+      expect(instructions).toContain('unavailable')
+      expect(instructions).toContain('free text')
+      expect(instructions).not.toContain('<plan_clarification>')
+    }
+    expect(PLAN_REPAIR_INSTRUCTIONS).toContain('then return a complete plan')
+    expect(PLAN_REPAIR_INSTRUCTIONS).toContain('Do not research again')
+  })
+})
+
+describe('structured plan outcomes', () => {
+  it('accepts exactly one complete nonempty plan or blocked explanation', () => {
+    expect(parsePlanOutcome('<proposed_plan># Title\nSteps</proposed_plan>')).toMatchObject({ kind: 'plan_ready', plan: { title: 'Title' } })
+    expect(parsePlanOutcome('<plan_blocked> Input unavailable. </plan_blocked>')).toEqual({ kind: 'blocked', reason: 'Input unavailable.' })
+    for (const text of ['', '<proposed_plan>x', '<proposed_plan> </proposed_plan>', '<plan_blocked> </plan_blocked>', '<plan_blocked>x', '</plan_blocked><plan_blocked>x', '<plan_blocked>x</plan_blocked><plan_blocked>y</plan_blocked>', '<plan_clarification>Which?</plan_clarification>', '<proposed_plan>x</proposed_plan><plan_clarification>y</plan_clarification>', '<proposed_plan>x</proposed_plan><plan_blocked>y</plan_blocked>', '<proposed_plan>x</proposed_plan><proposed_plan>y</proposed_plan>', '</proposed_plan><proposed_plan>x']) {
+      expect(parsePlanOutcome(text), text).toEqual({ kind: 'invalid' })
+    }
+  })
+
+  it('repairs invalid replies once and accepts either valid outcome', async () => {
+    let calls = 0
+    const repair = async () => { calls++; return '<plan_blocked>Input unavailable.</plan_blocked>' }
+    expect(await finalizePlanOutcome('<proposed_plan>x</proposed_plan>', repair)).toMatchObject({ outcome: { kind: 'plan_ready' }, repaired: false })
+    expect(calls).toBe(0)
+    expect(await finalizePlanOutcome('invalid', repair)).toEqual({ outcome: { kind: 'blocked', reason: 'Input unavailable.' }, repaired: true })
+    expect(calls).toBe(1)
+    expect(await finalizePlanOutcome('invalid', async () => { throw new Error('failed') })).toEqual({ outcome: { kind: 'invalid' }, repaired: true })
   })
 })
 

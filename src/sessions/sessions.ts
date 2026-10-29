@@ -700,6 +700,7 @@ export class Sessions {
         gate,
         restrictTools: input.run.relation === 'subagent',
         ...(input.plan ? { plan: true } : {}),
+        ...(stateEligible && input.plan ? { repairPlan: true } : {}),
         cwd: input.cwd,
         workspaceRoot,
         sessionDir: input.sessionDir,

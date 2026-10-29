@@ -14,6 +14,7 @@ keeps provider caching effective across turns.
 |---|---|
 | `compile(env, caller, launch, variant)` → `ContextPack` | Builds the ordered, budgeted sections, including the configured data-root path in native file guidance. |
 | `render(env, pack)` → `string` | One string for a session that takes a single prompt. |
+| `renderSized(env, pack)` → `{ text, sizes, framing }` | The same string, plus the characters each section occupied and the framing around them. |
 | `sessionLaunch(env, caller, launch, historyFile, variant)` → `{ system, update, pack }` | SDK sessions: stable prefix plus an update with only the dynamic sections that changed since the last delivered snapshot. |
 | `deliveredSnapshot(sessionFile)` | Reads the last delivered snapshot on the active history branch; a compaction forces a fresh one. |
 | `renderCompactionCheckpoint` | Compiles a bounded current-request, todo list and plan-state message for post-compaction model requests. |
@@ -25,6 +26,13 @@ Assembly is in `prompt/compile.ts`; shared standard-section data is in `prompt/s
 A `ContextPack` holds `sections: Section[]` (each with `id`, `title`,
 `body`, `sources`, `budget`, `size`, `cut`), `toolGroups`, `harness` (scope and fingerprint),
 `profile`, `compiledAt` and `delivery` (`systemSectionIds`, `updatedSectionIds`).
+
+`delivery.sizes` records what each delivered section occupied when it was rendered — `system` and
+`update` maps by section id, plus the framing characters that belong to no section (the product
+heading, the section headings, the context-update guidance). It is what lets a surface attribute the
+context window without re-parsing a prompt whose bodies may contain their own headings. A pack
+recorded before the compiler measured them has no `sizes`, and a reader then falls back to
+`Section.size` and says the split is approximate.
 
 ## Section order
 
@@ -94,6 +102,8 @@ compile ──► pack ──► stable sections ──► system prompt (+ "Con
 
 - Dynamic sections are the built-in `references`, `required-skills` and `wiki`, plus every application section with
   `dynamic: true`.
+- The rendered sizes of both halves are recorded with the pack (`delivery.sizes`), so the context a run
+  was given can be attributed after the fact without replaying the compiler.
 - An update lists only the dynamic sections that changed, and announces a withdrawn one.
   `references` and `required-skills` are always resent when present, because they belong to the current request.
 - After successful compaction, the foundation checkpoint extension detects the compacted context and

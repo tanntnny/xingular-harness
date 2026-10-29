@@ -6,6 +6,7 @@ import { truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component } from 
 import type { RunEvent } from '../../sessions/contracts'
 import type { SideQuestionContext, SideQuestionRead } from '../../sessions/sideQuestions'
 import { contentWidth, footerRow, neutralRule, padded, safeText } from './chrome'
+import { MarkdownBlock, markdownSource } from './markdown'
 import { getWorkingSpinnerFrames, SPINNER_INTERVAL_MS, spinnerFrameAt } from './workingStatus'
 
 const QUESTION_ROWS = 2
@@ -88,6 +89,7 @@ export class SideQuestion {
   private startedAt = 0
   private afterSequence = -1
   private answerOffset = 0
+  private readonly answerMarkdown = new MarkdownBlock()
   private readonly dock: Component
 
   constructor(private readonly options: SideQuestionOptions) {
@@ -207,11 +209,14 @@ export class SideQuestion {
       return prefix + theme.fg('muted', line)
     })
     if (asked.length > QUESTION_ROWS) question[QUESTION_ROWS - 1] = truncateToWidth(question[QUESTION_ROWS - 1]!, inner - 1, '') + theme.fg('muted', '…')
-    const text = this.current === 'failed' ? `${this.answerText ? `${this.answerText}\n` : ''}${this.error ?? 'The side question failed.'}` : this.answerText
-    const wrapped = text ? text.split('\n').flatMap(line => line ? wrapTextWithAnsi(safeText(line), inner) : ['']) : []
+    const answer = this.answerText ? this.answerMarkdown.lines(markdownSource(this.answerText), inner, theme) : []
+    const failure = this.current === 'failed'
+      ? wrapTextWithAnsi(safeText(this.error ?? 'The side question failed.'), inner).map(line => theme.fg('error', line))
+      : []
+    const wrapped = [...answer, ...(answer.length && failure.length ? [''] : []), ...failure]
     const maxOffset = Math.max(0, wrapped.length - ANSWER_ROWS)
     this.answerOffset = Math.min(this.answerOffset, maxOffset)
-    const shown = wrapped.slice(this.answerOffset, this.answerOffset + ANSWER_ROWS).map(line => this.current === 'failed' ? theme.fg('error', line) : line)
+    const shown = wrapped.slice(this.answerOffset, this.answerOffset + ANSWER_ROWS)
     const before = this.answerOffset
     const after = Math.max(0, wrapped.length - before - shown.length)
     const textHint = before || after ? `PgUp/PgDn browse · ${before ? `${before} above` : ''}${before && after ? ' · ' : ''}${after ? `${after} below` : ''} · ` : ''

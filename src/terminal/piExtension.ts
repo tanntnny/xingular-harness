@@ -21,7 +21,7 @@ import { DEFAULT_COMMAND_TIMEOUT_SECONDS, withCommandBudget } from '../core/comm
 import { SESSION_NAME, deriveSessionName, sessionNameTool } from '../tools/sessionName'
 import { CAPABILITY_DISCOVERY, describeCapabilities } from '../tools/getCapabilities'
 import type { QuestionAnswer } from '../sessions/registry'
-import { PLAN_INSTRUCTIONS, planRefusal } from '../sessions/planMode'
+import { PLAN_INSTRUCTIONS, PLAN_REPAIR_CUSTOM_TYPE, PLAN_REPAIR_INSTRUCTIONS, parsePlanOutcome, planRefusal } from '../sessions/planMode'
 import { compactionCheckpoint } from '../sessions/compactionCheckpoint'
 import { requiredSkillsText, sessionStateText, type RequiredSkillText } from '../prompt/compile'
 import type { SessionState } from '../sessions/sessionState'
@@ -34,6 +34,9 @@ import { createWorkspaceShellTool } from '../core/workspaceBashTool'
 import { createWorkspaceBashOperations, runWithWorkspaceWriteScope } from '../core/workspaceSandbox'
 import { withWorkspaceWriteAuthorization, workspaceEditOperations, workspaceWriteOperations, type WorkspaceWriteAuthorization } from '../core/workspaceWriteOperations'
 import { BUDGET_GUARD, OUTPUT_TRIM, budgetGuard, outputTrim } from '../plugins/firstParty'
+
+/** How long reply text gathers before it is sent on to a paired phone. */
+const STREAM_FLUSH_MS = 150
 
 interface SocketTool {
   name: string
@@ -70,8 +73,12 @@ export default async function (pi: ExtensionAPI, planRun?: TerminalPlanRunState,
   let subagentParent = false
   let stoppedChildren: { text: string; receipt: SubagentReceipt } | null = null
   let timer: ReturnType<typeof setInterval> | null = null
+  let heartbeat: ReturnType<typeof setInterval> | null = null
+  let turnStartedAt = 0
   let polling = false
   let failure: string | undefined
+  let planRepairAttempted = false
+  let lastPlanText = ''
   const emptyUsage = () => ({ inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, requests: 0, costUsd: 0 })
   let usage = emptyUsage()
   let reasoningTokens: number | undefined
@@ -224,6 +231,8 @@ export default async function (pi: ExtensionAPI, planRun?: TerminalPlanRunState,
   pi.on('before_agent_start', async (event, ctx) => {
     context = ctx
     failure = undefined
+    planRepairAttempted = false
+    lastPlanText = ''
     usage = emptyUsage()
     reasoningTokens = undefined
     costReported = false
@@ -233,6 +242,21 @@ export default async function (pi: ExtensionAPI, planRun?: TerminalPlanRunState,
     if (!workspaceRoot) throw new Error('The active project workspace could not be resolved; the turn was not started.')
     // Every turn marks its run on the branch, so a reopened conversation finds its latest one.
     pi.appendEntry(SUBAGENT_OWNER, { runId: begun.runId })
+    // A live reply reports progress so a person and the watchdog can tell a long turn from a wedged
+    // one; a turn that stops producing anything is settled with reason `stalled` (INV-RUN-14).
+    turnStartedAt = Date.now()
+    if (heartbeat) clearInterval(heartbeat)
+    heartbeat = setInterval(() => {
+      void terminalCall('heartbeat', {
+        steps: sliceState.steps,
+        elapsedMs: Date.now() - turnStartedAt,
+        lastTool: sliceState.lastTool,
+        compactions: sliceState.compactions,
+        slice: sliceState.slice,
+        maxToolCalls: slicePolicy.enabled ? slicePolicy.maxToolCalls : 0
+      }, 10_000).catch(() => {})
+    }, 30_000)
+    heartbeat.unref?.()
     stoppedChildren = null
     if (nativeSubagents) {
       const snapshot = await controlCall<{ connectors?: string[]; subagentProfiles?: { normal: string; plan: string }; notice?: { text: string; receipt: SubagentReceipt } | null }>('terminal.subagents.register', { tools: pi.getActiveTools(), model: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : null, effort: pi.getThinkingLevel(), plan: planRun?.active === true, history: subagentHistory(ctx.sessionManager.getBranch()) })
@@ -367,11 +391,45 @@ export default async function (pi: ExtensionAPI, planRun?: TerminalPlanRunState,
   }
   pi.on('turn_end', (event, ctx) => deliverChildren(event, ctx, false))
   pi.on('agent_before_settle', (event, ctx) => deliverChildren(event, ctx, true))
+  pi.on('agent_before_settle', (event, ctx) => {
+    if (!planRun?.active || planRepairAttempted || event.outcome !== 'completed' || event.continue || ctx.signal?.aborted || failure || sliceState.endedBy || parsePlanOutcome(lastPlanText).kind !== 'invalid') return
+    planRepairAttempted = true
+    return {
+      entries: [...event.entries, { type: 'custom_message', customType: PLAN_REPAIR_CUSTOM_TYPE, content: PLAN_REPAIR_INSTRUCTIONS, display: false, details: { reason: 'invalid_plan_outcome' } }],
+      continue: true
+    }
+  })
+  // Reply text as it streams, batched, for a paired phone (remote control). The completed message
+  // carries the same id and replaces whatever streamed.
+  let streamId: string | null = null
+  let streamText = ''
+  let streamTimer: ReturnType<typeof setTimeout> | null = null
+  let streamCount = 0
+  const flushStream = () => {
+    streamTimer = null
+    if (!streamId || !streamText) return
+    const text = streamText
+    streamText = ''
+    void terminalCall('delta', { id: streamId, text }).catch(() => undefined)
+  }
+  pi.on('message_update', (event) => {
+    const update = event.assistantMessageEvent
+    if (event.message.role !== 'assistant' || update.type !== 'text_delta' || !update.delta) return
+    streamId ??= `${Date.now().toString(36)}-${++streamCount}`
+    streamText += update.delta
+    streamTimer ??= setTimeout(flushStream, STREAM_FLUSH_MS)
+  })
   pi.on('message_end', async (event) => {
     if (event.message.role !== 'assistant') return
+    const messageId = streamId
+    if (streamTimer) clearTimeout(streamTimer)
+    streamTimer = null
+    streamText = ''
+    streamId = null
     if (event.message.stopReason === 'error' || event.message.stopReason === 'aborted') failure = event.message.errorMessage ?? `Pi stopped: ${event.message.stopReason}`
     const text = event.message.content.filter((part) => part.type === 'text').map((part) => part.text).join('\n')
-    if (text) await terminalCall('message', { text })
+    lastPlanText = text
+    if (text) await terminalCall('message', messageId ? { id: messageId, text } : { text })
     if (event.message.usage) {
       const reported = event.message.usage
       usage.inputTokens += reported.input ?? 0
@@ -480,13 +538,15 @@ export default async function (pi: ExtensionAPI, planRun?: TerminalPlanRunState,
     if (!event.isError && path) await terminalCall('file', { path, change: 'modified' })
   })
   pi.on('agent_settled', async (event, ctx) => {
+    if (heartbeat) clearInterval(heartbeat)
+    heartbeat = null
     if (subagentParent && !event.aborted && !failure) {
       try { await controlCall('terminal.subagents.verify', { history: subagentHistory(ctx.sessionManager.getBranch()) }, 2_147_483_647) } catch (error) { failure = error instanceof Error ? error.message : String(error) }
     }
     subagentParent = false
     // A reply that stopped at its work-slice boundary is not a completed task: the record says so,
     // so a host can offer the continuation instead of treating it as done (PROP-0041).
-    const reason = sliceState.endedBy ? sliceState.endedBy === 'stuck' ? 'stalled' : 'slice_complete' : undefined
+    const reason = sliceState.endedBy ? 'slice_complete' : undefined
     await terminalCall('settled', { error: failure, aborted: event.aborted, ...(reason ? { reason } : {}) })
   })
   pi.on('user_bash', async () => {
@@ -495,6 +555,8 @@ export default async function (pi: ExtensionAPI, planRun?: TerminalPlanRunState,
   pi.on('session_shutdown', async () => {
     if (timer) clearInterval(timer)
     timer = null
+    if (heartbeat) clearInterval(heartbeat)
+    heartbeat = null
     context = null
     sessionState = null
     stateDelivered = false

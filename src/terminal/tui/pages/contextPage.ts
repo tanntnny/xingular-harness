@@ -2,11 +2,12 @@
 // window each one takes and where the rest of it went. The page only reads: `terminal.context`
 // answers with the attribution and, on request, the text of one row.
 import type { Theme } from '@earendil-works/pi-coding-agent'
-import { matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi } from '@earendil-works/pi-tui'
+import { matchesKey, parseColor, truncateToWidth, visibleWidth, wrapTextWithAnsi } from '@earendil-works/pi-tui'
 
 import type { ContextAttribution, ContextGroup, ContextRow } from '../../../context/types'
-import { CHROME_PAD, headerRow, neutralRule, padded, selectedRow, selectionMuted, selectionText, type TabInfo } from '../chrome'
+import { CHROME_PAD, padded, selectedRow, type TabInfo } from '../chrome'
 import type { TerminalPage } from '../page'
+import { SERIES_COLORS } from '../theme'
 
 export type ContextTab = 'request' | 'growth'
 export type ContextGrouping = 'owner' | 'kind'
@@ -24,6 +25,8 @@ interface ContextPageOptions {
 }
 
 const BARS = '▁▂▃▄▅▆▇█'
+/** Characters per token, for the budget column: the same ratio the attribution estimates with. */
+const CHARS = 4
 const OWNER_TITLES: Record<ContextGroup, string> = {
   foundation: 'Foundation · harness',
   variant: 'Variant',
@@ -55,20 +58,96 @@ function percent(value: number | null): string {
   return value === null ? '?' : `${value.toFixed(1)}%`
 }
 
+/** One rule for capacity, shared with the App's `Meter`: amber at 80, red at 95. */
 function tone(share: number | null): 'error' | 'warning' | 'success' | 'dim' {
   if (share === null) return 'dim'
-  if (share >= 90) return 'error'
-  if (share >= 70) return 'warning'
+  if (share >= 95) return 'error'
+  if (share >= 80) return 'warning'
   return 'success'
 }
 
-/** A context bar: filled as the window is used, with room left in the track. */
-function usageBar(share: number | null, width: number, theme: Theme): string {
+/** What a bar's run is called, short enough to sit in a legend. */
+const SERIES_LABELS: Record<ContextGroup, string> = {
+  foundation: 'foundation',
+  variant: 'variant',
+  application: 'your app',
+  conversation: 'conversation',
+  reserved: 'reserved'
+}
+
+/** The categorical colour of an owner group: the App's `--data-1..4`, in the same order. */
+function seriesColor(theme: Theme, index: number): string {
+  const palette = theme.appearance === 'light' ? SERIES_COLORS.light : SERIES_COLORS.dark
+  return palette[index] ?? palette[palette.length - 1]!
+}
+
+/** Cells for each value out of `total`, by largest remainder, so the runs always add up. */
+export function allocateCells(values: readonly number[], total: number): number[] {
+  const cells = Math.max(0, Math.floor(total))
+  const sum = values.reduce((acc, value) => acc + Math.max(0, value), 0)
+  if (sum <= 0 || cells <= 0) return values.map(() => 0)
+  const present = values.map((value, index) => ({ value: Math.max(0, value), index })).filter((entry) => entry.value > 0)
+  if (cells < present.length) {
+    const out = values.map(() => 0)
+    for (const entry of [...present].sort((left, right) => right.value - left.value).slice(0, cells)) out[entry.index] = 1
+    return out
+  }
+  const exact = values.map((value) => (Math.max(0, value) / sum) * cells)
+  const out = exact.map((value) => Math.floor(value))
+  let left = cells - out.reduce((acc, value) => acc + value, 0)
+  for (const entry of exact.map((value, index) => ({ rest: value - Math.floor(value), index })).sort((left_, right) => right.rest - left_.rest)) {
+    if (left <= 0) break
+    out[entry.index] = (out[entry.index] ?? 0) + 1
+    left -= 1
+  }
+  // A kind with tokens gets one cell while there is room to spare, so it never vanishes silently.
+  for (const entry of present) {
+    if ((out[entry.index] ?? 0) > 0) continue
+    const donor = out.map((value, index) => ({ value, index })).filter((candidate) => candidate.index !== entry.index && candidate.value > 1).sort((a, b) => b.value - a.value)[0]
+    if (!donor) break
+    out[donor.index] = (out[donor.index] ?? 0) - 1
+    out[entry.index] = 1
+  }
+  return out
+}
+
+/** The bar and its legend: one colour per kind of context, the track for free space, a marker at the reserve. */
+export function contextBar(data: ContextAttribution, width: number, theme: Theme): { bar: string; legend: string[] } {
   const room = Math.max(1, width - 2)
-  const track = '░'.repeat(room)
-  if (share === null) return `[${theme.fg('dim', track)}]`
-  const filled = Math.max(0, Math.min(room, Math.round((Math.max(0, Math.min(100, share)) / 100) * room)))
-  return `[${theme.fg(tone(share), '█'.repeat(filled))}${theme.fg('dim', '░'.repeat(room - filled))}]`
+  const parts = OWNER_ORDER.slice(0, 4)
+    .map((group, index) => ({ group, tokens: data.totals[group], color: seriesColor(theme, index) }))
+    .filter((part) => part.tokens > 0)
+  const window = data.window
+  const share = window === null || window <= 0 ? 100 : Math.min(100, (data.used / window) * 100)
+  const filled = Math.max(0, Math.min(room, Math.round((share / 100) * room)))
+  const cells = allocateCells(parts.map((part) => part.tokens), filled)
+  const runs = parts.flatMap((part, index) => (cells[index] ?? 0) > 0 ? [{ text: '█'.repeat(cells[index]!), color: part.color }] : [])
+  const trackCells = Math.max(0, room - filled)
+  const reserve = data.compaction?.reserveTokens ?? null
+  const markerAt = reserve !== null && window !== null && window > 0 ? Math.round(((data.used + reserve) / window) * room) : null
+  const inTrack = markerAt !== null && markerAt >= filled && markerAt < room ? markerAt - filled : null
+  const bar = '[' + runs.map((run) => theme.style(run.text, { fg: parseColor(run.color) })).join('')
+    + (trackCells > 0
+      ? theme.fg('dim', '░'.repeat(inTrack ?? trackCells))
+        + (inTrack === null ? '' : theme.fg('warning', '│') + theme.fg('dim', '░'.repeat(Math.max(0, trackCells - inTrack - 1))))
+      : (inTrack === null ? '' : theme.fg('warning', '│')))
+    + ']'
+
+  const entries: { text: string; color: string | null }[] = parts.map((part) => ({ text: `▌${SERIES_LABELS[part.group]} ${count(part.tokens)}`, color: part.color }))
+  entries.push({ text: `free ${data.free === null ? '?' : count(data.free)}`, color: null })
+  if (reserve !== null) entries.push({ text: `│ compaction at ${count(Math.min(window ?? data.used + reserve, data.used + reserve))}`, color: null })
+  const legend: string[] = []
+  let line = ''
+  for (const entry of entries) {
+    const piece = entry.color ? theme.style(entry.text, { fg: parseColor(entry.color) }) : theme.fg('dim', entry.text)
+    const candidate = line ? `${line}  ${piece}` : piece
+    if (line && visibleWidth(candidate) > width) {
+      legend.push(line)
+      line = piece
+    } else line = candidate
+  }
+  if (line) legend.push(line)
+  return { bar, legend }
 }
 
 /** A label on the left and a quiet value at the right edge of the same row. */
@@ -154,6 +233,8 @@ export class ContextPage implements TerminalPage {
       const answer = await this.options.call('terminal.context', section ? { section } : {}) as { attribution?: ContextAttribution | null; text?: { id: string; title: string; text: string } | null }
       if (this.disposed) return
       this.data = answer.attribution ?? null
+      // Start on the first row so space and enter act on something the person can see.
+      if (!this.entries().some((entry) => entry.row.id === this.selectedId)) this.selectedId = this.entries()[0]?.row.id ?? null
       if (section) {
         if (answer.text) this.detail = answer.text
         else this.error = 'That row carries no text: it is measured, not written.'
@@ -192,7 +273,9 @@ export class ContextPage implements TerminalPage {
       return true
     }
     const entries = this.entries()
-    const current = Math.max(0, entries.findIndex((entry) => entry.row.id === this.selectedId))
+    const found = entries.findIndex((entry) => entry.row.id === this.selectedId)
+    const current = found >= 0 ? found : 0
+    if (!entries.length) return false
     if (matchesKey(data, 'up')) this.move(entries, current - 1)
     else if (matchesKey(data, 'down')) this.move(entries, current + 1)
     else if (matchesKey(data, 'home')) this.offset = 0
@@ -271,19 +354,16 @@ export class ContextPage implements TerminalPage {
   render(width: number, rows: number): string[] {
     if (width < 1 || rows < 1) return []
     const theme = this.options.theme()
-    const data = this.data
-    const meta = data ? `${count(data.used)} / ${data.window === null ? '?' : count(data.window)} · ${percent(data.share)}` : undefined
-    const header = [headerRow('Context', meta, width, theme), neutralRule(width, theme)]
+    // The overlay owns the tab strip, both rules and the hint; the body starts at the reading.
     const body = this.detail ? this.detailBody(width, theme) : this.tab === 'growth' ? this.growthBody(width, theme) : this.requestBody(width, theme)
-    const list = this.detail ? body : body
-    const room = Math.max(0, rows - header.length - 2)
-    this.scrollRows = Math.max(1, room)
-    const offset = this.detail ? Math.min(this.detailOffset, Math.max(0, list.length - room)) : Math.min(this.offset, Math.max(0, list.length - room))
-    this.maxOffset = Math.max(0, list.length - room)
+    const room = Math.max(1, rows)
+    this.scrollRows = room
+    this.maxOffset = Math.max(0, body.length - room)
+    const wanted = this.detail ? this.detailOffset : this.offset
+    const offset = Math.max(0, Math.min(wanted, this.maxOffset))
     if (this.detail) this.detailOffset = offset
     else this.offset = offset
-    const footer = [neutralRule(width, theme), padded(theme.fg('dim', this.hint()), width)]
-    return [...header, ...list.slice(offset, offset + room), ...footer].map((line) => truncateToWidth(line, width, ''))
+    return body.slice(offset, offset + room).map((line) => truncateToWidth(line, width, ''))
   }
 
   private requestBody(width: number, theme: Theme): string[] {
@@ -298,18 +378,21 @@ export class ContextPage implements TerminalPage {
       theme.fg(tone(data.share), `${percent(data.share)} used · ${data.source}`),
       inner
     ), width))
-    body.push(padded(usageBar(data.share, inner, theme), width))
+    const chart = contextBar(data, inner, theme)
+    body.push(padded(chart.bar, width))
+    for (const line of chart.legend) body.push(padded(line, width))
     body.push('')
     for (const entry of this.entries()) {
       if (entry.heading) {
         const total = data.rows.filter((row) => (this.grouping === 'owner' ? OWNER_TITLES[row.group] === entry.heading : kindOf(row) === entry.heading)).reduce((sum, row) => sum + row.tokens, 0)
-        body.push(padded(theme.bold(theme.fg('accent', entry.heading)) + theme.fg('dim', `  ${count(total)}`), width))
+        // The heading carries its group's colour, so the list and the bar read as one picture.
+        const owner = this.grouping === 'owner' ? OWNER_ORDER.find((group) => OWNER_TITLES[group] === entry.heading) : undefined
+        const swatch = owner ? theme.style('█ ', { fg: parseColor(seriesColor(theme, OWNER_ORDER.indexOf(owner))) }) : ''
+        body.push(padded(swatch + theme.bold(theme.fg('accent', entry.heading)) + theme.fg('dim', `  ${count(total)}`), width))
       }
       if (entry.folded) continue
       body.push(this.rowLine(entry.row, inner, width, theme))
     }
-    body.push('')
-    body.push(padded(theme.fg('dim', `free ${data.free === null ? '?' : count(data.free)}${data.compaction ? ` · reserve ${count(data.compaction.reserveTokens)}` : ''}`), width))
     if (data.onDemand.length) {
       body.push('')
       body.push(padded(theme.fg('accent', 'On demand') + theme.fg('dim', '  not in this request'), width))
@@ -329,21 +412,21 @@ export class ContextPage implements TerminalPage {
   private rowLine(row: ContextRow, inner: number, width: number, theme: Theme): string {
     const selected = row.id === this.selectedId
     const marker = selected ? '❯ ' : row.always ? '  ' : '· '
-    const budget = row.budget ? `  ${count(row.tokens * 4)} of ${count(row.budget)} chars` : ''
-    const tools = row.tools?.length ? `  ${row.tools.map((tool) => `${tool.group} ${tool.count}`).join(' · ')}` : ''
-    const note = row.note ? `  ${row.note}` : ''
     const tail = `${count(row.tokens).padStart(7)}${percent(row.share).padStart(7)}`
-    const label = `${marker}${row.title}`
-    const fixed = visibleWidth(tail) + 1
-    const left = truncateToWidth(label, Math.max(4, inner - fixed - visibleWidth(budget) - visibleWidth(tools) - visibleWidth(note)), '…')
-    const line = `${left}${' '.repeat(Math.max(1, inner - visibleWidth(left) - fixed))}${tail}`
+    // The note says why a figure is not exact, so it outranks the budget and the tool breakdown.
+    const extras = [
+      row.note ? row.note : '',
+      row.budget ? `${count(row.chars ?? row.tokens * CHARS)} of ${count(row.budget)} chars` : '',
+      row.tools?.length ? row.tools.map((tool) => `${tool.group} ${tool.count}`).join(' · ') : ''
+    ].filter(Boolean)
+    const room = (): number => Math.max(12, inner - visibleWidth(tail) - 1 - (extras.length ? visibleWidth(extras.join('  ')) + 2 : 0))
+    let left = truncateToWidth(`${marker}${row.title}`, room(), '…')
+    while (extras.length && visibleWidth(left) + visibleWidth(tail) + 2 + visibleWidth(extras.join('  ')) > inner) extras.pop()
+    const rest = extras.join('  ')
+    const gap = Math.max(1, inner - visibleWidth(left) - visibleWidth(tail) - (rest ? visibleWidth(rest) + 2 : 0))
+    const line = `${left}${' '.repeat(gap)}${rest ? theme.fg('dim', rest) + '  ' : ''}${tail}`
     if (selected) return selectedRow(padded(line, width), width, theme)
-    const rest = `${budget}${tools}${note}`
-    if (rest && inner > visibleWidth(line) + visibleWidth(rest)) {
-      const quiet = theme.fg('dim', rest)
-      return padded(selected ? selectionMuted(theme, line) : line + ' '.repeat(Math.max(1, inner - visibleWidth(line) - visibleWidth(rest))) + quiet, width)
-    }
-    return padded(selected ? selectionText(theme, line) : line, width)
+    return padded(line, width)
   }
 
   private growthBody(width: number, theme: Theme): string[] {

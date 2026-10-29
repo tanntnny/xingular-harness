@@ -48,6 +48,8 @@ export interface TerminalCommandHost {
   /** Opens a file in the person's editor and resolves once the editor closes. */
   editFile?(path: string): Promise<void>
   hotkeys?(): string
+  /** Follow `/remote-control` after it starts: the status bar, and pairing requests. */
+  watchRemoteControl?(): void
   logs: { read(): Promise<string> }
   subagents(): readonly TerminalSubagentActivity[]
   trajectory: {
@@ -88,9 +90,9 @@ export function createTerminalCommands(host: TerminalCommandHost) {
     return session.resourceLoader.getSkills().skills.map((skill) => ({ name: skill.name, description: skill.description }))
   }
 
-  async function openPage(id: CommandPageId, options: { runId?: string; url?: string; annotate?: AnnotateStart; usageTab?: 'analysis' | 'limit' | 'accounts'; usagePeriod?: 'today' | '7d' | '30d' | 'all' } = {}) {
+  async function openPage(id: CommandPageId, options: { runId?: string; url?: string; annotate?: AnnotateStart; usageTab?: 'analysis' | 'limit' | 'accounts'; usagePeriod?: 'today' | '7d' | '30d' | 'all'; contextTab?: 'request' | 'growth' } = {}) {
     let close = () => {}
-    const page = createCommandPage(host, id, { ...options, close: () => close() })
+    const page = createCommandPage(host, id, { ...options, close: () => close(), navigate: (target) => { close(); setTimeout(() => void openPage(target), 0) } })
     await host.ui.custom<void>((tui, _theme, _keys, done) => {
       close = () => done(undefined)
       return new PageOverlay({ page, tui, theme: () => host.ui.theme, close, changed: host.changed })
@@ -426,6 +428,20 @@ export function createTerminalCommands(host: TerminalCommandHost) {
           break
         }
         case 'log': await openPage('log'); break
+        case 'context': await openPage('context', { contextTab: argument === 'growth' ? 'growth' : 'request' }); break
+        case 'remote-control': {
+          const choice = argument.toLowerCase()
+          if (choice === 'off' || choice === 'stop') {
+            await host.control('terminal.remoteControl.stop')
+            notify('Remote control stopped.')
+            break
+          }
+          if (choice && !['tailscale', 'lan', 'wifi', 'wi-fi'].includes(choice)) throw new Error('Use /remote-control, /remote-control off, /remote-control tailscale or /remote-control lan.')
+          await host.control('terminal.remoteControl.start', { interface: choice === 'tailscale' ? 'tailscale' : choice ? 'lan' : 'auto' })
+          host.watchRemoteControl?.()
+          await openPage('remote-control')
+          break
+        }
         case 'compact': await session.compact(argument || undefined); break
         case 'reload': await host.runtime().reload(); notify('Trusted resources reloaded'); break
         case 'copy': {

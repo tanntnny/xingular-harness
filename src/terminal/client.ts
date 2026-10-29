@@ -6,6 +6,8 @@ import { createConnection, type Socket } from 'node:net'
 
 export const SOCKET_ENV = 'XINGULAR_HARNESS_SOCKET'
 export const TOKEN_ENV = 'XINGULAR_HARNESS_TOKEN'
+/** Set by `xagent --remote-control`: the terminal turns on `/remote-control` as it opens. */
+export const REMOTE_CONTROL_ENV = 'XINGULAR_HARNESS_REMOTE_CONTROL'
 
 export class SocketError extends Error {
   constructor(

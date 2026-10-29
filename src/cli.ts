@@ -54,6 +54,8 @@ Standalone terminal options:
                      Start in a new managed worktree of this repository, or in
                      the named one
   --variant <scope>  Run on this variant scope's head (default: interactive profile scope)
+  --remote-control, --rc
+                     Turn on /remote-control at start, to continue from a phone or iPad
 `
 
 function flags(argv: string[]): { values: Record<string, string[]>; switches: Set<string> } {

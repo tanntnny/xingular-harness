@@ -61,6 +61,21 @@ export const PLAN_SECTION_ID = 'plan'
 export const PLAN_SECTION_ORDER = 25
 export const PLAN_OPEN_TAG = '<proposed_plan>'
 export const PLAN_CLOSE_TAG = '</proposed_plan>'
+export const PLAN_BLOCKED_OPEN_TAG = '<plan_blocked>'
+export const PLAN_BLOCKED_CLOSE_TAG = '</plan_blocked>'
+const LEGACY_CLARIFICATION_TAGS = ['<plan_clarification>', '</plan_clarification>']
+
+/** The hidden custom message that asks a plan run to re-send a reply without its plan block. */
+export const PLAN_REPAIR_CUSTOM_TYPE = 'xingular-plan-repair'
+
+/**
+ * One repair turn, not a new plan request: it is sent only after a top-level attended plan run ends
+ * without a complete block. The model preserves its plan or asks for necessary input.
+ */
+export const PLAN_REPAIR_INSTRUCTIONS = `Your last reply to this plan request did not end with the required plan block.
+- If you already proposed a sound plan, re-send it unchanged and complete inside one ${PLAN_OPEN_TAG} ... ${PLAN_CLOSE_TAG} block. Its first line must be the plan title as an H1 heading.
+- Do not research again or change an existing plan. If necessary user input is missing, call ${ASK_USER} when available, then return a complete plan informed by the answer. Never ask a question in free text.
+- Only if necessary input cannot be obtained because ${ASK_USER} is unavailable, return one ${PLAN_BLOCKED_OPEN_TAG} ... ${PLAN_BLOCKED_CLOSE_TAG} block with a nonempty explanation of the blocker, not a question. Do not invent an answer.`
 
 export const PLAN_INSTRUCTIONS = `Plan mode is on for this request. Research and design; do not carry out the work.
 - Classify the task and scale investigation and plan detail to it. For repository work, read the governing instructions and relevant source, callers and tests before asserting paths, symbols, behavior or checks. Cite inspected code as path:line; cite external research with source URLs, and mark unverified claims as unknown.
@@ -80,7 +95,7 @@ ${PLAN_OPEN_TAG}
 # <Plan title>
 <Markdown: Goal or Summary first; Findings when useful; ordered Steps with files and behavior; Verification with expected results; material Assumptions>
 ${PLAN_CLOSE_TAG}
-- If the user's input is necessary before a sound plan is possible, ask instead of proposing one.`
+- If the user's input is necessary before a sound plan is possible, call ${ASK_USER} when available and continue planning after the answer. Never ask the user a question in free text. Only when ${ASK_USER} is unavailable and necessary input cannot be obtained, end with exactly one ${PLAN_BLOCKED_OPEN_TAG} ... ${PLAN_BLOCKED_CLOSE_TAG} block containing a nonempty explanation of the blocker, not a question, instead of a plan. Do not invent an answer.`
 
 export const PLAN_RESEARCH_SUBAGENT_INSTRUCTIONS = `You are a read-only research subagent supporting a parent plan.
 - Answer only the bounded question in your brief. Inspect sources and return concise findings with path:line or source URLs, separating evidence from inference and stating uncertainty.
@@ -149,6 +164,42 @@ export function parseProposedPlan(text: string): ProposedPlan | null {
     body,
     after: complete ? text.slice(close + PLAN_CLOSE_TAG.length).trim() : '',
     complete
+  }
+}
+
+export type PlanOutcome =
+  | { kind: 'plan_ready'; plan: ProposedPlan }
+  | { kind: 'blocked'; reason: string }
+  | { kind: 'invalid' }
+
+/** Validate the final reply without changing the permissive streaming parser. */
+export function parsePlanOutcome(text: string): PlanOutcome {
+  if (LEGACY_CLARIFICATION_TAGS.some((tag) => text.includes(tag))) return { kind: 'invalid' }
+  const tags = [PLAN_OPEN_TAG, PLAN_CLOSE_TAG, PLAN_BLOCKED_OPEN_TAG, PLAN_BLOCKED_CLOSE_TAG]
+  const counts = tags.map((tag) => text.split(tag).length - 1)
+  if (counts[0] === 1 && counts[1] === 1 && counts[2] === 0 && counts[3] === 0) {
+    const plan = parseProposedPlan(text)
+    const start = text.indexOf(PLAN_OPEN_TAG) + PLAN_OPEN_TAG.length
+    const end = text.indexOf(PLAN_CLOSE_TAG)
+    if (plan?.complete && end >= start && text.slice(start, end).trim()) return { kind: 'plan_ready', plan }
+  }
+  if (counts[0] === 0 && counts[1] === 0 && counts[2] === 1 && counts[3] === 1) {
+    const start = text.indexOf(PLAN_BLOCKED_OPEN_TAG) + PLAN_BLOCKED_OPEN_TAG.length
+    const end = text.indexOf(PLAN_BLOCKED_CLOSE_TAG)
+    const reason = end >= start ? text.slice(start, end).trim() : ''
+    if (reason) return { kind: 'blocked', reason }
+  }
+  return { kind: 'invalid' }
+}
+
+/** Attempt at most one injected repair; failed repairs leave an invalid outcome. */
+export async function finalizePlanOutcome(text: string, repair: () => Promise<string>): Promise<{ outcome: PlanOutcome; repaired: boolean }> {
+  const outcome = parsePlanOutcome(text)
+  if (outcome.kind !== 'invalid') return { outcome, repaired: false }
+  try {
+    return { outcome: parsePlanOutcome(await repair()), repaired: true }
+  } catch {
+    return { outcome, repaired: true }
   }
 }
 

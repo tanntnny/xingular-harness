@@ -1,7 +1,7 @@
 ---
 id: PROP-0049
 title: Context attribution as a built-in capability
-status: Proposed
+status: Implemented
 created: 2026-10-28
 updated: 2026-10-28
 affects: [INV-PRM-6, INV-SRV-1, INV-PAR-1, INV-PAR-2, INV-RUN-7, 04-prompt.md, 10-server-protocol.md, 11-terminal.md, 14-surfaces-and-parity.md, parity.md]
@@ -363,6 +363,33 @@ deleting the page, the method and the extra pack field; no data depends on it.
   `cd src-tauri && cargo test`.
 - A visual check of both surfaces against one real run, comparing the header figure with the
   terminal status band and with Pi's own footer.
+
+## What shipped
+
+- `prompt/compile.ts` renders the pack with `renderSized` and records `delivery.sizes` (system and
+  update maps plus framing); `render()` is unchanged byte for byte. The sizes are recorded in place of
+  the per-section `rendered?: number` the design proposed: one map, keyed by the ids that already
+  name the sections.
+- `sessions/contracts.ts` records `compaction: { enabled, reserveTokens }` in `context.snapshot`, read
+  from the Pi session's own settings; absent stays absent.
+- `context/attribution.ts` builds the rows, the measured reconciliation, the reserve and free space,
+  the per-request history, the compaction markers and the on-demand list. `context.attribution` is a
+  new server method; `terminal.context` resolves the terminal's latest run, so no surface passes a
+  run id it could not verify.
+- The bar is segmented: one colour per kind of context (the App's `--data-1..4` on both surfaces), the
+  track for free space, and a `│` where the reserve begins. The terminal's palette lives in
+  `terminal/tui/theme.ts` as `SERIES_COLORS`; the shared `SegmentedBar` grew `track`, `marker` and
+  `height` so the App draws one bar instead of a single-tone meter above a split. Severity moved to
+  the percentage text, on one rule for both surfaces: amber at 80, red at 95.
+- The terminal `/context` page shipped with the one-column ledger and the detail replacing the list on
+  `enter` (the side-by-side panes in Option B were not built); `g` regroups by owner or kind, `c`
+  compacts after a confirmation, `v` navigates to `/harness`. The band and the OpenTUI status bar
+  gained the reading, shown only when the session knows it.
+- The App gained `context.attribution` on the bridge, a full-width `ContextAttributionPage` opened from
+  the Context tab, and a context ring in the composer footer. The ring reports; it does not open the
+  page yet, so the Context tab is the only App entry point.
+- `context.attribution` takes `{ runId }` only; the session-scoped case is `terminal.context`, which is
+  the surface that has a session rather than a run.
 
 ## Open questions
 

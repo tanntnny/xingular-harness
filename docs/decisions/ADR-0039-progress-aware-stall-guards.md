@@ -2,11 +2,15 @@
 id: ADR-0039
 title: Progress-aware stall guards and bounded plan research children
 status: Accepted
+superseded_by: ADR-0053 (targeted protections only)
 created: 2026-10-27
 proposal: PROP-0046
 ---
 
 # ADR-0039: Progress-aware stall guards and bounded plan research children
+
+The targeted repeated-call, repeated-failing-check and edit-churn protections decided here are
+superseded by [ADR-0053](ADR-0053-no-repeated-work-guard.md); the rest of the decision stands.
 
 ## Decision
 

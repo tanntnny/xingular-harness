@@ -13,6 +13,7 @@ import { createHarness, type Harness, type HarnessOptions } from '../harness'
 import { seedVariant } from '../variant/seed'
 import * as variantStore from '../variant/store'
 import type { TerminalLaunch } from './terminals'
+import { REMOTE_CONTROL_ENV } from './client'
 
 export interface StandalonePaths {
   dataRoot: string
@@ -21,6 +22,8 @@ export interface StandalonePaths {
   worktree?: string | true | null
   /** `--variant <scope>`: run on that scope's head, as a host's agent of that scope does. */
   variant?: string | null
+  /** `--remote-control`, `--rc`: turn on `/remote-control` as the terminal opens. */
+  remoteControl?: boolean
 }
 
 export interface StandaloneDependencies {
@@ -50,8 +53,13 @@ function resolveStandaloneOptions(argv: string[], home = homedir(), cwd = proces
   const given = new Set<string>()
   let worktree: StandalonePaths['worktree']
   let variant: StandalonePaths['variant']
+  let remoteControl = false
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index]
+    if (argument === '--remote-control' || argument === '--rc') {
+      remoteControl = true
+      continue
+    }
     if (argument === '--worktree' || argument === '-w') {
       const name = argv[index + 1]
       if (name && !name.startsWith('-')) {
@@ -119,7 +127,8 @@ function resolveStandaloneOptions(argv: string[], home = homedir(), cwd = proces
       dataRoot: profile.dataRoot,
       stateDir: profile.stateDir,
       ...(worktree !== undefined ? { worktree } : {}),
-      ...(variant !== undefined ? { variant } : {})
+      ...(variant !== undefined ? { variant } : {}),
+      ...(remoteControl ? { remoteControl } : {})
     }
   }
 }
@@ -242,7 +251,7 @@ export async function runStandaloneTerminal(argv: string[], dependencies: Standa
     for (;;) {
       const sessionFolder = join(paths.dataRoot, 'sessions', 'terminal', createHash('sha256').update(cwd).digest('hex'))
       const launch = await harness.terminals.prepare({ ...current, cwd, sessionFolder, variant: { scope: variantScope }, ...(worktreeId ? { run: { worktreeId } } : {}) })
-      const code = await spawnFrontend(launch, cwd, dependencies.spawn)
+      const code = await spawnFrontend(paths.remoteControl ? { ...launch, env: { ...launch.env, [REMOTE_CONTROL_ENV]: '1' } } : launch, cwd, dependencies.spawn)
       // `/accounts` and `/worktree` ask for a switch and end the frontend. An account switch resumes
       // the conversation; a folder switch starts a new one there.
       const next = harness.terminals.takeRelaunch(current.sessionId)

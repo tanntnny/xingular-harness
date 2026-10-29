@@ -12,11 +12,12 @@ import {
 import { matchesKey, type Component, type EditorComponent } from '@earendil-works/pi-tui'
 
 import { controlCall } from '../control'
+import { REMOTE_CONTROL_ENV } from '../client'
 import { CHROME_ROWS, centerDialogChromeRows, selectionText } from '../tui/chrome'
 import { createTerminalCommands } from '../tui/commands'
 import { BROWSER_COMMANDS } from '../browser'
 import type { TerminalCommandHelpGroup } from '../commandHelp'
-import { parseProposedPlan } from '../tui/planMode'
+import { parsePlanOutcome } from '../../sessions/planMode'
 import { DialogPanel, SearchableSelect } from '../tui/dialogs'
 import { terminalKeybindings } from '../tui/keybindings'
 import { loadPiAdapter, setPiTheme } from '../tui/piAdapter'
@@ -46,6 +47,7 @@ import { linkTarget, openLink as openWithDefaultHandler, type LinkTarget } from 
 import { subagentRoster, type SubagentRosterView } from './subagentsWidget'
 import type { PendingMessage } from './pendingMessages'
 import { skillTokenAt } from '../tui/skillInvocation'
+import type { RemoteStatus as RemoteControlStatus } from '../../remote/service'
 
 const exec = promisify(execFile)
 const COPY_TOAST_DURATION_MS = 2500
@@ -122,6 +124,8 @@ export interface FileCompletionView {
 
 export interface OpenTuiView {
   home: boolean
+  /** `/remote-control` state for the status bar. */
+  remoteControl?: 'waiting' | 'connected' | null
   sessionName?: string
   cwd: string
   branch: string | null
@@ -260,6 +264,9 @@ export class OpenTuiApplication {
   readonly done = new Promise<void>(resolve => { this.finish = resolve })
   private pendingBusy = false
   private decisionWatch?: AbortController
+  private remoteWatch?: AbortController
+  private remoteState: 'waiting' | 'connected' | null = null
+  private readonly remoteAsked = new Set<string>()
   private pendingRequests: TerminalDecision[] = []
   private pendingAbort?: AbortController
   private pendingId?: string
@@ -580,7 +587,8 @@ export class OpenTuiApplication {
         subagents: () => this.subagents,
         editFile: path => this.editFile(path),
         suspend: () => this.suspend(),
-        hotkeys: () => this.hotkeys()
+        hotkeys: () => this.hotkeys(),
+        watchRemoteControl: () => this.watchRemoteControl()
       })
       this.cleanup.push(this.runtime.subscribe(event => this.accept(event)))
       this.cleanup.push(this.runtime.onBeforeSessionChange(() => this.resetPresentation()))
@@ -611,6 +619,7 @@ export class OpenTuiApplication {
       this.cleanup.push(() => { clearInterval(tick); clearInterval(git) })
       await this.refreshBranch()
       this.change()
+      if (process.env[REMOTE_CONTROL_ENV] === '1') void this.commands.execute('/remote-control')
     } catch (error) {
       this.failure = error instanceof Error ? error : new Error(String(error))
       this.notify(this.failure.message, 'error')
@@ -888,6 +897,54 @@ export class OpenTuiApplication {
     if (event.type === 'summarization_retry_finished') this.notify('Summarization retry finished.')
     this.transcript.invalidate()
     this.change()
+  }
+
+  /**
+   * Follows `/remote-control` while it is on: the status bar group, and the question the person
+   * answers when a phone asks to pair. The `/rc` page asks it itself while it is open.
+   */
+  private watchRemoteControl(): void {
+    if (this.remoteWatch || this.stopped) return
+    const watch = new AbortController()
+    this.remoteWatch = watch
+    this.cleanup.push(() => watch.abort())
+    void (async () => {
+      let revision: number | undefined
+      try {
+        while (!watch.signal.aborted && !this.stopped) {
+          let status: RemoteControlStatus
+          try {
+            status = await controlCall<RemoteControlStatus>(revision === undefined ? 'terminal.remoteControl.status' : 'terminal.remoteControl.status.wait', { revision }, 25_000, watch.signal)
+          } catch {
+            if (watch.signal.aborted || this.stopped) return
+            revision = undefined
+            await new Promise(resolve => setTimeout(resolve, 1000))
+            continue
+          }
+          revision = status.revision
+          const state = !status.running ? null : status.devices.some(device => device.connected) ? 'connected' : 'waiting'
+          if (state !== this.remoteState) {
+            this.remoteState = state
+            this.change()
+          }
+          const request = status.request
+          const ui = this.ui
+          if (request && ui && !this.remoteAsked.has(request.id) && !this.host.hasOverlay()) {
+            this.remoteAsked.add(request.id)
+            void ui.confirm('Allow remote control?', `${request.label} wants to control this session: send messages, stop replies, and answer approvals and questions.`)
+              .then(allow => controlCall('terminal.remoteControl.confirm', { requestId: request.id, allow }))
+              .catch(error => this.notify(error instanceof Error ? error.message : String(error), 'error'))
+          }
+          if (!status.running && !request) return
+        }
+      } finally {
+        if (this.remoteWatch === watch) this.remoteWatch = undefined
+        if (this.remoteState !== null) {
+          this.remoteState = null
+          this.change()
+        }
+      }
+    })()
   }
 
   private async watchDecisions(signal: AbortSignal): Promise<void> {
@@ -1533,8 +1590,13 @@ export class OpenTuiApplication {
     if (this.deferredInputs.length) return
     const last = this.session.messages.at(-1) as { role?: string; stopReason?: string } | undefined
     if (last?.role !== 'assistant' || last.stopReason === 'error' || last.stopReason === 'aborted') return
-    const plan = parseProposedPlan(this.session.getLastAssistantText() ?? '')
-    if (plan?.complete) this.planChoice.show(plan.title)
+    const outcome = parsePlanOutcome(this.session.getLastAssistantText() ?? '')
+    if (outcome.kind === 'plan_ready') this.planChoice.show(outcome.plan.title)
+    else {
+      this.planChoice.clear()
+      if (outcome.kind === 'blocked') this.notify('Planning stopped because user input is unavailable.', 'warning')
+      else if (outcome.kind === 'invalid') this.notify('The plan reply did not include a valid plan or blocked outcome.', 'warning')
+    }
   }
 
   /** Leaves plan mode, then runs the plan. The plan is already in the conversation, so the prompt only names it. */
@@ -1978,6 +2040,7 @@ export class OpenTuiApplication {
       if (lines) (widget.placement === 'belowEditor' ? below : above).push(lines)
     }
     return {
+      remoteControl: this.remoteState,
       // Single-line notices can accompany the welcome; multiline output such as /help takes over the transcript.
       home: !transcript.hasMultilineNotice && transcript.items.every(item => item.kind === 'notice'),
       sessionName: snapshot?.name,

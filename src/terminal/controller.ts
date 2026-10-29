@@ -9,6 +9,7 @@ import { runStatusSchema, type RunEvent, type RunRecord } from '../sessions/cont
 import { briefTitle } from '../sessions/subagents'
 import type { ActiveRun, ApprovalDecision, QuestionAnswer, QuestionInput } from '../sessions/registry'
 import { MAIN_PROFILE, SubagentMonitor, type TerminalSubagentActivity, type TerminalSubagentProfile, type TerminalSubagentRun } from './subagentMonitor'
+import { replyStalled } from './stallWatch'
 
 type MonitorRuntime = Pick<TerminalSubagentRun, 'accountLabel' | 'model' | 'effort'>
 
@@ -84,6 +85,8 @@ type Command = { type: 'interrupt' } | { type: 'send'; text: string }
 
 const READY_TIMEOUT_MS = 90_000
 const ACK_TIMEOUT_MS = 25_000
+/** How often a live reply's progress is checked against the stall windows. */
+const STALL_CHECK_MS = 30_000
 
 export class TerminalController {
   private run: ActiveRun | null = null
@@ -103,6 +106,11 @@ export class TerminalController {
   private nativeId: string | null
   private readonly seen = new Map<string, Promise<unknown>>()
   private readonly commands: Command[] = []
+  /** When the reply last produced something other than a heartbeat; silence is what a stall is. */
+  private progressAt = 0
+  private readonly runningTools = new Map<string, number>()
+  private stallRequested: string | null = null
+  private stallTimer: ReturnType<typeof setInterval> | null = null
 
   constructor(private readonly hooks: ControllerHooks) {
     this.nativeId = hooks.nativeSessionId
@@ -165,6 +173,7 @@ export class TerminalController {
     this.run = run
     this.lastRunId = run.runId
     this.subagentParentRunId = run.runId
+    this.watchProgress()
     this.subagents.begin(run.runId)
     run.onInterrupt(() => void this.commands.push({ type: 'interrupt' }))
     if (text) run.emit('message.completed', { messageId: nativeTurnId, role: 'user', text })
@@ -174,10 +183,41 @@ export class TerminalController {
   }
 
   private finish(outcome: 'completed' | 'failed' | 'interrupted', message?: string, reason?: string): void {
+    this.stopStallWatch()
     this.run?.finish(outcome, message ? { code: 'terminal_attention', message } : undefined, reason)
     this.run = null
     this.seen.clear()
     if (this.pending.size) { this.pending.clear(); this.pendingChanged() }
+  }
+
+  private watchProgress(): void {
+    this.progressAt = Date.now()
+    this.runningTools.clear()
+    this.stallRequested = null
+    if (this.stallTimer) clearInterval(this.stallTimer)
+    this.stallTimer = setInterval(() => this.checkStall(), STALL_CHECK_MS)
+    this.stallTimer.unref?.()
+  }
+
+  private stopStallWatch(): void {
+    if (this.stallTimer) clearInterval(this.stallTimer)
+    this.stallTimer = null
+    this.stallRequested = null
+    this.runningTools.clear()
+  }
+
+  /**
+   * Ends a reply its native turn can no longer finish: the process is alive and keeps reporting, but
+   * the reply produced nothing for the whole window (a model request that never came back). A person
+   * may already be answering an approval, and a tool may still be working, so neither is cut short.
+   */
+  private checkStall(): void {
+    const run = this.activeRun
+    if (!run || this.stallRequested || this.pending.size) return
+    if (!replyStalled({ now: Date.now(), progressAt: this.progressAt, runningTools: [...this.runningTools.values()] })) return
+    this.stallRequested = run.runId
+    this.hooks.telemetry('stall')
+    this.commands.push({ type: 'interrupt' })
   }
 
   /** Hands the native process an instruction and waits until it acknowledges the prompt. */
@@ -383,7 +423,8 @@ export class TerminalController {
 
   async accept(event: string, data: Record<string, any>): Promise<unknown> {
     if (this.disposed) throw new Error('This terminal controller was disposed.')
-    if (event !== 'poll') this.hooks.telemetry(event)
+    // Streamed reply text is frequent and only feeds run events; it is not host telemetry.
+    if (event !== 'poll' && event !== 'delta') this.hooks.telemetry(event)
     if (event === 'startup') {
       this.startupPhase = String(data.phase)
       return {}
@@ -395,6 +436,8 @@ export class TerminalController {
       return {}
     }
     if (event === 'poll') return { command: this.commands.shift() ?? null }
+    // A heartbeat proves the turn is alive, not that it is working; only real events restart the clock.
+    if (event !== 'heartbeat') this.progressAt = Date.now()
     if (event === 'ready') {
       if (!this.ready) {
         this.dirty = false
@@ -428,7 +471,8 @@ export class TerminalController {
     if (event === 'settled') {
       // A reply that stopped at its work-slice boundary is interrupted, not completed: the record
       // says `slice_complete` (or `stalled`) so a host can continue it (PROP-0041).
-      const reason = typeof data.reason === 'string' ? data.reason : undefined
+      const stalled = this.stallRequested !== null && this.stallRequested === this.run?.runId
+      const reason = stalled ? 'stalled' : typeof data.reason === 'string' ? data.reason : undefined
       const outcome = data.error ? 'failed' : data.aborted || reason ? 'interrupted' : 'completed'
       this.finish(outcome, data.error ? String(data.error) : undefined, reason)
       return {}
@@ -469,11 +513,15 @@ export class TerminalController {
       }
     }
     if (event === 'usage') run.emit('usage.updated', data)
+    else if (event === 'heartbeat') run.emit('heartbeat', data)
     else if (event === 'todo' || event === 'checklist') run.emit('todo.updated', { items: data.items })
     else if (event === 'checkpoint') run.emit('checkpoint', data)
     else if (event === 'file') run.emit('file.changed', data)
+    else if (event === 'delta') run.emit('message.delta', { messageId: String(data.id ?? ''), text: String(data.text ?? '') })
     else if (event === 'message') run.emit('message.completed', { messageId: data.id ?? randomUUID(), role: data.role ?? 'assistant', text: String(data.text) })
     else if (event === 'tool') {
+      if (data.phase === 'start') this.runningTools.set(String(data.id), Date.now())
+      else this.runningTools.delete(String(data.id))
       run.emit(data.phase === 'start' ? 'tool.started' : 'tool.completed', {
         toolCallId: String(data.id),
         name: String(data.name),

@@ -2,7 +2,7 @@
 // This service prepares the isolated account, compiled context, trusted resource selection and
 // socket bridge. The default launch runs our frontend with Pi's persistent SDK runtime.
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { Type } from 'typebox'
@@ -45,7 +45,7 @@ import type { RunRecord } from '../sessions/contracts'
 import { isActiveStatus } from '../sessions/contracts'
 import type { ToolPolicy } from '../sessions/policy'
 import type { ActiveRun, RunRegistry } from '../sessions/registry'
-import { findRun, loadRun, readEvents, recordedSubagents, saveRun, updateRun } from '../sessions/runStore'
+import { findRun, listRuns, loadRun, readEvents, recordedSubagents, saveRun, updateRun } from '../sessions/runStore'
 import { combineWorkspaceScope, inspectRunWorkspaceWrite } from '../sessions/workspaceBoundary'
 import type { ToolSpec } from '../tools/types'
 import { TODO_WRITE } from '../tools/todo'
@@ -76,6 +76,8 @@ import { SessionSocket, socketPath } from './socket'
 import { harnessLogInfo, readHarnessLogChunk } from './logs'
 import { listTerminalTrajectoryRuns, readTerminalTrajectory, latestTerminalTodo } from './trajectory'
 import { BrowserControl } from './browserControl'
+import { RemoteControl, type RemoteControlOptions, type RemoteSessionPort } from '../remote/service'
+import type { RemoteInterfaceChoice } from '../remote/addresses'
 
 /** Identity of the exact resource decision that this terminal was prepared with. */
 function resourceIdentity(loading: Loading | null): string {
@@ -196,6 +198,8 @@ export interface TerminalsOptions {
   usage?: Usage
   /** Provider plan windows, balances and rate limits (`/usage:limit`). */
   usageLimits?: UsageLimits
+  /** Where `/remote-control` listens; tests bind loopback here. */
+  remoteControl?: RemoteControlOptions
 }
 
 /** What `/plugins` in a terminal can do. Each takes the session's folder, account and project. */
@@ -234,6 +238,8 @@ export class Terminals {
   private readonly relaunches = new Map<string, TerminalRelaunch>()
   /** The managed worktree each live session holds. */
   private readonly worktreeLeases = new Map<string, string>()
+  /** `/remote-control` for each live session that opened it. */
+  private readonly remotes = new Map<string, RemoteControl>()
 
   /** Each child's profile name and colour, looked up once per child run. */
   private readonly childProfiles = new Map<string, TerminalSubagentProfile | null>()
@@ -1329,6 +1335,7 @@ export class Terminals {
           }
           if (call.startsWith('terminal.usage.')) return this.usageCall(live, call, params)
           if (call === 'terminal.context') return this.contextCall(live, params)
+          if (call.startsWith('terminal.remoteControl.')) return this.remoteCall(live, call, params)
           if (call !== 'terminal.resources') return live.controller.control(call, params)
           const current = await this.options.plugins?.loading({ cwd: input.cwd, agentDir: configDir(accounts.dir, preparedAccount), install: false, caller: { projectId: input.projectId ?? null } }) ?? null
           const currentVariant = variant ? materialise(root, { dir: variant.dir, scope: variant.scope }, { trust: this.options.trust ?? null }) : null
@@ -1420,6 +1427,76 @@ export class Terminals {
     return this.sessions.has(sessionId)
   }
 
+  private remote(live: Live): RemoteControl {
+    const sessionId = live.input.sessionId
+    let remote = this.remotes.get(sessionId)
+    if (!remote) {
+      remote = new RemoteControl(this.remotePort(live), { productName: this.options.env.productName, ...this.options.remoteControl })
+      this.remotes.set(sessionId, remote)
+    }
+    return remote
+  }
+
+  /**
+   * What a paired phone reaches: this session's own runs and the same send, interrupt and
+   * decision calls the terminal makes (INV-RC-3).
+   */
+  private remotePort(live: Live): RemoteSessionPort {
+    const { root } = this.options.env
+    const sessionId = live.input.sessionId
+    const own = new Map<string, boolean>()
+    const isOwn = (runId: string): boolean => {
+      let known = own.get(runId)
+      if (known === undefined) {
+        const record = findRun(root, runId)
+        known = !!record && !record.relation && record.trigger !== 'side-question'
+        if (own.size > 1000) own.clear()
+        if (record) own.set(runId, known)
+      }
+      return known
+    }
+    return {
+      sessionId,
+      title: () => basename(live.input.cwd) || this.options.env.productName,
+      send: (text) => this.send({ sessionId, text }),
+      control: (call, params) => live.controller.control(call, params) as Promise<unknown>,
+      history: () => {
+        const native = live.controller.nativeSessionId
+        if (!native) return []
+        const runs = listRuns(root, { sessionId })
+          .filter((run) => run.nativeSessionId === native && !run.relation && run.trigger !== 'side-question')
+          .slice(0, 20)
+          .reverse()
+        return runs.flatMap((run) => readEvents(root, run.id))
+      },
+      listen: (listener) => this.options.runs.listen((event) => {
+        if (event.sessionId === sessionId && isOwn(event.runId)) listener(event)
+      }),
+      state: () => {
+        const state = live.controller.state()
+        return { ready: state.ready, active: state.active }
+      }
+    }
+  }
+
+  private async remoteCall(live: Live, call: string, params: Record<string, any>): Promise<unknown> {
+    const remote = this.remote(live)
+    if (call === 'terminal.remoteControl.status') return remote.status()
+    if (call === 'terminal.remoteControl.status.wait') return remote.waitStatus(params.revision)
+    if (call === 'terminal.remoteControl.start') {
+      const choice = params.interface ?? 'auto'
+      if (!['auto', 'tailscale', 'lan'].includes(choice)) throw invalid('Choose auto, tailscale or lan.')
+      return remote.start(choice as RemoteInterfaceChoice)
+    }
+    if (call === 'terminal.remoteControl.stop') return remote.stop()
+    if (call === 'terminal.remoteControl.rotate') return remote.rotate()
+    if (call === 'terminal.remoteControl.confirm') {
+      if (typeof params.requestId !== 'string' || typeof params.allow !== 'boolean') throw invalid('A pairing request id and a boolean choice are required.')
+      return remote.confirm(params.requestId, params.allow)
+    }
+    throw new HarnessError('unknown_method', `Unknown terminal control ${call}.`)
+  }
+
   /** The terminal process ended (or never started): its turn, tokens, and written credentials go with it. */
   async dispose(sessionId: string): Promise<void> {
     const live = this.sessions.get(sessionId)
@@ -1430,6 +1507,9 @@ export class Terminals {
     }
     this.sessions.delete(sessionId)
     this.worldNames.delete(sessionId)
+    const remote = this.remotes.get(sessionId)
+    this.remotes.delete(sessionId)
+    await remote?.dispose().catch(() => undefined)
     const worktreeId = this.worktreeLeases.get(sessionId)
     this.worktreeLeases.delete(sessionId)
     if (worktreeId) await this.options.worktrees?.release(worktreeId, sessionId).catch(() => undefined)

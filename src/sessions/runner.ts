@@ -16,6 +16,7 @@ import type { InlineExtension } from '../plugins/firstParty'
 import type { Loading, Registered } from '../plugins/plugins'
 import { CONTEXT_MESSAGE_TYPE, CONTEXT_SNAPSHOT_KEY, type ContextUpdate } from '../prompt/compile'
 import type { ToolSpec } from '../tools/types'
+import { PLAN_REPAIR_CUSTOM_TYPE, PLAN_REPAIR_INSTRUCTIONS, finalizePlanOutcome } from './planMode'
 import { MAX_CHECKPOINT_CHECKS, MAX_CHECKPOINT_FILES, MAX_CHECKPOINT_SUMMARY, type Checkpoint, type CheckpointCheck } from './contracts'
 import { derivedReason, type SliceState } from './workSlice'
 import { toolAttachmentRefsSchema, type UsageRequest } from './contracts'
@@ -40,6 +41,8 @@ export interface TurnParams {
   workspaceRoot: string
   /** A plan run: model-issued Bash runs only in the read-only sandbox scope. */
   plan?: boolean
+  /** A top-level attended plan run: one hidden repair turn if the reply lacks its plan block. */
+  repairPlan?: boolean
   sessionDir: string
   /** The native history to open, or `null` to start a fresh one. */
   historyFile: string | null
@@ -314,7 +317,6 @@ function derivedCheckpoint(state: SliceState, ledger: SliceLedger): Checkpoint {
     summary: ledger.lastText.trim().slice(0, MAX_CHECKPOINT_SUMMARY) || `The reply stopped after ${state.steps} steps at its work-slice boundary.`,
     done: [],
     next: '',
-    ...(state.endedBy === 'stuck' ? { blocked: (state.endedByLimit ?? 'Repeated work').slice(0, 500) } : {}),
     files: [...ledger.files].slice(-MAX_CHECKPOINT_FILES).map(([path, why]) => ({ path: path.slice(0, 300), why: why.slice(0, 200) })),
     checks: ledger.checks.slice(-MAX_CHECKPOINT_CHECKS),
     decisions: [],
@@ -676,10 +678,23 @@ export async function runTurn(run: ActiveRun, session: PiSessionLike, params: Tu
       session.clearQueue?.()
     }
     if (!aborted && !lastError) await params.settle?.()
+    if (params.plan && params.repairPlan && !aborted && !lastError && !slice?.endedBy) {
+      const errorBeforeRepair = lastError
+      const result = await finalizePlanOutcome(ledger.lastText, async () => {
+        if (!session.sendCustomMessage) throw new Error('Plan repair unavailable')
+        ledger.lastText = ''
+        await session.sendCustomMessage({ customType: PLAN_REPAIR_CUSTOM_TYPE, content: PLAN_REPAIR_INSTRUCTIONS, display: false, details: { reason: 'missing_plan_block' } }, { triggerTurn: true })
+        return ledger.lastText
+      })
+      if (result.repaired && !aborted) lastError = errorBeforeRepair
+      if (result.outcome.kind === 'invalid' && !aborted) {
+        run.emit('extension.notice', { kind: 'notify', level: 'warning', text: 'The plan reply did not include a valid plan or blocked block.' })
+      }
+    }
     if (slice?.endedBy && !aborted && !lastError) {
       // The model stopped because its slice was over. Keep the state it did not write itself.
       if (!slice.checkpointWritten) run.emit('checkpoint', derivedCheckpoint(slice, ledger))
-      run.finish('interrupted', undefined, slice.endedBy === 'stuck' ? 'stalled' : 'slice_complete')
+      run.finish('interrupted', undefined, 'slice_complete')
       return
     }
     if (aborted) run.finish('interrupted')

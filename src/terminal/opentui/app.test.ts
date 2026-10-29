@@ -1436,6 +1436,63 @@ describe('OpenTuiApplication', () => {
     await app.shutdown()
   })
 
+  it('warns instead of offering a plan when the plan run returned no block', async () => {
+    const app = new OpenTuiApplication([])
+    const internals = app as unknown as { offerPlan(): void; runtime?: TerminalRuntime }
+    internals.runtime = {
+      session: {
+        messages: [{ role: 'assistant', stopReason: 'stop' }],
+        getLastAssistantText: () => 'The plan was not wrapped.',
+        state: {},
+        extensionRunner: { getShortcuts: () => new Map() }
+      },
+      snapshot: () => undefined,
+      dispose: async () => {}
+    } as unknown as TerminalRuntime
+
+    internals.offerPlan()
+
+    expect(app.view().items.at(-1)).toMatchObject({ kind: 'notice', text: 'The plan reply did not include a valid plan or blocked outcome.', level: 'warning' })
+    expect(app.view().planChoice).toBeNull()
+    await app.shutdown()
+  })
+
+  it('reports blocked input without offering a plan', async () => {
+    const app = new OpenTuiApplication([])
+    const internals = app as unknown as { offerPlan(): void; runtime?: TerminalRuntime }
+    internals.runtime = {
+      session: {
+        messages: [{ role: 'assistant', stopReason: 'stop' }],
+        getLastAssistantText: () => '<plan_blocked>User input is unavailable.</plan_blocked>',
+        state: {}, extensionRunner: { getShortcuts: () => new Map() }
+      }, snapshot: () => undefined, dispose: async () => {}
+    } as unknown as TerminalRuntime
+    internals.offerPlan()
+    expect(app.view().items.at(-1)).toMatchObject({ kind: 'notice', text: 'Planning stopped because user input is unavailable.', level: 'warning' })
+    expect(app.view().planChoice).toBeNull()
+    await app.shutdown()
+  })
+
+  it('offers the plan when the plan run returned a complete block', async () => {
+    const app = new OpenTuiApplication([])
+    const internals = app as unknown as { offerPlan(): void; runtime?: TerminalRuntime }
+    internals.runtime = {
+      session: {
+        messages: [{ role: 'assistant', stopReason: 'stop' }],
+        getLastAssistantText: () => '<proposed_plan># Fix it\n\n1. Patch it.</proposed_plan>',
+        state: {},
+        extensionRunner: { getShortcuts: () => new Map() }
+      },
+      snapshot: () => undefined,
+      dispose: async () => {}
+    } as unknown as TerminalRuntime
+
+    internals.offerPlan()
+
+    expect(app.view().planChoice).toMatchObject({ title: 'Fix it' })
+    await app.shutdown()
+  })
+
   it('gives plan-choice navigation precedence over prompt history', async () => {
     const app = new OpenTuiApplication([])
     const internals = app as unknown as {

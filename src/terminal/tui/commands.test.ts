@@ -307,7 +307,7 @@ describe('owned terminal commands', () => {
     const runCommands = groups.find(group => group.name === 'Run')?.commands ?? []
     expect(runCommands).toContainEqual({ name: 'btw', aliases: ['side'], description: 'Ask a side question without interrupting: /btw <question>' })
     expect(runCommands.map(command => command.name)).not.toContain('side')
-    expect(groups.find(group => group.name === 'Inspect')?.commands.map(command => command.name)).toEqual(['copy', 'export', 'todo', 'trajectory', 'log'])
+    expect(groups.find(group => group.name === 'Inspect')?.commands.map(command => command.name)).toEqual(['copy', 'export', 'todo', 'trajectory', 'log', 'context'])
     expect(groups.find(group => group.name === 'Harness')?.commands.map(command => command.name)).toEqual(expect.arrayContaining(['accounts', 'plugins', 'settings', 'doctor', 'worktree', 'subagents', 'agents', 'mcp']))
     expect(groups.find(group => group.name === 'Plugins')?.commands.map(command => command.name)).toEqual(expect.arrayContaining(['annotate:', 'annotate:notes', 'annotate:submit', 'annotate:clear', 'deploy:deploy']))
     expect(groups.find(group => group.name === 'Prompts')?.commands).toEqual([{ name: 'review', description: 'Review code' }])
@@ -470,6 +470,25 @@ describe('owned terminal commands', () => {
     await vi.waitFor(() => expect(host.trajectory.read).toHaveBeenCalledWith('run-1'))
     expect(shown.page.activeTab()).toBe('events')
     shown.dispose()
+  })
+
+  it('starts remote control and opens its page through /rc, and stops it with /rc off', async () => {
+    const { commands, host, ui } = setup()
+    host.watchRemoteControl = vi.fn()
+    vi.mocked(host.control).mockImplementation((async (method: string) => method === 'terminal.remoteControl.status.wait' ? new Promise(() => {}) : { running: true, revision: 1, url: 'http://192.168.1.20:5000/#a.b', kind: 'lan', kinds: ['lan'], devices: [], request: null, warning: null }) as never)
+    expect(await commands.execute('/rc')).toBe(true)
+    expect(host.control).toHaveBeenCalledWith('terminal.remoteControl.start', { interface: 'auto' })
+    expect(host.watchRemoteControl).toHaveBeenCalledOnce()
+    const shown = await overlayOf(ui)
+    expect(shown.page.tabs().map(tab => tab.title)).toEqual(['Remote Control'])
+    shown.dispose()
+    await commands.execute('/remote-control tailscale')
+    expect(host.control).toHaveBeenCalledWith('terminal.remoteControl.start', { interface: 'tailscale' })
+    await commands.execute('/rc off')
+    expect(host.control).toHaveBeenCalledWith('terminal.remoteControl.stop')
+    expect(ui.notify).toHaveBeenCalledWith('Remote control stopped.', 'info')
+    await commands.execute('/rc everywhere')
+    expect(ui.notify).toHaveBeenCalledWith(expect.stringContaining('/remote-control off'), 'error')
   })
 
   it('opens Log alone and reads diagnostics and current-conversation run events', async () => {

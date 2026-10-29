@@ -102,8 +102,8 @@ describe('Budget guard', () => {
     writeFile(join(base, 'a.txt'), 'line\n'.repeat(40))
     await call('plugins.attach', { id: 'budget-guard' })
     await call('plugins.configure', { pluginId: 'budget-guard', settings: { maxRequests: 5 } })
-    // A model that never stops by itself: every reply asks for another read. The reads differ so
-    // the work-slice stall guard is not what stops this reply; the budget guard is.
+    // A model that never stops by itself: every reply asks for another read, so nothing but the
+    // budget guard is what ends this reply.
     const again = (step: number) => model.calls(['read', { path: join(base, 'a.txt'), offset: step, limit: 1 }])
     model.script(Array.from({ length: 40 }, (_, step) => again(step)))
     const events = await reply('a1')

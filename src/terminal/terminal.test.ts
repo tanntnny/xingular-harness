@@ -19,6 +19,7 @@ import { defaultAssets } from './terminals'
 import { SOCKET_ENV, TOKEN_ENV, socketCall, type SocketConnection } from './client'
 import { SessionSocket } from './socket'
 import { LOG_READ_CHUNK_BYTES } from './logs'
+import { REPLY_STALL_MS } from './stallWatch'
 
 const open: Harness[] = []
 afterEach(async () => {
@@ -88,6 +89,26 @@ describe('a pi terminal session', () => {
     const final = await resolved
     expect(final.revision).toBeGreaterThan(next.revision)
     expect(final.requests).toEqual([])
+  })
+  it('records a live heartbeat on the run so a working reply is not mistaken for a hang', async () => {
+    const { root, tell } = await setup()
+    await tell('ready')
+    const begun = await tell('begin', { text: 'Carry on' })
+    const heartbeat = { steps: 4, elapsedMs: 61_000, lastTool: 'bash', compactions: 0, slice: 1, maxToolCalls: 320 }
+    await tell('heartbeat', heartbeat)
+    expect(readEvents(root, begun.runId).filter((event) => event.type === 'heartbeat').map((event) => event.payload)).toEqual([heartbeat])
+    await tell('settled', { aborted: false })
+  })
+  it('ends a reply that made no progress for the whole stall window', async () => {
+    const { tell, root } = await setup()
+    await tell('ready')
+    vi.useFakeTimers()
+    const begun = await tell('begin', { text: 'Carry on' })
+    await vi.advanceTimersByTimeAsync(REPLY_STALL_MS + 31_000)
+    expect(await tell('poll')).toEqual({ command: { type: 'interrupt' } })
+    await tell('settled', { aborted: true })
+    vi.useRealTimers()
+    expect(loadRun(root, begun.runId)).toMatchObject({ status: 'interrupted', terminalReason: 'stalled' })
   })
   it('launches OpenTUI on the pinned account with compiled instructions, the extension, and the session socket', async () => {
     const { launch, account, harness, sessionFolder, root } = await setup()
@@ -756,5 +777,29 @@ describe('decisions in the Harness-owned frontend', () => {
     await socketCall(connection, 'terminal.interrupt', {}, 1000, key)
     expect(await answer).toEqual({ selected: [] })
     expect(harness.terminals.state('term-1').active).toBe(false)
+  })
+})
+
+describe('remote control of a pi terminal session', () => {
+  it('keeps remote-control calls behind the terminal control key', async () => {
+    const { connection } = await setup()
+    await expect(socketCall(connection, 'terminal.remoteControl.start')).rejects.toMatchObject({ code: 'unauthorized' })
+    await expect(socketCall(connection, 'terminal.remoteControl.confirm', { requestId: 'r', allow: true })).rejects.toMatchObject({ code: 'unauthorized' })
+    const { key } = await socketCall<{ key: string }>(connection, 'control.claim')
+    expect(await socketCall(connection, 'terminal.remoteControl.status', {}, 1000, key)).toMatchObject({ running: false, url: null, devices: [], request: null })
+    await expect(socketCall(connection, 'terminal.remoteControl.start', { interface: 'everywhere' }, 1000, key)).rejects.toThrow('auto, tailscale or lan')
+  })
+
+  it('records streamed reply text under the id of the completed message', async () => {
+    const { tell, events } = await setup()
+    await tell('ready')
+    await tell('begin', { text: 'Stream a reply' })
+    await tell('delta', { id: 'm-1', text: 'Hel' })
+    await tell('message', { id: 'm-1', text: 'Hello.' })
+    const reply = events.filter((event) => event.type === 'message.delta' || (event.type === 'message.completed' && (event.payload as { role: string }).role === 'assistant'))
+    expect(reply.map((event) => [event.type, event.payload])).toEqual([
+      ['message.delta', { messageId: 'm-1', text: 'Hel' }],
+      ['message.completed', { messageId: 'm-1', role: 'assistant', text: 'Hello.' }]
+    ])
   })
 })

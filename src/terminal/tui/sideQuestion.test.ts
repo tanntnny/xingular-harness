@@ -141,8 +141,49 @@ describe('the side question dock', () => {
     expect(failed.rows().join('\n')).toContain('No model is selected.')
   })
 
+  it('renders the side answer as Markdown on the Harness markdown colours', async () => {
+    const answer = [
+      '## Result',
+      '',
+      'The **rollout** flag stays `false`.',
+      '',
+      '- one',
+      '- two',
+      '',
+      '> quoted',
+      '',
+      '```ts',
+      'const enabled = false',
+      '```',
+      '',
+      '[the plan](https://example.test/plan)',
+      '\x1b[31mred\x1b[0m output'
+    ].join('\n')
+    const { side, dock, rows } = setup({ reads: async () => result('completed', [event(0, 'message.completed', { messageId: 'a', role: 'assistant', text: answer }), event(1, 'completed', {})]) })
+    await side.ask('what changed?')
+    await vi.waitFor(() => expect(side.state).toBe('answered'))
+
+    const raw = dock()!.render(80).join('\n')
+    expect(raw).toContain(theme.fg('mdHeading', theme.bold('Result')))
+    expect(raw).toContain(theme.fg('mdCode', 'false'))
+    expect(raw).toContain(theme.fg('mdListBullet', '- '))
+    for (const markup of ['## Result', '**rollout**']) expect(raw).not.toContain(markup)
+    expect(raw).not.toContain('\x1b[31m')
+
+    const top = rows().join('\n')
+    expect(top).toContain('Result')
+    expect(top).toContain('The rollout flag stays false.')
+    expect(top).toContain('one')
+    side.scroll('down')
+    side.scroll('down')
+    const bottom = rows().join('\n')
+    expect(bottom).toContain('const enabled = false')
+    expect(bottom).toContain('the plan')
+    expect(bottom).toContain('red output')
+  })
+
   it('scrolls and copies the complete answer, keeping every rendered row within width', async () => {
-    const lines = Array.from({ length: 30 }, (_, index) => `line ${index}`).join('\n')
+    const lines = Array.from({ length: 30 }, (_, index) => `- line ${index}`).join('\n')
     const { side, rows, dock, copyText } = setup({ reads: async () => result('completed', [event(0, 'message.completed', { messageId: 'a', role: 'assistant', text: lines }), event(1, 'completed', {})]) })
     await side.ask('show me the full answer')
     await vi.waitFor(() => expect(side.state).toBe('answered'))
@@ -152,5 +193,23 @@ describe('the side question dock', () => {
     await side.copyAnswer()
     expect(copyText).toHaveBeenCalledWith(lines)
     for (let width = 0; width <= 100; width++) for (const row of dock()!.render(width)) expect(visibleWidth(row), `width ${width}`).toBeLessThanOrEqual(width)
+  })
+
+  it('keeps a long Markdown answer, including a table and a link, within the dock width', async () => {
+    const answer = [
+      '# Findings',
+      '',
+      'A long paragraph that wraps across several rows because the dock keeps the answer narrow enough to read.',
+      '',
+      '| setting | value |',
+      '| --- | --- |',
+      '| rollout | disabled |',
+      '',
+      `[a link with a long label](https://example.test/${'segment/'.repeat(20)})`
+    ].join('\n')
+    const { side, dock } = setup({ reads: async () => result('completed', [event(0, 'message.completed', { messageId: 'a', role: 'assistant', text: answer }), event(1, 'completed', {})]) })
+    await side.ask('show the table')
+    await vi.waitFor(() => expect(side.state).toBe('answered'))
+    for (let width = 1; width <= 120; width++) for (const row of dock()!.render(width)) expect(visibleWidth(row), `width ${width}`).toBeLessThanOrEqual(width)
   })
 })

@@ -43,6 +43,7 @@ not one class (a set of functions in one module, say), it says so.
 | [12 Storage](12-storage.md) | The data root and state directory, and who writes what | `INV-STO` |
 | [13 World tools](13-world-tools.md) | Generic web and isolated browser backends, host boundary and diagnostics | — |
 | [14 Surfaces and parity](14-surfaces-and-parity.md) | Every capability is a Harness capability with a terminal surface; host-backed capabilities; host-only surfaces | `INV-PAR` |
+| [15 Remote control](15-remote-control.md) | Continuing a terminal session from a phone or iPad: pairing, sealed frames, the bind policy | `INV-RC` |
 | [Proposals](proposals/README.md) | Architecture change proposals and their status | — |
 
 Related records, not binding by themselves:
@@ -129,3 +130,4 @@ resolve relevant drift by updating the implementation and specification together
 | D-19 | Provider limits layout | Page 09 describes a centered Limits dialog; page 11 and `src/terminal/tui/pages/usagePage.ts` describe and implement a full-screen page. |
 | D-18 | `core/index.ts` migration 5 | The `run_stats` table has no writer in the Harness. PROP-0042's `usage_requests` ledger is the analytics source; whether to drop the older table is open. |
 | D-21 | `terminal-tui.md`, per-mode model and effort | The terminal page says the App reads and writes the per-mode choices through `accounts.choices` and `accounts.choose`. The App's source calls neither method: its account, model and effort are saved on the App Thread (App ADR-0023), and plan mode shares that Thread's tuple. Whether the App should adopt the Harness's per-mode store is an owner decision. |
+| D-22 | Plan outcomes, pages 02 and 11; ADR-0055 — resolved | Page 02 previously described a missing-block repair without distinguishing paths: the runner repaired but the terminal only warned, and neither classified clarification. ADR-0057 adds shared outcome classification and a bounded repair in both paths. |

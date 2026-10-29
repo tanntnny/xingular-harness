@@ -88,6 +88,21 @@ operations, not an assertion that a host has built a review UI. Protected termin
 require the terminal control key. The model tool can create only. Validation and trust details are
 on page 06.
 
+## Context attribution (PROP-0049)
+
+| Method | Input | Reply |
+|---|---|---|
+| `context.attribution` | `{ runId }` | `ContextAttribution`: the model and window, the measured `used` and its `share`, `source` (`measured` or `estimate`), the request index, the compaction reserve and `free`, one row per contributor (`tokens`, share, owner group, `always`, `estimated`, budget, cut, tool breakdown, note), `history` of the window at each request, `compactions`, `onDemand` variant components, group totals and the reconciliation `note` |
+| `terminal.context` | `{ section? }` | `{ attribution, text }` for this terminal's latest run: the same attribution, and one row's text when `section` names it |
+
+The rows are read from what the run recorded — `runs/<id>/context.json` for the sections and their
+rendered sizes, `context.snapshot` for the prompt, the update and every tool schema, `usage.updated`
+for the provider's own figure. Nothing is written. A row is estimated at four characters per token;
+the conversation row is the measured total less the rows above it, so the rows add up to the figure
+the provider reported rather than to an estimate of their own. When the pack carries no rendered
+sizes, or the snapshot was truncated, the reply says the split is approximate. `terminal.context`
+resolves the run from the terminal session, never from the request.
+
 ## Usage (PROP-0042)
 
 | Method | Input | Reply |
@@ -208,6 +223,15 @@ from preparation, never from the request.
 | `terminal.usage.summary\|limits` | `{ scope, period, timezoneOffsetMinutes }` / `{ refresh? }` | Existing usage service result, scoped to this terminal's account and project |
 | `terminal.usage.allLimits` | `{ refresh? }` | All-account provider limits; refresh reads providers due under the configured cache interval, without changing the pinned account |
 | `terminal.usage.headers` | `{ provider, status, headers }` | `{}`; only limit-bearing headers, throttled, stored as an account limit reading |
+
+Remote control (page 15, ADR-0056) adds these protected controls:
+
+| Method | Input | Reply |
+|---|---|---|
+| `terminal.remoteControl.start` | `{ interface?: 'auto' \| 'tailscale' \| 'lan' }` | `RemoteStatus`; listening on one Tailscale or private address |
+| `terminal.remoteControl.stop` \| `rotate` | `{}` | `RemoteStatus`; stopped, or a new link with every device unpaired |
+| `terminal.remoteControl.confirm` | `{ requestId, allow }` | `RemoteStatus`; the person's answer to a pair request |
+| `terminal.remoteControl.status` \| `status.wait` | `{}` / `{ revision }` | `RemoteStatus`; the wait returns at once for a changed revision, otherwise within 20 seconds |
 
 Protected `plugins.install { source }`, `plugins.update { pluginId? }` and
 `plugins.remove { pluginId }` delegate to the package service. Removing a Hub-owned package routes

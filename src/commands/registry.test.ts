@@ -12,6 +12,7 @@ describe('command registry', () => {
   it('resolves aliases', () => {
     expect(coreCommand('side')?.name).toBe('btw')
     expect(coreCommand('tree')?.name).toBe('history')
+    expect(coreCommand('rc')?.name).toBe('remote-control')
     expect(coreCommand('nope')).toBeUndefined()
   })
 

@@ -105,6 +105,10 @@ terminal command or page, a host screen.
   not merge stores, copy credentials or silently downgrade the secret backend.
 - `PluginDescriptor.surfaces` / `Plugin.surfaces` optionally describe a host preference, terminal
   fallback/unavailability and reason. This labels add-ons, not plugin categories or permissions.
+- Remote control (page 15) is a third Harness-owned surface of a terminal session: a phone page the
+  harness serves. It is not a host and owns no capability. A paired device acts through the same
+  `Terminals` and controller paths as the terminal, and reaches no command, shell, link, plugin or
+  account control.
 - The register of capabilities and their surfaces is [`docs/parity.md`](../parity.md). It is
   descriptive; the invariants below are binding.
 - A host keeps its own register of host-only surfaces. The Harness names no host surface.

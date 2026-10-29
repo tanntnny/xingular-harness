@@ -89,6 +89,35 @@ describe('a native SDK runtime on the actual Harness terminal socket', () => {
     expect(session.getActiveToolNames()).not.toContain('ask_user')
   })
 
+  it('repairs an unstructured clarification within the same terminal run', async () => {
+    const { harness, runtime } = await setup()
+    const ai = await import('@earendil-works/pi-ai')
+    const faux = ai.fauxProvider()
+    runtime.services.modelRuntime.registerNativeProvider(faux.provider)
+    await runtime.session.setModel(faux.getModel())
+    faux.setResponses([
+      ai.fauxAssistantMessage('Which option?'),
+      ai.fauxAssistantMessage([ai.fauxToolCall('ask_user', { questions: [{ summary: 'Choice', question: 'Which option?', options: [{ label: 'A', description: 'Choose A', recommended: true }] }] })], { stopReason: 'toolUse' }),
+      ai.fauxAssistantMessage('<proposed_plan># Choose A\nUse A.</proposed_plan>')
+    ])
+    const planning = runtime.submitPlan('Choose an option')
+    let questions: Array<{ requestId: string; batchId: string; type: string }> = []
+    await vi.waitFor(async () => {
+      const pending = await runtime.pending()
+      const approval = pending.find(item => item.type === 'approval')
+      if (approval) await runtime.approve(approval.requestId, 'approved', false)
+      questions = pending.filter(item => item.type === 'question') as typeof questions
+      expect(questions).toHaveLength(1)
+    })
+    await runtime.answerBatch(questions[0].batchId, [{ questionId: questions[0].requestId, answer: { selected: ['A'] } }])
+    await planning
+    expect(runtime.session.getLastAssistantText()).toContain('<proposed_plan># Choose A')
+    const runs = readAllRuns(harness.env.root).filter(run => run.goal === 'Choose an option')
+    expect(runs).toHaveLength(1)
+    expect(runs[0].status).toBe('completed')
+    expect(runtime.session.getActiveToolNames()).not.toContain('ask_user')
+  })
+
   it('does not activate research delegation when the terminal disables subagents', async () => {
     const { runtime } = await setup({ subagents: null })
     const session = runtime.session

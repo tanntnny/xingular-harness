@@ -2,6 +2,39 @@
 
 ## Unreleased
 
+- Render the `/btw` side answer as Markdown instead of plain text. Headings, emphasis, lists,
+  quotes, links, tables and fenced code use the theme's markdown colours, and a streaming answer
+  re-renders in place. Terminal control sequences in model output are still removed.
+
+- Add `/remote-control` (alias `/rc`): continue a terminal session from a phone or iPad, as Claude
+  Code's `/rc` does, without a cloud relay. The harness serves a small phone page on the computer's
+  Tailscale address, or its private Wi-Fi address, and the terminal shows a QR code for a one-device
+  pairing link. The person at the terminal allows each device; a paired phone then sends messages,
+  watches the reply stream, stops it, and answers approvals and questions through the same paths
+  the terminal uses. Every body is sealed with a key that reaches the phone only in the QR code's
+  fragment, keys live in memory, and remote control ends with the session. `xagent --remote-control`
+  turns it on at start; `/rc off` stops it. Terminal runs now also record streamed `message.delta`
+  events. New dependencies: `tweetnacl`, `uqr` (ADR-0056, page 15).
+
+- Recover a plan run whose reply loses its plan block. An attended top-level plan run now makes one
+  hidden format-repair turn in the same run, asking the model to re-send its own plan in one complete
+  block; a failed repair leaves the run completed and the terminal shows a warning instead of a plan
+  choice. The plan-research children, commands, probes, improvers, reflections and other unattended
+  runs are unchanged (ADR-0055).
+
+- A live terminal reply now reports a heartbeat every 30 seconds, and one that produces nothing but
+  heartbeats for 15 minutes is ended as `interrupted` with reason `stalled` instead of showing a run
+  that never settles. A running tool gets 30 minutes and an unanswered approval or question is never
+  cut short. Before this, a terminal reply reported no heartbeat at all, so the run sweep waited the
+  full 30-minute silence window and recorded `owner_gone` while the process was alive (ADR-0054).
+
+- Stop refusing repeated work. A reply is no longer refused, or ended, for calling the same tool
+  with the same arguments three times, for a Bash check that keeps failing, or for editing one path
+  more than four times: those calls are ordinary work, and the reply budget is the single bound. The
+  320-call/60-minute budget, its checkpoint handoff, slice continuation and the three-compaction
+  thrash rule are unchanged, and the `stuck` checkpoint reason stays readable in existing runs
+  (ADR-0053).
+
 - Make a skill named in a message required for that request. `$name` is a skill invocation at any
   word start, not only as the first token: `Launch.requiredSkills` carries it and the compiler
   renders a built-in dynamic `required-skills` section (order 52, 12,000 characters) from the pinned

@@ -1,16 +1,14 @@
 // A reply's work slice (PROP-0041): a bounded amount of work, then a handoff checkpoint, then a
 // continuation. The guard here refuses the call that would run past the budget, once with a
-// request for the checkpoint, and ends the reply if the model keeps calling tools. It also names
-// repeated work before it becomes a loop. All decisions are deterministic; no model is consulted.
-import { createHash } from 'node:crypto'
-
+// request for the checkpoint, and ends the reply if the model keeps calling tools. All decisions
+// are deterministic; no model is consulted.
 import type { Checkpoint } from './contracts'
 import { findRun } from './runStore'
 
 export const WORK_SLICE_EXTENSION = 'work-slice'
 
 export interface WorkSliceInput {
-  /** False turns the guard off for this run: no budget, no stall notes, no continuation. */
+  /** False turns the guard off for this run: no budget, no handoff request, no continuation. */
   enabled?: boolean
   /** Tool calls in one reply; 0 disables this limit. */
   maxToolCalls?: number
@@ -97,7 +95,7 @@ export function parseWorkSlice(input: unknown): SlicePolicy {
   return policy
 }
 
-export type SliceEnd = 'budget' | 'stuck' | 'compaction-thrash'
+export type SliceEnd = 'budget' | 'compaction-thrash'
 
 /** What a live reply tracks for its slice; the runner reads it after the reply. */
 export interface SliceState {
@@ -143,36 +141,6 @@ export function sliceLimitReached(policy: SlicePolicy, state: SliceState, now = 
 
 /** Tools a reply may still call while it writes its handoff. A plan update waits for the next slice. */
 const HANDOFF_TOOLS = new Set(['checkpoint_write', 'session_name'])
-/** Tools whose repetition is how waiting works, not a loop. */
-const POLLING_TOOLS = new Set(['wait_subagents', 'subagents.list', 'subagents.status'])
-
-/** Commands that read as a check for the repeated-failure rule. */
-export function looksLikeCheck(command: string): boolean {
-  return /\b(test|tests|typecheck|tsc|vitest|jest|cargo|check:|prove|lint|ci|build)\b/u.test(command)
-}
-
-/**
- * A stable rendering of a value: object keys sorted, so argument order never changes the result.
- * Depth is bounded so a cyclic or absurdly nested input cannot recurse forever.
- */
-function canonical(value: unknown, depth = 0): string {
-  if (depth > 8) return '…'
-  if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null'
-  if (Array.isArray(value)) return `[${value.map((item) => canonical(item, depth + 1)).join(',')}]`
-  const entries = Object.entries(value as Record<string, unknown>).filter(([, item]) => item !== undefined)
-  entries.sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
-  return `{${entries.map(([key, item]) => `${JSON.stringify(key)}:${canonical(item, depth + 1)}`).join(',')}}`
-}
-
-/**
- * A call's identity: its name and every argument, hashed so the key stays small even when an
- * argument is a whole file. A changed argument is a different call; only an identical one repeats.
- * Reading a fixed handful of fields made every `todo_write` look identical, so a reply that
- * reported its progress was told it was repeating work.
- */
-const signature = (name: string, input: unknown): string =>
-  `${name}\u0000${createHash('sha256').update(canonical(input ?? null)).digest('hex')}`
-
 const clip = (value: string, limit: number): string => (value.length <= limit ? value : `${value.slice(0, limit - 1)}…`)
 
 function handoffRequest(limit: string, state: SliceState, checkpointAvailable = true): string {
@@ -182,21 +150,12 @@ function handoffRequest(limit: string, state: SliceState, checkpointAvailable = 
   return clip(`This reply reached its work-slice limit (${limit}; step ${state.steps}). ${handoff} Do not call other tools.`, 600)
 }
 
-function stalledNote(reason: string, checkpointAvailable = true): string {
-  const handoff = checkpointAvailable
-    ? 'Choose a different approach, read what the earlier attempt returned, or call checkpoint_write with the blocker so the next slice can decide.'
-    : 'Do not use more tools. Return concise findings and blockers in your final response; the Harness records an evidence-derived checkpoint.'
-  return clip(`You are repeating work: ${reason}. Do not repeat it. ${handoff}`, 600)
-}
-
 interface ToolCall {
   toolName: string
-  input?: unknown
 }
 interface ToolResult {
   toolName: string
   isError?: boolean
-  input?: unknown
 }
 
 /** The part of Pi's extension API this guard uses. Structural, so the module needs no Pi import. */
@@ -217,81 +176,30 @@ export interface WorkSliceGuardOptions {
 }
 
 /**
- * Bounds one reply and names repeated work. Refusals request a checkpoint when available; without
- * one, they ask for a partial report and prohibit further tools. A repeated call or failing command
- * is named once, then ends the reply.
+ * Bounds one reply. A call past the budget is refused, with one wrap-up request when a checkpoint
+ * is available, and an ended reply lets only a handoff call through. Three compactions in one reply
+ * end it too. Every other call is allowed, however often it is made.
  */
 export function workSliceGuard(options: WorkSliceGuardOptions): (pi: GuardApi) => void {
   const { policy, state } = options
-  const calls = new Map<string, number>()
-  const checkCalls = new Set<string>()
-  const edits = new Map<string, number>()
-  const failures = new Map<string, number>()
-  let nudged = false
 
   const checkpointAvailable = (): boolean => typeof options.checkpointAvailable === 'function'
     ? options.checkpointAvailable()
     : options.checkpointAvailable !== false
-
-  /** Repetition is judged inside one reply; the next reply starts from a clean count. */
-  const resetRepetition = (): void => {
-    calls.clear()
-    checkCalls.clear()
-    edits.clear()
-    failures.clear()
-    nudged = false
-  }
 
   const end = (kind: SliceEnd, limit: string): { block: true; terminate: true; reason: string } => {
     state.endedBy = kind
     state.endedByLimit = limit
     options.onEnd?.(kind, limit)
     const canCheckpoint = checkpointAvailable()
-    const reason = kind === 'stuck'
-      ? stalledNote(limit, canCheckpoint)
-      : kind === 'compaction-thrash'
-        ? handoffRequest('three context compactions in one reply', state, canCheckpoint)
-        : handoffRequest(limit, state, canCheckpoint)
+    const reason = kind === 'compaction-thrash'
+      ? handoffRequest('three context compactions in one reply', state, canCheckpoint)
+      : handoffRequest(limit, state, canCheckpoint)
     return { block: true, terminate: true, reason }
   }
 
-  const nudge = (reason: string): { block: true; reason: string } | { block: true; terminate: true; reason: string } => {
-    if (nudged) return end('stuck', reason)
-    nudged = true
-    const canCheckpoint = checkpointAvailable()
-    if (!canCheckpoint) {
-      state.endedBy = 'stuck'
-      state.endedByLimit = reason
-    }
-    return { block: true, reason: stalledNote(reason, canCheckpoint) }
-  }
-
-  const repeated = (name: string, input: unknown): string | null => {
-    if (POLLING_TOOLS.has(name)) return null
-    const key = signature(name, input)
-    if (name === 'bash') {
-      const command = input && typeof input === 'object' ? String((input as { command?: unknown }).command ?? '') : ''
-      if (command && looksLikeCheck(command)) checkCalls.add(key)
-    }
-    const count = (calls.get(key) ?? 0) + 1
-    calls.set(key, count)
-    if (count < 3) return null
-    return name === 'bash' ? `the same Bash command ${count} times (steps ending at ${state.steps})` : `the same ${name} call ${count} times (steps ending at ${state.steps})`
-  }
-
-  const failing = (name: string, input: unknown): string | null => {
-    if (name !== 'bash') return null
-    const command = input && typeof input === 'object' ? String((input as { command?: unknown }).command ?? '') : ''
-    if (!command || !looksLikeCheck(command)) return null
-    const count = failures.get(command) ?? 0
-    return count >= 2 ? `the check ${command} failed ${count} times` : null
-  }
-
   return (pi) => {
-    pi.on('agent_start', () => {
-      resetSliceState(state)
-      resetRepetition()
-    })
+    pi.on('agent_start', () => resetSliceState(state))
     pi.on('message_end', (event) => {
       const usage = event.message.usage
       if (event.message.role !== 'assistant' || !usage) return
@@ -299,33 +207,7 @@ export function workSliceGuard(options: WorkSliceGuardOptions): (pi: GuardApi) =
       state.tokens += (usage.input ?? 0) + (usage.cacheWrite ?? 0) + (usage.output ?? 0)
     })
     pi.on('tool_result', (event) => {
-      if (event.toolName === 'checkpoint_write' && !event.isError) {
-        state.checkpointWritten = true
-        nudged = false
-      }
-      if ((event.toolName === 'edit' || event.toolName === 'write') && event.isError === false) {
-        const path = event.input && typeof event.input === 'object' ? String((event.input as { path?: unknown }).path ?? '') : ''
-        if (path) {
-          edits.set(path, (edits.get(path) ?? 0) + 1)
-          failures.clear()
-          for (const key of checkCalls) calls.delete(key)
-          checkCalls.clear()
-          nudged = false
-        }
-      }
-      if (event.toolName !== 'bash') return
-      const command = event.input && typeof event.input === 'object' ? String((event.input as { command?: unknown }).command ?? '') : ''
-      if (!command || !looksLikeCheck(command)) return
-      if (event.isError) {
-        failures.set(command, (failures.get(command) ?? 0) + 1)
-        return
-      }
-      // A passing check is progress: the repetition rules start over.
-      failures.delete(command)
-      edits.clear()
-      calls.clear()
-      checkCalls.clear()
-      nudged = false
+      if (event.toolName === 'checkpoint_write' && !event.isError) state.checkpointWritten = true
     })
     pi.on('tool_call', (event) => {
       const name = event.toolName
@@ -357,24 +239,6 @@ export function workSliceGuard(options: WorkSliceGuardOptions): (pi: GuardApi) =
         state.refusedAt ??= state.steps
         return handoff ? undefined : { block: true, reason: handoffRequest(limit, state, canCheckpoint) }
       }
-      if (handoff) return undefined
-      // Todo updates are bookkeeping, not evidence of progress or a stall. They still count above
-      // toward the reply's overall tool-call budget.
-      if (name === 'todo_write') return undefined
-      const edit = name === 'edit' || name === 'write'
-      const path = edit && event.input && typeof event.input === 'object' ? String((event.input as { path?: unknown }).path ?? '') : ''
-      if (edit && path) {
-        const count = edits.get(path) ?? 0
-        if (count >= 4) {
-          const reason = `${path} was edited ${count} times with no passing check between`
-          return nudge(reason)
-        }
-      }
-      const repeat = repeated(name, event.input)
-      const failure = failing(name, event.input)
-      const reason = repeat ?? failure
-      if (!reason) return undefined
-      return nudge(reason)
     })
   }
 }

@@ -14,15 +14,27 @@ import { AnnotatePage, type AnnotateStart } from './pages/annotatePage'
 import { SubagentsPage } from './pages/subagentsPage'
 import { AgentsPage } from './pages/agentsPage'
 import { UsagePage } from './pages/usagePage'
+import { ContextPage, type ContextTab } from './pages/contextPage'
+import { RemoteControlPage } from './pages/remoteControlPage'
 import { createSettingsModel } from './settingsModel'
 
-export type CommandPageId = 'doctor' | 'accounts' | 'permissions' | 'plugins' | 'hub' | 'components' | 'settings' | 'trajectory' | 'log' | 'harness' | 'skills' | 'connections' | 'tools' | 'worktree' | 'notes' | 'annotate' | 'subagents' | 'agents' | 'usage'
+export type CommandPageId = 'doctor' | 'accounts' | 'permissions' | 'plugins' | 'hub' | 'components' | 'settings' | 'trajectory' | 'log' | 'harness' | 'skills' | 'connections' | 'tools' | 'worktree' | 'notes' | 'annotate' | 'subagents' | 'agents' | 'usage' | 'context' | 'remote-control'
 
 /** Construct one independent full-screen page for a slash command. */
-export function createCommandPage(host: TerminalCommandHost, id: CommandPageId, options: { runId?: string; url?: string; annotate?: AnnotateStart; usageTab?: 'analysis' | 'limit' | 'accounts'; usagePeriod?: 'today' | '7d' | '30d' | 'all'; close?(): void } = {}): TerminalPage {
+export function createCommandPage(host: TerminalCommandHost, id: CommandPageId, options: { runId?: string; url?: string; annotate?: AnnotateStart; usageTab?: 'analysis' | 'limit' | 'accounts'; usagePeriod?: 'today' | '7d' | '30d' | 'all'; contextTab?: ContextTab; close?(): void; navigate?(id: CommandPageId): void } = {}): TerminalPage {
   const theme = () => host.ui.theme
   const notify = (message: string, type?: string) => host.ui.notify(message, type === 'error' || type === 'warning' ? type : 'info')
   switch (id) {
+    case 'remote-control':
+      return new RemoteControlPage({ theme, call: host.control, changed: host.changed, copy: host.copyText, notify })
+    case 'context':
+      return new ContextPage({
+        theme, call: host.control, changed: host.changed,
+        initialTab: options.contextTab === 'growth' ? 'growth' : 'request',
+        openVariant: () => options.navigate?.('harness'),
+        compact: async () => { await host.session().compact?.() },
+        confirm: (title, message) => host.ui.confirm(title, message)
+      })
     case 'usage':
       return new UsagePage({ theme, call: host.control, changed: host.changed, initialTab: options.usageTab === 'limit' ? 'limits' : options.usageTab === 'accounts' ? 'accounts' : 'analysis', ...(options.usagePeriod ? { initialPeriod: options.usagePeriod } : {}) })
     case 'doctor':

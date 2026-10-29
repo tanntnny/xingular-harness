@@ -46,7 +46,15 @@ Screen: transcript above the composer, centred dialogs, full-screen resource bro
   request and latest todo list into post-compaction model context until the run settles.
 - Normal mode keeps `ask_user` out of the active tool set. An attended plan request enables the
   shared tool alongside its read-only set and restores the normal set on success, failure or
-  interruption. There is no terminal-only question alias (PROP-0040).
+  interruption. The question blocks until answered, then planning continues in the same run. There
+  is no terminal-only question alias (PROP-0040).
+- The approved plan outcome contract on page 02 applies equally to the terminal and server:
+  only `plan_ready` offers a plan card and Implement; `blocked` reports unavailable required input
+  without Implement; `invalid` gets at most one shared bounded repair and, if still invalid, a
+  warning and the retained original text. New final replies do not ask free-text questions or use
+  `<plan_clarification>`: clarification uses `ask_user`, which blocks the active run. Repair at
+  Pi's settlement boundary is in the same run and may call `ask_user`. Existing `<proposed_plan>`
+  cards and old transcripts, including clarification blocks, remain intact; see ADR-0058.
 - A plan request keeps `bash` in its active set; each call runs in the sandbox's read-only scope
   (PROP-0043). A user `!` command submitted during a plan request waits as a separate turn; it
   cannot run inside the plan's read-only request.
@@ -77,6 +85,10 @@ Screen: transcript above the composer, centred dialogs, full-screen resource bro
   the first letter of a multiword name is the orange block mark and its remaining words are letter-spaced
   in blue. The welcome adds a greeting, tagline and `/help` hint without replacing the composer or
   status bar. Explicit host product names use the same generic formatting.
+- `/remote-control` (`/rc`) lets a phone or iPad continue this session: a page with the pairing
+  link and its QR code, paired devices, and the person's answer to a pair request; `rc` / `rc ●` in
+  the status bar while it is on. `xagent --remote-control` (`--rc`) turns it on at start. The
+  binding rules are page 15.
 - `xagent --worktree [name]` (`-w`) starts in a new managed worktree of the current repository,
   or in the named one, and prunes older managed worktrees (PROP-0016). A session that names a
   worktree holds it for its whole life. `/worktree` opens the worktree page; selecting
@@ -89,7 +101,12 @@ Screen: transcript above the composer, centred dialogs, full-screen resource bro
   mirrors the main run's redacted prompt and public evidence, starts a separate tool-free run, and
   leaves the main conversation untouched. The dock streams, scrolls and copies the complete answer.
   Aliases remain callable and searchable, but help and palette show only the canonical
-  entry. `/usage:` and `/usage:analysis` open the usage page's Analysis tab, and `/usage:limit`
+  entry. `/context` opens the context attribution page: what the latest request was made of, one row
+  per contributor with its tokens and share of the window, grouped by owner (foundation, variant,
+  application, conversation) with the compaction reserve and free space below it. `/context growth`
+  opens its second tab, the window at each measured request with its compaction markers. The page
+  reads `terminal.context`, never computes a figure of its own, and says `?` where nothing measured a
+  window. `/usage:` and `/usage:analysis` open the usage page's Analysis tab, and `/usage:limit`
   opens its Limits tab (PROP-0042); `/usage:accounts` opens the All accounts limits tab. These are plugin-owned namespaced routes. All-account refresh reads due providers using their own account credentials without switching the session account. The usage page is a
   full-screen page with a top tab strip: each window is a label and reset line above a quota-left bar coloured green at
   50% or more left, amber from 20–49%, and red below 20%. `commands.list`
@@ -114,9 +131,10 @@ the proposal service checks it again. Acceptance leaves the package switched off
   through the controller and the run store.
 - **INV-TUI-4** Changes made through the session socket (`plugins.attach|detach|trust|untrust|configure`,
   `plugins.proposals.*`, `accounts.*`, Hub installs, `terminal.browser.*`, `terminal.worktrees.*`,
-  `terminal.annotations.*`, `terminal.sideQuestions.*`) require the control key the trusted terminal process claimed once
+  `terminal.annotations.*`, `terminal.sideQuestions.*`, `terminal.remoteControl.*`) require the control key the trusted terminal process claimed once
   (`control.claim`). The session's shell can read the session token, so the token alone is never
-  enough.
+  enough. A phone paired through `/remote-control` is the one other party that answers decisions;
+  only the control-key holder can start remote control or allow a device (INV-RC-3, INV-RC-7).
 - The terminal watches decisions through the control-key-protected `terminal.pending.wait` revision
   snapshot. It returns immediately for a changed revision and otherwise waits at most 20 seconds;
   additions, removals and disposal wake waiters. `terminal.pending` remains available. The terminal
@@ -204,7 +222,7 @@ The browser uses the full terminal with persistent section tabs (PROP-0014); wid
 inventory beside details, actions and content, while compact screens keep inline details under
 the same tabs. The separate `/plugins` and `/hub` pages also use full-screen layouts with persistent
 section tabs, responsive inventory/details panes and their existing protected operations. Other
-command pages remain centered except `/settings`, `/accounts`, `/plugins`, `/hub` and `/usage:`, which use
+command pages remain centered except `/settings`, `/accounts`, `/plugins`, `/hub`, `/context` and `/usage:`, which use
 full-screen page layouts.
 Accounts keeps Accounts/Pools tabs, search and account-service operations.
 Wide terminals show selected-account details beside the list; Enter or a primary click opens grouped
@@ -333,10 +351,24 @@ extension registers the shared tool and sends it as `checkpoint` telemetry, whic
 records as `checkpoint` on the
 active run, so an App reading the same session sees the handoff. Terminal replies are not
 auto-continued: at the boundary the person decides, which is what the terminal's own turn model
-already does. The run record says `interrupted` with terminal reason `slice_complete` (or `stalled`
-when the guard ended it), so a host can continue it; a checkpoint card in the transcript is not built
-yet (PAR-004). Start the terminal with `XINGULAR_WORK_SLICE=off` to launch a reply with no
+already does. The run record says `interrupted` with terminal reason `slice_complete`, so a host can
+continue it; a checkpoint card in the transcript is not built yet (PAR-004). Start the terminal with
+`XINGULAR_WORK_SLICE=off` to launch a reply with no
 boundary at all; it is not persisted, so the next launch without it restores the guard.
+
+## Liveness and a reply that stops working (INV-RUN-14, ADR-0054)
+
+While a reply is live the extension sends `heartbeat` telemetry every 30 seconds, carrying the work
+slice counters it already keeps (steps, elapsed time, last tool, compactions, slice and the call
+budget); the controller records it as `heartbeat` on the active run, so the run sweep settles a
+terminal reply that stopped reporting by the same five-minute rule as a structured one.
+
+A heartbeat proves the turn is alive, not that it is working. A reply that produces no event other
+than a heartbeat for fifteen minutes — the state a model request that never returns leaves it in —
+is ended: the controller queues the same `interrupt` command the person's Esc queues, the native turn
+aborts, and the run records `interrupted` with reason `stalled`. A reply whose oldest running tool
+has run for thirty minutes ends the same way, and a reply waiting on an approval or question is never
+cut short.
 
 ## Subagent activity monitor
 

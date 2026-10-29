@@ -45,6 +45,29 @@ function extension() {
 afterEach(() => vi.useRealTimers())
 
 describe('terminal bridge lifecycle', () => {
+  it('repairs an invalid plan once at the settlement boundary and skips valid or interrupted outcomes', async () => {
+    const state: TerminalPlanRunState = { active: true, allowedTools: new Set() }
+    const { api, ctx, handlers } = extension()
+    await terminalExtension(api, state)
+    const start = () => handlers.get('before_agent_start')!({ messageType: 'user', prompt: 'Plan it', systemPromptOptions: { sections: {} } }, ctx)
+    const message = (text: string) => handlers.get('message_end')!({ message: { role: 'assistant', content: [{ type: 'text', text }], stopReason: 'stop' } })
+    const boundary = { outcome: 'completed', continue: false, entries: [], context: { canContinue: true } }
+    await start()
+    await message('What should change?')
+    expect(await handlers.get('agent_before_settle')!(boundary, ctx)).toMatchObject({ continue: true, entries: [{ customType: 'xingular-plan-repair' }] })
+    expect(await handlers.get('agent_before_settle')!(boundary, ctx)).toBeUndefined()
+    await start()
+    await message('<plan_blocked>User input is unavailable.</plan_blocked>')
+    expect(await handlers.get('agent_before_settle')!(boundary, ctx)).toBeUndefined()
+    await start()
+    await message('<proposed_plan># Plan\nDo it.</proposed_plan>')
+    expect(await handlers.get('agent_before_settle')!(boundary, ctx)).toBeUndefined()
+    await start()
+    await message('Incomplete')
+    expect(await handlers.get('agent_before_settle')!({ ...boundary, outcome: 'aborted' }, ctx)).toBeUndefined()
+    expect(await handlers.get('agent_before_settle')!({ ...boundary, continue: true }, ctx)).toBeUndefined()
+  })
+
   it('registers one question tool with fixed-column sketch guidance, and no terminal-only alias', async () => {
     const { api } = extension()
     await terminalExtension(api)
@@ -104,6 +127,21 @@ describe('terminal bridge lifecycle', () => {
     transport.telemetry.mockClear()
     await todo.execute('c-2', { items: [{ text: '', status: 'pending' }] }, undefined, undefined, {} as ExtensionToolContext)
     expect(transport.telemetry).not.toHaveBeenCalledWith('todo', expect.anything())
+  })
+
+  it('sends reply text on as batched deltas under the id of the completed message', async () => {
+    const { api, handlers } = extension()
+    await terminalExtension(api)
+    transport.telemetry.mockClear()
+    const message = { role: 'assistant', content: [{ type: 'text', text: 'Hello there.' }], stopReason: 'stop' }
+    await handlers.get('message_update')!({ type: 'message_update', message, assistantMessageEvent: { type: 'text_delta', delta: 'Hel' } })
+    await handlers.get('message_update')!({ type: 'message_update', message, assistantMessageEvent: { type: 'text_delta', delta: 'lo' } })
+    await handlers.get('message_update')!({ type: 'message_update', message, assistantMessageEvent: { type: 'thinking_delta', delta: 'hmm' } })
+    await vi.waitFor(() => expect(transport.telemetry).toHaveBeenCalledWith('delta', { id: expect.any(String), text: 'Hello' }))
+    const [, delta] = transport.telemetry.mock.calls.find(([event]) => event === 'delta')! as unknown as [string, { id: string }]
+    await handlers.get('message_end')!({ type: 'message_end', message })
+    expect(transport.telemetry).toHaveBeenCalledWith('message', { id: delta.id, text: 'Hello there.' })
+    expect(transport.telemetry.mock.calls.filter(([event]) => event === 'delta')).toHaveLength(1)
   })
 
   it('rehydrates the current plan and todo in context after compaction', async () => {
@@ -264,6 +302,21 @@ describe('terminal bridge lifecycle', () => {
     await next.handlers.get('session_shutdown')!({ type: 'session_shutdown', reason: 'quit' }, next.ctx)
     expect(transport.telemetry.mock.calls.filter(([event]) => event === 'shutdown')).toHaveLength(2)
     expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('reports a heartbeat while a reply is live and stops once it settles', async () => {
+    vi.useFakeTimers()
+    const { api, ctx, handlers } = extension()
+    await terminalExtension(api)
+    await handlers.get('before_agent_start')!({ messageType: 'user', prompt: 'Finish the page', systemPromptOptions: { sections: {} } }, ctx)
+    transport.telemetry.mockClear()
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(transport.telemetry.mock.calls.filter(([event]) => event === 'heartbeat')).toHaveLength(1)
+    expect(transport.telemetry).toHaveBeenCalledWith('heartbeat', expect.objectContaining({ steps: 0, lastTool: null, compactions: 0, slice: 1 }), 10_000)
+    await handlers.get('agent_settled')!({ aborted: false }, ctx)
+    transport.telemetry.mockClear()
+    await vi.advanceTimersByTimeAsync(90_000)
+    expect(transport.telemetry.mock.calls.filter(([event]) => event === 'heartbeat')).toHaveLength(0)
   })
 
   it('makes a $skill anywhere in the message required for that request', async () => {

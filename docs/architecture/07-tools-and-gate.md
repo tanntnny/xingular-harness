@@ -130,7 +130,9 @@ Standing approvals (`approvals.json`): an always-approve switch per key (`chat`,
 `harness`), tools allowed across the state directory per key, and targets remembered per
 session. `humanOnly` calls are never answered by remembered tools, and by the switch only when
 `allowGlobalApproval`. `ApprovalFacts.unattended` disables standing answers; `readOnly` disables
-the switch and global tools.
+the switch and global tools. A person answering through a phone paired by `/remote-control` answers
+the same terminal request through the same controller call, with its complete action text shown
+beside the choices (INV-RC-3, INV-RC-4).
 
 ## Invariants
 

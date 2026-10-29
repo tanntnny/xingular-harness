@@ -324,6 +324,14 @@ of two rule-based shapes, using the 2-cell composer gutter on each side and a di
   `/plugins` and `/hub` menus are pages. Section labels inside a page are plain bold headings, never
   text set into a rule. `/trajectory` is a full-screen page with searchable Runs and Events
   tabs; its Events view keeps the event list beside the selected event's JSON on wide terminals.
+  `/context` is a full-screen page with Request and Growth tabs: one bar that gives each kind of
+  context its own colour — foundation blue, variant orange, your application green, conversation
+  amber, the same four values as the App's `--data-1..4` tokens — with the track for free space and a
+  `│` where Pi would start compacting, a legend naming every run, then one row per contributor (`❯` on the selected one, `·` for a section that arrives per request) reading
+  `tokens` and `share`, group headings carrying their own total, the reserve and free space, and an
+  On demand list. `space` folds a group, `enter` shows the text a row contributed, `g` regroups rows
+  by owner or by kind, `c` compacts after a confirmation, and `v` opens `/harness`. It reads
+  `terminal.context` and draws no figure it did not receive.
 
 `DialogPanel` takes a `variant` (`block` by default). `ui.select` accepts a harness-owned `page`
 option, which Pi's own dialogs ignore, so the same extension code runs in either terminal. Selected
@@ -493,7 +501,9 @@ dismisses it; the block yields to the composer as soon as the draft has text.
 Implement leaves plan mode, so the normal tools and the mode's own model and effort come back, and sends
 `Implement the plan: <title>`; the plan itself is already in the conversation. Edit the plan stays in plan
 mode and focuses the composer, so the next message revises the plan and offers a new choice. A plan run
-that was interrupted, failed, or had work queued behind it is not offered.
+that was interrupted, failed, or had work queued behind it is not offered. If a completed plan run still
+has no complete block after the harness's one repair attempt, the terminal shows a warning notice instead
+of a plan choice; the plan request can be sent again.
 
 A recognized leading slash command uses the selected theme's link color while typing and in its
 user-message bubble. Only the command token is accented; arguments and unknown slash tokens keep the
@@ -794,8 +804,10 @@ terminal no longer has separate `/login`, `/trust`, `/bug`, `/changelog`, `/shar
 `/import` commands. `/btw <question>` (or `/side <question>`) starts a separate Harness run with the
 main run's effective instructions, visible conversation and redacted public tool inputs/results.
 Hidden reasoning and image bytes are excluded; the side run has no tools. Its block puts the
-question after `/btw`, shows the normal animated spinner while answering, and separates the answer
-and hint by one blank row; it has no status labels. PageUp/PageDown browse a long answer and Ctrl+X
+question after `/btw`, shows the normal animated spinner while answering, renders the answer as
+Markdown, and separates the answer and hint by one blank row; it has no status labels. Headings,
+emphasis, lists, quotes, links, tables and fenced code keep the theme's markdown colours, and a
+streaming answer re-renders as it grows. PageUp/PageDown browse a long answer and Ctrl+X
 copies the full answer. Escape or either command with no question dismisses the dock and interrupts
 only that side run; the main reply continues. `/stop` interrupts the current main reply. The `/accounts` page handles sign-in
 and sign-out. `/components` browses reusable skills, prompts and rules; a confirmed skill or rule addition

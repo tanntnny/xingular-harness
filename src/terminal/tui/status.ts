@@ -14,6 +14,10 @@ export interface BandState {
   account?: string
   inputTokens: number
   outputTokens: number
+  /** Share of the model's window the latest request used; null until something measured it. */
+  contextPercent?: number | null
+  /** Auto-compaction is on, so the band says so beside the reading. */
+  autoCompact?: boolean
 }
 
 // OMP's shipped light theme supplies status colors separately from transcript colors.
@@ -31,6 +35,14 @@ export function singleLine(text: string): string {
 
 export function displayProjectName(cwd: string): string {
   return singleLine(basename(cwd) || cwd || sep)
+}
+
+/** `18.3%/1M`, `?/1M` before anything measured it, and `(auto)` when Pi compacts on its own. */
+export function formatContextReading(state: Pick<BandState, 'model' | 'contextPercent' | 'autoCompact'>): string {
+  const window = state.model?.contextWindow && state.model.contextWindow > 0 ? formatTokenCount(state.model.contextWindow) : '?'
+  if (state.contextPercent === null || state.contextPercent === undefined || !Number.isFinite(state.contextPercent)) return `?/${window}${state.autoCompact ? ' (auto)' : ''}`
+  const bounded = Math.max(0, Math.min(999, state.contextPercent))
+  return `${bounded.toFixed(1)}%/${window}${state.autoCompact ? ' (auto)' : ''}`
 }
 
 export function formatTokenCount(value: number): string {
@@ -76,7 +88,13 @@ export function renderStatusBand(state: BandState, width: number, theme: Theme):
     { text: displayProjectName(state.cwd), color: colors.brightAluminum },
     { text: singleLine(state.branch ?? '') || '—', color: colors.readoutGreen },
     { text: `${account} · ${model} · ${effort}`, color: colors.electricBlue },
-    { text: `↑ ${formatTokenCount(state.inputTokens)} ↓ ${formatTokenCount(state.outputTokens)}`, color: colors.titaniumGold }
+    { text: `↑ ${formatTokenCount(state.inputTokens)} ↓ ${formatTokenCount(state.outputTokens)}`, color: colors.titaniumGold },
+    ...(state.contextPercent === undefined ? [] : [{
+      text: formatContextReading(state),
+      color: state.contextPercent !== null && state.contextPercent >= 90
+        ? colors.alertRed
+        : state.contextPercent !== null && state.contextPercent >= 70 ? colors.warningAmber : colors.dimAluminum
+    }])
   ], size)
   const separator = color(theme, colors.subtleGray, ' | ')
   return parts.map(part => color(theme, part.color, part.text)).join(separator)
