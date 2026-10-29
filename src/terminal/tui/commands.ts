@@ -18,6 +18,8 @@ import type { TodoEntry } from '../opentui/model'
 import type { TerminalSubagentActivity } from '../subagentMonitor'
 import { groupTerminalCommands, type TerminalCommandCompletion, type TerminalCommandHelpGroup } from '../commandHelp'
 import { createBuiltinPluginCommandHandlers } from './pluginCommands'
+import { TextPage } from './pages/textPage'
+import { createVariantCommands } from './variantCommands'
 export type { TerminalCommandCompletion } from '../commandHelp'
 export { parseAnnotate } from './pluginCommands'
 
@@ -98,6 +100,19 @@ export function createTerminalCommands(host: TerminalCommandHost) {
       return new PageOverlay({ page, tui, theme: () => host.ui.theme, close, changed: host.changed })
     }, { overlay: true, overlayOptions: pageOverlayOptions(page.presentation) })
   }
+
+  const variantCommands = createVariantCommands({
+    session: () => host.session(),
+    control: host.control,
+    ui: host.ui,
+    shutdown: () => host.shutdown(),
+    showText: async (title, text) => {
+      await host.ui.custom<void>((tui, _theme, _keys, done) => {
+        const page = new TextPage(title, text, host.changed)
+        return new PageOverlay({ page, tui, theme: () => host.ui.theme, close: () => done(undefined), changed: host.changed })
+      }, { overlay: true, overlayOptions: pageOverlayOptions('fullscreen') })
+    }
+  })
 
   const pluginHandlers = createBuiltinPluginCommandHandlers(host, openPage)
   const pluginCommands = BUILTIN_PLUGIN_REGISTRY.commands()
@@ -367,6 +382,8 @@ export function createTerminalCommands(host: TerminalCommandHost) {
         case 'plugins': await openPage('plugins'); break
         case 'hub': await openPage('hub'); break
         case 'components': await openPage('components'); break
+        case 'variant': await variantCommands.variant(argument); break
+        case 'refine': await variantCommands.refine(argument); break
         case 'name': {
           const name = argument || await host.ui.input('Session name', session.sessionName)
           if (name !== undefined) session.setSessionName(name)

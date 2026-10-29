@@ -28,6 +28,23 @@ export interface RefineTask {
   prompts?: WorkPrompts
   /** Whether a harness here may carry subagents. Default true. */
   allowSubagents?: boolean
+  /**
+   * Where the person asked improvers and composers to look (`/refine <guidance>`). It describes
+   * the work, never its measurement, and never reaches the selector or the reflector.
+   */
+  guidance?: string | null
+  /** Where an execution starts: a snapshot of a git working tree, replayed in a throwaway worktree. */
+  workspace?: GitSnapshotWorkspace | null
+}
+
+/** A commit made from a working tree (tracked edits and untracked files) without touching it. */
+export interface GitSnapshotWorkspace {
+  kind: 'git-snapshot'
+  /** The repository's top-level folder. */
+  repo: string
+  commit: string
+  /** Untracked files the snapshot left out because they were too large or too many. */
+  omitted?: number
 }
 
 /** What the method knows about one finished execution. Never carries a score. */

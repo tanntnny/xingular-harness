@@ -112,4 +112,35 @@ describe('mode choices', () => {
     expect(calls).toEqual(['setThinkingLevel max persist=false', 'setThinkingLevel medium persist=false'])
     expect(written).toEqual([{ mode: 'plan', patch: { effort: 'max' } }])
   })
+
+  it('starts a conversation the account cannot continue on its newest usable choice, unrecorded', async () => {
+    const { choices, written, session, calls, modelFor } = fixture({
+      normal: { model: 'anthropic/gone', updatedAt: '2026-01-01T00:00:00.000Z' },
+      plan: { model: 'anthropic/fast', effort: 'low', updatedAt: '2026-01-02T00:00:00.000Z' }
+    })
+    await choices.load()
+    expect(choices.start('normal')).toEqual({ model: 'anthropic/gone', effort: 'low' })
+    // The mode's own model is gone, so the account's newest usable one takes over with its effort.
+    await expect(choices.useFallback(session, 'normal', async reference => modelFor(reference), 'medium'))
+      .resolves.toEqual({ reference: 'anthropic/fast', effort: 'low' })
+    expect(calls).toEqual(['setModel anthropic/fast persist=false', 'setThinkingLevel low persist=false'])
+    expect(written).toEqual([])
+  })
+
+  it('gives nothing back when no saved model of the account is usable', async () => {
+    const { choices, written, session, calls, modelFor } = fixture({ normal: { model: 'anthropic/no-key', effort: 'high', updatedAt: 'a' } })
+    await choices.load()
+    // The runtime's `usable` already rejects a model the account holds no credentials for.
+    const usable = async (reference: string) => (reference === 'anthropic/no-key' ? undefined : modelFor(reference))
+    await expect(choices.useFallback(session, 'normal', usable, 'medium')).resolves.toBeNull()
+    expect(calls).toEqual([])
+    expect(written).toEqual([])
+  })
+
+  it('leaves a conversation that already runs on the account’s choice untouched', async () => {
+    const { choices, session, calls } = fixture({ normal: { model: 'anthropic/current', effort: 'low', updatedAt: 'a' } })
+    await choices.load()
+    await expect(choices.useFallback(session, 'normal', async reference => (reference === 'anthropic/current' ? ({ provider: 'anthropic', id: 'current' } as ChoiceModel) : undefined), 'medium')).resolves.toBeNull()
+    expect(calls).toEqual([])
+  })
 })

@@ -23,6 +23,7 @@ import * as attachments from '../plugins/attachments'
 import { FIRST_PARTY_PLUGINS, firstPartyExtensions, type InlineExtension } from '../plugins/firstParty'
 import { imagePruning } from '../world/images'
 import { materialise, type VariantChoice, type Materialised } from '../variant/materialise'
+import { snapshotWorkingTree } from '../worktrees/snapshot'
 import type { VariantTrust } from '../variant/trust'
 import { ASK_USER } from '../tools/askUser'
 import { defaultSkillPaths } from '../tools/defaultSkills'
@@ -583,6 +584,11 @@ export class Sessions {
       && (input.depth ?? 0) === 0
       && !input.automatic
       && (input.run.trigger == null || input.run.trigger === 'user')
+    // The working tree as the person's turn found it, so refinement can replay the request later.
+    if (stateEligible) {
+      const snapshot = await snapshotWorkingTree(input.cwd)
+      if (snapshot) updateRun(root, runId, (record) => { record.workspaceSnapshot = snapshot })
+    }
     const existingName = stateEligible ? latestSessionName(historyFile) : null
     const sessionState: SessionState | undefined = stateEligible
       ? {

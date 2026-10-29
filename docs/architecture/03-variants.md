@@ -36,6 +36,7 @@ The surface is `PI_SURFACE` (`variant/surface.ts`), the one surface this harness
 | `Variant` (path → text), `SurfaceSpec`, `ComponentInfo` | `variant/surface.ts` | The editable surface and its patterns. |
 | `validate`, `readVariant`, `writeVariant`, `diffSummary`, `applyEdit`, `autotrigger` | `variant/variant.ts` | Validation and editing. |
 | `commit`, `seed`, `restore`, `head`, `lineage`, `fingerprint` | `variant/store.ts` | Versions and the head. |
+| `tag`, `untag`, `tags`, `resolveRef`, `revertComponents`, `selects` | `variant/store.ts` | Names for versions, references, and taking components back from an earlier version (PROP-0052). |
 | `materialise`, `resolve`, `VariantChoice`, `Materialised` | `variant/materialise.ts` | Turns a version into prompt sections, skill paths and extension paths for one run. |
 | `VariantTrust` | `variant/trust.ts` | Which plugin code a person trusted, by hash; which scopes let probes run improver code. |
 | `seedVariant` | `variant/seed.ts` | A first variant for a scope. |
@@ -46,6 +47,16 @@ The surface is `PI_SURFACE` (`variant/surface.ts`), the one surface this harness
 - **`VariantChoice`**: `{ scope, version? }` (a scope's head or one version) or `{ dir, scope? }`
   (a variant on disk, read and never written, such as a refinement candidate).
 - **Version source** (`VersionSource`): `seed`, `edit`, `refinement`, `import`, `restore`.
+- **Tuned for**: a version made by adopting a refinement records `tunedFor: { model }`, the model its
+  execution ran on. It is written once with the version and never changed.
+- **Tags**: `name → fingerprint` per scope. A tag is a label that can move to another version; it
+  is not a version and never changes one. A tag cannot be `head` or look like a fingerprint.
+- **Reference** (`resolveRef`): a fingerprint, a unique prefix of at least four characters, a tag,
+  or `head`.
+- **Revert** (`revertComponents`): a new version made from the head with the selected components
+  replaced by an earlier version's. A selector is a component (`c1`–`c8` or its id) or one item by
+  path prefix (`skills/review`, `sub_agents/reader`, `scripts/check.py`, `plugins/guard.ts`). It is
+  committed with source `edit` and passes the validator like any edit.
 - **Fingerprint**: first 16 hex characters of SHA-1 over sorted `path\0text\0` pairs.
 - **Validation** (`validate`) refuses a variant when: always-on text (c1–c4) exceeds 24,000
   characters; a file is off the surface; a skill lacks `description:` or its `name:` differs from
@@ -65,9 +76,12 @@ The surface is `PI_SURFACE` (`variant/surface.ts`), the one surface this harness
   refused with every problem listed.
 - **INV-VAR-3** A version is never edited. A change is a new version; `restore` moves the head
   and appends to `restores.jsonl`.
-- **INV-VAR-4** A run resolves its variant once and pins it; a child run or later turn uses the same
-  files even if the head moves. A child whose agent profile names another variant resolves and
-  pins that one when it starts (PROP-0029).
+- **INV-VAR-4** A run resolves its variant once and pins it; a child run uses the same files even if
+  the head moves. A child whose agent profile names another variant resolves and pins that one when
+  it starts (PROP-0029). A later turn of a conversation uses the conversation's selected version.
+  That changes only by the person's own action in that session (adopting, restoring, reverting or
+  choosing a version) and only at a turn boundary; a head moved elsewhere is never followed
+  (PROP-0052, ADR-0065).
 - **INV-VAR-5** c8 plugin code loads only when its exact text is trusted (SHA-256 in
   `variant-plugin-trust.json`). A changed file asks again. The one exception: a refinement probe may
   run improver-written code for a scope whose person allowed it (`probeCode`), and adopting that
@@ -85,6 +99,7 @@ The surface is `PI_SURFACE` (`variant/surface.ts`), the one surface this harness
   head.json
   lineage.jsonl
   restores.jsonl
+  tags.json                 name → fingerprint (PROP-0052)
 <state dir>/variant-plugin-trust.json
 <data root>/registry/{skills,prompts,rules}/   (component library)
 ```
@@ -94,6 +109,12 @@ The surface is `PI_SURFACE` (`variant/surface.ts`), the one surface this harness
 `src/variant/*.ts` (`migrate.ts` renames state written before PROP-0009 on `open`). Method origin: Harness² (`harness2/core/tree.py`, Apache-2.0).
 
 ## Terminal inspection
+
+`/variant` lists the scope's versions with their tags, source, and which one this conversation runs
+and which is the head. On a version it offers: switch this conversation to it, restore it as the
+head, compare it with the head, tag it, and take some components from it; `/variant
+use|restore|tag|untag|diff|revert` are the typed forms. Restoring, reverting or adopting switches
+this conversation at the next turn boundary (ADR-0065).
 
 The resource browser retains the materialised preparation snapshot and labels it pinned. The
 current scope head is separately labelled latest saved; browsing and comparison never rematerialise

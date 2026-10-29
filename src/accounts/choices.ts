@@ -72,3 +72,39 @@ export function resolveChoice(modes: Record<string, ModeChoice>, mode: string, f
   const base: Partial<ModeChoice> = mode === fallback ? {} : modes[fallback] ?? {}
   return { model: own.model ?? base.model, effort: own.effort ?? base.effort }
 }
+
+/** A saved selection with the mode it was made in. */
+export interface SavedChoice {
+  mode: string
+  model?: string
+  effort?: Effort
+}
+
+/** The account's newest saved selection, whichever mode it was made in. */
+export function latestChoice(modes: Record<string, ModeChoice>): SavedChoice | undefined {
+  let newest: { choice: SavedChoice; updatedAt: string } | undefined
+  for (const [mode, entry] of Object.entries(modes)) {
+    if (newest && entry.updatedAt <= newest.updatedAt) continue
+    newest = {
+      choice: { mode, ...(entry.model ? { model: entry.model } : {}), ...(entry.effort ? { effort: entry.effort } : {}) },
+      updatedAt: entry.updatedAt
+    }
+  }
+  return newest?.choice
+}
+
+/**
+ * The selection a conversation starts from when this account cannot use the model in its own
+ * history: the mode's own fields, then normal's, then the newest selection in any mode.
+ */
+export function startChoice(modes: Record<string, ModeChoice>, mode: string): { model?: string; effort?: Effort } {
+  const resolved = resolveChoice(modes, mode)
+  const latest = latestChoice(modes)
+  return { model: resolved.model ?? latest?.model, effort: resolved.effort ?? latest?.effort }
+}
+
+/** Every model `startChoice` may try, most specific first and without repeats. */
+export function startModels(modes: Record<string, ModeChoice>, mode: string): string[] {
+  const ordered = [modes[mode]?.model, mode === 'normal' ? undefined : modes.normal?.model, latestChoice(modes)?.model]
+  return [...new Set(ordered.filter((reference): reference is string => typeof reference === 'string' && reference.length > 0))]
+}

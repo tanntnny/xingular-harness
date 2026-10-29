@@ -269,7 +269,7 @@ export async function runParallel(ctx: RecursionContext, k: number, base: readon
   const specs: [string, 'INV' | 'DOM', number][] = []
   for (let i = 1; i <= k; i++) for (const dim of ['INV', 'DOM'] as const) specs.push([`${dim.toLowerCase()}${i}`, dim, i])
   const stages = await mapLimit(specs, ctx.proposeWidth ?? 4, ([label, dim, index]) =>
-    runStage(ctx, { label, dim, job: P.propose(prompts, dim, { k, index }), fallback: ctx.baseVariant, rollouts: base, variantDir: baseDir })
+    runStage(ctx, { label, dim, job: P.propose(prompts, dim, { k, index, guidance: ctx.task.guidance }), fallback: ctx.baseVariant, rollouts: base, variantDir: baseDir })
   )
   recordSessions(result.ledger, stages)
   for (const stage of stages) {
@@ -281,7 +281,7 @@ export async function runParallel(ctx: RecursionContext, k: number, base: readon
   const pool = stages.map((stage) => ({ label: stage.label, variantDir: variantPath(ctx, stage.label), rollout: result.rollouts[stage.label] ?? null }))
   const decisions = Object.fromEntries(stages.map((stage) => [stage.label, stage.notes || stage.error]))
   const aggs = await mapLimit(Array.from({ length: k }, (_, i) => i + 1), ctx.proposeWidth ?? 4, (index) =>
-    runStage(ctx, { label: `agg${index}`, dim: 'AGG', job: P.aggregate(prompts, { k, index }), fallback: ctx.baseVariant, rollouts: base, variantDir: baseDir, pool, decisions })
+    runStage(ctx, { label: `agg${index}`, dim: 'AGG', job: P.aggregate(prompts, { k, index, guidance: ctx.task.guidance }), fallback: ctx.baseVariant, rollouts: base, variantDir: baseDir, pool, decisions })
   )
   recordSessions(result.ledger, aggs)
   for (const stage of aggs) {
@@ -310,7 +310,7 @@ export async function runSequential(ctx: RecursionContext, k: number, base: read
     const before = decisions()
     const fallback = current
     const stages = await mapLimit(specs, Math.min(2, ctx.proposeWidth ?? 2), ([label, dim]) =>
-      runStage(ctx, { label, dim, job: P.propose(prompts, dim, { k, index: t, roundT: k > 1 ? t : null }), fallback, rollouts: base, variantDir: currentDir, pool: [...history], decisions: before })
+      runStage(ctx, { label, dim, job: P.propose(prompts, dim, { k, index: t, roundT: k > 1 ? t : null, guidance: ctx.task.guidance }), fallback, rollouts: base, variantDir: currentDir, pool: [...history], decisions: before })
     )
     recordSessions(result.ledger, stages)
     for (const stage of stages) {
@@ -320,7 +320,7 @@ export async function runSequential(ctx: RecursionContext, k: number, base: read
     Object.assign(result.rollouts, await rollMany(ctx, result.ledger, stages.map((stage) => [stage.label, stage.variant] as const)))
     const roundPool = [...history, ...stages.map((stage) => ({ label: stage.label, variantDir: variantPath(ctx, stage.label), rollout: result.rollouts[stage.label] ?? null }))]
     const ck = `c${t}`
-    const job = k === 1 ? P.aggregate(prompts, { k: 1, index: 1 }) : P.composeRound(prompts, { t, k })
+    const job = k === 1 ? P.aggregate(prompts, { k: 1, index: 1, guidance: ctx.task.guidance }) : P.composeRound(prompts, { t, k, guidance: ctx.task.guidance })
     const comp = await runStage(ctx, { label: ck, dim: 'COMPOSE', job, fallback: current, rollouts: base, variantDir: currentDir, pool: roundPool, decisions: decisions() })
     recordSessions(result.ledger, [comp])
     result.stages.push(comp)

@@ -80,6 +80,7 @@ it to the index and update its status as the work progresses.
 | [PROP-0048](PROP-0048-simple-annotate.md) | One annotate page, two actions, and easy app attach | Implemented; ADR-0044 | PROP-0018, 07, 10, 11, 13, terminal-tui.md, parity.md | 2026-10-27 |
 | [PROP-0049](PROP-0049-context-attribution.md) | Context attribution: what fills the context window, by foundation, variant and application | Implemented | INV-PRM-6, INV-SRV-1, INV-PAR-1/2, INV-RUN-7, 04, 10, 11, 14, parity.md | 2026-10-28 |
 | [PROP-0050](PROP-0050-run-stop-codes-and-refusals.md) | Run stop codes and refusal evidence | Implemented; ADR-0059 | INV-RUN-3/4, INV-GATE-1, INV-TUI-3, INV-PAR-1 | 2026-10-29 |
+| [PROP-0052](PROP-0052-terminal-refine-and-variant-switch.md) | Refine from the terminal, version checkpoints, switching a conversation's variant | Implemented; ADR-0065, ADR-0066 | INV-VAR-4, INV-REF-1/2, INV-RUN-1 | 2026-10-30 |
 
 Numbers are four digits, start at `0001`, and are never reused.
 

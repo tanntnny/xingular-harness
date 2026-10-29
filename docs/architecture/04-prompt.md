@@ -2,7 +2,9 @@
 
 ## Purpose
 
-One compiler builds every model instruction the harness gives. It merges the pinned variant's
+One compiler builds every model instruction the harness gives. A terminal compiles its pack again
+only when the person switches the conversation to another variant version, at a turn boundary
+(ADR-0065); that costs the provider cache once. It merges the pinned variant's
 sections, the harness's own sections and the application's sections into an ordered,
 budgeted pack, then splits the pack into a **stable system prompt** (cached by the provider) and
 a **context update** (changing state appended to native history). Keeping the two apart is what
@@ -82,7 +84,9 @@ own `budget`.
 Every pack ends with the harness's `reporting` section ("Reporting your work",
 `REPORTING_GUIDANCE` in `prompt/compile.ts`). It is fixed text that shapes the final reply: lead
 with the answer or outcome, then use only headings or structure that help explain it; no fixed list
-of report headings is required. When a concrete verification requires a person because the agent
+of report headings is required. When work remains unfinished, state the concrete decision the person
+must make or the next action and its owner for each material blocker, without inventing a human
+decision. When a concrete verification requires a person because the agent
 could not perform or observe it, the optional **Need human inspection** heading says what remains
 unverified, why, and the specific check the person should make. Report only checks actually run,
 with their results. Markdown tables are used where they help compare options or present repeated

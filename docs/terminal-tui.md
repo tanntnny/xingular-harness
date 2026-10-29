@@ -484,8 +484,15 @@ Each mode keeps its own model and effort for the account. Every selection the pe
 picker, `/effort`, Shift+Up/Down, Ctrl+P) is saved against the mode it was made in, so Shift+Tab switches to that
 mode's model and effort, and a new conversation starts on the normal mode's latest choice. A mode with no
 choice of its own takes normal's, field by field; when neither has a saved effort, the mode uses Pi's
-default level rather than keeping the level chosen in the other mode. A resumed conversation keeps the model in its history,
-and a saved model the account cannot use is skipped. The choices live in the account's `choices.json`,
+default level rather than keeping the level chosen in the other mode. A resumed conversation keeps the model in its history while
+the account can use it, and a saved model the account cannot use is skipped. When the conversation's
+model is not offered by the account or holds no credentials there — a different account, a signed-out
+provider, a retired model — the conversation starts on this account's own newest selection instead:
+the mode's choice, then normal's, then the newest selection in any mode, with its effort, skipping any
+model the account cannot use. That start is the terminal's own change: it is written into the
+conversation, never into the person's saved choice, and the terminal says in one notice which model it
+replaced and which it used. With no usable saved model, Pi's own fallback applies and its message is
+shown. The choices live in the account's `choices.json`,
 and the App reads and writes them through `accounts.choices` and `accounts.choose`.
 
 A bare `/plan` toggles plan mode, and Shift+Tab cycles between normal and plan mode. Normal, plan
@@ -818,6 +825,17 @@ question dismisses the dock and interrupts
 only that side run; the main reply continues. `/stop` interrupts the current main reply. The `/accounts` page handles sign-in
 and sign-out. `/components` browses reusable skills, prompts and rules; a confirmed skill or rule addition
 creates a variant version for future sessions while the current terminal keeps its pinned version. `/reload` applies trusted resource and keybinding changes.
+
+`/variant` lists this scope's versions (tags, source, which is the head and which this chat runs) and
+offers switch, restore, compare, tag and take-components on one; `/variant use|restore|tag|untag|diff|revert`
+are the typed forms. A switch waits for the current reply, then restarts the frontend on that version
+and resumes the conversation; the prompt cache starts over, and a version tuned for another model
+says so. `/refine [--k N] [--mode m] [--model id] [--executor-model id] [what to look at]` replays the
+latest request typed here from its turn snapshot: a confirmation shows the request, focus, run count
+and models, then it runs in the background with a `refine` status item and a notice when done.
+`/refine status`, `/refine stop` and `/refine review` follow it; review lists every candidate with the
+selector's pick starred, shows its changes and its output in a scrollable page, and adopts any one
+(with an optional tag), which switches this chat to it (PROP-0052).
 
 `/trajectory` opens the newest recorded run for the current native conversation; `/trajectory <run-id>`
 opens a selected run from that conversation. The full-screen page keeps searchable Runs and Events

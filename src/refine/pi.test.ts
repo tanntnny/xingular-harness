@@ -8,7 +8,7 @@ import { afterEach, expect, it } from 'vitest'
 import { fauxModel } from '../../tests/faux'
 import { memorySecretStore } from '../accounts/secrets'
 import { createHarness, type Harness } from '../harness'
-import { listRuns } from '../sessions/runStore'
+import { listRuns, saveRun } from '../sessions/runStore'
 import * as store from '../variant/store'
 import { DEFAULT_REFINE_HOST } from './host'
 import { Library } from './library'
@@ -209,4 +209,24 @@ it('records the settings a refinement was started with on its summary', async ()
   const { id } = harness.refine.start({ task: { id: 'memo-1', scope: 'memo', prompt: 'Write the memo.' }, executor: { model: 'openai-codex/gpt-6-luna' }, improver: { model: 'openai-codex/gpt-6-luna', effort: 'low' } })
   const summary = await harness.refine.wait(id)
   expect(summary?.settings).toEqual({ executor: { model: 'openai-codex/gpt-6-luna' }, improver: { model: 'openai-codex/gpt-6-luna', effort: 'low' } })
+})
+
+it('builds a replay task from the latest request a person typed, with its snapshot and guidance', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'refine-from-run-'))
+  const harness = createHarness({ dataRoot: root, stateDir: mkdtempSync(join(tmpdir(), 'refine-from-run-state-')), secrets: memorySecretStore() })
+  open.push(harness)
+  const base = { resumedFromRunId: null, parentRunId: null, relation: null, terminalReason: null, projectId: null, mode: 'code', harness: 'pi', sessionType: 'terminal', sessionId: 's1', nativeSessionId: null, workingDirectory: root, worktreeId: null, attachmentCount: 0, endedAt: null, status: 'completed', exitCode: null, handoffId: null, accountId: null, agentId: null, loadedSkills: [], variantScope: 'memo', variantVersion: null }
+  const snapshot = { kind: 'git-snapshot' as const, repo: root, commit: 'a'.repeat(40) }
+  saveRun(root, { ...base, id: 'run-old', trigger: null, goal: 'Old request', startedAt: '2026-10-01T00:00:00.000Z', workspaceSnapshot: snapshot })
+  saveRun(root, { ...base, id: 'run-new', trigger: null, goal: 'Fix the parser', startedAt: '2026-10-02T00:00:00.000Z', model: 'anthropic/claude-sonnet-5-5', attachmentCount: 1, workspaceSnapshot: snapshot })
+  saveRun(root, { ...base, id: 'run-probe', trigger: 'probe', goal: 'Not a person', startedAt: '2026-10-03T00:00:00.000Z', workspaceSnapshot: snapshot })
+  saveRun(root, { ...base, id: 'run-bare', trigger: null, goal: 'No snapshot', startedAt: '2026-10-01T00:00:00.000Z', sessionId: 's2' })
+
+  const made = harness.refine.taskFromRun({ sessionId: 's1', guidance: '  how it checks edits  ' })
+  expect(made.run).toMatchObject({ id: 'run-new', model: 'anthropic/claude-sonnet-5-5' })
+  expect(made.task).toMatchObject({ scope: 'memo', prompt: 'Fix the parser', workspace: snapshot, guidance: 'how it checks edits' })
+  expect(made.notes.join(' ')).toMatch(/attachment/)
+  expect(() => harness.refine.taskFromRun({ runId: 'run-probe' })).toThrow(/typed/)
+  expect(() => harness.refine.taskFromRun({ sessionId: 's2' })).toThrow(/snapshot/)
+  expect(() => harness.refine.taskFromRun({ runId: 'run-new', guidance: 'improve the score' })).toThrow(/WORK/)
 })

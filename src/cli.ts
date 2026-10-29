@@ -50,6 +50,10 @@ Standalone terminal options:
                      ~/.xingular-harness/data; npm run dev passes its own data root)
   --state <dir>      State directory (interactive profile default; otherwise
                      ~/.xingular-harness/state; npm run dev passes its own state directory)
+  --account-state <dir>
+                     Sign in as the accounts kept in that state directory (its
+                     accounts folder and secrets file); npm run dev shares the
+                     installed command's account state by default
   --worktree [name], -w [name]
                      Start in a new managed worktree of this repository, or in
                      the named one

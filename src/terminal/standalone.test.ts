@@ -6,7 +6,7 @@ import { join, resolve } from 'node:path'
 import type { ChildProcess, spawn as nodeSpawn } from 'node:child_process'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { memorySecretStore } from '../accounts/secrets'
+import { fileSecretStore, memorySecretStore } from '../accounts/secrets'
 import { adoptInteractiveProfile, interactiveProfilePath, type InteractiveProfile } from '../core/interactiveProfile'
 import { createHarness, type Harness, type HarnessOptions } from '../harness'
 import * as variantStore from '../variant/store'
@@ -84,6 +84,8 @@ describe('standalone terminal startup', () => {
     })
     expect(() => parseStandaloneOptions(['--data'])).toThrow('--data needs a directory path.')
     expect(() => parseStandaloneOptions(['--model', 'unknown'])).toThrow('Unknown standalone option: --model')
+    expect(parseStandaloneOptions(['--account-state', './shared'], '/home/test', '/work/project')).toMatchObject({ accountState: '/work/project/shared' })
+    expect(() => parseStandaloneOptions(['--account-state'])).toThrow('--account-state needs a state directory path.')
   })
 
   it('resolves profile roots while letting explicit data and state roots win independently', () => {
@@ -138,6 +140,47 @@ describe('standalone terminal startup', () => {
     expect(installed.secretBackend).toEqual({ kind: 'host', id: 'installed-only' })
     expect(developmentProfile.secretBackend).toEqual({ kind: 'host', id: 'dev-host-only' })
     expect(existsSync(join(installed.stateDir, 'secrets.json'))).toBe(false)
+  })
+
+  it('signs in as the account state named by --account-state, so one sign-in serves both launches', async () => {
+    const home = temporaryDirectory('harness-account-state-')
+    const cwd = temporaryDirectory('harness-account-state-cwd-')
+    const devData = join(home, '.xingular-harness-dev', 'data')
+    const devState = join(home, '.xingular-harness-dev', 'state')
+    const installedState = join(home, '.xingular-harness', 'state')
+    const shared = join(installedState, 'accounts')
+    let received: HarnessOptions | undefined
+    let invocation: { options: { env?: NodeJS.ProcessEnv } } | undefined
+    const createHarness = (options: HarnessOptions): Harness => {
+      received = options
+      return harnessFactory(options)
+    }
+    const spawn = fakeSpawn((_program, _args, options) => {
+      invocation = { options }
+    })
+
+    await runStandaloneTerminal(['--data', devData, '--state', devState, '--account-state', installedState], {
+      home, cwd, stdinIsTTY: true, stdoutIsTTY: true, createSessionId: () => 'shared', createHarness, spawn
+    })
+
+    const development = harnesses[0]
+    expect(received).toMatchObject({ dataRoot: devData, stateDir: devState, accountsDir: shared })
+    expect(development.stateDir).toBe(devState)
+    expect(development.accounts.dir).toBe(shared)
+    expect(existsSync(join(devState, 'accounts', 'accounts.json'))).toBe(false)
+    expect(invocation?.options.env?.PI_CODING_AGENT_DIR).toContain(shared)
+
+    // A credential the development launch writes is the installed command's credential.
+    const account = development.accounts.overview().accounts[0]
+    expect(account?.label).toBe('Default')
+    await received!.secrets!.set(`fake-account/${account.id}`, 'fake-credential')
+    expect(existsSync(join(devState, 'secrets.json'))).toBe(false)
+    expect(await fileSecretStore(join(installedState, 'secrets.json')).get(`fake-account/${account.id}`)).toBe('fake-credential')
+
+    // The installed command, started on its own state, finds that account and its credential.
+    const installed = harnessFactory({ dataRoot: join(home, '.xingular-harness', 'data'), stateDir: installedState })
+    expect(installed.accounts.overview().accounts.map((entry) => entry.id)).toEqual([account.id])
+    expect(installed.accounts.dir).toBe(shared)
   })
 
   it('runs on the profile default scope unless --variant selects another scope', async () => {
@@ -339,5 +382,41 @@ describe('switching the account of a running terminal', () => {
     expect(spawned[1].env[TOKEN_ENV]).not.toBe(spawned[0].env[TOKEN_ENV])
     // The session it ended is closed; nothing is left running in the harness.
     expect(harnesses[0].terminals.has('standalone')).toBe(false)
+  })
+})
+
+describe('switching the variant version of a running terminal', () => {
+  it('restarts the frontend on the chosen version and resumes the same conversation', async () => {
+    const home = temporaryDirectory('harness-variant-switch-')
+    const cwd = temporaryDirectory('harness-variant-switch-cwd-')
+    const spawned: { args: string[] }[] = []
+    let switchedTo = ''
+    const spawn = ((_program: string, args: string[], options: { env?: NodeJS.ProcessEnv }) => {
+      spawned.push({ args })
+      const child = new EventEmitter() as ChildProcess
+      child.kill = vi.fn(() => true)
+      void (async () => {
+        await Promise.resolve()
+        if (spawned.length === 1) {
+          const connection = { socket: options.env![SOCKET_ENV]!, token: options.env![TOKEN_ENV]! }
+          const { key } = await socketCall<{ key: string }>(connection, 'control.claim')
+          const state = await socketCall<{ scope: string }>(connection, 'terminal.variant.state', {}, 5_000, key)
+          const root = harnesses[0].env.root
+          const current = variantStore.headVariant(root, state.scope)!.variant
+          // A version that is not the head: only an explicit switch can load it.
+          switchedTo = variantStore.commit(root, state.scope, { ...current, 'memory.md': 'MARKER-NEW-VERSION\n' }, { kind: 'edit' }, { moveHead: false }).fingerprint
+          await socketCall(connection, 'terminal.variant.switch', { version: switchedTo }, 5_000, key)
+        }
+        child.emit('exit', 0, null)
+      })()
+      return child
+    }) as unknown as typeof nodeSpawn
+
+    expect(await runStandaloneTerminal([], { home, cwd, stdinIsTTY: true, stdoutIsTTY: true, createHarness: harnessFactory, spawn })).toBe(0)
+
+    expect(spawned).toHaveLength(2)
+    expect(spawned[0].args.join('\n')).not.toContain('MARKER-NEW-VERSION')
+    expect(spawned[1].args.join('\n')).toContain('MARKER-NEW-VERSION')
+    expect(switchedTo).toMatch(/^[0-9a-f]{16}$/)
   })
 })

@@ -155,9 +155,37 @@ export function methods(harness: Harness): Record<string, Handler> {
     },
     'variants.restore': (params: Params) => {
       const scope = text(params, 'scope')
-      const head = variants.restore(root(), scope, text(params, 'version'), optional(params, 'note') ?? undefined)
+      const head = variants.restore(root(), scope, variants.resolveRef(root(), scope, text(params, 'version')), optional(params, 'note') ?? undefined)
       variantsChanged(scope)
       return head
+    },
+    // Names a version (a fingerprint, a short prefix or another tag); a tag already in use moves.
+    'variants.tag': (params: Params) => {
+      const scope = text(params, 'scope')
+      const tags = variants.tag(root(), scope, text(params, 'name'), variants.resolveRef(root(), scope, text(params, 'version')))
+      variantsChanged(scope)
+      return tags
+    },
+    'variants.untag': (params: Params) => {
+      const scope = text(params, 'scope')
+      const tags = variants.untag(root(), scope, text(params, 'name'))
+      variantsChanged(scope)
+      return tags
+    },
+    'variants.tags': (params: Params) => variants.tags(root(), text(params, 'scope')),
+    'variants.resolve': (params: Params) => {
+      const scope = text(params, 'scope')
+      const fp = variants.resolveRef(root(), scope, text(params, 'ref'))
+      return { fingerprint: fp, version: variants.versionRecord(root(), scope, fp) }
+    },
+    // A new head built from the current one with some components taken from an earlier version.
+    'variants.revert': (params: Params) => {
+      const scope = text(params, 'scope')
+      const from = variants.resolveRef(root(), scope, text(params, 'from'))
+      const selectors = Array.isArray(params.components) ? params.components.filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0) : []
+      const record = variants.revertComponents(root(), scope, from, selectors, optional(params, 'note') ?? undefined)
+      variantsChanged(scope)
+      return record
     },
     // A first version: the variant given, or one built from what shaped the caller before variants.
     'variants.seed': (params: Params) => {

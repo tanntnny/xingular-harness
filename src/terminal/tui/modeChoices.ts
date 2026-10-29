@@ -3,7 +3,7 @@
 // the terminal makes itself (applying a choice, restoring a session) are never recorded.
 import type { AgentSession } from '@earendil-works/pi-coding-agent'
 
-import { resolveChoice, type ChoicePatch, type ModeChoice } from '../../accounts/choices'
+import { resolveChoice, startChoice, startModels, type ChoicePatch, type ModeChoice } from '../../accounts/choices'
 import type { Effort } from '../../core/effort'
 
 export type ComposerMode = 'normal' | 'plan'
@@ -21,6 +21,15 @@ export interface ChoiceSession {
   readonly model?: ChoiceModel
   setModel(model: ChoiceModel, options: { persist: boolean }): Promise<void>
   setThinkingLevel(level: AgentSession['thinkingLevel'], options: { persist: boolean }): void
+}
+
+/** The model the terminal resolved for a saved reference, when the account can use it. */
+export type UsableModel = (reference: string) => Promise<ChoiceModel | undefined>
+
+/** What a fallback put in place, for the notice that explains it. */
+export interface AppliedChoice {
+  reference: string
+  effort?: Effort
 }
 
 export class ModeChoices {
@@ -41,6 +50,31 @@ export class ModeChoices {
   /** The model and effort a mode starts from: its own, else normal's, field by field. */
   resolve(mode: ComposerMode): { model?: string; effort?: Effort } {
     return resolveChoice(this.modes, mode)
+  }
+
+  /** The selection a conversation falls back to when the account cannot use the model in its history. */
+  start(mode: ComposerMode): { model?: string; effort?: Effort } {
+    return startChoice(this.modes, mode)
+  }
+
+  /**
+   * Starts a conversation this account cannot continue on the model in its own history, on the
+   * newest selection the person made on this account. Each model is tried in order, so a choice the
+   * account cannot use is skipped; the change stays a change the terminal made itself.
+   */
+  async useFallback(session: ChoiceSession, mode: ComposerMode, usable: UsableModel, fallback: AgentSession['thinkingLevel']): Promise<AppliedChoice | null> {
+    const effort = this.start(mode).effort
+    for (const reference of startModels(this.modes, mode)) {
+      const model = await usable(reference)
+      if (!model) continue
+      if (session.model && session.model.provider === model.provider && session.model.id === model.id) return null
+      await this.quietly(async () => {
+        await session.setModel(model, { persist: false })
+        session.setThinkingLevel((effort ?? fallback) as AgentSession['thinkingLevel'], { persist: false })
+      })
+      return { reference: `${model.provider}/${model.id}`, ...(effort ? { effort } : {}) }
+    }
+    return null
   }
 
   /** Runs `action` as the terminal's own change. Nothing it causes is recorded as a person's selection. */

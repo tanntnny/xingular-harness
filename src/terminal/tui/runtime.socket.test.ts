@@ -44,10 +44,11 @@ async function setup(input: Partial<TerminalPrepareInput> = {}, packagePrompts =
   for (const [name, value] of Object.entries(launch.env)) vi.stubEnv(name, value === null ? undefined : value)
   vi.spyOn(process, 'cwd').mockReturnValue(cwd)
   const ui = { select: vi.fn(async () => undefined), confirm: vi.fn(async () => false), notify: vi.fn(), getEditorText: () => '' } as unknown as ExtensionUIContext
+  const notify = vi.fn()
   // Bun consumes its flags and the frontend script before the runtime sees process.argv.
-  const runtime = await createTerminalRuntime(launch.args.slice(2), { ui, notify: vi.fn(), changed: vi.fn(), shutdown: vi.fn() })
+  const runtime = await createTerminalRuntime(launch.args.slice(2), { ui, notify, changed: vi.fn(), shutdown: vi.fn() })
   entry.runtime = runtime
-  return { harness, runtime, ui, account }
+  return { harness, runtime, ui, account, notify }
 }
 
 describe('a native SDK runtime on the actual Harness terminal socket', () => {
@@ -366,6 +367,44 @@ describe('a native SDK runtime on the actual Harness terminal socket', () => {
     expect(blocked?.block).toBe(true)
     await runtime.dispose()
     expect(harness.terminals.state('offline-sdk').ready).toBe(false)
+  })
+
+  it('starts a resumed conversation this account cannot use on the account’s latest choice', async () => {
+    const { harness, runtime, account, notify } = await setup()
+    const ai = await import('@earendil-works/pi-ai')
+    const chosen = ai.fauxProvider({ provider: 'faux-a', models: [{ id: 'one', reasoning: true }] })
+    const other = ai.fauxProvider({ provider: 'faux-b', models: [{ id: 'two' }] })
+    runtime.services.modelRuntime.registerNativeProvider(chosen.provider)
+    runtime.services.modelRuntime.registerNativeProvider(other.provider)
+    // Pi's own fallback default, kept apart from the account's choice so the two are distinguishable.
+    writeFileSync(join(runtime.services.agentDir, 'settings.json'), JSON.stringify({ defaultProvider: 'faux-b', defaultModel: 'two', defaultThinkingLevel: 'low' }))
+    harness.accounts.choose(account.id, 'normal', { model: 'faux-a/one', effort: 'high' })
+    // A new conversation re-reads the account's choices.
+    await runtime.newSession()
+    expect(await runtime.services.modelRuntime.checkAuth('faux-a')).toBeTruthy()
+
+    const at = new Date().toISOString()
+    const prior = join(runtime.sessionDirectory, '2026-01-01T00-00-00-000Z_prior.jsonl')
+    writeFileSync(prior, [
+      { type: 'session', version: 3, id: 'prior', timestamp: at, cwd: runtime.cwd },
+      { type: 'model_change', id: 'prior-1', parentId: null, timestamp: at, provider: 'unusable', modelId: 'offline' },
+      { type: 'message', id: 'prior-2', parentId: 'prior-1', timestamp: at, message: { role: 'user', content: [{ type: 'text', text: 'Earlier work' }], timestamp: Date.now() } }
+    ].map(entry => JSON.stringify(entry)).join('\n') + '\n')
+    const choicesFile = join(harness.accounts.dir, account.id, 'choices.json')
+    const saved = readFileSync(choicesFile, 'utf8')
+    notify.mockClear()
+
+    await runtime.switchSession(prior)
+
+    expect(runtime.session.model).toMatchObject({ provider: 'faux-a', id: 'one' })
+    expect(runtime.session.thinkingLevel).toBe('high')
+    // The conversation records the switch, so the next resume needs no fallback.
+    expect(runtime.session.sessionManager.getBranch().filter(entry => entry.type === 'model_change').at(-1)).toMatchObject({ provider: 'faux-a', modelId: 'one' })
+    // It is the terminal's own change, never the person's saved choice.
+    expect(readFileSync(choicesFile, 'utf8')).toBe(saved)
+    expect(notify).toHaveBeenCalledTimes(1)
+    expect(notify.mock.calls[0][0]).toContain('cannot use unusable/offline')
+    expect(notify.mock.calls[0][0]).toContain('faux-a/one')
   })
 
   it('submits grouped terminal answers atomically through the protected real registry', async () => {

@@ -42,8 +42,19 @@ Screen: transcript above the composer, centred dialogs, full-screen resource bro
   the request. The eligible Full Permission switch is the only standing boundary bypass; remembered
   per-tool grants do not widen it, and command output never triggers approval or replay.
 - The terminal compiles its prompt once (`compile` + `render`) and keeps that pack; each run
-  records a copy (page 04). The shared compaction checkpoint extension reintroduces the active
+  records a copy (page 04). Switching the conversation to another variant version (`/variant`,
+  restoring, reverting, or adopting a refinement) restarts the frontend on that version at a turn
+  boundary and resumes the same native conversation (`TerminalRelaunch.variantVersion`, ADR-0065).
+- Each turn a person types records a workspace snapshot before the agent acts (page 02); `/refine`
+  replays the latest one (page 05). The shared compaction checkpoint extension reintroduces the active
   request and latest todo list into post-compaction model context until the run settles.
+- The terminal runtime, not Pi, decides the model a conversation starts on. A fresh conversation
+  starts on the account's latest normal-mode choice; a resumed one keeps the model in its own
+  history while this account offers it and holds credentials for its provider. When it does not,
+  the runtime starts the conversation on the account's newest saved selection (the mode's, then
+  normal's, then the newest in any mode) with that selection's effort, writes that model change
+  into the conversation, and reports it in one notice; the account's `choices.json` is not touched
+  (ADR-0064). With no usable saved selection, Pi's own fallback message stands.
 - Normal mode keeps `ask_user` out of the active tool set. An attended plan request enables the
   shared tool alongside its read-only set and restores the normal set on success, failure or
   interruption. The question blocks until answered, then planning continues in the same run. There
@@ -66,8 +77,12 @@ Screen: transcript above the composer, centred dialogs, full-screen resource bro
   queues. Modified shortcuts require terminal support.
 - Current standalone source defaults: `~/.xingular-harness/{data,state}`; `npm run dev` uses
   `~/.xingular-harness-dev/{data,state}`. The standalone development launch uses a file SecretStore
-  under its resolved development state directory, even when its profile names a host backend; it
-  does not use or alter host credentials. `--variant <scope>` explicitly selects a variant head.
+  under its resolved state directory or the `--account-state` one, even when its profile names a
+  host backend; it does not use or alter host credentials. `--account-state <dir>` signs in as the
+  accounts kept in that state directory (its `accounts` folder and `secrets.json`), and
+  `npm run dev` passes the installed state directory, so development and installed launches share
+  one sign-in while keeping their own data, approvals and plugin trust. `--variant <scope>`
+  explicitly selects a variant head.
   PROP-0040 approves a shared Harness-owned interactive profile, neutral default scope and
   credential backend; adoption and runtime verification remain in progress. Until that lands,
   matching roots/scopes is explicit and matching roots alone does not share host Keychain secrets.
@@ -135,7 +150,8 @@ the proposal service checks it again. Acceptance leaves the package switched off
   through the controller and the run store.
 - **INV-TUI-4** Changes made through the session socket (`plugins.attach|detach|trust|untrust|configure`,
   `plugins.proposals.*`, `accounts.*`, Hub installs, `terminal.browser.*`, `terminal.worktrees.*`,
-  `terminal.annotations.*`, `terminal.sideQuestions.*`, `terminal.remoteControl.*`) require the control key the trusted terminal process claimed once
+  `terminal.annotations.*`, `terminal.sideQuestions.*`, `terminal.remoteControl.*`,
+  `terminal.variant.*`, `terminal.refine.*`) require the control key the trusted terminal process claimed once
   (`control.claim`). The session's shell can read the session token, so the token alone is never
   enough. A phone paired through `/remote-control` is the one other party that answers decisions;
   only the control-key holder can start remote control or allow a device (INV-RC-3, INV-RC-7).

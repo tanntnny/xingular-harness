@@ -119,7 +119,7 @@ export class Hub {
       })
       if (receipt.entry.delivery.kind === 'pi-package') {
         const source = receipt.entry.delivery.source
-        const settings = readJsonOr<{ packages?: Array<string | { source: string }> }>(join(this.harness.stateDir, 'accounts', '_shared', 'pi', 'settings.json'), {})
+        const settings = readJsonOr<{ packages?: Array<string | { source: string }> }>(join(this.harness.accountsDir, '_shared', 'pi', 'settings.json'), {})
         return settings.packages?.some((item) => (typeof item === 'string' ? item : item.source) === source) ?? false
       }
     } catch { return false }

@@ -5,7 +5,7 @@ import { appendFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { isAbsolute, join, resolve } from 'node:path'
 
-import type { SecretStore } from '../accounts/secrets'
+import { fileSecretStore, type SecretStore } from '../accounts/secrets'
 import { setLogSink } from '../core/bus'
 import { DEFAULT_PRODUCT_NAME } from '../core/env'
 import { interactiveProfileSecretStore, resolveInteractiveProfile, type InteractiveProfile, type InteractiveProfileOverrides, type SecretBackendDescriptor } from '../core/interactiveProfile'
@@ -18,6 +18,11 @@ import { REMOTE_CONTROL_ENV } from './client'
 export interface StandalonePaths {
   dataRoot: string
   stateDir: string
+  /**
+   * `--account-state <dir>`: sign in as the accounts kept in that state directory. A launch that
+   * shares it and the state's `secrets.json` sees the same sign-in, so one sign-in serves both.
+   */
+  accountState?: string | null
   /** `--worktree [name]`: start in a new managed worktree (true) or the named one. */
   worktree?: string | true | null
   /** `--variant <scope>`: run on that scope's head, as a host's agent of that scope does. */
@@ -53,6 +58,7 @@ function resolveStandaloneOptions(argv: string[], home = homedir(), cwd = proces
   const given = new Set<string>()
   let worktree: StandalonePaths['worktree']
   let variant: StandalonePaths['variant']
+  let accountState: StandalonePaths['accountState']
   let remoteControl = false
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index]
@@ -72,6 +78,13 @@ function resolveStandaloneOptions(argv: string[], home = homedir(), cwd = proces
       const scope = argv[index + 1]
       if (!scope || scope.startsWith('-')) throw new Error('--variant needs a variant scope.')
       variant = scope
+      index += 1
+      continue
+    }
+    if (argument === '--account-state') {
+      const value = argv[index + 1]
+      if (!value || value.startsWith('--')) throw new Error('--account-state needs a state directory path.')
+      accountState = resolve(cwd, value)
       index += 1
       continue
     }
@@ -126,6 +139,7 @@ function resolveStandaloneOptions(argv: string[], home = homedir(), cwd = proces
     paths: {
       dataRoot: profile.dataRoot,
       stateDir: profile.stateDir,
+      ...(accountState !== undefined ? { accountState } : {}),
       ...(worktree !== undefined ? { worktree } : {}),
       ...(variant !== undefined ? { variant } : {}),
       ...(remoteControl ? { remoteControl } : {})
@@ -219,9 +233,19 @@ export async function runStandaloneTerminal(argv: string[], dependencies: Standa
 
   let cwd = resolve(dependencies.cwd ?? process.cwd())
   const { paths, profile } = resolveStandaloneOptions(argv, dependencies.home, cwd)
-  const secrets = await interactiveProfileSecretStore(profile, dependencies.hostSecretStore)
+  // `--account-state` takes both halves of another state's account identity, so its credentials
+  // come from that state's own file store rather than from this launch's profile backend.
+  const secrets = paths.accountState
+    ? fileSecretStore(join(paths.accountState, 'secrets.json'))
+    : await interactiveProfileSecretStore(profile, dependencies.hostSecretStore)
   const makeHarness = dependencies.createHarness ?? createHarness
-  const harness = makeHarness({ dataRoot: paths.dataRoot, stateDir: paths.stateDir, productName: DEFAULT_PRODUCT_NAME, secrets })
+  const harness = makeHarness({
+    dataRoot: paths.dataRoot,
+    stateDir: paths.stateDir,
+    ...(paths.accountState ? { accountsDir: join(paths.accountState, 'accounts') } : {}),
+    productName: DEFAULT_PRODUCT_NAME,
+    secrets
+  })
   const newSessionId = dependencies.createSessionId ?? randomUUID
   let current = { sessionId: newSessionId(), accountId: null as string | null, nativeSessionId: null as string | null }
   // The frontend draws on this terminal, so the host's diagnostics go to a file the person can read instead.
@@ -248,9 +272,11 @@ export async function runStandaloneTerminal(argv: string[], dependencies: Standa
       cwd = worktree.path
       worktreeId = worktree.id
     }
+    // The version this conversation runs: the head at start, or one the person switched to (PROP-0052).
+    let variantVersion: string | null = null
     for (;;) {
       const sessionFolder = join(paths.dataRoot, 'sessions', 'terminal', createHash('sha256').update(cwd).digest('hex'))
-      const launch = await harness.terminals.prepare({ ...current, cwd, sessionFolder, variant: { scope: variantScope }, ...(worktreeId ? { run: { worktreeId } } : {}) })
+      const launch = await harness.terminals.prepare({ ...current, cwd, sessionFolder, variant: { scope: variantScope, ...(variantVersion ? { version: variantVersion } : {}) }, ...(worktreeId ? { run: { worktreeId } } : {}) })
       const code = await spawnFrontend(paths.remoteControl ? { ...launch, env: { ...launch.env, [REMOTE_CONTROL_ENV]: '1' } } : launch, cwd, dependencies.spawn)
       // `/accounts` and `/worktree` ask for a switch and end the frontend. An account switch resumes
       // the conversation; a folder switch starts a new one there.
@@ -260,6 +286,9 @@ export async function runStandaloneTerminal(argv: string[], dependencies: Standa
         process.stdout.write(`Opening ${next.cwd}.\n`)
         cwd = next.cwd
         worktreeId = next.worktreeId ?? null
+      } else if (next.variantVersion) {
+        process.stdout.write(`Switching this conversation to variant version ${next.variantVersion.slice(0, 8)}.\n`)
+        variantVersion = next.variantVersion
       } else process.stdout.write(`Switching this session to account ${harness.accounts.find(next.accountId).label}.\n`)
       await harness.terminals.dispose(current.sessionId)
       current = { sessionId: newSessionId(), accountId: next.accountId, nativeSessionId: next.nativeSessionId }

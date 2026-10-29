@@ -168,6 +168,7 @@ export const REPORTING_GUIDANCE = `When you finish work, write the final reply f
 - Keep it concise and use only headings or structure that help explain the outcome; do not force a fixed set of report headings.
 - When work involves files, identify the relevant paths and briefly state what changed or mattered. Use \`path:line\` references where useful, and a table (File | Change | Why) when there are three or more changed files.
 - Include blockers, risks, or next steps only when they are concrete and relevant.
+- When work remains unfinished, state the concrete decision the person must make or the next action and its owner for each material blocker; do not merely restate the blocker or invent a human decision.
 - Use **Need human inspection** only when a concrete verification requires a person because you could not perform or observe it. State what remains unverified, why you could not verify it, and the specific check the person should make. Do not use this for checks you ran or generic risks.
 - Name only checks actually run and their results; never claim a check you did not run.
 - Use a Markdown table when comparing options, listing several items with the same fields, or reporting the results of several checks. Use prose or bullets otherwise.
@@ -212,7 +213,7 @@ export function renderCompactionCheckpoint(input: { goal: string; todo: readonly
   const parts = [
     'This is current state from the active run after context compaction, not a new user request. Continue the same request. Do not infer that omitted details or decisions were settled.',
     input.goal.trim() ? `## Current request\n\n${clip(input.goal.trim(), 1_000)}` : '',
-    input.planInstructions ? `## Active plan instructions\n\n${clip(input.planInstructions, 4_000)}` : ''
+    input.planInstructions ? `## Active plan instructions\n\n${clip(input.planInstructions, 8_000)}` : ''
   ].filter(Boolean)
   if (input.todo.length) {
     const active = input.todo.filter((item) => item.status !== 'completed')
@@ -223,7 +224,7 @@ export function renderCompactionCheckpoint(input: { goal: string; todo: readonly
     ].filter(Boolean).join('\n\n')
     parts.push(`## Current todo list\n\n${todo}`)
   }
-  const body = clip(parts.join('\n\n'), 8_000)
+  const body = clip(parts.join('\n\n'), 13_000)
   return `[Harness context update — not a user message]\n\n## Compaction checkpoint\n\n${body}`
 }
 

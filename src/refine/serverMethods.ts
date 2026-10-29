@@ -7,6 +7,7 @@ export function refinementServerMethods(harness: Harness): Record<string, Handle
   const root = (): string => harness.env.root
   return {
     'refine.start': (params) => harness.refine.start({ task: params.task, k: typeof params.k === 'number' ? params.k : 1, mode: params.mode === 'sequential' ? 'sequential' : 'parallel', improver: params.improver ?? {}, executor: params.executor ?? undefined, baseVersion: optional(params, 'baseVersion'), retainWorkspaces: params.retainWorkspaces === true, id: optional(params, 'id') ?? undefined }),
+    'refine.fromRun': (params) => harness.refine.taskFromRun({ runId: optional(params, 'runId'), sessionId: optional(params, 'sessionId'), guidance: optional(params, 'guidance') }),
     'refine.get': (params) => harness.refine.get(text(params, 'id')),
     'refine.list': (params) => harness.refine.list({ scope: optional(params, 'scope'), limit: typeof params.limit === 'number' ? params.limit : undefined }),
     'refine.running': () => harness.refine.running(),
@@ -15,7 +16,9 @@ export function refinementServerMethods(harness: Harness): Record<string, Handle
       return readSummary(root(), text(params, 'id'))
     },
     'refine.candidates': (params) => harness.refine.candidates(text(params, 'id')),
-    'refine.adopt': (params) => harness.refine.adopt(text(params, 'id'), { label: optional(params, 'label') }),
+    'refine.candidateDiff': (params) => harness.refine.candidateDiff(text(params, 'id'), text(params, 'label')),
+    'refine.candidateOutput': (params) => harness.refine.candidateOutput(text(params, 'id'), text(params, 'label')),
+    'refine.adopt': (params) => harness.refine.adopt(text(params, 'id'), { label: optional(params, 'label'), tag: optional(params, 'tag') }),
     'library.list': (params) => harness.refine.library(text(params, 'scope')),
     'library.read': (params) => harness.refine.libraryEntry(text(params, 'scope'), text(params, 'area'), text(params, 'task')),
     'library.forget': (params) => harness.refine.forget(text(params, 'scope'), text(params, 'area'), Array.isArray(params.tasks) ? params.tasks : [])

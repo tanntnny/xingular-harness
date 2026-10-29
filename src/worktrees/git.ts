@@ -15,6 +15,8 @@ export interface GitOptions {
   env?: Record<string, string>
   /** Return a failed result instead of throwing. */
   allowFail?: boolean
+  /** Stop git and fail with `git_timeout` after this long. */
+  timeoutMs?: number
 }
 
 const QUIET_FILTERS = ['-c', 'filter.lfs.smudge=', '-c', 'filter.lfs.process=', '-c', 'filter.lfs.required=false', '-c', 'core.hooksPath=/dev/null']
@@ -67,10 +69,17 @@ export async function git(cwd: string, args: readonly string[], options: GitOpti
     })
     const out: Buffer[] = []
     const err: Buffer[] = []
+    let timedOut = false
+    const timer = options.timeoutMs ? setTimeout(() => { timedOut = true; child.kill('SIGKILL') }, options.timeoutMs) : null
     child.stdout!.on('data', (chunk: Buffer) => out.push(chunk))
     child.stderr!.on('data', (chunk: Buffer) => err.push(chunk))
     child.once('error', (error) => reject(new HarnessError('git_unavailable', `Git could not be started: ${error.message}`, 'Install git and make sure it is on PATH.')))
     child.once('close', (code) => {
+      if (timer) clearTimeout(timer)
+      if (timedOut) {
+        reject(new HarnessError('git_timeout', `git ${args.join(' ')} took longer than ${options.timeoutMs} ms.`))
+        return
+      }
       const result = { code: code ?? 1, stdout: Buffer.concat(out).toString('utf8'), stderr: Buffer.concat(err).toString('utf8') }
       if (result.code !== 0 && !options.allowFail) {
         reject(new HarnessError('git_failed', `git ${args.join(' ')} failed: ${result.stderr.trim() || result.stdout.trim() || `exit ${result.code}`}`))

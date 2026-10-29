@@ -119,6 +119,50 @@ describe('store', () => {
     expect(store.head(root, 'a')).toEqual(before)
   })
 
+  it('tags versions, moves a tag, and resolves tags, prefixes and head', () => {
+    const root = mkdtempSync(join(tmpdir(), 'variant-store-'))
+    const first = store.seed(root, 'a', base())
+    const second = store.commit(root, 'a', applyEdit(base(), { 'memory.md': 'Uses pnpm.' }), { kind: 'edit' })
+    store.tag(root, 'a', 'good', first.fingerprint)
+    expect(store.lineage(root, 'a').map((entry) => entry.tags)).toEqual([[], ['good']])
+    store.tag(root, 'a', 'good', second.fingerprint)
+    expect(store.lineage(root, 'a').map((entry) => entry.tags)).toEqual([['good'], []])
+    expect(store.resolveRef(root, 'a', 'good')).toBe(second.fingerprint)
+    expect(store.resolveRef(root, 'a', 'head')).toBe(second.fingerprint)
+    expect(store.resolveRef(root, 'a', first.fingerprint.slice(0, 8))).toBe(first.fingerprint)
+    expect(() => store.tag(root, 'a', 'head', first.fingerprint)).toThrow(/head/)
+    expect(() => store.tag(root, 'a', 'bad name', first.fingerprint)).toThrow(/tag/)
+    expect(() => store.resolveRef(root, 'a', 'missing')).toThrow()
+    store.untag(root, 'a', 'good')
+    expect(store.tags(root, 'a')).toEqual({})
+    // A tag never changes a version.
+    expect(store.versionRecord(root, 'a', second.fingerprint)?.source.kind).toBe('edit')
+  })
+
+  it('reverts chosen components from an earlier version into a new head', () => {
+    const root = mkdtempSync(join(tmpdir(), 'variant-store-'))
+    const old = store.seed(root, 'a', { ...base(), 'tool_guidance.md': 'Old tools.', 'guardrails.md': 'When reviewing, load the `review` skill.', 'skills/review/SKILL.md': skill('review', 'reviewing old') })
+    const current = store.commit(root, 'a', { ...base(), 'tool_guidance.md': 'New tools.', 'memory.md': 'New memory.', 'guardrails.md': 'When reviewing, load the `review` skill.', 'skills/review/SKILL.md': skill('review', 'reviewing new') }, { kind: 'edit' })
+    const reverted = store.revertComponents(root, 'a', old.fingerprint, ['c4', 'skills/review'])
+    const head = store.headVariant(root, 'a')!.variant
+    expect(head['tool_guidance.md']).toBe('Old tools.')
+    expect(head['skills/review/SKILL.md']).toContain('reviewing old')
+    expect(head['memory.md']).toBe('New memory.')
+    expect(reverted.parent).toBe(current.fingerprint)
+    expect(reverted.source).toMatchObject({ kind: 'edit', components: ['c4', 'skills/review'] })
+    // Both earlier versions are untouched.
+    expect(store.readVersion(root, 'a', current.fingerprint)['tool_guidance.md']).toBe('New tools.')
+    expect(store.readVersion(root, 'a', old.fingerprint)['memory.md']).toBe('')
+    expect(() => store.revertComponents(root, 'a', old.fingerprint, ['skills/none'])).toThrow(/Nothing/)
+  })
+
+  it('records the model a version was tuned for on a new version only', () => {
+    const root = mkdtempSync(join(tmpdir(), 'variant-store-'))
+    const record = store.commit(root, 'a', base(), { kind: 'refinement', refineId: 'r', label: 'final_0' }, { tunedFor: { model: 'anthropic/claude-sonnet-5-5' } })
+    expect(record.tunedFor).toEqual({ model: 'anthropic/claude-sonnet-5-5' })
+    expect(store.commit(root, 'a', base(), { kind: 'edit' }, { tunedFor: { model: 'other' } }).tunedFor).toEqual({ model: 'anthropic/claude-sonnet-5-5' })
+  })
+
   it('fingerprints by content, not by key order', () => {
     expect(store.fingerprint({ a: '1', b: '2' })).toBe(store.fingerprint({ b: '2', a: '1' }))
     expect(store.fingerprint({ a: '1' })).not.toBe(store.fingerprint({ a: '2' }))

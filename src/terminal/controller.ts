@@ -50,6 +50,8 @@ export interface ControllerHooks {
   nativeSessionId: string | null
   /** Reserves or creates the run for a native turn and starts tracking it. */
   begin(input: { reservedRunId: string | null; nativeTurnId: string; text: string; model?: string | null; effort?: string | null }): ActiveRun
+  /** Work that must finish before the native turn starts, such as the workspace snapshot. */
+  afterBegin?(run: ActiveRun, text: string): Promise<void>
   /** Whether a native tool call may run. */
   policy(run: ActiveRun, tool: string, args: unknown): Promise<PolicyReply>
   /** The workspace root pinned on the run record. */
@@ -461,6 +463,7 @@ export class TerminalController {
         model: typeof data.model === 'string' && data.model ? data.model : null,
         effort: typeof data.effort === 'string' && data.effort ? data.effort : null
       })
+      await this.hooks.afterBegin?.(run, String(data.text ?? '')).catch(() => {})
       return { runId: run.runId, workspaceRoot: this.hooks.workspaceRoot(run) }
     }
     if (event === 'shutdown') {

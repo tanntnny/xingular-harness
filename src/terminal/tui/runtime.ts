@@ -2,7 +2,7 @@ import {
   createAgentSession, createAgentSessionRuntime, DefaultResourceLoader, ModelRuntime, resolveCliModel,
   SessionManager, SettingsManager,
   type AgentSession, type AgentSessionEventListener, type AgentSessionRuntime, type AgentSessionServices,
-  type CreateAgentSessionRuntimeFactory, type ExtensionUIContext
+  type CreateAgentSessionRuntimeFactory, type ExtensionUIContext, type SessionEntry
 } from '@earendil-works/pi-coding-agent'
 import { closeSync, existsSync, openSync, readSync, realpathSync } from 'node:fs'
 import { isAbsolute, join, relative, resolve, sep } from 'node:path'
@@ -177,6 +177,23 @@ export function assertTerminalSessionScope(path: string, cwd: string, cwdOverrid
   }
 }
 
+/**
+ * The model a conversation's own history names: the last model change, else the model that answered
+ * last. A conversation with no message yet has nothing to continue and names nothing.
+ */
+function recordedModel(branch: SessionEntry[]): { provider: string; modelId: string } | undefined {
+  if (!branch.some(entry => entry.type === 'message' && (entry.message.role === 'user' || entry.message.role === 'assistant'))) return undefined
+  for (let index = branch.length - 1; index >= 0; index -= 1) {
+    const entry = branch[index]
+    if (entry.type === 'model_change') return { provider: entry.provider, modelId: entry.modelId }
+    // A routed virtual response names the physical model that answered it, not the selection.
+    if (entry.type === 'message' && entry.message.role === 'assistant' && entry.message.api !== 'pi-virtual') {
+      return { provider: entry.message.provider, modelId: entry.message.model }
+    }
+  }
+  return undefined
+}
+
 export async function createTerminalRuntime(args: string[], host: TerminalRuntimeHost): Promise<TerminalRuntime> {
   const prepared = parseTerminalArguments(args)
   const cwd = realpathSync(process.cwd())
@@ -238,6 +255,11 @@ export async function createTerminalRuntime(args: string[], host: TerminalRuntim
   // A selection is recorded against the mode it was made in; a one-shot plan run is always plan.
   const recordingMode = (): ComposerMode => (planRun.active ? 'plan' : currentMode)
   const modelFor = (reference: string): ChoiceModel | undefined => resolveCliModel({ cliModel: reference, modelRuntime }).model
+  /** A model this account can use: offered by its catalogue and holding credentials. Never a request. */
+  const usableModel = async (reference: string): Promise<ChoiceModel | undefined> => {
+    const model = modelFor(reference)
+    return model && await modelRuntime.checkAuth(model.provider) ? model : undefined
+  }
   // The level Pi resolves when no mode has saved an effort: the model's own default, then the account's.
   const defaultEffort = (session: AgentSession): AgentSession['thinkingLevel'] => {
     const model = session.model
@@ -250,6 +272,19 @@ export async function createTerminalRuntime(args: string[], host: TerminalRuntim
       await session.setModel(previous.model, { persist: false }).catch(() => undefined)
     }
     session.setThinkingLevel(previous.effort, { persist: false })
+  }
+  // A conversation written on another account can name a model this one cannot use. The account's own
+  // newest choice decides then, and the conversation records it so the next resume is settled. A
+  // fallback never fails the start: whatever is wrong with the choice, Pi's own fallback remains.
+  const recoverModel = async (session: AgentSession): Promise<{ recorded: string; reference: string; effort?: Effort } | null> => {
+    // An explicit launch model is the host's decision for this session, and a reading that fails is no reason to change one.
+    if (prepared.model) return null
+    const recorded = recordedModel(session.sessionManager.getBranch())
+    if (!recorded) return null
+    const reference = `${recorded.provider}/${recorded.modelId}`
+    if (await usableModel(reference).catch(() => undefined)) return null
+    const applied = await modeChoices.useFallback(session, currentMode, usableModel, defaultEffort(session)).catch(() => null)
+    return applied ? { recorded: reference, ...applied } : null
   }
 
   let native: AgentSessionRuntime
@@ -526,8 +561,12 @@ export async function createTerminalRuntime(args: string[], host: TerminalRuntim
         reload: () => runtime.reload()
       }
     })
+    const recovered = await recoverModel(session)
     await announce()
-    if (native.modelFallbackMessage) host.notify(native.modelFallbackMessage)
+    if (recovered) {
+      const effort = recovered.effort ? ` at ${recovered.effort} effort` : ''
+      host.notify(`This account cannot use ${recovered.recorded}. Started on ${recovered.reference}${effort}, your latest choice on this account.`)
+    } else if (native.modelFallbackMessage) host.notify(native.modelFallbackMessage)
   }
   native.setBeforeSessionInvalidate(before)
   native.setRebindSession(bind)

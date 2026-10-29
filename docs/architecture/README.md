@@ -109,6 +109,7 @@ resolve relevant drift by updating the implementation and specification together
 
 | ID | Where | What disagrees |
 |---|---|---|
+| D-24 | Plan instruction delivery, pages 02 and 04 — resolved | The plan instruction exceeded its 4,000-character section budget, and the compaction checkpoint separately clipped it at 4,000 characters, risking loss of outcome rules. Both bounds are increased and covered by delivery tests so the complete current instruction survives compilation and compaction. |
 | D-23 | Terminal model-tool caller identity, pages 07 and 08 — resolved | `ownTools` used the session caller without the active run id, so `trajectory_read` with `run: 'current'` failed over `tools.call`. It now derives the caller on each execution and clears the identity after settlement. |
 | D-1 | `AGENTS.md` (before this spec), `INV-RUN-6` | The old rule said only `sessions/runStore.ts` writes `runs/<id>/`. In code, four other harness modules also write side files there: `prompt/compile.ts` (`context.json`), `sessions/sessions.ts` (`caller.json`), `capabilities/runSnapshot.ts` (`capabilities.json`), `mcp/service.ts` (`mcp-context.json`). The spec states the rule the code keeps (see `INV-RUN-6`); whether to route all of them through `runStore.ts` is open. |
 | D-2 | Plugin proposal review surfaces | `plugin_propose` and hash-bound proposal APIs now exist; a terminal review UI is pending and no App review UI is claimed. See [PAR-017](../parity.md#gaps). |

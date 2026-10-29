@@ -53,7 +53,8 @@ function ordered(record: RunRecord): RunRecord {
     ...(record.model ? { model: record.model } : {}),
     ...(record.effort ? { effort: record.effort } : {}),
     ...(record.loadedSkills !== undefined ? { loadedSkills: record.loadedSkills } : {}),
-    ...(record.activatedPlugins !== undefined ? { activatedPlugins: record.activatedPlugins } : {})
+    ...(record.activatedPlugins !== undefined ? { activatedPlugins: record.activatedPlugins } : {}),
+    ...(record.workspaceSnapshot ? { workspaceSnapshot: record.workspaceSnapshot } : {})
   }
 }
 

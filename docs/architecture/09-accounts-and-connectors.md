@@ -25,9 +25,12 @@ skills, prompts, rules and Pi packages.
 ## Contracts
 
 - **Account folder.** Every Pi session gets its account's own agent folder
-  (`PI_CODING_AGENT_DIR`) under `<state dir>/accounts/`. Settings, skills, prompts and
-  instructions are shared through links to `_shared/pi/`; credentials, sessions and history stay
-  in the account's own folder.
+  (`PI_CODING_AGENT_DIR`) under the account state folder (`HarnessOptions.accountsDir`, by default
+  `<state dir>/accounts/`). Settings, skills, prompts and instructions are shared through links to
+  `_shared/pi/`; credentials, sessions and history stay in the account's own folder. The registry,
+  the account folders and their shared settings are one identity: a launch that points
+  `accountsDir` at another state's folder (`--account-state`) also uses that state's `SecretStore`,
+  so both launches sign in as the same accounts.
 - **Resolution.** A new session may name an account, a pool, or neither (the default). Once
   started, it stays on that account.
 - **Sign-in progress** lives in the running process only. `accounts.loginStatus` recovers the
@@ -74,12 +77,19 @@ skills, prompts, rules and Pi packages.
 
 ```text
 <state dir>/accounts/         registry, per-account Pi agent folders, _shared/pi/, audit log, per-account state (health, plan, limits)
+<state dir>/accounts/<id>/choices.json  the model and effort each mode last used on that account
 <state dir>/secrets.json      default SecretStore (owner-only)
 <state dir>/connections.json  connected apps, no secrets
 <state dir>/hub/catalog.json  catalog cache
 <data root>/hub/              installed documents and provenance
 <data root>/runs/<id>/mcp-context.json
 ```
+
+`choices.json` is the account's own model memory: it holds no credentials and is removed with the
+account. A conversation that reaches a new account cannot use is started on this account's newest
+selection — the mode's, then normal's, then the newest in any mode — with that selection's effort,
+skipping a model the account cannot authenticate; the terminal records the start in the
+conversation, never in `choices.json`. See [ADR-0064](../decisions/ADR-0064-account-model-fallback-on-resume.md).
 
 ## Source map
 

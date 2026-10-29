@@ -68,6 +68,13 @@ A session that cannot open ends its run as `failed` and returns `nativeSessionId
   would collapse the write boundary. Native writes revalidate the target and atomically replace it
   inside an OS write scope; Bash scans for external hard-link aliases and runs in the same pinned
   boundary (page 07).
+- **Workspace snapshot** (`RunRecord.workspaceSnapshot`, PROP-0052). Before the agent acts on a turn
+  a person typed (a structured session's own turn, or a terminal turn with text), the harness
+  records `{ kind: 'git-snapshot', repo, commit, omitted? }` when the working folder is in a git
+  repository: a commit of tracked edits, deletions and bounded untracked files (5 MB each, 100 MB,
+  10,000 files; `omitted` counts the rest) made through a throwaway index. The working tree, the
+  real index, HEAD and refs are not touched. A snapshot that fails or takes longer than two seconds
+  records nothing. Refinement replays the turn from it (page 05).
 - **Question sketches** (PROP-0025, ADR-0026; originally PROP-0024, ADR-0025). `question.requested` may include `uiSketch: true`
   and `sketch` text on each choice. If enabled, every choice must have a sketch; otherwise no
   choice may carry one. A sketch is 1–24 LF-separated lines, at most 80 printable ASCII characters
@@ -142,8 +149,12 @@ A session that cannot open ends its run as `failed` and returns `nativeSessionId
   (PROP-0043). The dynamic plan instruction
   requires an opening `Goal` or `Summary`, evidence-grounded findings when useful, and task-scaled
   steps and verification. A small fix stays concise without omitting its
-  outcome or check; cross-cutting work uses ordered steps. It uses alternatives only when requested
-  or materially useful; contextual `uiSketch` questions clarify real choices.
+  outcome or check; cross-cutting work uses ordered steps. It encourages questions about material
+  user-owned decisions and important assumptions after discovery, including when a default exists.
+  For unresolved substantive UI or TUI layout and interaction choices, it defaults to contextual
+  `uiSketch` questions with meaningful alternatives; routine, specified, delegated or nonvisual
+  decisions do not require sketches. Both the dynamic section and compaction checkpoint have room
+  for the complete bounded plan instruction.
   **Outcome contract (ADR-0058, superseding the clarification portion of ADR-0057).** Classify a
   new final reply as exactly one of `plan_ready`, `blocked`, or `invalid`. `plan_ready` uses the
   existing complete `<proposed_plan>` block and is the only outcome that offers a plan card and
@@ -339,7 +350,8 @@ is approved but remains in progress; no completed cross-surface catalog is impli
 
 ## Data
 
-`<data root>/runs/<id>/`: `run.json` (including the optional, legacy-compatible `workspaceRoot`),
+`<data root>/runs/<id>/`: `run.json` (including the optional, legacy-compatible `workspaceRoot` and
+the optional `workspaceSnapshot`),
 `events.jsonl`, `owner.json`, `subagents.json`, `context.json`, `caller.json`, `capabilities.json`,
 `mcp-context.json`. Native history lives in
 the session directory the caller passes (`sessionDir`), owned by Pi. Side-question native history

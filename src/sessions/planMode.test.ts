@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
-import { CONTEXT_MESSAGE_TYPE, CONTEXT_SNAPSHOT_KEY } from '../prompt/compile'
+import { CONTEXT_MESSAGE_TYPE, CONTEXT_SNAPSHOT_KEY, fit } from '../prompt/compile'
 import { GET_CAPABILITIES } from '../tools/getCapabilities'
 import { deniedPlanBashCommand, finalizePlanOutcome, normalModeTools, PLAN_INSTRUCTIONS, PLAN_REPAIR_INSTRUCTIONS, PLAN_SECTION_ID, parsePlanOutcome, parseProposedPlan, planModeTools, planRefusal, planSection, QUESTION_TOOL_NAMES } from './planMode'
 
@@ -64,7 +64,9 @@ describe('plan mode', () => {
   })
 
   it('adds its instructions while on, withdraws them once after, and is absent otherwise', () => {
-    expect(planSection(true, null)).toMatchObject({ id: PLAN_SECTION_ID, body: PLAN_INSTRUCTIONS, budget: 4_000, dynamic: true })
+    const section = planSection(true, null)!
+    expect(section).toMatchObject({ id: PLAN_SECTION_ID, body: PLAN_INSTRUCTIONS, budget: 8_000, dynamic: true })
+    expect(fit(PLAN_INSTRUCTIONS, section.budget, '')).toEqual({ body: PLAN_INSTRUCTIONS, cut: false })
     expect(planSection(true, null, true)?.body).toContain('read-only research subagent')
     expect(PLAN_INSTRUCTIONS).toContain('<proposed_plan>')
     expect(PLAN_INSTRUCTIONS).toContain('path:line')
@@ -74,7 +76,12 @@ describe('plan mode', () => {
     expect(PLAN_INSTRUCTIONS).toContain('specific verification')
     expect(PLAN_INSTRUCTIONS).toContain('expected results')
     expect(PLAN_INSTRUCTIONS).toContain('only to a named profile in the plan-specific Subagents list')
-    expect(PLAN_INSTRUCTIONS).toContain('contextual `uiSketch` wireframes')
+    expect(PLAN_INSTRUCTIONS).toContain('use ask_user before finalizing—even if you have a recommended default')
+    expect(PLAN_INSTRUCTIONS).toContain('Do not ask about discoverable facts')
+    expect(PLAN_INSTRUCTIONS).toContain('use ask_user with `uiSketch: true`')
+    expect(PLAN_INSTRUCTIONS).toContain('Do not force sketches for routine changes')
+    expect(PLAN_INSTRUCTIONS).toContain('Respect a request to decide autonomously')
+    expect(PLAN_INSTRUCTIONS).toContain('After resolving material user-owned choices')
     expect(planSection(false, null)).toBeNull()
     expect(planSection(false, history(['blocks']))).toBeNull()
     expect(planSection(false, history(['blocks', PLAN_SECTION_ID]))).toMatchObject({ id: PLAN_SECTION_ID, body: null, dynamic: true })

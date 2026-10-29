@@ -79,6 +79,9 @@ import { listTerminalTrajectoryRuns, readTerminalTrajectory, latestTerminalTodo 
 import { BrowserControl } from './browserControl'
 import { RemoteControl, type RemoteControlOptions, type RemoteSessionPort } from '../remote/service'
 import type { RemoteInterfaceChoice } from '../remote/addresses'
+import { snapshotWorkingTree } from '../worktrees/snapshot'
+import { refineCall, variantCall, type VariantControlContext } from './variantControl'
+import type { Refinements } from '../refine/service'
 
 /** Identity of the exact resource decision that this terminal was prepared with. */
 function resourceIdentity(loading: Loading | null): string {
@@ -144,6 +147,8 @@ export interface TerminalRelaunch {
   cwd?: string
   /** The managed worktree the new folder belongs to; null for the main checkout. */
   worktreeId?: string | null
+  /** Resume the conversation on this version of the session's variant scope (PROP-0052). */
+  variantVersion?: string
 }
 
 export interface TerminalLaunch {
@@ -201,6 +206,8 @@ export interface TerminalsOptions {
   usageLimits?: UsageLimits
   /** Where `/remote-control` listens; tests bind loopback here. */
   remoteControl?: RemoteControlOptions
+  /** Refinements, for `/refine` (PROP-0052). */
+  refine?: Refinements
 }
 
 /** What `/plugins` in a terminal can do. Each takes the session's folder, account and project. */
@@ -237,6 +244,8 @@ export class Terminals {
   private readonly assets: TerminalAssets
   /** A session's `/accounts` or `/worktree` switch, taken once its Pi process has ended. */
   private readonly relaunches = new Map<string, TerminalRelaunch>()
+  /** Refinements each session started with `/refine`. */
+  private readonly refinements = new Map<string, string[]>()
   /** The managed worktree each live session holds. */
   private readonly worktreeLeases = new Map<string, string>()
   /** `/remote-control` for each live session that opened it. */
@@ -899,6 +908,13 @@ export class Terminals {
     return this.options.runs.start(sessionId, runId)
   }
 
+  /** Records the working tree as a typed turn found it, before the agent acts (refinement replays from it). */
+  private async snapshotTurn(live: Live, run: ActiveRun, text: string): Promise<void> {
+    if (!text.trim() || live.input.readOnly) return
+    const snapshot = await snapshotWorkingTree(live.input.cwd)
+    if (snapshot) updateRun(this.options.env.root, run.runId, (record) => { record.workspaceSnapshot = snapshot })
+  }
+
   private async decide(live: Live, run: ActiveRun, tool: string, args: unknown): Promise<PolicyReply> {
     const record = loadRun(this.options.env.root, run.runId)
     if (!isActiveStatus(record.status)) throw invalid(`The run is no longer active (its status is ${record.status}).`)
@@ -1104,6 +1120,26 @@ export class Terminals {
     throw new HarnessError('unknown_method', 'Unknown terminal component operation.')
   }
 
+  private variantContext(live: Live): VariantControlContext {
+    const sessionId = live.input.sessionId
+    const choice = live.input.variant
+    const scope = choice && !('dir' in choice) ? choice.scope : null
+    let started = this.refinements.get(sessionId)
+    if (!started) this.refinements.set(sessionId, started = [])
+    return {
+      root: this.options.env.root,
+      bus: this.options.bus,
+      sessionId,
+      nativeSessionId: live.controller.nativeSessionId,
+      scope,
+      pinned: live.variant?.fingerprint ?? null,
+      active: () => Boolean(this.options.runs.activeForSession(sessionId)) || live.controller.state().active,
+      relaunchOn: (version) => this.relaunches.set(sessionId, { accountId: live.account.id, nativeSessionId: live.controller.nativeSessionId, variantVersion: version }),
+      refine: this.options.refine ?? null,
+      started
+    }
+  }
+
   private trajectoryCall(live: Live, call: string, params: Record<string, unknown>): unknown {
     if (call === 'terminal.trajectory.list') {
       return { runs: listTerminalTrajectoryRuns(this.options.env.root, live.input.sessionId, live.controller.nativeSessionId) }
@@ -1232,6 +1268,7 @@ export class Terminals {
           sessionId,
           nativeSessionId: input.nativeSessionId ?? null,
           begin: ({ reservedRunId, text, model, effort }) => this.begin(live, reservedRunId, text, { model, effort }),
+          afterBegin: (run, text) => this.snapshotTurn(live, run, text),
           hydrate: (owners) => this.hydrateMonitor(live, owners),
           policy: (run, tool, args) => this.decide(live, run, tool, args),
           workspaceRoot: run => {
@@ -1326,6 +1363,8 @@ export class Terminals {
             if (current === null || snapshotSize > current) throw invalid('The diagnostics snapshot is no longer available.')
             return readHarnessLogChunk(this.options.stateDir, snapshotSize, offset)
           }
+          if (call.startsWith('terminal.variant.')) return variantCall(this.variantContext(live), call, params)
+          if (call.startsWith('terminal.refine.')) return refineCall(this.variantContext(live), call, params)
           if (call.startsWith('terminal.components.')) return this.componentsCall(live, call, params)
           if (call.startsWith('terminal.trajectory.')) return this.trajectoryCall(live, call, params)
           if (call === 'terminal.todo') return latestTerminalTodo(this.options.env.root, live.input.sessionId, live.controller.nativeSessionId)
@@ -1519,6 +1558,7 @@ export class Terminals {
     }
     this.sessions.delete(sessionId)
     this.worldNames.delete(sessionId)
+    this.refinements.delete(sessionId)
     const remote = this.remotes.get(sessionId)
     this.remotes.delete(sessionId)
     await remote?.dispose().catch(() => undefined)

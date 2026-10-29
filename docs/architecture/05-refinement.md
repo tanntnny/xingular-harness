@@ -12,7 +12,7 @@ next task's improvers read.
 
 | Type / function | Module | Role |
 |---|---|---|
-| `Refinements` | `refine/service.ts` | `start`, `wait`, `get`, `list`, `cancel`, `candidates`, `adopt`, `library`, `libraryEntry`, `forget`. |
+| `Refinements` | `refine/service.ts` | `start`, `taskFromRun`, `wait`, `get`, `list`, `cancel`, `candidates`, `candidateDiff`, `candidateOutput`, `adopt`, `library`, `libraryEntry`, `forget`. |
 | `runRefinement` | `refine/runner.ts` | One refinement end to end; writes `summary.json`. |
 | `runMatrix` | `refine/suite.ts` | Evaluates variant versions on a task set without refining: one probe execution per version × task, recorded as `matrix.json` with comparability keys. Reads with `readMatrix`. |
 | recursion | `refine/recursion.ts` | Parallel (`agg`) and sequential (`seq`) modes; stages `INV`, `DOM`, `AGG`, `COMPOSE`. |
@@ -21,7 +21,8 @@ next task's improvers read.
 | selection | `refine/selection.ts` | Blind choice among anonymised outputs, then reflection. |
 | `Library` | `refine/library.ts` | The experience library per scope and area. |
 | `PiExecutor`, `PiImprover` | `refine/pi.ts` | Executions and improvers as ordinary harness runs, triggers `probe` and `improver`. |
-| `RefineHost` | `refine/host.ts` | The application's part (page 01, surface 7). |
+| `RefineHost` | `refine/host.ts` | The application's part (page 01, surface 7). The default host replays a git snapshot in a shared clone (`prepareSnapshotWorkspace`). |
+| `snapshotWorkingTree` | `worktrees/snapshot.ts` | The working tree as a typed turn found it, as a commit (PROP-0052). |
 | prompts | `refine/prompts.ts` | Improver missions. |
 
 ## Method
@@ -60,8 +61,26 @@ answer-free rule: a variant or record carrying grader output is refused before a
   the host's `session(...)` wins, then `executor`, then the account default. `summary.json`
   records `settings: { executor, improver }` as started; each probe run's record holds what it
   resolved (PROP-0003).
-- `adopt(id, { label? })` commits the chosen (or named) candidate as the scope's head with source
-  `refinement`. It refuses while any plugin code in it is untrusted.
+- `adopt(id, { label?, tag? })` commits the chosen (or named) candidate as the scope's head with
+  source `refinement`, records `tunedFor` from the model its execution ran on, and tags it when
+  asked. It refuses while any plugin code in it is untrusted, and checks the tag before committing.
+- `taskFromRun({ runId? | sessionId?, nativeSessionId?, guidance? })` builds a task that replays
+  one turn a person typed: its request text, the scope its variant came from, and its
+  `workspaceSnapshot` as `task.workspace`. With a session it takes the latest typed turn; with a
+  native session id it also finds turns recorded before the terminal restarted on another version.
+  It refuses a run something else started, a run with no variant, and a run with no snapshot, and
+  lists what the replay leaves out (attachments, untracked files the snapshot omitted).
+- `task.workspace: { kind: 'git-snapshot', repo, commit }`: the default host prepares each
+  execution as a `--shared` clone of `repo` checked out at `commit`, with HEAD and the index at the
+  commit's parent, so tracked edits, deletions and new files look as they did. Ignored files named
+  by `.worktreeinclude` are copied from the repository as it is now. The person's repository gains
+  no worktree, ref or file.
+- `task.guidance`: where the person asked improvers to look, at most 2,000 characters, refused when
+  it names measurement (`checkGuidance`). It is added to the INV, DOM, aggregate and compose
+  missions as a focus block that directs attention and keeps `KEEP_BASE` valid, and recorded on the
+  summary. It never reaches the selector or the reflector.
+- `candidateDiff(id, label)` and `candidateOutput(id, label)` return one candidate's file changes
+  from the base and what its execution produced, for review before adopting.
 - Executions run as `sessions.run` with `trigger: 'probe'`, `automatic: true`, in the host's
   workspace. Improvers run with `trigger: 'improver'`, `automatic: true`, file tools only, no
   providers, no connected apps, no harness tools, no variant, in a temporary copy of the evidence.
@@ -74,7 +93,7 @@ answer-free rule: a variant or record carrying grader output is refused before a
   library. Retained workspaces are output for measurement after the fact; evidence, selection,
   reflection and the library never read them.
 - **INV-REF-2** The selector sees only the request, the source and the outputs, shuffled under
-  arbitrary ids. It never sees a harness, a trajectory or a verdict.
+  arbitrary ids. It never sees a harness, a trajectory, a verdict or the person's guidance.
 - **INV-REF-3** The budget identity R = 4k, P = 3k holds in both modes (`Ledger.assertIdentity`).
   A change to the method changes both modes and their tests together.
 - **INV-REF-4** Refinement never acts in the world. Executions are unattended `probe` runs in a
@@ -100,6 +119,14 @@ answer-free rule: a variant or record carrying grader output is refused before a
 ```
 
 ## Source map
+
+In the terminal, `/refine [--k N] [--mode parallel|sequential] [--model id] [--executor-model id]
+[guidance]` replays the latest request typed in this conversation. It shows the request, its
+snapshot, the focus, the run count (4k executions, 3k improver sessions, selection and reflection)
+and the models, asks, then runs in the background with a status item. Executions use this chat's
+model unless `--executor-model` names another; `--model` sets the improver's. `/refine status`,
+`/refine stop` and `/refine review` follow it; review marks the selector's pick, shows each
+candidate's changes and output, and adopts any candidate, then switches the conversation to it.
 
 `src/refine/*.ts`. Method origin: Harness² (`harness2/core/{recursion,ledger,selection,library,context}.py`,
 Apache-2.0). The evaluation matrix is this harness's addition (`refine/suite.ts`), shaped by the

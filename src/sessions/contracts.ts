@@ -550,6 +550,12 @@ export interface RunRecord {
   loadedSkills?: string[]
   /** Plugin identities observed activating; absent when not fully observable. */
   activatedPlugins?: string[]
+  /**
+   * The git working tree as this person's turn found it, before the agent changed anything: a
+   * commit made without touching the tree or the index. Refinement replays the request from it.
+   * Absent outside git, for runs nobody typed, and when the snapshot took too long.
+   */
+  workspaceSnapshot?: { kind: 'git-snapshot'; repo: string; commit: string; omitted?: number } | null
 }
 
 const text = z.string().nullish().transform((value) => value ?? null)
@@ -588,7 +594,8 @@ export const runRecordSchema = z.object({
   model: text.optional(),
   effort: text.optional(),
   loadedSkills: z.array(z.string()).optional(),
-  activatedPlugins: z.array(z.string()).optional()
+  activatedPlugins: z.array(z.string()).optional(),
+  workspaceSnapshot: z.object({ kind: z.literal('git-snapshot'), repo: z.string(), commit: z.string(), omitted: z.number().int().nonnegative().optional() }).nullish()
 }) satisfies z.ZodType<RunRecord, unknown>
 
 /** Records written before PROP-0009 name the variant `harnessScope` and `harnessVersion`. */

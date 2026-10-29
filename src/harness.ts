@@ -65,6 +65,12 @@ export interface HarnessOptions {
   dataRoot?: string | null
   /** Device-local state that never belongs in the data root: accounts, approvals, connections, sockets. */
   stateDir: string
+  /**
+   * Where account identity lives: the registry, each account's Pi folder, and the shared settings.
+   * Defaults to `<state dir>/accounts`. A launch that points it at another state's folder signs in
+   * as that state's accounts, so it must pair it with that state's secret store.
+   */
+  accountsDir?: string
   /** Where credentials are kept. Defaults to an owner-only file in the state directory. */
   secrets?: SecretStore
   /** How the harness names itself to a model. */
@@ -142,6 +148,8 @@ export class Harness {
   readonly bus = new Bus()
   readonly env: Env
   readonly stateDir: string
+  /** The account registry, account Pi folders and their shared settings; usually `<state dir>/accounts`. */
+  readonly accountsDir: string
   readonly policy: ToolPolicy
   /** How a link a person clicked reaches the operating system (page 10, `links.open`). */
   readonly linkOpener: LinkOpener
@@ -186,9 +194,10 @@ export class Harness {
   constructor(options: HarnessOptions) {
     this.browserEnabled = options.browser !== false
     this.stateDir = options.stateDir
+    this.accountsDir = options.accountsDir ?? join(this.stateDir, 'accounts')
     mkdirSync(this.stateDir, { recursive: true })
     // Before anything can start a session: no inherited credential, no `~/.pi`.
-    isolateProcess(join(this.stateDir, 'accounts'))
+    isolateProcess(this.accountsDir)
     this.env = new Env(options.dataRoot || null, options.directory ?? EMPTY_DIRECTORY, options.productName ?? DEFAULT_PRODUCT_NAME, this.bus)
     this.hub = new Hub(this, options.hub)
     this.policy = options.policy ?? {}
@@ -197,7 +206,7 @@ export class Harness {
     this.trust = new VariantTrust(this.stateDir)
     this.refineHost = options.refineHost ?? null
     const secrets = options.secrets ?? fileSecretStore(join(this.stateDir, 'secrets.json'))
-    this.accounts = new Accounts({ dir: join(this.stateDir, 'accounts'), secrets, bus: this.bus })
+    this.accounts = new Accounts({ dir: this.accountsDir, secrets, bus: this.bus })
     this.approvals = new Approvals(this.stateDir, this.bus)
     this.usageLimits = new UsageLimits({ accounts: this.accounts, root: () => this.env.dataRoot })
     // Response headers are the free, always-fresh limit signal; the account runtime reports them here.
@@ -221,7 +230,7 @@ export class Harness {
       // The shared folder stands in for an account: packages are the same for all of them.
       wanted: async () => {
         if (!this.env.dataRoot) return []
-        const shared = ensureSharedDir(join(this.stateDir, 'accounts'))
+        const shared = ensureSharedDir(this.accountsDir)
         // A hook comes only with a package: one kept beside the data, or one the shared settings
         // name. With neither there is nothing to look for, and Pi is not loaded to find that out.
         const named = readJsonOr<{ packages?: unknown }>(join(shared, 'settings.json'), {}).packages
@@ -271,7 +280,7 @@ export class Harness {
     this.refine = new Refinements({ root: () => this.env.root, bus: this.bus, trust: this.trust, host: () => this.refineHost, runtime: refineRuntime })
     this.lessons = new Lessons({ root: () => this.env.root, runtime: refineRuntime })
     this.pageNotes = new NoteDeliveries({ root: () => this.env.root, bus: this.bus, terminals: () => this.terminals ?? null })
-    this.terminals = new Terminals({ trust: this.trust, subagents: this.subagents, sideQuestions: this.sideQuestions, resolveCapabilities: (caller, tools, cwd) => capabilities.resolve(this, { agentId: caller.agentId ?? null, projectId: caller.projectId ?? null, cwd, tools }), env: this.env, stateDir: this.stateDir, accounts: this.accounts, runs: this.runs, approvals: this.approvals, apps: this.apps, policy: this.policy, bus: this.bus, plugins: this.plugins, usage: this.usage, usageLimits: this.usageLimits, pluginControl: { list: (scope) => pluginApi.list(this, scope), attach: (params, on) => pluginApi.attach(this, params, on), trust: (scope) => pluginApi.trust(this, scope), untrust: (scope) => pluginApi.untrust(this, scope), configure: (params) => pluginApi.configure(this, params), install: params => pluginInstall.install(this, params), remove: params => pluginInstall.remove(this, params), proposals: { list: () => pluginProposals.list(this.env.root), preview: id => pluginProposals.preview(this.env.root, id), accept: (id, hash) => pluginProposals.accept(this, id, hash), reject: (id, hash) => pluginProposals.reject(this.env.root, id, hash) } }, assets: options.assets, hub: this.hub, world: this.world, doctor: this.doctor, worktrees: this.worktrees, noteCapture: this.noteCapture, pageNotes: this.pageNotes })
+    this.terminals = new Terminals({ trust: this.trust, subagents: this.subagents, sideQuestions: this.sideQuestions, resolveCapabilities: (caller, tools, cwd) => capabilities.resolve(this, { agentId: caller.agentId ?? null, projectId: caller.projectId ?? null, cwd, tools }), env: this.env, stateDir: this.stateDir, accounts: this.accounts, runs: this.runs, approvals: this.approvals, apps: this.apps, policy: this.policy, bus: this.bus, plugins: this.plugins, usage: this.usage, usageLimits: this.usageLimits, pluginControl: { list: (scope) => pluginApi.list(this, scope), attach: (params, on) => pluginApi.attach(this, params, on), trust: (scope) => pluginApi.trust(this, scope), untrust: (scope) => pluginApi.untrust(this, scope), configure: (params) => pluginApi.configure(this, params), install: params => pluginInstall.install(this, params), remove: params => pluginInstall.remove(this, params), proposals: { list: () => pluginProposals.list(this.env.root), preview: id => pluginProposals.preview(this.env.root, id), accept: (id, hash) => pluginProposals.accept(this, id, hash), reject: (id, hash) => pluginProposals.reject(this.env.root, id, hash) } }, assets: options.assets, hub: this.hub, world: this.world, doctor: this.doctor, worktrees: this.worktrees, noteCapture: this.noteCapture, pageNotes: this.pageNotes, refine: this.refine })
     this.ready = this.apps.start().catch((error) => log('connected apps', error instanceof Error ? error.message : String(error)))
     this.runs.listen((event, run) => {
       this.accounts.onRunEvent(event, run)

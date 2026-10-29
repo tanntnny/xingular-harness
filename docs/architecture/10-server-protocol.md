@@ -40,6 +40,17 @@ harness → host   { v: 1, id, call, params }          host → harness   { v: 1
   `plugins.describe`.
 - `refine.start` takes `{ task, k?, mode?, improver?, executor?, baseVersion?, retainWorkspaces?, id? }`;
   `refine.candidates` returns each execution with `workspace: string | null` (page 05, PROP-0002, PROP-0003).
+  A task may carry `guidance` and `workspace: { kind: 'git-snapshot', repo, commit }` (PROP-0052).
+- `refine.fromRun { runId? | sessionId?, guidance? }` returns `{ task, run, notes }`, a task that
+  replays a typed turn from its snapshot. `refine.candidateDiff { id, label }` returns `{ label, files }`
+  and `refine.candidateOutput { id, label }` a filename → text map. `refine.adopt` takes an optional
+  `tag` (PROP-0052).
+- `variants.tag { scope, name, version }` and `variants.untag { scope, name }` return the scope's tags;
+  `variants.tags { scope }` reads them; `variants.resolve { scope, ref }` returns `{ fingerprint, version }`
+  for a fingerprint, prefix, tag or `head`; `variants.revert { scope, from, components }` saves a new
+  head with those components taken from `from`. `variants.restore` accepts any reference. Lineage rows
+  carry `tags`; a version record may carry `tunedFor` (PROP-0052).
+- Run records may carry `workspaceSnapshot` (page 02, PROP-0052); hosts tolerate the additive field.
 - `runs.todo { runId }` returns the run's latest todo list, `[]` when it wrote none (PROP-0006,
   renamed by PROP-0045). `runs.checklist` is the deprecated pre-rename alias.
 - `runs.continuation` returns `todo`; `checklist` remains a deprecated mirror of it for one release.

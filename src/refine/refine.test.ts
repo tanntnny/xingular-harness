@@ -108,6 +108,36 @@ describe('guards and parsing', () => {
     expect(() => P.checkWorkPrompts({ work: 'maximise the rubric score' })).toThrow(/must describe the WORK/)
   })
 
+  it('refuses guidance that describes measurement or is too long, and trims the rest', () => {
+    expect(() => P.checkGuidance('raise my score on totals')).toThrow(/must describe the WORK/)
+    expect(() => P.checkGuidance('x'.repeat(P.GUIDANCE_MAX + 1))).toThrow(/at most/)
+    expect(P.checkGuidance('  how it checks totals  ')).toBe('how it checks totals')
+    expect(P.focus('')).toBe('')
+  })
+
+  for (const mode of ['parallel', 'sequential'] as const) {
+    it(`${mode}: guidance reaches improvers and composers, never the selector or the reflector`, async () => {
+      const { root, tasks, executor } = setup()
+      const missions: { label: string; mission: string }[] = []
+      const inner = new DemoImprover()
+      const improver: Improver = { call: (input: ImproverCall) => { missions.push({ label: input.label, mission: input.mission }); return inner.call(input) } }
+      const guidance = 'how the agent reconciles line items before it writes the total'
+      const task = { ...tasks[0]!, guidance }
+      const summary = await runRefinement({ root, id: `guided-${mode}`, task, k: 2, mode, executor, improver })
+      expect(summary.status).toBe('ok')
+      expect(summary.guidance).toBe(guidance)
+      expect(summary.recursion?.ledger).toMatchObject({ R: 8, P: 6 })
+      const withGuidance = missions.filter((entry) => entry.mission.includes(guidance)).map((entry) => entry.label)
+      const without = missions.filter((entry) => !entry.mission.includes(guidance)).map((entry) => entry.label)
+      expect(withGuidance.length).toBe(6)
+      expect(without.length).toBeGreaterThan(0)
+      for (const entry of missions.filter((item) => item.mission.includes('You are choosing which of') || item.mission.includes('complete record of one improvement round'))) {
+        expect(entry.mission).not.toContain(guidance)
+        expect(entry.mission).not.toContain('WHERE THE PERSON ASKED YOU TO LOOK')
+      }
+    })
+  }
+
   it('shuffles candidate ids deterministically', () => {
     expect(anonId(0)).toBe('A')
     expect(anonId(26)).toBe('AA')

@@ -1,12 +1,14 @@
 // Refinements as the harness offers them: start one in the background, follow it, stop it, read
 // what it produced, and adopt its chosen harness. The method itself is in `runner.ts`.
 import { randomUUID } from 'node:crypto'
-import { existsSync, readdirSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import type { Bus } from '../core/bus'
 import { HarnessError, invalid, notFound } from '../core/errors'
 import { readJsonOr, safeId } from '../core/fs'
+import { findRun, listRuns, readEvents } from '../sessions/runStore'
+import type { RunRecord } from '../sessions/contracts'
 import * as store from '../variant/store'
 import { PI_SURFACE } from '../variant/surface'
 import { diffSummary, readVariant, type VariantDiff } from '../variant/variant'
@@ -14,7 +16,7 @@ import type { VariantTrust } from '../variant/trust'
 import { DEFAULT_REFINE_HOST, type RefineHost } from './host'
 import { Library, libraryAreas, libraryScopes } from './library'
 import { PiExecutor, PiImprover, RETAINED_WORKSPACE, type ImproverSettings, type RefineRuntime } from './pi'
-import { checkWorkPrompts } from './prompts'
+import { checkGuidance, checkWorkPrompts } from './prompts'
 import { readSummary, refineDir, runRefinement, type RefineEvent, type RefineSummary } from './runner'
 import type { Executor, Improver, RecursionMode, RefineTask } from './types'
 
@@ -46,6 +48,33 @@ export interface CandidateView {
   workspace: string | null
 }
 
+/** A refinement task made from a recorded turn, and what the person should know before starting it. */
+export interface TaskFromRun {
+  task: RefineTask
+  /** The turn it replays. */
+  run: { id: string; sessionId: string; startedAt: string; model: string | null }
+  /** Things the replay leaves out, such as attached images. */
+  notes: string[]
+}
+
+/** The text the person typed for a turn: its first user message, else its recorded goal. */
+function requestOf(root: string, record: RunRecord): string {
+  try {
+    for (const event of readEvents(root, record.id)) {
+      const payload = event.payload as { role?: string; text?: string } | undefined
+      if (event.type === 'message.completed' && payload?.role === 'user' && typeof payload.text === 'string' && payload.text.trim()) return payload.text
+    }
+  } catch {
+    // Fall back to the goal.
+  }
+  return record.goal ?? ''
+}
+
+/** A run a person typed, at the top of its session: what `/refine` may replay. */
+function replayable(record: RunRecord): boolean {
+  return (record.trigger == null || record.trigger === 'user') && !record.relation && !record.parentRunId
+}
+
 export interface RefinementsOptions {
   root: () => string
   bus: Bus
@@ -55,6 +84,14 @@ export interface RefinementsOptions {
   /** Replace the Pi executor and improver, for tests and the demo. */
   executor?: (id: string, dir: string, signal: AbortSignal) => Executor
   improver?: (id: string, dir: string, settings: ImproverSettings, signal: AbortSignal) => Improver
+}
+
+function checkGuidanceOrInvalid(guidance: string): string {
+  try {
+    return checkGuidance(guidance)
+  } catch (error) {
+    throw invalid(error instanceof Error ? error.message : String(error))
+  }
 }
 
 /** A refinement's variants folder; records made before PROP-0009 call it `harnesses`. */
@@ -72,6 +109,11 @@ export class Refinements {
     if (!task || typeof task.id !== 'string' || !task.id.trim() || typeof task.prompt !== 'string' || !task.prompt.trim()) throw invalid('A refinement needs a task with an id and a request.')
     safeId(task.scope)
     if (task.prompts) checkWorkPrompts(task.prompts)
+    if (task.guidance != null) {
+      if (typeof task.guidance !== 'string') throw invalid('guidance is text.')
+      task.guidance = checkGuidanceOrInvalid(task.guidance) || null
+    }
+    if (task.workspace != null && (task.workspace.kind !== 'git-snapshot' || typeof task.workspace.repo !== 'string' || !/^[0-9a-f]{40,64}$/.test(String(task.workspace.commit)))) throw invalid('workspace is a git snapshot: { kind: "git-snapshot", repo, commit }.')
     const k = input.k ?? 1
     const mode = input.mode ?? 'parallel'
     if (mode !== 'parallel' && mode !== 'sequential') throw invalid('mode is parallel or sequential.')
@@ -96,6 +138,38 @@ export class Refinements {
       .finally(() => this.active.delete(id))
     this.active.set(id, { controller, done })
     return { id }
+  }
+
+  /**
+   * A task that replays one recorded turn (`runId`) or the latest turn a person typed in a session
+   * (`sessionId`), from the working tree as that turn found it. Refuses a turn with no snapshot.
+   */
+  taskFromRun(input: { runId?: string | null; sessionId?: string | null; nativeSessionId?: string | null; guidance?: string | null }): TaskFromRun {
+    const root = this.options.root()
+    let record: RunRecord | null = null
+    const latest = (records: RunRecord[]) => records.find((entry) => replayable(entry) && requestOf(root, entry).trim()) ?? null
+    if (input.runId) record = findRun(root, safeId(input.runId))
+    else if (input.sessionId || input.nativeSessionId) {
+      if (input.sessionId) record = latest(listRuns(root, { sessionId: input.sessionId }))
+      // A terminal that restarted on another version keeps its conversation under a new session id.
+      if (!record && input.nativeSessionId) record = latest(listRuns(root, {}).filter((entry) => entry.nativeSessionId === input.nativeSessionId))
+    } else throw invalid('Name a run or a session to refine from.')
+    if (!record) throw notFound(input.runId ? 'That run' : 'A request in this session')
+    if (!replayable(record)) throw invalid('Only a request a person typed can be replayed; this run was started by something else.')
+    const prompt = requestOf(root, record).trim()
+    if (!prompt) throw invalid('That run has no request text to replay.')
+    if (!record.variantScope) throw invalid('That run used no variant, so there is nothing to refine.')
+    const snapshot = record.workspaceSnapshot
+    if (!snapshot) throw new HarnessError('replay_unavailable', 'That request has no snapshot of the folder it started in, so it cannot be replayed safely.', 'Refinement replays requests made in a git repository; the snapshot is skipped outside git or when it takes over two seconds.')
+    const notes: string[] = []
+    if (snapshot.omitted) notes.push(`${snapshot.omitted} untracked file${snapshot.omitted === 1 ? ' was' : 's were'} too large or too many to snapshot and will be missing from the replay.`)
+    if (record.attachmentCount > 0) notes.push(`${record.attachmentCount} attachment${record.attachmentCount === 1 ? '' : 's'} on that request are not replayed; only its text is.`)
+    const guidance = input.guidance?.trim() ? checkGuidanceOrInvalid(input.guidance) : null
+    return {
+      task: { id: `turn-${record.id.replace(/[^A-Za-z0-9_-]/g, '').slice(0, 12)}`, scope: record.variantScope, prompt, workspace: snapshot, ...(guidance ? { guidance } : {}) },
+      run: { id: record.id, sessionId: record.sessionId, startedAt: record.startedAt, model: record.model ?? null },
+      notes
+    }
   }
 
   /** Waits for a running refinement; resolves at once for one that is not running. */
@@ -162,22 +236,57 @@ export class Refinements {
     })
   }
 
+  /** File by file, how one candidate's variant differs from the refinement's base. */
+  candidateDiff(id: string, label: string): { label: string; files: store.FileDiff[] } {
+    this.get(id)
+    const dir = variantsFolder(refineDir(this.options.root(), id))
+    const base = readVariant(PI_SURFACE, join(dir, 'base'))
+    const candidateDir = join(dir, safeId(label))
+    if (!existsSync(candidateDir)) throw notFound('That candidate variant')
+    const after = readVariant(PI_SURFACE, candidateDir)
+    const summary = diffSummary(PI_SURFACE, base, after)
+    const files = [...summary.added, ...summary.removed, ...summary.modified].sort().map((path) => ({ path, before: base[path] ?? null, after: after[path] ?? null }))
+    return { label, files }
+  }
+
+  /** What one execution produced, filename → text. */
+  candidateOutput(id: string, label: string): Record<string, string> {
+    this.get(id)
+    const dir = join(refineDir(this.options.root(), id), 'rollouts', safeId(label))
+    if (!existsSync(dir)) throw notFound('That execution')
+    const record = readJsonOr<{ files?: string[] }>(join(dir, 'rollout.json'), {})
+    const out: Record<string, string> = {}
+    for (const name of record.files ?? []) {
+      try {
+        out[name] = readFileSync(join(dir, 'deliverables', name), 'utf8')
+      } catch {
+        // A file that went missing is not shown.
+      }
+    }
+    return out
+  }
+
   /**
    * Makes a refinement's chosen harness (or one of its candidates, by label) the scope's head.
    * Plugin code in it must already be trusted.
    */
-  adopt(id: string, options: { label?: string | null } = {}): store.Head {
+  adopt(id: string, options: { label?: string | null; tag?: string | null } = {}): store.Head {
     const root = this.options.root()
     const summary = this.get(id)
     const label = options.label ?? summary.selection?.chosenLabel
     if (!label) throw invalid('This refinement has nothing to adopt.')
     const variant = readVariant(PI_SURFACE, join(variantsFolder(refineDir(root, id)), safeId(label)))
     if (!Object.keys(variant).length) throw notFound('That candidate variant')
+    if (options.tag) store.checkTagName(options.tag)
     const untrusted = this.options.trust.review(variant).filter((plugin) => !plugin.trusted)
     if (untrusted.length) throw new HarnessError('plugin_untrusted', `Trust the plugin code first: ${untrusted.map((plugin) => plugin.path).join(', ')}.`, 'Review the plugin files on the Harness page, trust them, then adopt.')
-    store.commit(root, summary.scope, variant, { kind: 'refinement', refineId: id, label, note: summary.selection?.why?.slice(0, 500) })
+    // The model the adopted variant was tuned on: what its own execution resolved, else what the refinement asked for.
+    const model = findRun(root, `${id}-${label}`)?.model ?? summary.settings?.executor?.model ?? null
+    store.commit(root, summary.scope, variant, { kind: 'refinement', refineId: id, label, note: summary.selection?.why?.slice(0, 500) }, { tunedFor: model ? { model } : null })
+    const adopted = store.head(root, summary.scope)!
+    if (options.tag) store.tag(root, summary.scope, options.tag, adopted.fingerprint)
     this.options.bus.emit({ type: 'variants.changed', scope: summary.scope })
-    return store.head(root, summary.scope)!
+    return adopted
   }
 
   library(scope: string): { area: string; entries: ReturnType<Library['list']> }[] {

@@ -294,11 +294,13 @@ npm run dev
 
 `npm run dev` rebuilds the CLI and opens the Harness terminal in the current working directory.
 It uses separate development directories by default: `~/.xingular-harness-dev/data` and
-`~/.xingular-harness-dev/state`. This keeps development harness data and device settings—including
-accounts, Pi settings, approvals, and connections—separate from the installed command. Press
-`/quit`, Ctrl+C or Ctrl+D to close it. Override either directory with `--data <dir>` or
-`--state <dir>`; for example: `npm run dev -- --data <dir> --state <dir>`. An omitted option keeps
-its development specific default.
+`~/.xingular-harness-dev/state`, so development harness data, approvals, plugin trust and
+connections stay separate from the installed command. It signs in as the installed command's
+accounts, though: one provider sign-in serves both launches. Press `/quit`, Ctrl+C or Ctrl+D to
+close it. Override either directory with `--data <dir>` or `--state <dir>`; choose the accounts a
+launch signs in as with `--account-state <dir>`, for example
+`npm run dev -- --account-state ~/.xingular-harness-dev/state` for a fully separate identity. An
+omitted option keeps its development specific default.
 
 The OpenTUI/Solid frontend is the only terminal. Install Bun 1.3.14 or newer and run
 `npm run build:tui` (or `npm run build`); without Bun the build fails rather than producing a
@@ -404,10 +406,13 @@ still be removed; that session then asks for another account the next time it st
 The installed standalone command defaults to `~/.xingular-harness/data` and
 `~/.xingular-harness/state`; `npm run dev` instead defaults to the separate
 `~/.xingular-harness-dev/data` and `~/.xingular-harness-dev/state`. Override either with
-`--data <dir>` and `--state <dir>`. Session history is stored per working directory and can be
-reopened with the terminal's `/resume` command. The explicit `terminal` command is an alias for
-the default launch. Use `--help` to see the commands; `serve` remains the host-facing RPC service
-for integrations such as Xingular Agent/App.
+`--data <dir>` and `--state <dir>`. A launch signs in as the accounts kept in the state directory
+it uses; `--account-state <dir>` takes them from another state directory instead (its `accounts`
+folder and its `secrets.json`), which is how `npm run dev` reaches the installed command's sign-in.
+Session history is stored per working directory and can be reopened with the terminal's `/resume`
+command. The explicit `terminal` command is an alias for the default launch. Use `--help` to see
+the commands; `serve` remains the host-facing RPC service for integrations such as Xingular
+Agent/App.
 
 ## Storage
 

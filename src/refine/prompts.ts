@@ -39,6 +39,45 @@ export function checkWorkPrompts(prompts: WorkPrompts): WorkPrompts {
   return prompts
 }
 
+/** The longest focus a person may give a refinement. */
+export const GUIDANCE_MAX = 2_000
+
+/**
+ * Checks a person's focus for a refinement (`/refine <guidance>`). Like the work prompts it
+ * describes the work, never how the work is measured (INV-REF-1). Returns it trimmed.
+ */
+export function checkGuidance(guidance: string): string {
+  const text = guidance.trim()
+  if (text.length > GUIDANCE_MAX) throw new Error(`Refinement guidance is at most ${GUIDANCE_MAX} characters.`)
+  const low = text.toLowerCase()
+  for (const bad of MEASUREMENT_WORDS) {
+    if (low.includes(bad)) throw new Error(`Refinement guidance must describe the WORK, not its measurement (found '${bad}'). Say where the agent goes wrong or what to look at.`)
+  }
+  return text
+}
+
+/**
+ * Where the person asked improvers and composers to look. It directs attention; it is not a
+ * requirement to change anything and never reaches the selector or the reflector (INV-REF-2).
+ */
+export function focus(guidance: string | null | undefined): string {
+  const text = (guidance ?? '').trim()
+  if (!text) return ''
+  return `# WHERE THE PERSON ASKED YOU TO LOOK
+
+The person who runs this agent asked for attention here:
+
+<guidance>
+${text}
+</guidance>
+
+Read the trajectories with this in mind first: find the moments it points at. It directs where you
+look, not what you conclude. Every rule above still binds: an edit still has to trace to a moment
+in a trajectory, and if the evidence shows no problem there, say so in your notes and leave that
+part alone -- KEEP_BASE remains valid. Do not copy the guidance into the harness as a rule unless
+the trajectories show the agent needs it.`
+}
+
 function domainWord(bp: WorkPrompts): string {
   return bp.domainWord ?? 'area'
 }
@@ -308,7 +347,7 @@ parallel candidate owns procedure; stay on practitioner knowledge.`
 export type Dimension = 'INV' | 'DOM'
 
 /** The job for one INV or DOM candidate. `roundT` set means sequential mode, pass t. */
-export function propose(bp: WorkPrompts, dim: Dimension, options: { k?: number; index?: number; roundT?: number | null } = {}): string {
+export function propose(bp: WorkPrompts, dim: Dimension, options: { k?: number; index?: number; roundT?: number | null; guidance?: string | null } = {}): string {
   const k = options.k ?? 1
   const index = options.index ?? 1
   let where = k > 1 ? `You are candidate ${index} of ${k} on this dimension, drawn independently from the same evidence.` : ''
@@ -327,12 +366,14 @@ export function propose(bp: WorkPrompts, dim: Dimension, options: { k?: number; 
   how.push('', 'Do not hedge toward an average or try to cover every base -- commit to the single most defensible version of your dimension. A later stage compares and merges.')
   const parts = ["You are adapting an autonomous agent's harness.", work(bp), lens(bp), dim === 'INV' ? inv(bp) : dom(bp), generalize(domainWord(bp)), how.join('\n')]
   if ((bp.yardstick ?? '').trim()) parts.push(`# WHAT GOOD PROCESS LOOKS LIKE HERE\n\n${bp.yardstick!.trim()}`)
+  const looked = focus(options.guidance)
+  if (looked) parts.push(looked)
   parts.push(ANSWER_FREE, EVIDENCE_BOUNDARY, SURFACE_PI)
   return tidy(parts.join('\n\n'))
 }
 
 /** agg-k: compose ONE final from all base evidence and all 2k candidates. */
-export function aggregate(bp: WorkPrompts, options: { k?: number; index?: number } = {}): string {
+export function aggregate(bp: WorkPrompts, options: { k?: number; index?: number; guidance?: string | null } = {}): string {
   const k = options.k ?? 1
   const n = 2 * k
   const s = k > 1 ? 's' : ''
@@ -345,6 +386,7 @@ export function aggregate(bp: WorkPrompts, options: { k?: number; index?: number
     `# YOUR JOB\n\nCompose ONE harness. All of these are valid, judged only on what the rollouts support:\n- MERGE across candidates -- the expected outcome when an INV edit and a DOM edit each earn their place. Resolve the overlaps rather than concatenating.\n- ADOPT ONE WHOLESALE if a single candidate is simply the best state.\n- KEEP_BASE.\n\n${KEEP_BASE}`,
     k > 1 ? `You are one of ${k} aggregators composing a final from this same evidence in parallel, and you will not see the others. Do not aim for the consensus answer -- commit to the harness you can defend.` : '',
     (bp.yardstick ?? '').trim() ? `# WHAT GOOD PROCESS LOOKS LIKE HERE\n\n${bp.yardstick!.trim()}` : '',
+    focus(options.guidance),
     ANSWER_FREE,
     EVIDENCE_BOUNDARY,
     SURFACE_PI,
@@ -353,7 +395,7 @@ export function aggregate(bp: WorkPrompts, options: { k?: number; index?: number
 }
 
 /** seq-k: compose checkpoint C_t from this round's candidates and every earlier round. */
-export function composeRound(bp: WorkPrompts, options: { t: number; k: number }): string {
+export function composeRound(bp: WorkPrompts, options: { t: number; k: number; guidance?: string | null }): string {
   const { t, k } = options
   const final = t >= k
   return tidy([
@@ -367,6 +409,7 @@ export function composeRound(bp: WorkPrompts, options: { t: number; k: number })
       "All of these are valid:\n- MERGE across rounds -- including a candidate REJECTED earlier, if a later rollout now argues for it.\n- REPRODUCE an earlier checkpoint verbatim, if that state was simply the best one and later rounds drifted away from it.\n- ADOPT this round's best candidate.\n- KEEP_BASE.\n\n" +
       KEEP_BASE +
       "\n\nHere `KEEP_BASE` means keep the CURRENT checkpoint in `context/harness/` unchanged; it does not restore the original harness. In `<notes>`, identify which rounds' edits survive and which were dropped or restored.",
+    focus(options.guidance),
     ANSWER_FREE,
     EVIDENCE_BOUNDARY,
     SURFACE_PI

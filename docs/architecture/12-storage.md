@@ -12,7 +12,7 @@ index.
 
 ```text
 <data root>/
-  variants/<scope>/   versions/<fingerprint>/{variant/, version.json}, head.json, lineage.jsonl, restores.jsonl   (03)
+  variants/<scope>/   versions/<fingerprint>/{variant/, version.json}, head.json, lineage.jsonl, restores.jsonl, tags.json   (03)
   refine/<id>/         summary.json, task.json, variants/, rollouts/, sessions/, context/, selection/, reflection/, improver/, or matrix.json + suite.json for evaluation matrices   (05)
                        rollouts/<label>/workspace/ only when started with retainWorkspaces
   library/<scope>/<area>/   INDEX.md, variants/<task>/{variant/, EXPERIENCE.md}   (05)
@@ -26,7 +26,7 @@ index.
   plugin-proposals/<id>.json   pending and decided proposal text, hash and status; owned by plugins/proposals.ts   (06)
   trash/plugins/       removed packages   (06)
   hub/                 installed documents and provenance   (09)
-  runs/<id>/           run.json (including optional legacy-compatible workspaceRoot), events.jsonl, owner.json, subagents.json, context.json, caller.json, capabilities.json, mcp-context.json   (02)
+  runs/<id>/           run.json (including optional legacy-compatible workspaceRoot and workspaceSnapshot), events.jsonl, owner.json, subagents.json, context.json, caller.json, capabilities.json, mcp-context.json   (02)
   # `checkpoint` and `heartbeat` are run events in the same events.jsonl; every live reply emits one
   # heartbeat per 30 seconds (about 60 KB an hour) and no side file (PROP-0041, ADR-0054).
   config/              plugin-attachments.json and settings the harness reads   (06)
@@ -70,8 +70,16 @@ credentials. Existing account, variant, and session pins remain authoritative fo
 runs; the profile selects defaults for new interactive work. `scripts/dev.mjs` and a development
 interactive profile use `~/.xingular-harness-dev/{data,state}` and a separate profile file, not the
 production defaults. The standalone development launch always selects a file SecretStore under its
-resolved development state directory, even if that profile names a host backend; it does not use or
-alter host credentials.
+resolved state directory (or the `--account-state` one), even if that profile names a host
+backend; it does not use or alter host credentials.
+
+A standalone launch can take its account identity from another state directory:
+`--account-state <dir>` uses that directory's `accounts/` folder (`HarnessOptions.accountsDir`) and
+its `secrets.json`, so an account signed in by one launch is the account and credential of the
+other. `scripts/dev.mjs` passes the installed command's state directory, so development and
+installed launches share accounts and sign-in while keeping separate data roots, approvals, plugin
+trust and connections. A launch that shares an account folder must use the `SecretStore` that
+folder's account ids belong to; the registry, account folders and shared settings travel together.
 
 Side-question runs use the ordinary `runs/<id>/` records. Their temporary Pi native history is
 created under the operating system temporary directory and removed when the run ends; it is not

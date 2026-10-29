@@ -14,6 +14,7 @@ import type { Variant } from '../variant/surface'
 import * as notes from '../wiki/notes'
 import { SESSION_GUIDANCE } from '../tools/sessionName'
 import { TODO_GUIDANCE } from '../tools/todo'
+import { PLAN_INSTRUCTIONS, planSection } from '../sessions/planMode'
 import { compile, fit, load, render, renderCompactionCheckpoint, REPORTING_GUIDANCE, sessionFile, sessionLaunch, SECTION_ORDER, type ContextUpdate, type HostSection, type Launch } from './compile'
 
 const roots: string[] = []
@@ -76,6 +77,34 @@ test('a compaction checkpoint carries the request, active plan instructions, and
   expect(checkpoint.indexOf('In progress and pending')).toBeLessThan(checkpoint.indexOf('Completed (1)'))
   expect(Array.from(checkpoint).length).toBeLessThanOrEqual(8_100)
   expect(renderCompactionCheckpoint({ goal: 'A completed request', todo: [] })).toBeNull()
+})
+
+test('compilation and compaction deliver the complete current plan instructions', () => {
+  const env = setup()
+  const pack = compile(env, agent(), hosted({ sections: [planSection(true, null)!] }), scoped(env))
+  expect(pack.sections.find((entry) => entry.id === 'plan')).toMatchObject({ body: PLAN_INSTRUCTIONS, cut: false })
+  expect(renderCompactionCheckpoint({ goal: 'Plan the work', todo: [], planInstructions: PLAN_INSTRUCTIONS })).toContain(PLAN_INSTRUCTIONS)
+})
+
+test('a compaction checkpoint preserves an entire 8,000-character plan alongside bounded request and todo state', () => {
+  const planInstructions = `${'p'.repeat(7_980)}END OF PLAN MARKER!!`
+  expect(Array.from(planInstructions)).toHaveLength(8_000)
+  const checkpoint = renderCompactionCheckpoint({
+    goal: 'g'.repeat(2_000),
+    todo: [
+      { text: 'a'.repeat(3_000), status: 'in_progress' },
+      { text: 'c'.repeat(1_000), status: 'completed' }
+    ],
+    planInstructions
+  })!
+  expect(checkpoint).toContain(planInstructions)
+  expect(checkpoint).toContain('### In progress and pending')
+  expect(checkpoint).toContain('### Completed (1)')
+  expect(Array.from(checkpoint).length).toBeLessThanOrEqual(13_100)
+
+  const oversized = renderCompactionCheckpoint({ goal: '', todo: [], planInstructions: 'p'.repeat(20_000) })!
+  expect(Array.from(oversized).length).toBeLessThanOrEqual(13_100)
+  expect(oversized).toContain(`${'p'.repeat(8_000)}…`)
 })
 
 test('the variant supplies the instructions, guardrails, memory, subagents, scripts and tool guidance, in order', () => {
@@ -280,6 +309,8 @@ test('the reporting guidance closes the stable prefix and never rides in a conte
   expect(first.update!.content).not.toContain('Reporting your work')
   expect(first.pack.delivery!.systemSectionIds.at(-1)).toBe('reporting')
   expect(REPORTING_GUIDANCE).toContain('do not force a fixed set of report headings')
+  expect(REPORTING_GUIDANCE).toContain('When work remains unfinished, state the concrete decision the person must make or the next action and its owner for each material blocker')
+  expect(REPORTING_GUIDANCE).toContain('do not merely restate the blocker or invent a human decision')
   expect(REPORTING_GUIDANCE).toContain('**Need human inspection** only when a concrete verification requires a person')
   expect(REPORTING_GUIDANCE).not.toContain('Worth a look')
   expect(REPORTING_GUIDANCE).not.toContain('Check by hand')

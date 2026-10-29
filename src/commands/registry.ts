@@ -56,6 +56,8 @@ export const CORE_COMMANDS = [
   { name: 'plugins', description: 'Manage local plugins, packages, trust and settings', group: 'Harness', kind: 'page', methods: ['plugins.list', 'plugins.attach', 'plugins.detach', 'plugins.trust', 'plugins.untrust', 'plugins.configure', 'plugins.install', 'plugins.update', 'plugins.remove', 'hub.list'] },
   { name: 'hub', description: 'Browse the Community catalog and manage Hub installs', group: 'Harness', kind: 'page', methods: ['hub.list', 'hub.install', 'hub.uninstall'] },
   { name: 'components', description: 'Browse skills, prompts and rules for this Harness scope', group: 'Harness', kind: 'page' },
+  { name: 'variant', args: '[use|restore|tag|untag|diff|revert]', description: 'Versions of this variant: switch, restore, tag, compare, take components back', group: 'Harness', kind: 'session', methods: ['variants.lineage', 'variants.compare', 'variants.restore', 'variants.tag', 'variants.untag', 'variants.revert'] },
+  { name: 'refine', args: '[guidance|status|review|stop]', description: 'Improve this variant by replaying your last request: /refine <what to look at>', group: 'Harness', kind: 'session', methods: ['refine.fromRun', 'refine.start', 'refine.list', 'refine.cancel', 'refine.candidates', 'refine.candidateDiff', 'refine.candidateOutput', 'refine.adopt'] },
   { name: 'settings', description: 'Session, terminal and browser settings', group: 'Harness', kind: 'page' },
   { name: 'doctor', description: 'Check account, model, tools and runtime readiness', group: 'Harness', kind: 'page', methods: ['doctor.start', 'doctor.read'] },
   { name: 'worktree', description: 'Manage repository worktrees', group: 'Harness', kind: 'page', methods: ['worktrees.list'] },

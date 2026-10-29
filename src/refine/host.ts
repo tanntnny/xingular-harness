@@ -8,7 +8,9 @@ import { join, relative, sep } from 'node:path'
 import type { CallerContext } from '../core/caller'
 import type { Launch } from '../prompt/compile'
 import type { Effort } from '../sessions/runner'
-import type { RefineTask } from './types'
+import { copyFiles, includedFiles } from '../worktrees/copy'
+import { git } from '../worktrees/git'
+import type { GitSnapshotWorkspace, RefineTask } from './types'
 
 /** How one execution of a task runs: who it works as and with what. */
 export interface RolloutSession {
@@ -90,8 +92,33 @@ export function defaultDeliverable(cwd: string, reply: string, sourceDir: string
 }
 
 /** For a host that supplies nothing: a temporary copy of the task's source, the caller as the scope, and Pi's file and shell tools. */
+/**
+ * A throwaway checkout of a turn snapshot. It is a `--shared` clone, so the person's repository
+ * gains no worktree, ref or file: the clone only reads its object store. HEAD is the commit the
+ * turn started on and the working tree holds the snapshot, so tracked edits show as changes and new
+ * files as untracked, as they were. Ignored files named by `.worktreeinclude` are copied from the
+ * repository as it is now.
+ */
+export async function prepareSnapshotWorkspace(snapshot: GitSnapshotWorkspace): Promise<RolloutWorkspace> {
+  const cwd = mkdtempSync(join(tmpdir(), 'harness-replay-'))
+  const cleanup = async () => rmSync(cwd, { recursive: true, force: true })
+  try {
+    await git(snapshot.repo, ['clone', '--quiet', '--shared', '--no-checkout', snapshot.repo, cwd])
+    await git(cwd, ['checkout', '--quiet', '--detach', snapshot.commit])
+    const parent = await git(cwd, ['rev-parse', '--verify', '--quiet', `${snapshot.commit}^`], { allowFail: true })
+    // The tree stays the snapshot; HEAD and the index go back to the commit the turn started on.
+    if (parent.code === 0) await git(cwd, ['reset', '--quiet', parent.stdout.trim()])
+    copyFiles(snapshot.repo, cwd, await includedFiles(snapshot.repo).catch(() => []))
+    return { cwd, cleanup }
+  } catch (error) {
+    await cleanup()
+    throw error
+  }
+}
+
 export const DEFAULT_REFINE_HOST: RefineHost = {
   async prepareWorkspace({ task }) {
+    if (task.workspace?.kind === 'git-snapshot') return prepareSnapshotWorkspace(task.workspace)
     const cwd = mkdtempSync(join(tmpdir(), 'harness-rollout-'))
     if (task.sourceDir && existsSync(task.sourceDir)) cpSync(task.sourceDir, cwd, { recursive: true })
     return { cwd, cleanup: async () => rmSync(cwd, { recursive: true, force: true }) }

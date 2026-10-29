@@ -1,9 +1,9 @@
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
-import { readChoices, resolveChoice, saveChoice } from './choices'
+import { latestChoice, readChoices, resolveChoice, saveChoice, startChoice, startModels } from './choices'
 
 const temp = () => mkdtempSync(join(tmpdir(), 'choices-'))
 
@@ -54,5 +54,26 @@ describe('model and effort choices per account and mode', () => {
     expect(resolveChoice(readChoices(dir, 'acct'), 'plan')).toEqual({ model: 'anthropic/a', effort: 'low' })
     expect(resolveChoice(readChoices(dir, 'acct'), 'normal')).toEqual({ model: 'anthropic/a', effort: 'high' })
     expect(resolveChoice({}, 'plan')).toEqual({ model: undefined, effort: undefined })
+  })
+
+  it('starts a conversation this account cannot continue on the newest selection in any mode', () => {
+    const dir = temp()
+    mkdirSync(join(dir, 'acct'), { recursive: true })
+    // Explicit timestamps: two saves inside one millisecond would otherwise tie.
+    writeFileSync(join(dir, 'acct', 'choices.json'), JSON.stringify({ modes: {
+      plan: { model: 'anthropic/p', effort: 'low', updatedAt: '2026-01-02T00:00:00.000Z' },
+      normal: { model: 'anthropic/n', effort: 'high', updatedAt: '2026-01-01T00:00:00.000Z' },
+      research: { effort: 'max', updatedAt: '2026-01-03T00:00:00.000Z' }
+    } }))
+    const modes = readChoices(dir, 'acct')
+    // The newest mode may name only an effort; it never contributes a missing model.
+    expect(latestChoice(modes)).toEqual({ mode: 'research', effort: 'max' })
+    expect(startChoice(modes, 'normal')).toEqual({ model: 'anthropic/n', effort: 'high' })
+    expect(startChoice(modes, 'plan')).toEqual({ model: 'anthropic/p', effort: 'low' })
+    // Every model to try, most specific first and without repeats.
+    expect(startModels(modes, 'plan')).toEqual(['anthropic/p', 'anthropic/n'])
+    expect(startModels(modes, 'normal')).toEqual(['anthropic/n'])
+    expect(startChoice({}, 'normal')).toEqual({ model: undefined, effort: undefined })
+    expect(startModels({}, 'plan')).toEqual([])
   })
 })

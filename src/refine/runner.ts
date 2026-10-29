@@ -42,6 +42,8 @@ export interface RefineSummary {
   errors: string[]
   /** The executor and improver settings the refinement was started with (PROP-0003). Run records hold what each run resolved. */
   settings?: { executor: RefineSettings | null; improver: RefineSettings | null }
+  /** Where the person asked improvers to look, when they did. */
+  guidance?: string | null
 }
 
 export interface RefineSettings {
@@ -120,7 +122,8 @@ export async function runRefinement(input: RefineRunInput): Promise<RefineSummar
     experience: null,
     usd: 0,
     errors: [],
-    ...(input.settings ? { settings: input.settings } : {})
+    ...(input.settings ? { settings: input.settings } : {}),
+    ...(task.guidance ? { guidance: task.guidance } : {})
   }
   const save = () => {
     writeJson(join(workDir, 'summary.json'), summary)
