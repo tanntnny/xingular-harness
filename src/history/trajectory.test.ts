@@ -88,6 +88,18 @@ test('trajectory search filters runs and paginates deterministically, including 
   expect(bounded.runs.map((item: { id: string }) => item.id)).toEqual(['z-run', 'b-run'])
 })
 
+test('trajectory summaries expose stop metadata and null for legacy and active runs', () => {
+  const { root, env } = setup()
+  save(root, run('interrupted', { status: 'interrupted', terminalReason: 'Work budget reached', terminalCode: 'slice_budget' }))
+  save(root, run('legacy', { status: 'interrupted', terminalReason: 'old reason' }))
+  save(root, run('active'))
+  const results = JSON.parse(searchTool(env, agent, {})).runs
+  expect(results.find((item: { id: string }) => item.id === 'interrupted')).toMatchObject({ terminalReason: 'Work budget reached', terminalCode: 'slice_budget' })
+  expect(results.find((item: { id: string }) => item.id === 'legacy')).toMatchObject({ terminalReason: 'old reason', terminalCode: null })
+  expect(results.find((item: { id: string }) => item.id === 'active')).toMatchObject({ terminalReason: null, terminalCode: null })
+  expect(JSON.parse(readTool(env, agent, { run: 'interrupted' })).run).toMatchObject({ terminalReason: 'Work budget reached', terminalCode: 'slice_budget' })
+})
+
 test('trajectory search and read keep host-excluded agents hidden', () => {
   const { root, env } = setup()
   save(root, run('hidden-agent-run', { agentId: 'agent-hidden' }))

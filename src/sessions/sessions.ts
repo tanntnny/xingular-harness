@@ -33,7 +33,7 @@ import { DEFAULT_TOOL_NAMES } from '../tools/definitions'
 import { GET_CAPABILITIES, getCapabilitiesTool } from '../tools/getCapabilities'
 import type { ToolProvider, ToolSession, ToolSpec } from '../tools/types'
 import type { DispatchEnv } from '../tools/dispatch'
-import { isActiveStatus, type RunRecord } from './contracts'
+import { isActiveStatus, stopCodeOf, type RunRecord } from './contracts'
 import { SPAWN_SUBAGENT, WAIT_SUBAGENTS, subagentDepth, subagentHistory, subagentNesting, type SubagentInput, type SubagentOptions } from './subagents'
 import type { Subagents } from './subagentService'
 import { selectHistory } from './history'
@@ -254,33 +254,35 @@ export class Sessions {
 
   private gate(run: ActiveRun, caller: CallerContext, gated: Set<string>, diagnostic = false, automatic = false): ToolGate {
     const { policy } = this.options
-    return {
+    const gate: ToolGate = {
+      check: async (name, input) => (await gate.checkDetailed!(name, input))?.reason ?? null,
       ask: (names) => {
         for (const name of names) gated.add(name)
       },
-      check: async (tool, args) => {
+      checkDetailed: async (tool, args) => {
         let record: RunRecord
         let inspection
         try {
           record = loadRun(this.env.root, run.runId)
           inspection = inspectRunWorkspaceWrite(record, tool, args)
         } catch (error) {
-          return error instanceof Error ? error.message : 'The active project workspace could not be verified.'
+          return { code: 'workspace', reason: error instanceof Error ? error.message : 'The active project workspace could not be verified.' }
         }
         const call = { run: record, caller, tool, args: inspection.input }
         const hostScope = (await policy.scope?.(call)) ?? { allowed: true }
         const scope = combineWorkspaceScope(hostScope, inspection)
-        if (!scope.allowed && (scope.automatic || (automatic && inspection.outside) || !scope.requiresApproval)) return scope.reason ?? 'Outside the approved work scope.'
+        if (!scope.allowed && (scope.automatic || (automatic && inspection.outside) || !scope.requiresApproval)) return { code: inspection.outside ? 'workspace' : 'scope', reason: scope.reason ?? 'Outside the approved work scope.' }
         try {
           await policy.authorize?.(call)
         } catch (error) {
-          return error instanceof Error ? error.message : 'Tool unavailable in the app settings.'
+          return { code: 'policy', reason: error instanceof Error ? error.message : 'Tool unavailable in the app settings.' }
         }
         if (scope.allowed && !scope.humanOnly && (scope.automatic || !gated.has(tool))) return null
-        if (diagnostic) return 'This diagnostic call requires a separate per-call approval.'
+        if (diagnostic) return { code: 'unattended', reason: 'This diagnostic call requires a separate per-call approval.' }
         // Refinement and reflection runs have nobody to ask: what would need a person is refused, never queued.
-        if (call.run.trigger === 'probe' || call.run.trigger === 'improver') return scope.reason ? `Refused in a refinement run: ${scope.reason}` : 'Refused in a refinement run: this call needs a person to approve it.'
-        if (call.run.trigger === 'reflection') return scope.reason ? `Refused in a reflection run: ${scope.reason}` : 'Refused in a reflection run: this call needs a person to approve it.'
+        if (call.run.trigger === 'probe' || call.run.trigger === 'improver') return { code: 'unattended', reason: scope.reason ? `Refused in a refinement run: ${scope.reason}` : 'Refused in a refinement run: this call needs a person to approve it.' }
+        if (call.run.trigger === 'reflection') return { code: 'unattended', reason: scope.reason ? `Refused in a reflection run: ${scope.reason}` : 'Refused in a reflection run: this call needs a person to approve it.' }
+        if (automatic) return { code: 'unattended', reason: scope.reason ?? 'Refused in an unattended run: this call needs a person to approve it.' }
         const boundaryAction = inspection.outside ? `${inspection.reason} ${summarize(call.args, tool)}` : summarize(call.args)
         const decision = await run.requestApproval({
           target: tool,
@@ -289,11 +291,11 @@ export class Sessions {
           rememberable: scope.allowed && !scope.humanOnly,
           standing: scope.humanOnly ? (scope.allowGlobalApproval ? 'switch' : 'none') : undefined
         })
-        if (decision !== 'approved') return 'The user denied this action. Ask how they would like to proceed.'
+        if (decision !== 'approved') return { code: 'approval_denied', reason: 'The user denied this action. Do not repeat it or ask for permission in a message; choose another approach or report what is blocked.' }
         try {
           await policy.authorize?.(call)
         } catch (error) {
-          return error instanceof Error ? error.message : 'Tool was disabled while waiting.'
+          return { code: 'policy', reason: error instanceof Error ? error.message : 'Tool was disabled while waiting.' }
         }
         return null
       },
@@ -347,6 +349,7 @@ export class Sessions {
         }
       }
     }
+    return gate
   }
 
   /** Compatibility alias for the shared native service. */
@@ -526,6 +529,7 @@ export class Sessions {
       id: runId,
       projectId: input.run.projectId ?? caller.projectId ?? null,
       mode: input.run.mode ?? 'chat',
+      effectiveMode: input.plan ? 'plan' : 'normal',
       harness: input.run.harness ?? 'pi',
       sessionType: input.run.sessionType ?? 'structured',
       sessionId: input.run.sessionId,
@@ -538,6 +542,7 @@ export class Sessions {
       startedAt: now(),
       endedAt: null,
       status: 'queued',
+      loadedSkills: [],
       exitCode: null,
       handoffId: input.run.handoffId ?? null,
       accountId: account.id,
@@ -560,7 +565,7 @@ export class Sessions {
 
     const fail = (error: unknown, code = 'provider_unavailable'): void => {
       const message = error instanceof Error ? error.message : String(error)
-      updateRun(root, runId, (record) => Object.assign(record, { status: 'failed', endedAt: now(), terminalReason: message }))
+      updateRun(root, runId, (record) => Object.assign(record, { status: 'failed', endedAt: now(), terminalReason: message, terminalCode: stopCodeOf(code) }))
       log(`session ${runId} did not start: ${message}`, code)
     }
 
@@ -684,20 +689,19 @@ export class Sessions {
       for (const tool of tools) if (tool.planModeSafe) planModeSafety.set(tool.name, tool.planModeSafe)
       const gate = (() => {
         const baseGate = this.gate(run, caller, new Set((input.tools.gated ?? []).filter((name) => capabilities.tools.includes(name))), false, input.automatic === true)
-        return {
-          ...baseGate,
-          check: (name: string, args: unknown) => {
-            if (input.run.relation === 'subagent' && !capabilities.tools.includes(name)) return Promise.resolve('This tool is outside the child capability snapshot.')
-            const refusal = input.plan ? planRefusal(name, readOnly, args, planModeSafety.get(name)) : null
-            return refusal ? Promise.resolve(refusal) : baseGate.check(name, args)
-          }
+        const checkDetailed = (name: string, args: unknown) => {
+          if (input.run.relation === 'subagent' && !capabilities.tools.includes(name)) return Promise.resolve({ code: 'capability' as const, reason: 'This tool is outside the child capability snapshot.' })
+          const refusal = input.plan ? planRefusal(name, readOnly, args, planModeSafety.get(name)) : null
+          return refusal ? Promise.resolve({ code: 'plan_mode' as const, reason: refusal }) : baseGate.checkDetailed!(name, args)
         }
+        return { ...baseGate, checkDetailed, check: async (name: string, args: unknown) => (await checkDetailed(name, args))?.reason ?? null }
       })()
       const params: TurnParams = {
         runId,
         ...(input.initialBashCommand !== undefined && input.initialBashCommand !== null ? { initialBashCommand: input.initialBashCommand, initialBashAvailable: capabilities.tools.includes('bash') } : {}),
         ...(input.initialBashContext !== undefined && input.initialBashContext !== null ? { initialBashContext: input.initialBashContext } : {}),
         gate,
+        onRefusal: (toolCallId, name, refusal) => run.emit('tool.refused', { toolCallId, name, ...refusal, reason: refusal.reason.slice(0, 2000) }),
         restrictTools: input.run.relation === 'subagent',
         ...(input.plan ? { plan: true } : {}),
         ...(stateEligible && input.plan ? { repairPlan: true } : {}),
@@ -721,9 +725,10 @@ export class Sessions {
           this.options.subagents.extension(runId),
           { name: 'image-pruning', factory: imagePruning() },
           { name: COMPACTION_CHECKPOINT_EXTENSION, factory: compactionCheckpoint({ initialTodo: continuation?.todo, planInstructions: checkpointPlanInstructions }) },
-          ...(sliceEnabled ? [{ name: WORK_SLICE_EXTENSION, factory: workSliceGuard({ policy: slicePolicy, state: sliceState, checkpointAvailable }) }] : [])
+          ...(sliceEnabled ? [{ name: WORK_SLICE_EXTENSION, factory: workSliceGuard({ policy: slicePolicy, state: sliceState, checkpointAvailable, onRefuse: (event, reason) => { if (typeof event.toolCallId === 'string') run.emit('tool.refused', { toolCallId: event.toolCallId, name: event.toolName, code: 'work_slice', reason: reason.slice(0, 2000) }) } }) }] : [])
         ],
         ...(plugins && loadPlugins ? { plugins: { loading: loadPlugins, loaded: (extensions) => plugins.loaded(extensions) } } : {}),
+        activatedPlugins: (ids) => updateRun(root, runId, (record) => { record.activatedPlugins = ids }),
         system,
         ...(sliceEnabled ? { slice: { state: sliceState, maxToolCalls: slicePolicy.maxToolCalls } } : {}),
         // A command sends no request of its own, so the context update waits for the next turn.

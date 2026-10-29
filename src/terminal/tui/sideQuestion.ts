@@ -89,6 +89,8 @@ export class SideQuestion {
   private startedAt = 0
   private afterSequence = -1
   private answerOffset = 0
+  /** The answer is taller than the dock, so PageUp/PageDown browse it instead of the transcript. */
+  private overflowing = false
   private readonly answerMarkdown = new MarkdownBlock()
   private readonly dock: Component
 
@@ -99,6 +101,7 @@ export class SideQuestion {
   get visible(): boolean { return this.current !== undefined }
   get state(): SideState | undefined { return this.current }
   get answer(): string { return this.answerText }
+  get scrollable(): boolean { return this.overflowing }
 
   /** Asks one question, replacing any earlier one. Empty text dismisses. */
   async ask(question: string): Promise<void> {
@@ -111,6 +114,7 @@ export class SideQuestion {
     this.answerText = ''
     this.error = undefined
     this.answerOffset = 0
+    this.overflowing = false
     this.afterSequence = -1
     this.current = 'thinking'
     this.options.mount(this.dock)
@@ -148,6 +152,7 @@ export class SideQuestion {
     this.generation++
     await this.release()
     this.current = undefined
+    this.overflowing = false
     this.options.mount(undefined)
     this.options.changed()
   }
@@ -214,12 +219,13 @@ export class SideQuestion {
       ? wrapTextWithAnsi(safeText(this.error ?? 'The side question failed.'), inner).map(line => theme.fg('error', line))
       : []
     const wrapped = [...answer, ...(answer.length && failure.length ? [''] : []), ...failure]
+    this.overflowing = wrapped.length > ANSWER_ROWS
     const maxOffset = Math.max(0, wrapped.length - ANSWER_ROWS)
     this.answerOffset = Math.min(this.answerOffset, maxOffset)
     const shown = wrapped.slice(this.answerOffset, this.answerOffset + ANSWER_ROWS)
     const before = this.answerOffset
     const after = Math.max(0, wrapped.length - before - shown.length)
-    const textHint = before || after ? `PgUp/PgDn browse · ${before ? `${before} above` : ''}${before && after ? ' · ' : ''}${after ? `${after} below` : ''} · ` : ''
+    const textHint = before || after ? `PgUp/PgDn/wheel browse · ${before ? `${before} above` : ''}${before && after ? ' · ' : ''}${after ? `${after} below` : ''} · ` : ''
     return [
       neutralRule(width, theme),
       ...question.map(line => padded(line, width)),

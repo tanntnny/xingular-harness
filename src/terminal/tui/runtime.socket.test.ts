@@ -1,5 +1,5 @@
 import type { ExtensionUIContext } from '@earendil-works/pi-coding-agent'
-import { mkdtempSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -23,11 +23,19 @@ afterEach(async () => {
   vi.unstubAllEnvs()
 })
 
-async function setup(input: Partial<TerminalPrepareInput> = {}) {
+async function setup(input: Partial<TerminalPrepareInput> = {}, packagePrompts = false) {
   const root = mkdtempSync(join(tmpdir(), 'harness-sdk-socket-'))
   const cwd = join(root, 'project')
   mkdirSync(cwd)
-  const harness = createHarness({ dataRoot: join(root, 'data'), stateDir: join(root, 'state'), secrets: memorySecretStore(), resolver: async () => [], assets: { node: process.execPath, cli: join(root, 'cli.js'), piExtension: join(root, 'terminal-pi.js'), openTui: join(root, 'terminal-opentui.js') } })
+  const pkg = join(root, 'package')
+  const prompts = join(pkg, 'prompts')
+  if (packagePrompts) {
+    mkdirSync(prompts, { recursive: true })
+    writeFileSync(join(pkg, 'package.json'), JSON.stringify({ name: 'devkit', harness: { commandPrefix: 'xdiag', defaultPrompt: 'diagnose' } }))
+    writeFileSync(join(prompts, 'diagnose.md'), 'Diagnose ${1:-current-session}')
+    writeFileSync(join(prompts, 'sweep.md'), 'Sweep $1')
+  }
+  const harness = createHarness({ dataRoot: join(root, 'data'), stateDir: join(root, 'state'), secrets: memorySecretStore(), resolver: async () => packagePrompts ? [{ kind: 'prompt', path: prompts, origin: 'package', packageRoot: pkg, project: false, source: pkg, enabled: true }] : [], assets: { node: process.execPath, cli: join(root, 'cli.js'), piExtension: join(root, 'terminal-pi.js'), openTui: join(root, 'terminal-opentui.js') } })
   const entry: { harness: Harness; runtime?: TerminalRuntime; root: string } = { harness, root }
   opened.push(entry)
   await harness.ready
@@ -43,6 +51,43 @@ async function setup(input: Partial<TerminalPrepareInput> = {}) {
 }
 
 describe('a native SDK runtime on the actual Harness terminal socket', () => {
+  it('resolves model-tool current against each active run and not after settlement', async () => {
+    const { harness } = await setup()
+    const connection = connectionFromEnv()
+    await socketCall(connection, 'tools.list')
+    const readCurrent = () => socketCall<{ text: string }>(connection, 'tools.call', { name: 'trajectory_read', input: { run: 'current' } })
+    expect((await readCurrent()).text).toContain('no current run')
+    const ids: string[] = []
+    for (const text of ['First run', 'Second run']) {
+      await terminalCall('begin', { text })
+      const id = harness.runs.activeForSession('offline-sdk')!.runId
+      ids.push(id)
+      expect(JSON.parse((await readCurrent()).text).run.id).toBe(id)
+      await terminalCall('settled', { aborted: false })
+      expect((await readCurrent()).text).toContain('no current run')
+    }
+    expect(ids[0]).not.toBe(ids[1])
+  })
+
+  it('exposes selected package prompts only under the declared owner prefix after reload', async () => {
+    const { runtime } = await setup({}, true)
+    const names = () => runtime.session.resourceLoader.getPrompts().prompts.map(prompt => prompt.name)
+    expect(names()).toEqual(expect.arrayContaining(['xdiag:', 'xdiag:sweep']))
+    expect(names()).not.toEqual(expect.arrayContaining(['diagnose', 'sweep']))
+    await expect(runtime.session.prompt('/diagnose item')).rejects.toThrow('requires its owner prefix')
+    const ai = await import('@earendil-works/pi-ai')
+    const faux = ai.fauxProvider()
+    runtime.services.modelRuntime.registerNativeProvider(faux.provider)
+    await runtime.session.setModel(faux.getModel())
+    faux.setResponses([ai.fauxAssistantMessage('Done'), ai.fauxAssistantMessage('Done')])
+    await runtime.session.prompt('/xdiag:')
+    await runtime.session.prompt('/xdiag: item')
+    const branch = JSON.stringify(runtime.session.sessionManager.getBranch())
+    expect(branch).toContain('Diagnose current-session')
+    expect(branch).toContain('Diagnose item')
+    await runtime.reload()
+    expect(names()).toEqual(expect.arrayContaining(['xdiag:', 'xdiag:sweep']))
+  })
   it('reads and changes shared terminal permissions only through the claimed private control key', async () => {
     const { runtime } = await setup()
     await expect(socketCall(connectionFromEnv(), 'terminal.permissions.get')).rejects.toThrow('Only a person')

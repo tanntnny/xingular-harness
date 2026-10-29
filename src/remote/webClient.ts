@@ -312,11 +312,15 @@ export const PAGE_JS = String.raw`
       inputs.push(input)
       void index
     })
-    var other = document.createElement('input'); other.type = 'text'; other.placeholder = 'Or type an answer'
-    card.appendChild(other)
+    var allowsText = request.allowText !== false
+    var other = null
+    if (allowsText) {
+      other = document.createElement('input'); other.type = 'text'; other.placeholder = 'Or type an answer'
+      card.appendChild(other)
+    }
     return function () {
       var selected = inputs.filter(function (i) { return i.checked }).map(function (i) { return i.value })
-      var typed = other.value.trim()
+      var typed = allowsText && other ? other.value.trim() : ''
       if (!selected.length && !typed) throw new Error('Choose an answer first.')
       return typed ? { selected: selected, text: typed } : { selected: selected }
     }

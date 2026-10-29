@@ -181,6 +181,25 @@ describe('a Pi session loader', () => {
     expect(ran(markers).project).toBe(true)
   })
 
+  it('reports only extensions Pi actually activated, not selected skills', async () => {
+    const { agentDir, cwd, plugins } = workspace()
+    const pi = await import('@earendil-works/pi-coding-agent')
+    const observations: string[][] = []
+    const base = params(cwd, agentDir, plugins)
+    await loadResources(pi, { ...base, activatedPlugins: (ids) => observations.push(ids) }, () => undefined)
+    expect(observations).toEqual([['shared', 'package:local-package']])
+  })
+
+  it('observes variant and first-party activation only after successful loading', async () => {
+    const { agentDir, cwd, plugins, base } = workspace()
+    const pi = await import('@earendil-works/pi-coding-agent')
+    const variant = join(base, 'variant.ts')
+    write(variant, 'export default function () {}\n')
+    const observations: string[][] = []
+    await loadResources(pi, { ...params(cwd, agentDir, plugins), variantExtensions: [variant], inline: [{ name: 'output-trim', factory: () => {} }], activatedPlugins: (ids) => observations.push(ids) }, () => undefined)
+    expect(observations[0]).toEqual(expect.arrayContaining(['variant', 'output-trim']))
+  })
+
   it('does not run an extension a person switched off for the caller', async () => {
     const { agentDir, cwd, markers, base } = workspace()
     const choices: Attachments = { version: 1, global: { on: [], off: [] }, agents: { a1: { on: [], off: ['shared/code/shared.ts'] } }, projects: {}, settings: {} }

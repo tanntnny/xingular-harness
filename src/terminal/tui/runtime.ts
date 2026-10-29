@@ -14,6 +14,11 @@ import { observeProviderResponses } from '../../usage/limits/capture'
 import { limitHeaders } from '../../usage/limits/normalize'
 import { loadPiAdapter } from './piAdapter'
 import { loadPi } from '../../pi/runtime'
+import { wrapPromptLoader } from '../../commands/promptLoader'
+import { applyExtensionOwners } from '../../commands/extensionOwners'
+import { installPluginCommandRouter } from '../../commands/runtimeRouter'
+import { pluginCommandPrefix } from '../../plugins/commandPrefix'
+import type { Found } from '../../plugins/discover'
 import type { SessionAccount } from '../accountsMenu'
 import type { QuestionAnswer } from '../../sessions/registry'
 import type { TerminalQuestion } from './questions'
@@ -186,7 +191,7 @@ export async function createTerminalRuntime(args: string[], host: TerminalRuntim
     assertTerminalSessionScope(resume, cwd)
   }
 
-  await loadPi()
+  const pi = await loadPi()
   // Claim before loading any plugin code and retain it in the trusted process across reloads.
   await claimTerminalControl()
   const identity = await controlCall<SessionAccount>('accounts.session').catch(() => null)
@@ -277,12 +282,20 @@ export async function createTerminalRuntime(args: string[], host: TerminalRuntim
       ],
       appendSystemPromptOverride: (base) => [...base, ...prepared.appendSystemPrompt]
     })
+    let resourceOwners: Found[] = []
+    const barePrompts = new Set<string>()
     const reloadResources = resourceLoader.reload.bind(resourceLoader)
     resourceLoader.reload = async (options) => {
       // Recheck the host's exact package trust and attachment identities before every load,
       // including the reload performed internally by AgentSession.reload().
-      await controlCall('terminal.resources', {}, 30_000)
+      const selected = await controlCall<{ resourceOwners?: Found[] }>('terminal.resources', {}, 30_000)
+      resourceOwners = selected.resourceOwners ?? []
       await reloadResources(options)
+      applyExtensionOwners(resourceLoader, resourceOwners)
+      await wrapPromptLoader(pi, resourceLoader, resourceOwners, prepared.prompts, cwd, agentDir, () => (native?.session?.extensionRunner.getRegisteredCommands() ?? []).map(command => {
+        const source = command.sourceInfo
+        return { prefix: pluginCommandPrefix(source), name: command.name, owner: source.origin === 'package' ? `package:${source.baseDir ?? source.source}` : `extension:${source.path}`, path: source.path }
+      }), barePrompts)
     }
     await resourceLoader.reload()
     const errors = resourceLoader.getExtensions().errors
@@ -306,6 +319,7 @@ export async function createTerminalRuntime(args: string[], host: TerminalRuntim
       ...(selected?.model ? { model: selected.model } : {}),
       ...(thinkingLevel ? { thinkingLevel } : {})
     })
+    installPluginCommandRouter(created.session, resourceOwners, barePrompts)
     created.session.setActiveToolsByName(normalModeTools(created.session.getActiveToolNames()))
     const services: AgentSessionServices = { cwd, agentDir, modelRuntime, settingsManager, resourceLoader, diagnostics: [] }
     host.resources?.(services)

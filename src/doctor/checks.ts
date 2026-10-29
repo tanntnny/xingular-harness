@@ -80,6 +80,9 @@ export async function builtinChecks(harness: Harness, context: DoctorContext, se
         }
       }
     },
+    check('computer.capture', 'tools', 'Application window capture', async () => context.tools.includes('computer_screenshot')
+      ? { status: 'unverified', evidence: 'A computer screenshot tool is listed for this session; its backend and window isolation were not tested.', remedy: 'Check the provider and approve an application window before capture.' }
+      : { status: 'blocked', evidence: 'No computer screenshot tool is listed for this session. An application window cannot be read through this capability.', remedy: 'Use a host with an approved-window capture backend.' }),
     check('runtime.pi', 'runtime', 'Pi runtime', async () => { await loadPi(); return pass(`Pi ${PINNED_PI_VERSION} loaded with its required dispatcher.`) }),
     check('runtime.launcher', 'runtime', 'Terminal launcher', async () => {
       if (!executable(assets.node)) return fail('The configured Node executable cannot be accessed.', 'Check the host launch configuration.')

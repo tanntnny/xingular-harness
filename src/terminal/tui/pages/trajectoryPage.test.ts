@@ -79,6 +79,22 @@ describe('the Trajectory page', () => {
     page.dispose()
   })
 
+  it('shows refusals and interrupted reasons or codes in the event list', async () => {
+    const target = run('run-1', 'interrupted')
+    const events = [
+      event(0, 'tool.refused', { toolCallId: 't1', name: 'write', code: 'plan_mode', reason: 'Read only' }),
+      event(1, 'status.changed', { status: 'interrupted', reason: 'Budget reached', code: 'slice_budget' }),
+      event(2, 'status.changed', { status: 'interrupted', code: 'stalled' })
+    ]
+    const { page } = await opened({ runs: [target], snapshot: { run: target, events } })
+    page.handleInput('\t')
+    const text = plain(page, 30, 160)
+    expect(text).toContain('write refused (plan_mode) · Read only')
+    expect(text).toContain('interrupted · Budget reached')
+    expect(text).toContain('interrupted · stalled')
+    page.dispose()
+  })
+
   it('never prints a mouse report from recorded text', async () => {
     const target = { ...run('run-1'), goal: 'goal\x1b[<0;40;8M' }
     const events = [event(0, 'message.completed', { role: 'user', text: 'before\x1b[<65;56;29Mafter' })]

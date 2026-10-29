@@ -47,7 +47,10 @@ callable result for one run.
 - **Attachments.** `config/plugin-attachments.json` holds `global`, `agents`, `projects` (each
   `{ on, off }`) and `settings` per plugin. The narrowest scope that says something wins: agent,
   then project, then everywhere. With no entry an item keeps its default.
-- **Package metadata.** A Pi package may declare `"harness": { "extends": [...], "hooks": "./hooks.mjs", "commandPrefix": "my-tools", "agents": "./agents" }`.
+- **Package metadata.** A Pi package may declare `"harness": { "extends": [...], "hooks": "./hooks.mjs", "commandPrefix": "my-tools", "defaultPrompt": "review", "agents": "./agents" }`.
+  `defaultPrompt` names one of that package's prompt templates as the target of `/<owner-prefix>:`;
+  it is not a path or an arbitrary command. Without a valid, unambiguous owned target, it must not
+  route to another owner's template or guess a default (ADR-0061).
   A package without a `package.json` name is named, described and versioned by the first of
   `plugin.json`, `.claude-plugin/plugin.json`, `.codex-plugin/plugin.json`, so an agent plugin
   written for other harnesses installs as it is.
@@ -62,7 +65,10 @@ callable result for one run.
   variant's profile of the same name; the listing reports it as a problem instead.
   `commandPrefix` is optional; in the terminal, commands otherwise use a normalized package name as
   their owner prefix. Prefixes use lowercase letters, digits and hyphens, starting with a letter;
-  `plugin` and `skill` are reserved. See page 11 for the command route and collision rules.
+  `plugin` and `skill` are reserved. Package-owned prompt templates share the package's command
+  namespace with its extension commands; prompts discovered by a loose extension use that
+  extension's namespace. Neither is exposed as a bare plugin alias. Standalone prompt templates
+  retain their existing form. See page 11 for routing and collision rules.
 - **Plugin authoring.** `plugin_propose` creates a pending proposal, not an installation. The
   release-owned `plugin-authoring` skill is available on demand in structured and terminal sessions;
   a pinned variant's skill of the same name wins. It adds no trust or permission
@@ -131,6 +137,11 @@ callable result for one run.
   load third-party Pi code or bypass its trust checks.
 - **INV-PLG-11** Built-in plugin categories are a documentation ownership taxonomy. They are not a
   `PluginDescriptor` field, a public response field or a second attachment scope.
+- **INV-PLG-12** Plugin command ownership includes plugin-owned prompt templates. An owner prefix
+  identifies exactly one owner; prefix collisions between owners and duplicate routes within an
+  owner fail closed with owner diagnostics, including collisions between a template and an extension
+  command. Package `harness.defaultPrompt` can select only its own unambiguous template for the
+  namespace root. Ownership does not change attachment, code trust or permission rules.
 - **INV-CAP-1** A capability set only narrows. `intersect` never adds access; a run's set is
   frozen when it starts (`INV-RUN-2`). An agent profile's `plugins` list keeps only the parent's
   contributions of those plugins (required plugins always stay) and drops the tools they own; it

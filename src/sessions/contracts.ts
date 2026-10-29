@@ -13,6 +13,7 @@ export const runEventTypeSchema = z.enum([
   'message.steered',
   'tool.started',
   'tool.completed',
+  'tool.refused',
   'retry.started',
   'retry.ended',
   'compaction.started',
@@ -79,7 +80,47 @@ const toolPayload = z.object({
 })
 const retryStartedPayload = z.object({ attempt: z.number(), maxAttempts: z.number(), delayMs: z.number(), error: z.string().max(1_000).optional() })
 const retryEndedPayload = z.object({ attempt: z.number(), success: z.boolean(), error: z.string().max(1_000).optional() })
-const compactionStartedPayload = z.object({ reason: z.string() })
+/**
+ * Why a call was refused before it ran (PROP-0050). The model still sees the reason as the call's
+ * result; this event says which rule refused it, so a reader need not match the text.
+ */
+export const refusalCodeSchema = z.enum([
+  /** Plan mode allows only research tools and read-only Bash. */
+  'plan_mode',
+  /** A file write or command outside the active project workspace, or a workspace that could not be verified. */
+  'workspace',
+  /** The host's work scope does not cover the call. */
+  'scope',
+  /** The host's tool policy disabled the tool. */
+  'policy',
+  /** The tool is outside the run's capability set. */
+  'capability',
+  /** A person was asked and declined. */
+  'approval_denied',
+  /** The call needs a person and the run has nobody to ask: refinement, reflection, diagnostics. */
+  'unattended',
+  /** The reply reached its work-slice budget. */
+  'work_slice',
+  /** The terminal controller could not be reached to decide. */
+  'controller_unavailable'
+])
+export type RefusalCode = z.infer<typeof refusalCodeSchema>
+export interface Refusal {
+  code: RefusalCode
+  reason: string
+}
+const toolRefusedPayload = z.object({
+  toolCallId: z.string(),
+  name: z.string(),
+  code: refusalCodeSchema,
+  reason: z.string().max(2_000)
+})
+const compactionStartedPayload = z.object({
+  reason: z.string(),
+  /** The latest request's size and the model's limit when compaction began, when known. */
+  contextTokens: z.number().optional(),
+  contextWindow: z.number().optional()
+})
 const compactionEndedPayload = z.object({
   reason: z.string(),
   aborted: z.boolean(),
@@ -137,6 +178,48 @@ export const questionOptionSchema = z.object({
   sketch: questionSketchSchema.optional()
 })
 export type QuestionOption = z.infer<typeof questionOptionSchema>
+
+export interface QuestionAnswerProblem {
+  field: 'selection' | 'text' | 'notes'
+  message: string
+}
+
+/**
+ * Why an answer to one question would be refused, or `null` when it may be accepted.
+ * The session registry and the front ends share this rule, so a form cannot build an answer
+ * the server rejects, and a refusal can name the field that needs attention.
+ */
+export function questionAnswerProblem(
+  question: { summary?: string; options: readonly Pick<QuestionOption, 'label'>[]; multiSelect?: boolean; allowText?: boolean },
+  answer: { selected: readonly string[]; text?: string; notes?: Readonly<Record<string, string>> }
+): QuestionAnswerProblem | null {
+  const name = question.summary?.trim() ? `Question "${question.summary.trim()}"` : 'This question'
+  const selected = answer.selected
+  if (question.multiSelect !== true && selected.length > 1) {
+    return { field: 'selection', message: `${name} takes one choice, but ${selected.length} were selected.` }
+  }
+  if (new Set(selected).size !== selected.length) {
+    return { field: 'selection', message: `${name} lists the same choice more than once.` }
+  }
+  const unknown = selected.find((label) => !question.options.some((option) => option.label === label))
+  if (unknown !== undefined) {
+    return { field: 'selection', message: `${name} does not offer "${unknown}".` }
+  }
+  if (answer.text?.trim() && question.allowText === false) {
+    return { field: 'text', message: `${name} does not take a typed answer; choose one of its options.` }
+  }
+  for (const [label, note] of Object.entries(answer.notes ?? {})) {
+    const normalized = typeof note === 'string' ? note.trim() : ''
+    if (!normalized) continue
+    if (!selected.includes(label)) {
+      return { field: 'notes', message: `${name}: a note is attached to "${label}", which is not selected.` }
+    }
+    if (normalized.length > 10_000) {
+      return { field: 'notes', message: `${name}: the note for "${label}" is longer than 10,000 characters.` }
+    }
+  }
+  return null
+}
 const questionBatchFields = {
   batchId: z.string().min(1).optional(),
   batchIndex: z.number().int().min(1).max(5).optional(),
@@ -317,7 +400,43 @@ const accountStatusPayload = z.object({
   plan: z.string().optional(),
   limits: z.array(accountLimitSchema).optional()
 })
-const statusPayload = z.object({ status: runStatusSchema, reason: z.string().optional() })
+/**
+ * Why a run settled, as a fixed code (PROP-0050). `terminalReason` keeps the human text; this is what
+ * a reader branches on. A `failed` event's `code` is one of these too.
+ */
+export const runStopCodeSchema = z.enum([
+  'completed',
+  /** A person stopped the run. */
+  'user_abort',
+  /** The reply reached its work-slice budget and handed off. */
+  'slice_budget',
+  /** Three compactions in one reply ended it. */
+  'compaction_thrash',
+  /** The model request failed (auth, quota, rate limit, network, unsupported model). */
+  'provider_error',
+  /** The run stopped reporting progress or heartbeats. */
+  'stalled',
+  /** The owning process went away without settling the run. */
+  'owner_gone',
+  /** The harness started and found the run unsettled. */
+  'harness_restart',
+  /** The terminal needs attention: a startup error or a lost decision callback. */
+  'terminal_attention',
+  /** The terminal closed while the run was live. */
+  'terminal_closed',
+  /** An ancestor run stopped, so this one did too. */
+  'parent_stopped',
+  /** Any other failure. */
+  'failed'
+])
+export type RunStopCode = z.infer<typeof runStopCodeSchema>
+/** The stop code of a failure code, which may come from a host or an older writer. */
+export const stopCodeOf = (code: string): RunStopCode => {
+  const parsed = runStopCodeSchema.safeParse(code)
+  if (parsed.success) return parsed.data
+  return code.startsWith('provider_') ? 'provider_error' : 'failed'
+}
+const statusPayload = z.object({ status: runStatusSchema, reason: z.string().optional(), code: runStopCodeSchema.optional() })
 const failedPayload = z.object({ code: z.string(), message: z.string() })
 const emptyPayload = z.object({}).passthrough()
 
@@ -330,6 +449,7 @@ export const runEventPayloadSchemas = {
   'message.steered': messageSteeredPayload,
   'tool.started': toolPayload,
   'tool.completed': toolPayload,
+  'tool.refused': toolRefusedPayload,
   'retry.started': retryStartedPayload,
   'retry.ended': retryEndedPayload,
   'compaction.started': compactionStartedPayload,
@@ -387,9 +507,13 @@ export interface RunRecord {
   parentRunId: string | null
   relation: string | null
   terminalReason: string | null
+  /** Why the run settled, as a `RunStopCode`; absent on records written before PROP-0050. */
+  terminalCode?: RunStopCode | null
   id: string
   projectId: string | null
   mode: string
+  /** Execution mode, distinct from the host's session mode. */
+  effectiveMode?: 'plan' | 'normal'
   harness: string
   sessionType: string
   sessionId: string
@@ -422,6 +546,10 @@ export interface RunRecord {
   model?: string | null
   /** The reasoning effort the run used. */
   effort?: string | null
+  /** Successful Harness skill loads; absent for runs without observation. */
+  loadedSkills?: string[]
+  /** Plugin identities observed activating; absent when not fully observable. */
+  activatedPlugins?: string[]
 }
 
 const text = z.string().nullish().transform((value) => value ?? null)
@@ -431,9 +559,11 @@ export const runRecordSchema = z.object({
   parentRunId: text,
   relation: text,
   terminalReason: text,
+  terminalCode: runStopCodeSchema.nullish().transform((value) => value ?? null),
   id: z.string(),
   projectId: text,
   mode: z.string(),
+  effectiveMode: z.enum(['plan', 'normal']).optional(),
   harness: z.string(),
   sessionType: z.string(),
   sessionId: z.string(),
@@ -456,7 +586,9 @@ export const runRecordSchema = z.object({
   profile: text.optional(),
   title: text.optional(),
   model: text.optional(),
-  effort: text.optional()
+  effort: text.optional(),
+  loadedSkills: z.array(z.string()).optional(),
+  activatedPlugins: z.array(z.string()).optional()
 }) satisfies z.ZodType<RunRecord, unknown>
 
 /** Records written before PROP-0009 name the variant `harnessScope` and `harnessVersion`. */

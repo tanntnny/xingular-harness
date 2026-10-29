@@ -1,3 +1,4 @@
+import type { Refusal } from './contracts'
 // A session turn on Pi. Pi owns the model loop, native history, and tool use; this module opens
 // the session with the compiled prompt and the session's tools, and maps Pi's events onto the
 // run-event contract. Gated tools pause for the user's approval before they run.
@@ -24,7 +25,13 @@ import { completedReasoningSummary, REASONING_SUMMARY_APIS, requestDetailedReaso
 import { extensionUi, type ExtensionHost } from './extensionUi'
 import { inspectWorkspaceWrite } from './workspaceBoundary'
 import { parseInitialBashCommand } from './initialBash'
-import { observeResources, registrationHash } from '../plugins/runtime'
+import { observeResources, registrationHash, runtimeOwner } from '../plugins/runtime'
+import { wrapPromptLoader } from '../commands/promptLoader'
+import { applyExtensionOwners } from '../commands/extensionOwners'
+import { pluginCommandPrefix } from '../plugins/commandPrefix'
+import { installPluginCommandRouter } from '../commands/runtimeRouter'
+import { pluginIdOf } from '../plugins/identity'
+import { OUTPUT_TRIM, BUDGET_GUARD } from '../plugins/firstParty'
 import type { ActiveRun } from './registry'
 
 export { EFFORTS }
@@ -62,6 +69,7 @@ export interface TurnParams {
   initialBashAvailable?: boolean
   /** The same gate used for model-issued tools. */
   gate?: ToolGate
+  onRefusal?: (toolCallId: string, name: string, refusal: Refusal) => void
   images?: { mediaType: string; data: string }[]
   requiresImageInput?: boolean
   /** App-origin notes placed before the text of the request. */
@@ -78,6 +86,7 @@ export interface TurnParams {
    * discovery is off whenever this is set, so only these paths and the registry's reach the session.
    */
   plugins?: { loading(): Promise<Loading>; loaded(extensions: Registered[]): void }
+  activatedPlugins?: (ids: string[]) => void
   /** The harness's own switched-on extensions. They are code in this process, so they load in every kind of run. */
   inline?: InlineExtension[]
   /** The stable part of the compiled prompt: the only text added to Pi's own. */
@@ -152,6 +161,7 @@ export interface PiSessionLike {
 export interface ToolGate {
   /** Resolves to a block reason, or null to let the call run. */
   check(toolName: string, input: unknown): Promise<string | null>
+  checkDetailed?(toolName: string, input: unknown): Promise<Refusal | null>
   /** Requests one human-only approval before an explicit outside-workspace Bash call runs. */
   requestWorkspaceWriteScope?(toolName: string, input: unknown, reason: string): Promise<boolean>
   /** Whether the explicit Full Permission switch bypasses the boundary for this Bash command. */
@@ -333,6 +343,7 @@ export async function runTurn(run: ActiveRun, session: PiSessionLike, params: Tu
   let aborted = false
   const usage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0, requests: 0 }
   let usageReported = false
+  let lastContextTokens: number | undefined
   // Only some providers report a reasoning split; absent stays absent rather than zero.
   let reasoningTokens: number | undefined
   // One model request runs from a turn's start to its assistant message's end.
@@ -470,6 +481,7 @@ export async function runTurn(run: ActiveRun, session: PiSessionLike, params: Tu
             ...(message.stopReason ? { stopReason: message.stopReason } : {})
           }
           requestStartedAt = null
+          if (reported) lastContextTokens = (reported.input ?? 0) + (reported.cacheRead ?? 0) + (reported.cacheWrite ?? 0)
           const contextWindow = session.model?.contextWindow
           const { costUsd, ...tokens } = usage
           run.emit('usage.updated', {
@@ -553,16 +565,18 @@ export async function runTurn(run: ActiveRun, session: PiSessionLike, params: Tu
         break
       }
       case 'compaction_start': {
-        run.emit('compaction.started', { reason: stringField(event as unknown as Record<string, unknown>, 'reason', 'context limit') })
+        run.emit('compaction.started', { reason: stringField(event as unknown as Record<string, unknown>, 'reason', 'context limit'), ...(lastContextTokens === undefined ? {} : { contextTokens: lastContextTokens }), ...(session.model?.contextWindow ? { contextWindow: session.model.contextWindow } : {}) })
         break
       }
       case 'compaction_end': {
         const compaction = event as unknown as Record<string, unknown>
+        const result = compaction.result && typeof compaction.result === 'object' ? compaction.result as Record<string, unknown> : null
         const summary = evidenceText(compaction.result)
         const boundedSummary = summary ? limitedText(summary) : null
         run.emit('compaction.ended', {
           reason: stringField(compaction, 'reason', 'context limit'),
           aborted: compaction.aborted === true,
+          ...(typeof result?.tokensBefore === 'number' && Number.isFinite(result.tokensBefore) ? { tokensBefore: result.tokensBefore } : {}),
           ...(typeof compaction.willRetry === 'boolean' ? { willRetry: compaction.willRetry } : {}),
           ...(stringField(compaction, 'errorMessage') ? { error: stringField(compaction, 'errorMessage').slice(0, 1000) } : {}),
           ...(boundedSummary ? { summary: boundedSummary.text, ...(boundedSummary.truncated ? { summaryTruncated: true } : {}) } : {})
@@ -577,7 +591,7 @@ export async function runTurn(run: ActiveRun, session: PiSessionLike, params: Tu
     if (params.command) {
       const notice = await runCommand(session, params.command)
       if (notice) run.emit('extension.notice', { kind: 'notify', level: 'info', text: notice })
-      if (aborted) run.finish('interrupted')
+      if (aborted) run.finish('interrupted', undefined, undefined, 'user_abort')
       else run.finish('completed')
       return
     }
@@ -587,8 +601,7 @@ export async function runTurn(run: ActiveRun, session: PiSessionLike, params: Tu
       await session.sendCustomMessage({ customType: CONTEXT_MESSAGE_TYPE, content: params.update.content, display: false, details: { [CONTEXT_SNAPSHOT_KEY]: params.update.snapshot } }, { triggerTurn: false })
     }
     const command = /^\/(\S+)/.exec(params.text)?.[1]
-    const extensionCommand = command && session.extensionCommands?.includes(command)
-    if (params.preamble && extensionCommand) {
+    if (params.preamble && command) {
       if (!session.sendCustomMessage) throw new HarnessError('provider_error', 'The Pi session cannot receive the command context.')
       await session.sendCustomMessage({ customType: 'xingular-preamble', content: params.preamble, display: false, details: {} }, { triggerTurn: false })
     }
@@ -628,9 +641,12 @@ export async function runTurn(run: ActiveRun, session: PiSessionLike, params: Tu
           : !params.gate
             ? 'This run has no Bash policy gate.'
             : null
+      if (refusal && !params.initialBashAvailable && command) params.onRefusal?.(toolCallId, 'bash', { code: 'capability', reason: refusal })
       if (!refusal) {
         try {
-          refusal = await params.gate!.check('bash', args)
+          const blocked = params.gate!.checkDetailed ? await params.gate!.checkDetailed('bash', args) : null
+          if (!params.gate!.checkDetailed) refusal = await params.gate!.check('bash', args)
+          if (blocked) { params.onRefusal?.(toolCallId, 'bash', blocked); refusal = blocked.reason }
         } catch (error) {
           refusal = error instanceof Error ? error.message : 'The Bash policy could not be checked.'
         }
@@ -666,7 +682,7 @@ export async function runTurn(run: ActiveRun, session: PiSessionLike, params: Tu
       await session.sendCustomMessage({ customType: 'xingular-initial-bash', content: initialBashInstruction, display: false, details: {} }, { triggerTurn: false })
       initialBashInstruction = undefined
     }
-    const prompt = params.preamble && !extensionCommand ? `${params.preamble}\n\n${params.text}` : params.text
+    const prompt = params.preamble && !command ? `${params.preamble}\n\n${params.text}` : params.text
     const images = (params.images ?? []).map((image) => ({ type: 'image', mimeType: image.mediaType, data: image.data }))
     accepting = true
     try {
@@ -694,14 +710,14 @@ export async function runTurn(run: ActiveRun, session: PiSessionLike, params: Tu
     if (slice?.endedBy && !aborted && !lastError) {
       // The model stopped because its slice was over. Keep the state it did not write itself.
       if (!slice.checkpointWritten) run.emit('checkpoint', derivedCheckpoint(slice, ledger))
-      run.finish('interrupted', undefined, 'slice_complete')
+      run.finish('interrupted', undefined, 'slice_complete', slice.endedBy === 'budget' ? 'slice_budget' : 'compaction_thrash')
       return
     }
-    if (aborted) run.finish('interrupted')
+    if (aborted) run.finish('interrupted', undefined, undefined, 'user_abort')
     else if (lastError) run.finish('failed', { code: 'provider_error', message: lastError })
     else run.finish('completed')
   } catch (error) {
-    if (aborted) run.finish('interrupted')
+    if (aborted) run.finish('interrupted', undefined, undefined, 'user_abort')
     else run.finish('failed', { code: 'provider_error', message: error instanceof Error ? error.message : String(error) })
   } finally {
     if (heartbeat) clearInterval(heartbeat)
@@ -735,7 +751,9 @@ async function runCommand(session: PiSessionLike, command: SessionCommand): Prom
  * Loads what a session may use besides its tools: Pi's context files, the registry's skills and
  * prompts, and what the harness found for it. `gate` is loaded after every extension on disk.
  */
-export async function loadResources(pi: typeof import('@earendil-works/pi-coding-agent'), params: Pick<TurnParams, 'cwd' | 'account' | 'automatic' | 'resources' | 'variantExtensions' | 'plugins' | 'system' | 'inline'>, gate: unknown, automaticSettings?: SettingsManager) {
+const promptRouting = new WeakMap<object, { loading: Loading; bare: Set<string> }>()
+
+export async function loadResources(pi: typeof import('@earendil-works/pi-coding-agent'), params: Pick<TurnParams, 'cwd' | 'account' | 'automatic' | 'resources' | 'variantExtensions' | 'plugins' | 'system' | 'inline' | 'activatedPlugins'>, gate: unknown, automaticSettings?: SettingsManager) {
   const loading = params.automatic ? null : ((await params.plugins?.loading()) ?? null)
   const resourceLoader = new pi.DefaultResourceLoader({
     ...(automaticSettings ? { settingsManager: automaticSettings, noExtensions: true, noContextFiles: true } : {}),
@@ -756,10 +774,36 @@ export async function loadResources(pi: typeof import('@earendil-works/pi-coding
   })
   await resourceLoader.reload()
   if (loading) {
+    applyExtensionOwners(resourceLoader, loading.found)
+    const extensions = () => registeredBy(resourceLoader).flatMap(record => {
+      const owner = runtimeOwner(loading, record.path)
+      const prefix = pluginCommandPrefix(owner?.packageRoot ? { path: record.path, origin: 'package', baseDir: owner.packageRoot } : { path: record.path })
+      return record.commands.map(name => ({ prefix, name, owner: owner?.packageRoot ? `package:${owner.packageRoot}` : `extension:${record.path}`, path: record.path }))
+    })
     const records = registeredBy(resourceLoader).map((record) => ({ ...record, hash: registrationHash(loading, record.path) }))
     const publish = () => params.plugins?.loaded(records)
     observeResources(pi, resourceLoader, loading, records, publish)
+    const bare = await wrapPromptLoader(pi, resourceLoader, loading.found, loading.promptPaths, params.cwd, params.account.configDir, extensions)
+    promptRouting.set(resourceLoader, { loading, bare })
     publish()
+  }
+  if (loading || params.automatic) {
+    const extensions = resourceLoader.getExtensions().extensions
+    const ids: string[] = []
+    let known = true
+    for (const extension of extensions) {
+      const path = extension.resolvedPath || extension.path
+      if (extension.hidden) {
+        for (const id of [OUTPUT_TRIM, BUDGET_GUARD]) if (path === `<inline:${id}>`) ids.push(id)
+      } else if (params.variantExtensions?.some((entry) => path === entry || path.startsWith(`${entry}/`))) {
+        ids.push('variant')
+      } else {
+        const owner = loading && runtimeOwner(loading, path)
+        if (owner) ids.push(pluginIdOf(owner))
+        else known = false
+      }
+    }
+    if (known) params.activatedPlugins?.([...new Set(ids)])
   }
   return resourceLoader
 }
@@ -816,11 +860,20 @@ export const piSessionFactory: SessionFactory = async ({ params, allow, gate, to
             authorized: false
           }
         } catch (error) {
-          return { block: true, reason: error instanceof Error ? error.message : 'The active project workspace could not be verified.' }
+          const reason = error instanceof Error ? error.message : 'The active project workspace could not be verified.'
+          params.onRefusal?.(event.toolCallId, event.toolName, { code: 'workspace', reason })
+          return { block: true, reason }
         }
       }
-      const reason = await gate.check(event.toolName, event.input)
-      if (reason) return { block: true, reason }
+      const refusal = gate.checkDetailed ? await gate.checkDetailed(event.toolName, event.input) : null
+      if (!gate.checkDetailed) {
+        const reason = await gate.check(event.toolName, event.input)
+        if (reason) return { block: true, reason }
+      }
+      if (refusal) {
+        params.onRefusal?.(event.toolCallId, event.toolName, refusal)
+        return { block: true, reason: refusal.reason }
+      }
       if (authorization) {
         authorization.authorized = true
         writeAuthorizations.set(event.toolCallId, authorization)
@@ -881,7 +934,9 @@ export const piSessionFactory: SessionFactory = async ({ params, allow, gate, to
     })
   }
   const piSession = session as unknown as PiSessionLike & { agent: { streamFunction: typeof runtime.streamSimple } }
-  piSession.extensionCommands = loaded.flatMap((extension) => extension.commands)
+  const routing = promptRouting.get(resourceLoader)
+  const routes = installPluginCommandRouter(session, routing?.loading.found ?? [], routing?.bare ?? new Set())
+  piSession.extensionCommands = routes()
   supportsImageInput = piSession.model?.input.includes('image') ?? false
   const streamAgent = piSession.agent
   const originalStream = streamAgent.streamFunction

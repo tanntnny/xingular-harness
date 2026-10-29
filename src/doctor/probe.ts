@@ -35,7 +35,7 @@ export async function diagnosticProbe<T>(harness: Harness, context: DoctorContex
   freezeRun(root, id, caller, capabilities)
   const run = harness.runs.start(id, id)
   run.onInterrupt(() => interrupt.abort())
-  const abort = () => { run.finish('interrupted'); void harness.world.release(id) }
+  const abort = () => { run.finish('interrupted', undefined, undefined, 'user_abort'); void harness.world.release(id) }
   signal.addEventListener('abort', abort, { once: true })
   const gate = harness.sessions.diagnosticGate(run, caller)
   try {
@@ -45,10 +45,13 @@ export async function diagnosticProbe<T>(harness: Harness, context: DoctorContex
       call: async (name, input) => {
         signal.throwIfAborted()
         if (run.finished || !capabilities.tools.includes(name)) throw new HarnessError('doctor_blocked', 'This tool is outside the diagnostic capability set.')
-        const refusal = await gate.check(name, input)
-        if (refusal) throw new HarnessError('doctor_blocked', 'The tool policy refused this diagnostic call.')
-        signal.throwIfAborted()
         const callId = randomUUID()
+        const refusal = await gate.checkDetailed?.(name, input)
+        if (refusal) {
+          run.emit('tool.refused', { toolCallId: callId, name, code: refusal.code, reason: 'The tool policy refused this diagnostic call.' })
+          throw new HarnessError('doctor_blocked', 'The tool policy refused this diagnostic call.')
+        }
+        signal.throwIfAborted()
         run.emit('tool.started', { toolCallId: callId, name, summary: 'Synthetic diagnostic input' })
         try {
           let result
@@ -75,11 +78,11 @@ export async function diagnosticProbe<T>(harness: Harness, context: DoctorContex
     })
     return result
   } catch (error) {
-    run.finish(signal.aborted ? 'interrupted' : 'failed', { code: 'doctor_failed', message: 'The diagnostic probe failed.' })
+    run.finish(signal.aborted ? 'interrupted' : 'failed', { code: 'doctor_failed', message: 'The diagnostic probe failed.' }, undefined, signal.aborted ? 'user_abort' : undefined)
     throw error
   } finally {
     signal.removeEventListener('abort', abort)
-    run.finish(signal.aborted ? 'interrupted' : 'completed')
+    run.finish(signal.aborted ? 'interrupted' : 'completed', undefined, undefined, signal.aborted ? 'user_abort' : undefined)
     harness.apps.revokeRun(id, id)
     await harness.world.release(id)
   }

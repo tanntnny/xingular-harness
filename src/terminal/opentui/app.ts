@@ -43,6 +43,7 @@ import { matchPalette, type PaletteItem } from './palette'
 import { completeFilePaths, formatPathCompletion, type PathCompletionItem } from './pathCompletion'
 import { PlanChoice, type PlanChoiceView } from './planChoice'
 import { QuestionDockState, type QuestionDockAnswers, type QuestionDockQuestion, type QuestionDockView } from './questionDockState'
+import { questionAnswerProblem } from '../../sessions/contracts'
 import { linkTarget, openLink as openWithDefaultHandler, type LinkTarget } from '../../core/links'
 import { subagentRoster, type SubagentRosterView } from './subagentsWidget'
 import type { PendingMessage } from './pendingMessages'
@@ -132,7 +133,6 @@ export interface OpenTuiView {
   account?: string
   model?: { name: string; provider: string; reasoning: boolean; contextWindow: number }
   thinking: string
-  contextPercent: number | null
   inputTokens: number
   cacheReadTokens: number
   outputTokens: number
@@ -152,6 +152,10 @@ export interface OpenTuiView {
   planMode: boolean
   /** The finished plan's choice block above the composer, or null. */
   planChoice: PlanChoiceView | null
+  /** A visible `/btw` answer taller than its dock; PageUp/PageDown browse it, not the transcript. */
+  sideQuestionScrollable: boolean
+  /** The `/btw` dock, drawn with the other blocks above the composer; wheel over it browses the answer. */
+  sideQuestionDock?: AnsiLine[]
   /** The pending question form above the composer, or null. */
   questionDock: QuestionDockView | null
   pendingMessages: readonly PendingMessage[]
@@ -187,6 +191,7 @@ export class OpenTuiApplication {
   private readonly cleanup: (() => void | Promise<void>)[] = []
   private readonly statuses = new Map<string, string>()
   private readonly widgets = new Map<string, { component: Mounted; placement: string }>()
+  private sideQuestionDock?: Mounted
   private readonly branchListeners = new Set<() => void>()
   private historyIndex: number | undefined
   private historyScratch?: {
@@ -548,10 +553,8 @@ export class OpenTuiApplication {
         copyText: copyToClipboard,
         theme: () => this.theme,
         mount: dock => {
-          const previous = this.widgets.get('harness-btw')
-          if (previous) this.release(previous.component)
-          if (dock) this.widgets.set('harness-btw', { component: dock as Mounted, placement: 'aboveEditor' })
-          else this.widgets.delete('harness-btw')
+          this.release(this.sideQuestionDock)
+          this.sideQuestionDock = dock as Mounted | undefined
           this.change()
         },
         changed: this.change
@@ -793,6 +796,8 @@ export class OpenTuiApplication {
     this.headerFactory = this.footerFactory = undefined
     for (const widget of this.widgets.values()) this.release(widget.component)
     this.widgets.clear()
+    this.release(this.sideQuestionDock)
+    this.sideQuestionDock = undefined
     this.statuses.clear()
     this.branchListeners.clear()
     this.mountEditor(undefined)
@@ -986,14 +991,7 @@ export class OpenTuiApplication {
         const choice = await this.chooseApproval(request, abort.signal)
         if (!abort.signal.aborted) await this.runtime.approve(request.requestId, choice.decision, choice.alwaysAllow)
       } else {
-        const group = request.batchId
-          ? requests.filter(item => item.type === 'question' && item.batchId === request.batchId).sort((a, b) => (a.batchIndex ?? 0) - (b.batchIndex ?? 0))
-          : [request]
-        const answers = await this.showQuestionDock(group as QuestionDockQuestion[], abort.signal)
-        if (abort.signal.aborted) return
-        if (!answers) { await this.runtime!.interrupt(); return }
-        if (request.batchId) await this.runtime.answerBatch(request.batchId, answers)
-        else await this.runtime.answer(request.requestId, answers[0]!.answer)
+        await this.answerQuestionDock(request, requests, abort)
       }
     } catch (error) {
       if (this.pendingId) this.dismissedDecisions.delete(this.pendingId)
@@ -1008,22 +1006,60 @@ export class OpenTuiApplication {
     }
   }
 
-  private async showQuestionDock(questions: QuestionDockQuestion[], signal: AbortSignal): Promise<QuestionDockAnswers | undefined> {
-    if (signal.aborted) return undefined
+  /** One dock for a question batch. A refused answer stays in the dock with its drafts. */
+  private async answerQuestionDock(request: TerminalDecision, requests: readonly TerminalDecision[], abort: AbortController): Promise<void> {
+    const questions = (request.batchId
+      ? requests.filter(item => item.type === 'question' && item.batchId === request.batchId).sort((a, b) => (a.batchIndex ?? 0) - (b.batchIndex ?? 0))
+      : [request]) as QuestionDockQuestion[]
     const dock = new QuestionDockState(questions)
     this.questionDock = dock
     const cancel = () => dock.cancel()
-    signal.addEventListener('abort', cancel, { once: true })
+    abort.signal.addEventListener('abort', cancel, { once: true })
     this.change()
     try {
-      return await dock.result
+      while (!abort.signal.aborted) {
+        const answers = await dock.result
+        if (abort.signal.aborted) return
+        if (!answers) { await this.runtime!.interrupt(); return }
+        const refusal = this.questionAnswerRefusal(questions, answers)
+        if (refusal) { dock.fail(refusal); this.change(); continue }
+        dock.setSubmitting(true)
+        this.change()
+        try {
+          if (request.batchId) await this.runtime!.answerBatch(request.batchId, answers)
+          else await this.runtime!.answer(request.requestId, answers[0]!.answer)
+          return
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          // A question that is no longer waiting cannot be repaired in the dock.
+          if (/not waiting for an answer|no longer pending|not pending/i.test(message)) {
+            if (!this.stopped) this.notify(message, 'error')
+            return
+          }
+          dock.fail(message)
+          this.change()
+        } finally {
+          dock.setSubmitting(false)
+        }
+      }
     } finally {
-      signal.removeEventListener('abort', cancel)
+      abort.signal.removeEventListener('abort', cancel)
       if (this.questionDock === dock) {
         this.questionDock = undefined
         this.change()
       }
     }
+  }
+
+  /** The same rule the server applies, checked before the answer leaves the terminal. */
+  private questionAnswerRefusal(questions: readonly QuestionDockQuestion[], answers: QuestionDockAnswers): string | undefined {
+    for (const { questionId, answer } of answers) {
+      const question = questions.find(item => item.requestId === questionId)
+      if (!question) continue
+      const problem = questionAnswerProblem(question, answer)
+      if (problem) return problem.message
+    }
+    return undefined
   }
 
   selectQuestionTab(index: number): void {
@@ -1109,6 +1145,7 @@ export class OpenTuiApplication {
     if (!dock) return false
     const view = dock.view
     if (key.name === 'escape') {
+      if (view.submitting) return true
       dock.cancel()
       this.questionDock = undefined
       this.change()
@@ -1762,6 +1799,13 @@ export class OpenTuiApplication {
     this.setHistoryDraft(history[next] ?? '')
   }
 
+  /** Scrolls a visible `/btw` answer from a page key or a wheel over the dock; false when it fits. */
+  scrollSideQuestion(direction: 'up' | 'down'): boolean {
+    if (!this.sideQuestion?.scrollable) return false
+    this.sideQuestion.scroll(direction)
+    return true
+  }
+
   handleMouse(event: OpenTuiMouseInput): boolean {
     if (this.stopped || !this.host.hasOverlay()) return false
     return this.input(() => this.host.sendMouseToOverlay(event))
@@ -1889,8 +1933,8 @@ export class OpenTuiApplication {
       return true
     }
     if (key.name === 'tab' && key.shift) { this.togglePlanMode(); return true }
-    if (this.sideQuestion?.visible && (key.name === 'pageup' || key.name === 'pagedown')) {
-      this.sideQuestion.scroll(key.name === 'pageup' ? 'up' : 'down')
+    if (this.sideQuestion?.scrollable && (key.name === 'pageup' || key.name === 'pagedown')) {
+      this.scrollSideQuestion(key.name === 'pageup' ? 'up' : 'down')
       return true
     }
     if (key.name === 'pageup' || key.name === 'pagedown' || (key.ctrl && (key.name === 'home' || key.name === 'end'))) return false
@@ -1970,7 +2014,7 @@ export class OpenTuiApplication {
       'Tab files/folders · Shift+Tab plan mode', 'Shift+↑/↓ effort · /effort · Ctrl+K commands', 'Ctrl+O expand details · Ctrl+T thinking',
       'Ctrl+L model', 'Ctrl+N new session', '↑/↓ at either draft endpoint browse older/newer history · Ctrl+↑/↓ anywhere',
       'Enter send or queue · Cmd/Ctrl/Alt+Enter steer · Esc dismisses btw or stops reply', 'Ctrl+C clear or quit · Ctrl+D quit',
-      'PgUp/PgDn transcript'
+      'PgUp/PgDn transcript or a long btw answer'
     ].join('\n')
   }
 
@@ -2039,6 +2083,7 @@ export class OpenTuiApplication {
       const lines = this.componentLines(widget.component, width)
       if (lines) (widget.placement === 'belowEditor' ? below : above).push(lines)
     }
+    const sideQuestionDock = this.componentLines(this.sideQuestionDock, width)
     return {
       remoteControl: this.remoteState,
       // Single-line notices can accompany the welcome; multiline output such as /help takes over the transcript.
@@ -2049,7 +2094,6 @@ export class OpenTuiApplication {
       account: snapshot?.account?.label,
       model: snapshot?.model,
       thinking: snapshot?.thinkingLevel ?? 'off',
-      contextPercent: snapshot?.context.percent ?? null,
       inputTokens,
       cacheReadTokens,
       outputTokens,
@@ -2066,6 +2110,9 @@ export class OpenTuiApplication {
       bashMode: this.bashMode,
       planMode: this.planMode,
       planChoice: this.draft === '' && !this.bashMode ? this.planChoice.view : null,
+      // The dock renders above, so its overflow is known before this view is read.
+      sideQuestionScrollable: this.sideQuestion?.scrollable ?? false,
+      sideQuestionDock,
       questionDock: this.questionDock?.view ?? null,
       pendingMessages: [
         ...(this.runtime?.session?.getSteeringMessages?.() ?? []).map(text => ({ kind: 'steering' as const, text })),
@@ -2243,6 +2290,8 @@ export class OpenTuiApplication {
         protect(() => this.release(this.footer))
         for (const widget of this.widgets.values()) protect(() => this.release(widget.component))
         this.widgets.clear()
+        protect(() => this.release(this.sideQuestionDock))
+        this.sideQuestionDock = undefined
         protect(() => this.release(this.customEditor as Mounted | undefined))
         protect(() => this.host.dispose())
         try { this.stopHandler?.() }

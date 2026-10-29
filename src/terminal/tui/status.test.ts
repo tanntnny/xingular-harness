@@ -2,7 +2,7 @@ import { initTheme, Theme } from '@earendil-works/pi-coding-agent'
 import { stripTerminalSequences, visibleWidth } from '@earendil-works/pi-tui'
 import { describe, expect, it } from 'vitest'
 
-import { displayProjectName, formatContextReading, formatTokenCount, renderStatusBand, type BandState } from './status'
+import { displayProjectName, formatTokenCount, renderStatusBand, type BandState } from './status'
 import { createHarnessTheme } from './theme'
 
 initTheme('dark', false)
@@ -61,19 +61,5 @@ describe('composer status band', () => {
       expect(stripTerminalSequences(line)).not.toContain('malicious title')
       expect(stripTerminalSequences(line)).not.toContain('\n')
     }
-  })
-
-  it('reads the context window as a share of it, and says when it is unknown', () => {
-    expect(formatContextReading({ model: { name: 'x', reasoning: true, contextWindow: 200_000 }, contextPercent: 18.34 })).toBe('18.3%/200K')
-    expect(formatContextReading({ model: { name: 'x', reasoning: true, contextWindow: 200_000 }, contextPercent: null })).toBe('?/200K')
-    expect(formatContextReading({ contextPercent: 45.3 })).toBe('45.3%/?')
-    expect(formatContextReading({ model: { name: 'x', reasoning: true, contextWindow: 1_000_000 }, contextPercent: 96.2, autoCompact: true })).toBe('96.2%/1M (auto)')
-  })
-
-  it('adds the reading to the band only when the session knows it', () => {
-    expect(stripTerminalSequences(renderStatusBand(state, 120, theme))).not.toContain('%')
-    const line = renderStatusBand({ ...state, contextPercent: 18.34, autoCompact: true }, 120, theme)
-    expect(stripTerminalSequences(line)).toBe('project | main | Tanny · Sonnet 4.6 · high | ↑ 1K ↓ 50 | 18.3%/200K (auto)')
-    expect(line).toContain('38;2;156;163;176')
   })
 })

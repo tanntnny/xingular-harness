@@ -52,12 +52,14 @@ A session that cannot open ends its run as `failed` and returns `nativeSessionId
 - **Run status:** `queued`, `running`, `waiting_for_approval`, `waiting_for_input`, `interrupted`,
   `completed`, `failed`. The first four are active (`ACTIVE_STATUSES`).
 - **Run events** (`runEventTypeSchema`): `started`, `context.snapshot`, `message.delta`,
-  `message.completed`, `message.steered`, `tool.started`, `tool.completed`, `retry.started`,
+  `message.completed`, `message.steered`, `tool.started`, `tool.completed`, `tool.refused`, `retry.started`,
   `retry.ended`, `compaction.started`, `compaction.ended`, `approval.requested`,
   `approval.resolved`, `question.requested`, `question.answered`, `extension.notice`,
-  `reaction.added`, `agent.message`, `todo.updated`, `artifact.added`, `file.changed`, `usage.updated`,
+  `reaction.added`, `agent.message`, `todo.updated`, `checkpoint`, `heartbeat`, `artifact.added`, `file.changed`, `usage.updated`,
   `account.status`, `status.changed`, `failed`, `completed`. Each has a payload schema in
   `runEventPayloadSchemas`.
+- **Stop codes.** `terminalCode` is nullable for legacy records and identifies a recorded outcome independently of `terminalReason`. Structured sessions record `completed`, `user_abort`, `slice_budget`, `compaction_thrash`, `provider_error`, or `failed`; recovery can record `harness_restart`, `stalled` or `owner_gone`. Other shared codes include `terminal_attention`, `terminal_closed` and `parent_stopped`. Interrupted `status.changed` events may carry the code; failure codes map to a stop code. Legacy events without a code remain unknown.
+- **Compaction evidence.** Structured compaction starts include the latest known context tokens and window when available; ends include Pi’s `tokensBefore` when supplied. Tokens after compaction remain unknown unless reported.
 - **Workspace root** (`RunRecord.workspaceRoot`) is the canonical root whose filesystem effects
   native writes and default-scope Bash may modify: the nearest Git repository or worktree above its
   effective working directory, otherwise that canonical directory. New runs pin it; continuations
@@ -80,6 +82,7 @@ A session that cannot open ends its run as `failed` and returns `nativeSessionId
   last wrote with `todo_write`, `{ items: { text, status: pending | in_progress | completed }[] }`, at
   most 50 items. The latest event replaces every earlier one; `todoOf(events)` reads it. The
   pre-rename `checklist.updated` is still read so old runs keep their list, and is never written.
+- **Run details observations.** Optional `loadedSkills` records successful Harness `skill_load` calls during the run, not skill availability or native file reads. Optional `activatedPlugins` records observed activated extension plugin identities only when the loader can account for them; omission means unknown, including historical runs and unsupported boundaries. Empty arrays mean the corresponding observation found none.
 - **`RunRecord`** fields are listed in `sessions/contracts.ts`. `mode`, `harness`, `sessionType`,
   `worktreeId`, `attachmentCount`, `exitCode`, `handoffId` and `trigger` belong to the
   application: stored and returned, and only `mode` and `trigger` are read.

@@ -93,6 +93,15 @@ describe('owned terminal commands', () => {
     expect(ui.notify).not.toHaveBeenCalled()
   })
 
+  it('offers namespaced plugin prompts and passes them to Pi for expansion', async () => {
+    const { commands, ui } = setup([], [{ name: 'xdiag:', description: 'Diagnose' }, { name: 'xdiag:sweep', description: 'Sweep' }])
+    expect(commands.completions().map(command => command.name)).toEqual(expect.arrayContaining(['xdiag:', 'xdiag:sweep']))
+    expect(await commands.execute('/xdiag: run-1')).toBe(false)
+    expect(await commands.execute('/xdiag:sweep 7')).toBe(false)
+    expect(await commands.execute('/diagnose run-1')).toBe(true)
+    expect(ui.notify).toHaveBeenCalledWith(expect.stringContaining('Unknown command'), 'error')
+  })
+
   it('shows the current todo, accepts the legacy alias, and explains an empty list', async () => {
     const { commands, host, ui } = setup()
     vi.mocked(host.todo).mockResolvedValue([{ text: 'Read the code', status: 'completed' }, { text: 'Fix the bug', status: 'in_progress' }])
@@ -131,9 +140,9 @@ describe('owned terminal commands', () => {
     expect(await commands.execute('/deploy:deploy staging now')).toBe(true)
     expect(handler).toHaveBeenCalledWith('staging now', { commandContext: true })
     expect(await commands.execute('/plugin:deploy staging now')).toBe(true)
-    expect(handler).toHaveBeenCalledTimes(2)
+    expect(handler).toHaveBeenCalledTimes(1)
     expect(await commands.execute('/deploy staging now')).toBe(true)
-    expect(handler).toHaveBeenCalledTimes(2)
+    expect(handler).toHaveBeenCalledTimes(1)
     expect(ui.notify).toHaveBeenLastCalledWith(expect.stringContaining('Unknown command: /deploy'), 'error')
     expect(session.extensionRunner.getCommand('deploy')).toBe(command)
   })
@@ -232,15 +241,14 @@ describe('owned terminal commands', () => {
       await commands.execute(canonical!)
       for (const alias of aliases) await commands.execute(alias!)
     }
-    expect(ui.custom).toHaveBeenCalledTimes(15)
+    expect(ui.custom).toHaveBeenCalledTimes(10)
     const names = commands.completions().map(item => item.name)
     for (const name of ['doctor', 'worktree', 'trajectory', 'subagents', 'agents']) expect(names).toContain(name)
     for (const name of ['doctor:doctor', 'worktrees:worktree', 'history:trajectory', 'subagents:subagents', 'subagents:agents', 'plugin:doctor', 'plugin:worktree']) expect(names).not.toContain(name)
     expect(commands.legacyAliases()).toEqual(expect.arrayContaining([
-      'doctor:doctor', 'plugin:doctor', 'worktrees:worktree', 'plugin:worktree',
-      'history:trajectory', 'plugin:trajectory', 'subagents:subagents', 'plugin:subagents',
-      'subagents:agents', 'plugin:agents', 'plugin:deploy'
+      'doctor:doctor', 'worktrees:worktree', 'history:trajectory', 'subagents:subagents', 'subagents:agents'
     ]))
+    expect(commands.legacyAliases()).not.toContain('plugin:deploy')
   })
 
   it('reserves first-class Harness command names ahead of loaded prompts', async () => {
@@ -248,7 +256,7 @@ describe('owned terminal commands', () => {
     expect(await commands.execute('/doctor')).toBe(true)
     expect(ui.custom).toHaveBeenCalledOnce()
     expect(commands.completions().map(item => item.name)).toContain('doctor')
-    expect(commands.legacyAliases()).toContain('plugin:doctor')
+    expect(commands.legacyAliases()).not.toContain('plugin:doctor')
   })
 
   it('allows owner-qualified extension commands beside core commands and prompts', async () => {
@@ -269,7 +277,7 @@ describe('owned terminal commands', () => {
     expect(handler).toHaveBeenCalledTimes(names.length)
     for (const name of names) await commands.execute(`/plugin:${name}`)
     expect(ui.notify).toHaveBeenCalledTimes(names.length)
-    expect(ui.notify).toHaveBeenLastCalledWith(expect.stringContaining('Use /hub'), 'error')
+    expect(ui.notify).toHaveBeenLastCalledWith(expect.stringContaining('owner-qualified'), 'error')
   })
 
   it('consumes unknown slash commands without sending them to the model', async () => {
@@ -613,5 +621,5 @@ it('offers /doctor as a first-class command and accepts former routes as hidden 
   expect(await commands.execute('/doctor')).toBe(true)
   expect(await commands.execute('/doctor:doctor')).toBe(true)
   expect(await commands.execute('/plugin:doctor')).toBe(true)
-  expect(ui.custom).toHaveBeenCalledTimes(3)
+  expect(ui.custom).toHaveBeenCalledTimes(2)
 })

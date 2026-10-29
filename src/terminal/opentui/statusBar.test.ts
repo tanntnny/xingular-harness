@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { contextReading, statusBarGroups, statusBarText } from './statusBar'
+import { statusBarGroups, statusBarText } from './statusBar'
 
 const state = {
   cwd: '/work/project', branch: 'main', account: 'Tanny',
@@ -34,13 +34,6 @@ describe('the composer status bar', () => {
     expect(text).not.toContain('\n')
     expect(text).not.toContain('title')
     expect(text).toContain('main next')
-  })
-
-  it('adds the context reading to the token group', () => {
-    expect(statusBarText({ ...state, contextPercent: 18.34, contextWindow: 1_000_000 })).toBe('project:main | Tanny Sonnet 4.6 high | ↑1K R50% ↓50 18.3%/1M')
-    expect(contextReading(18.34, 1_000_000)).toBe('18.3%/1M')
-    expect(contextReading(null, 1_000_000)).toBe('?')
-    expect(contextReading(undefined, undefined)).toBe('?')
   })
 
   it('shows remote control after the tokens while it is on', () => {

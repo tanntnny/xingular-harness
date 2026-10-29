@@ -35,12 +35,17 @@ function eventDescription(event: RunEvent): string {
     case 'tool.started':
     case 'tool.completed':
       return `${stringOf(payload.name) ?? 'tool'}${stringOf(payload.summary) ? ` · ${stringOf(payload.summary)}` : ''}`
+    case 'tool.refused':
+      return `${stringOf(payload.name) ?? 'tool'} refused${stringOf(payload.code) ? ` (${stringOf(payload.code)})` : ''}${stringOf(payload.reason) ? ` · ${stringOf(payload.reason)}` : ''}`
     case 'usage.updated': {
       const request = payload.request && typeof payload.request === 'object' ? payload.request as Payload : {}
       return `${stringOf(request.model) ?? stringOf(payload.model) ?? 'model'} · request ${numberOf(request.index) ?? numberOf(payload.requests) ?? '?'} · ${numberOf(request.durationMs) ?? 0} ms`
     }
-    case 'status.changed':
-      return stringOf(payload.status) ?? 'status update'
+    case 'status.changed': {
+      const status = stringOf(payload.status) ?? 'status update'
+      const reason = status === 'interrupted' ? stringOf(payload.reason) || stringOf(payload.code) : undefined
+      return `${status}${reason ? ` · ${reason}` : ''}`
+    }
     case 'retry.started':
     case 'retry.ended':
       return `attempt ${numberOf(payload.attempt) ?? 1}${stringOf(payload.error) ? ` · ${stringOf(payload.error)}` : ''}`
@@ -82,6 +87,7 @@ export interface TrajectoryPageOptions {
   copy(text: string): Promise<void>
   /** Opens on this run when it is in the list; otherwise the newest. */
   initialRunId?: string
+  openContext?(runId: string): void
   notify(message: string, type?: string): void
   changed(): void
 }
@@ -295,7 +301,7 @@ export class TrajectoryPage implements TerminalPage {
   hint(): string {
     return this.section === 'runs'
       ? '↑/↓ runs · type to search · Enter inspect'
-      : '[ ] runs · ↑/↓ events · type to search · PgUp/PgDn details · Shift+C copy'
+      : '[ ] runs · ↑/↓ events · type to search · PgUp/PgDn details · Shift+C copy · Ctrl+O context'
   }
 
   handleMouse(event: TerminalMouseInput): TuiMouseEventResult | undefined {
@@ -331,6 +337,7 @@ export class TrajectoryPage implements TerminalPage {
       this.section = SECTIONS[(at + delta + SECTIONS.length) % SECTIONS.length]!.id
       return true
     }
+    if (matchesKey(data, 'ctrl+o') && this.run) { this.options.openContext?.(this.run.id); return true }
     if (this.section === 'runs') return this.runList.handleInput(data)
     if (data === '[') { void this.changeRun(1); return true }
     if (data === ']') { void this.changeRun(-1); return true }

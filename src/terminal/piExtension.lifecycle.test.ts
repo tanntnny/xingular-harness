@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 const transport = vi.hoisted(() => ({
   socket: vi.fn(async (_connection: unknown, call: string, _params?: Record<string, unknown>): Promise<Record<string, unknown>> => call === 'control.claim' ? { key: 'lexical-key' } : { tools: [] }),
-  telemetry: vi.fn(async (event: string) => event === 'poll' ? { command: null } : event === 'begin' ? { runId: 'run-1', workspaceRoot: process.cwd() } : {})
+  telemetry: vi.fn(async (event: string): Promise<Record<string, unknown>> => event === 'poll' ? { command: null } : event === 'begin' ? { runId: 'run-1', workspaceRoot: process.cwd() } : {})
 }))
 vi.mock('./client', () => ({
   connectionFromEnv: () => ({ socket: '/extension-test', token: 'lifecycle' }),
@@ -317,6 +317,55 @@ describe('terminal bridge lifecycle', () => {
     transport.telemetry.mockClear()
     await vi.advanceTimersByTimeAsync(90_000)
     expect(transport.telemetry.mock.calls.filter(([event]) => event === 'heartbeat')).toHaveLength(0)
+  })
+
+  it('distinguishes aborted messages from provider errors at settlement', async () => {
+    const { api, ctx, handlers } = extension()
+    await terminalExtension(api)
+    const start = () => handlers.get('before_agent_start')!({ messageType: 'user', prompt: 'Work', systemPromptOptions: { sections: {} } }, ctx)
+    await start()
+    await handlers.get('message_end')!({ message: { role: 'assistant', content: [], stopReason: 'aborted', errorMessage: 'Request aborted' } })
+    await handlers.get('agent_settled')!({ aborted: true }, ctx)
+    expect(transport.telemetry).toHaveBeenLastCalledWith('settled', { error: undefined, aborted: true })
+    await start()
+    await handlers.get('message_end')!({ message: { role: 'assistant', content: [], stopReason: 'error', errorMessage: 'Provider failed' } })
+    await handlers.get('agent_settled')!({ aborted: false }, ctx)
+    expect(transport.telemetry).toHaveBeenLastCalledWith('settled', { error: 'Provider failed', errorCode: 'provider_error', aborted: false })
+  })
+
+  it('records compaction outcomes and applies the per-reply thrash guard', async () => {
+    vi.useFakeTimers()
+    const { api, ctx, handlers } = extension()
+    await terminalExtension(api)
+    await handlers.get('before_agent_start')!({ messageType: 'user', prompt: 'Work', systemPromptOptions: { sections: {} } }, ctx)
+    await handlers.get('agent_start')!({}, ctx)
+    for (let i = 0; i < 2; i++) {
+      await handlers.get('session_before_compact')!({ reason: 'threshold' }, ctx)
+      await handlers.get('session_compact')!({ reason: 'threshold', willRetry: false, compactionEntry: { summary: 'Summary', tokensBefore: 123 } }, ctx)
+    }
+    await handlers.get('session_before_compact')!({ reason: 'overflow' }, ctx)
+    await handlers.get('session_compact_failed')!({ reason: 'overflow', aborted: false, willRetry: true, errorMessage: 'failed' }, ctx)
+    expect(transport.telemetry).toHaveBeenCalledWith('compaction.ended', { reason: 'threshold', aborted: false, tokensBefore: 123, willRetry: false, summary: 'Summary' })
+    expect(transport.telemetry).toHaveBeenCalledWith('compaction.ended', { reason: 'overflow', aborted: false, willRetry: true, error: 'failed' })
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(transport.telemetry).toHaveBeenCalledWith('heartbeat', expect.objectContaining({ compactions: 3 }), 10_000)
+    await handlers.get('tool_call')!({ toolName: 'read', toolCallId: 'thrash', input: {} }, ctx)
+    await handlers.get('agent_settled')!({ aborted: false }, ctx)
+    expect(transport.telemetry).toHaveBeenLastCalledWith('settled', expect.objectContaining({ reason: 'slice_complete', code: 'compaction_thrash' }))
+  })
+
+  it('records an initial Bash policy refusal without executing the command', async () => {
+    const { api, ctx, handlers } = extension()
+    const executeBash = vi.fn()
+    await terminalExtension(api, undefined, () => ({ executeBash } as never))
+    const original = transport.telemetry.getMockImplementation()!
+    transport.telemetry.mockImplementation(async (event: string) => event === 'policy' ? { allowed: false, reason: 'Denied by policy' } : original(event))
+    try {
+      await handlers.get('before_agent_start')!({ messageType: 'user', prompt: '! echo hello', systemPromptOptions: { sections: {} } }, ctx)
+      expect(transport.telemetry).toHaveBeenCalledWith('refusal', { toolCallId: 'initial-bash:run-1', name: 'bash', code: 'policy', reason: 'Denied by policy' })
+      expect(executeBash).not.toHaveBeenCalled()
+      await handlers.get('agent_settled')!({ aborted: false }, ctx)
+    } finally { transport.telemetry.mockImplementation(original) }
   })
 
   it('makes a $skill anywhere in the message required for that request', async () => {

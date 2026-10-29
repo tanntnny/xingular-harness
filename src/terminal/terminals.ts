@@ -1,3 +1,4 @@
+import { runDetails } from '../context/runDetails'
 // A host owns the PTY and process supervision; Harness owns the terminal application inside it.
 // This service prepares the isolated account, compiled context, trusted resource selection and
 // socket bridge. The default launch runs our frontend with Pi's persistent SDK runtime.
@@ -84,7 +85,7 @@ function resourceIdentity(loading: Loading | null): string {
   if (!loading) return 'null'
   return JSON.stringify({
     extensions: loading.extensionPaths, builtins: loading.builtins, skills: loading.skillPaths,
-    prompts: loading.promptPaths, themes: loading.themePaths, profiles: loading.profilePaths, detached: loading.detached,
+    prompts: loading.promptPaths, resourceOwners: loading.found.filter(item => (item.kind === 'prompt' || item.kind === 'extension') && item.packageRoot), themes: loading.themePaths, profiles: loading.profilePaths, detached: loading.detached,
     project: loading.projectCode, packages: loading.packageCode
   })
 }
@@ -387,7 +388,8 @@ export class Terminals {
 
   private async ownTools(live: Live, listing: boolean): Promise<ToolSpec[]> {
     const sessionId = live.caller.sessionId!
-    const all = harnessTools(this.options.env, live.caller, { variantDir: this.variantDirs.get(sessionId) ?? null })
+    const caller = { ...live.caller, runId: live.controller.activeRun?.runId ?? null }
+    const all = harnessTools(this.options.env, caller, { variantDir: this.variantDirs.get(sessionId) ?? null })
       .filter((tool) => DEFAULT_TOOL_NAMES.includes(tool.name))
     if (!listing) return all.filter((tool) => this.ownNames.get(sessionId)?.has(tool.name) ?? false)
     const on = await this.worldOn(live)
@@ -688,10 +690,12 @@ export class Terminals {
     }
   }
 
-  /** `/context`: what the session's latest request was made of, and one row's text on request. */
+  /** `/context`: the selected run's request, and one row's text on request. */
   private contextCall(live: Live, params: Record<string, unknown>): unknown {
-    const runId = live.controller.lastRun
+    if (params.runId !== undefined && (typeof params.runId !== 'string' || !params.runId)) throw invalid('A valid run id is required.')
+    const runId = typeof params.runId === 'string' ? params.runId : live.controller.lastRun
     if (!runId) return { attribution: null, text: null }
+    if (params.runId !== undefined) readTerminalTrajectory(this.options.env.root, live.input.sessionId, live.controller.nativeSessionId, runId)
     const text = typeof params.section === 'string' && params.section ? rowText(this.options.env, runId, params.section) : null
     return { attribution: attribution(this.options.env, runId), text }
   }
@@ -863,6 +867,7 @@ export class Terminals {
       startedAt: now(),
       endedAt: null,
       status: 'queued',
+      loadedSkills: [],
       exitCode: null,
       handoffId: null,
       accountId: live.account.id,
@@ -1032,6 +1037,7 @@ export class Terminals {
         }, packaged).body
       }
       freezeRun(this.options.env.root, run.runId, caller, capabilities)
+      updateRun(this.options.env.root, run.runId, (record) => { record.effectiveMode = params.plan === true ? 'plan' : 'normal' })
       if (!service || live.input.subagents === null) return { runId: run.runId, connectors: capabilities.connectors, subagentProfiles }
       service.register({
         run: { id: run.runId, sessionId: live.input.sessionId, mode: live.input.run?.mode ?? 'code', projectId: live.input.projectId, worktreeId: live.input.run?.worktreeId },
@@ -1101,6 +1107,11 @@ export class Terminals {
   private trajectoryCall(live: Live, call: string, params: Record<string, unknown>): unknown {
     if (call === 'terminal.trajectory.list') {
       return { runs: listTerminalTrajectoryRuns(this.options.env.root, live.input.sessionId, live.controller.nativeSessionId) }
+    }
+    if (call === 'terminal.trajectory.details') {
+      if (typeof params.runId !== 'string' || !params.runId) throw invalid('A run id is required.')
+      readTerminalTrajectory(this.options.env.root, live.input.sessionId, live.controller.nativeSessionId, params.runId)
+      return runDetails(this.options.env.root, params.runId)
     }
     if (call === 'terminal.trajectory.events') {
       if (typeof params.runId !== 'string' || !params.runId) throw invalid('A run id is required.')
@@ -1342,7 +1353,8 @@ export class Terminals {
           if (resourceIdentity(current) !== resourceIdentity(loading) || (variant && (currentVariant?.fingerprint !== variant.fingerprint || JSON.stringify(currentVariant.extensionPaths) !== JSON.stringify(variant.extensionPaths)))) {
             throw new HarnessError('terminal_resources_changed', 'Trusted resources changed since this terminal was prepared. Review /plugins and reopen the terminal to load the new selection.')
           }
-          return {}
+          const resourceOwners = (current?.found ?? []).filter(item => item.packageRoot && (item.kind === 'prompt' && current?.promptPaths.includes(item.path) || item.kind === 'extension' && current?.extensionPaths.includes(item.path)))
+          return resourceOwners.length ? { resourceOwners } : {}
         } }
       })
       live.token = token

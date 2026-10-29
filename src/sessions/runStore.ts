@@ -8,7 +8,7 @@ import { join } from 'node:path'
 import { notFound } from '../core/errors'
 import { newId, now, readJson, readJsonOr, safeId, writeJson } from '../core/fs'
 import { compareText, lines } from '../core/text'
-import { isActiveStatus, runEventSchema, runRecordSchema, upgradeRunRecord, usagePayloadSchema, type RunEvent, type RunRecord, type UsagePayload } from './contracts'
+import { isActiveStatus, runEventSchema, runRecordSchema, stopCodeOf, upgradeRunRecord, usagePayloadSchema, type RunEvent, type RunRecord, type RunStopCode, type UsagePayload } from './contracts'
 import { readAllRuns, recordRun, runsForSession } from './runIndex'
 
 export function runDir(root: string, runId: string): string {
@@ -24,9 +24,11 @@ function ordered(record: RunRecord): RunRecord {
     parentRunId: record.parentRunId,
     relation: record.relation,
     terminalReason: record.terminalReason,
+    ...(record.terminalCode !== undefined ? { terminalCode: record.terminalCode } : {}),
     id: record.id,
     projectId: record.projectId,
     mode: record.mode,
+    ...(record.effectiveMode !== undefined ? { effectiveMode: record.effectiveMode } : {}),
     harness: record.harness,
     sessionType: record.sessionType,
     sessionId: record.sessionId,
@@ -49,7 +51,9 @@ function ordered(record: RunRecord): RunRecord {
     ...(record.profile ? { profile: record.profile } : {}),
     ...(record.title ? { title: record.title } : {}),
     ...(record.model ? { model: record.model } : {}),
-    ...(record.effort ? { effort: record.effort } : {})
+    ...(record.effort ? { effort: record.effort } : {}),
+    ...(record.loadedSkills !== undefined ? { loadedSkills: record.loadedSkills } : {}),
+    ...(record.activatedPlugins !== undefined ? { activatedPlugins: record.activatedPlugins } : {})
   }
 }
 
@@ -121,9 +125,9 @@ export function recordedSubagents(root: string, parentRunId: string): string[] {
 export function updateRun(root: string, runId: string, update: (record: RunRecord) => void): void {
   const record = readRecord(recordPath(root, runId))
   if (!record) return
-  const { status, endedAt, terminalReason } = record
+  const { status, endedAt, terminalReason, terminalCode } = record
   update(record)
-  if (!isActiveStatus(status)) Object.assign(record, { status, endedAt, terminalReason })
+  if (!isActiveStatus(status)) Object.assign(record, { status, endedAt, terminalReason, terminalCode })
   write(root, record)
 }
 
@@ -139,6 +143,14 @@ function reasonOf(event: RunEvent): string | null {
   const payload = event.payload as { reason?: unknown; message?: unknown } | null
   const reason = payload?.reason ?? payload?.message
   return typeof reason === 'string' ? reason : null
+}
+
+/** The stop code a terminal event carries; null for an interruption written without one. */
+export function stopCodeOfEvent(event: Pick<RunEvent, 'type' | 'payload'>): RunStopCode | null {
+  const payload = event.payload as { code?: unknown } | null
+  if (event.type === 'completed') return 'completed'
+  if (event.type === 'failed') return stopCodeOf(typeof payload?.code === 'string' ? payload.code : 'failed')
+  return typeof payload?.code === 'string' ? stopCodeOf(payload.code) : null
 }
 
 export function appendEvent(root: string, event: RunEvent): void {
@@ -208,6 +220,7 @@ export function persistEvent(root: string, event: RunEvent): boolean {
     record.status = outcome
     record.endedAt = event.timestamp
     record.terminalReason = reasonOf(event)
+    record.terminalCode = stopCodeOfEvent(event)
     changed = true
   } else if (event.type === 'status.changed') {
     const status = (event.payload as { status?: unknown }).status
@@ -237,10 +250,11 @@ export function markInterruptedRuns(root: string, reason = STOPPED): string[] {
     if (settled) {
       const status = terminalStatus(settled)!
       const settledReason = reasonOf(settled)
-      if (record.status !== status || record.endedAt !== settled.timestamp || record.terminalReason !== settledReason) {
+      const settledCode = stopCodeOfEvent(settled)
+      if (record.status !== status || record.endedAt !== settled.timestamp || record.terminalReason !== settledReason || (settledCode !== null && record.terminalCode !== settledCode)) {
         const backup = `${path}.before-outcome-repair`
         if (!existsSync(backup)) copyFileSync(path, backup)
-        Object.assign(record, { status, endedAt: settled.timestamp, terminalReason: settledReason })
+        Object.assign(record, { status, endedAt: settled.timestamp, terminalReason: settledReason, ...(settledCode ? { terminalCode: settledCode } : {}) })
         write(root, record)
       }
     }
@@ -249,9 +263,10 @@ export function markInterruptedRuns(root: string, reason = STOPPED): string[] {
     if (ownedElsewhere(root, record.id)) continue
     record.status = 'interrupted'
     record.terminalReason = reason
+    record.terminalCode = 'harness_restart'
     record.endedAt ??= now()
     const last = events.reduce((highest, event) => Math.max(highest, event.sequence), -1)
-    appendEvent(root, { id: newId(), runId: record.id, sessionId: record.sessionId, sequence: last + 1, timestamp: now(), type: 'status.changed', payload: { status: 'interrupted', reason } })
+    appendEvent(root, { id: newId(), runId: record.id, sessionId: record.sessionId, sequence: last + 1, timestamp: now(), type: 'status.changed', payload: { status: 'interrupted', reason, code: 'harness_restart' } })
     write(root, record)
     interrupted.push(record.id)
   }
@@ -283,9 +298,10 @@ export function reconcileStaleRuns(root: string, at = Date.now(), options: { hea
     const reason = lastHeartbeat ? 'stalled' : 'owner_gone'
     record.status = 'interrupted'
     record.terminalReason = reason
+    record.terminalCode = reason
     record.endedAt = now()
     const sequence = events.reduce((highest, event) => Math.max(highest, event.sequence), -1) + 1
-    appendEvent(root, { id: newId(), runId: record.id, sessionId: record.sessionId, sequence, timestamp: now(), type: 'status.changed', payload: { status: 'interrupted', reason } })
+    appendEvent(root, { id: newId(), runId: record.id, sessionId: record.sessionId, sequence, timestamp: now(), type: 'status.changed', payload: { status: 'interrupted', reason, code: reason } })
     write(root, record)
     stalled.push(record.id)
   }

@@ -66,7 +66,8 @@ it('binds an extension in a session without a terminal: its start hook runs, its
     expect(session.getActiveToolNames?.()).toEqual(expect.arrayContaining(['read', 'kit_scan']))
     expect(session.getActiveToolNames?.()).not.toContain('bash')
 
-    await session.prompt('/hello there')
+    await expect(session.prompt('/hello there')).rejects.toThrow('requires its owner prefix')
+    await session.prompt('/kit:hello there')
     expect(asked).toEqual([{ question: 'Say hello?\n\nthere', options: [{ label: 'Yes' }, { label: 'No', recommended: true }], multiSelect: false, allowText: false }])
     expect(notices.at(-1)).toEqual({ kind: 'notify', level: 'info', text: 'hello there' })
     expect(Object.values(harness.plugins.registered())[0]).toMatchObject({ tools: ['kit_scan'], commands: ['hello'], hooks: ['session_start'] })

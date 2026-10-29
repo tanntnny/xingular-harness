@@ -32,6 +32,9 @@ export interface QuestionDockView {
   optionIndex: number
   focus: QuestionDockFocus
   actionLabel: string
+  /** Why the last submission was refused; the drafts stay exactly as they were. */
+  error?: string
+  submitting: boolean
 }
 
 export type QuestionDockAnswers = { questionId: string; answer: QuestionAnswer }[]
@@ -60,13 +63,15 @@ function questionLabel(question: QuestionDockQuestion): string {
 }
 
 export class QuestionDockState {
-  readonly result: Promise<QuestionDockAnswers | undefined>
+  private resultPromise: Promise<QuestionDockAnswers | undefined>
   private readonly drafts: AnswerDraft[]
   private activeIndex = 0
   private optionIndex = 0
   private focus: QuestionDockFocus
   private noteLabel?: string
   private settled = false
+  private submittingValue = false
+  private errorValue?: string
   private resolveResult!: (answers: QuestionDockAnswers | undefined) => void
 
   constructor(readonly questions: readonly QuestionDockQuestion[]) {
@@ -75,7 +80,22 @@ export class QuestionDockState {
     if (questions.some(question => !question.options.some(option => option.recommended))) throw new Error('Every question needs at least one recommended choice.')
     this.drafts = questions.map(() => emptyAnswer())
     this.focus = this.firstFocus()
-    this.result = new Promise(resolve => { this.resolveResult = resolve })
+    this.resultPromise = new Promise(resolve => { this.resolveResult = resolve })
+  }
+
+  /** Resolves on each submit attempt; a refused answer resolves nothing and re-arms after `fail`. */
+  get result(): Promise<QuestionDockAnswers | undefined> { return this.resultPromise }
+
+  /** Sends the form back to editing with the refusal reason; no draft is changed. */
+  fail(message: string): void {
+    this.errorValue = message
+    this.submittingValue = false
+    this.settled = false
+    this.resultPromise = new Promise(resolve => { this.resolveResult = resolve })
+  }
+
+  setSubmitting(value: boolean): void {
+    this.submittingValue = value
   }
 
   get view(): QuestionDockView {
@@ -110,7 +130,9 @@ export class QuestionDockState {
       allowText: question.allowText !== false,
       optionIndex: this.optionIndex,
       focus: this.focus,
-      actionLabel: `${action}${allOtherQuestionsAnswered ? ' and Submit' : ''}`
+      actionLabel: `${action}${allOtherQuestionsAnswered ? ' and Submit' : ''}`,
+      ...(this.errorValue ? { error: this.errorValue } : {}),
+      submitting: this.submittingValue
     }
   }
 
@@ -121,6 +143,7 @@ export class QuestionDockState {
   selectQuestion(index: number): boolean {
     if (!Number.isInteger(index) || index < 0 || index >= this.questions.length) return false
     if (index === this.activeIndex) return true
+    this.errorValue = undefined
     this.activeIndex = index
     this.optionIndex = Math.min(this.optionIndex, Math.max(0, orderedOptions(this.current.options).length - 1))
     if (this.focus === 'note') {
@@ -156,6 +179,7 @@ export class QuestionDockState {
     const question = this.current
     const option = orderedOptions(question.options)[index]
     if (!option) return
+    this.errorValue = undefined
     const answer = this.currentDraft
     if (question.multiSelect) {
       if (answer.selected.includes(option.label)) {
@@ -205,12 +229,14 @@ export class QuestionDockState {
 
   setNote(label: string, text: string): void {
     if (!this.currentDraft.selected.includes(label) || !this.currentDraft.openNotes.includes(label)) return
+    this.errorValue = undefined
     this.currentDraft.notes[label] = text
     this.currentDraft.skipped = false
   }
 
   setText(text: string): void {
     if (this.current.allowText === false) return
+    this.errorValue = undefined
     const answer = this.currentDraft
     answer.text = text
     answer.skipped = false
@@ -270,7 +296,7 @@ export class QuestionDockState {
   }
 
   activateAction(): void {
-    if (this.settled) return
+    if (this.settled || this.submittingValue) return
     const answer = this.currentDraft
     if (!this.hasAnswer(this.activeIndex, answer)) {
       answer.selected = []
@@ -326,10 +352,11 @@ export class QuestionDockState {
     return this.questions.map((question, index) => {
       const draft = this.drafts[index]!
       const skipped = draft.skipped || !this.isAnswered(index, draft)
-      const text = skipped ? '' : draft.text.trim()
+      const selected = skipped ? [] : [...new Set(draft.selected)]
+      const text = skipped || question.allowText === false ? '' : draft.text.trim()
       const notes: Record<string, string> = {}
       if (!skipped) {
-        for (const label of draft.selected) {
+        for (const label of selected) {
           const note = draft.notes[label]?.trim()
           if (note) notes[label] = note
         }
@@ -337,7 +364,7 @@ export class QuestionDockState {
       return {
         questionId: question.requestId,
         answer: {
-          selected: skipped ? [] : [...draft.selected],
+          selected,
           ...(text ? { text } : {}),
           ...(Object.keys(notes).length ? { notes } : {})
         }

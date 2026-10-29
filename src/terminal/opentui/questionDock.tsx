@@ -96,7 +96,7 @@ export function QuestionDock(props: { app: OpenTuiApplication; view: QuestionDoc
     const rows = lines.reduce((total, line) => total + Math.max(1, Math.ceil(Array.from(line).length / width)), 0)
     return Math.min(4, Math.max(1, rows))
   }
-  const chromeHeight = () => 3 + tabRows() + answerRows() + (contentWidth() < 60 ? 1 : 2)
+  const chromeHeight = () => 3 + tabRows() + answerRows() + (contentWidth() < 60 ? 1 : 2) + (props.view.error ? 2 : 0)
   const scheduleBodyMeasure = () => {
     if (bodyMeasureTimer) clearTimeout(bodyMeasureTimer)
     const activeIndex = props.view.activeIndex
@@ -126,6 +126,8 @@ export function QuestionDock(props: { app: OpenTuiApplication; view: QuestionDoc
     view.sketchPreview?.sketch
     view.text
     view.allowText
+    view.error
+    view.submitting
     dimensions().width
     dimensions().height
     scheduleBodyMeasure()
@@ -327,6 +329,11 @@ export function QuestionDock(props: { app: OpenTuiApplication; view: QuestionDoc
         </box>
       ) : null}
       </scrollbox>
+      <Show when={props.view.error}>
+        <box paddingX={1} marginTop={1} flexShrink={0}>
+          <text fg={theme.error} wrapMode='word'>{props.view.error}</text>
+        </box>
+      </Show>
       <box flexDirection='row' alignItems='flex-start' paddingX={1} marginTop={1} flexShrink={0}>
         <Show when={props.view.allowText}>
           <text
@@ -361,7 +368,7 @@ export function QuestionDock(props: { app: OpenTuiApplication; view: QuestionDoc
             attributes={primaryAction() || props.view.focus === 'action' ? TextAttributes.BOLD : 0}
             wrapMode='none'
           >
-            {props.view.actionLabel}
+            {props.view.submitting ? 'Submitting…' : props.view.actionLabel}
           </text>
         </box>
       </box>

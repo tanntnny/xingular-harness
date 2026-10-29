@@ -21,7 +21,7 @@ import { createSettingsModel } from './settingsModel'
 export type CommandPageId = 'doctor' | 'accounts' | 'permissions' | 'plugins' | 'hub' | 'components' | 'settings' | 'trajectory' | 'log' | 'harness' | 'skills' | 'connections' | 'tools' | 'worktree' | 'notes' | 'annotate' | 'subagents' | 'agents' | 'usage' | 'context' | 'remote-control'
 
 /** Construct one independent full-screen page for a slash command. */
-export function createCommandPage(host: TerminalCommandHost, id: CommandPageId, options: { runId?: string; url?: string; annotate?: AnnotateStart; usageTab?: 'analysis' | 'limit' | 'accounts'; usagePeriod?: 'today' | '7d' | '30d' | 'all'; contextTab?: ContextTab; close?(): void; navigate?(id: CommandPageId): void } = {}): TerminalPage {
+export function createCommandPage(host: TerminalCommandHost, id: CommandPageId, options: { runId?: string; url?: string; annotate?: AnnotateStart; usageTab?: 'analysis' | 'limit' | 'accounts'; usagePeriod?: 'today' | '7d' | '30d' | 'all'; contextTab?: ContextTab; close?(): void; navigate?(id: CommandPageId, runId?: string): void } = {}): TerminalPage {
   const theme = () => host.ui.theme
   const notify = (message: string, type?: string) => host.ui.notify(message, type === 'error' || type === 'warning' ? type : 'info')
   switch (id) {
@@ -30,7 +30,9 @@ export function createCommandPage(host: TerminalCommandHost, id: CommandPageId, 
     case 'context':
       return new ContextPage({
         theme, call: host.control, changed: host.changed,
-        initialTab: options.contextTab === 'growth' ? 'growth' : 'request',
+        initialTab: options.contextTab ?? 'details', initialRunId: options.runId,
+        runs: host.trajectory.list, readDetails: runId => host.control('terminal.trajectory.details', { runId }) as Promise<import('./pages/contextPage').RunDetails>,
+        openTrajectory: runId => options.navigate?.('trajectory', runId),
         openVariant: () => options.navigate?.('harness'),
         compact: async () => { await host.session().compact?.() },
         confirm: (title, message) => host.ui.confirm(title, message)
@@ -110,7 +112,7 @@ export function createCommandPage(host: TerminalCommandHost, id: CommandPageId, 
     case 'trajectory':
       return new TrajectoryPage({
         theme, runs: host.trajectory.list, read: host.trajectory.read, copy: host.copyText,
-        initialRunId: options.runId || undefined, notify, changed: host.changed
+        initialRunId: options.runId || undefined, openContext: runId => options.navigate?.('context', runId), notify, changed: host.changed
       })
     case 'subagents':
       return new SubagentsPage({ theme, snapshot: host.subagents, changed: host.changed })

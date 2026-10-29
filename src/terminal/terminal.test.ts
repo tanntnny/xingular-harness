@@ -108,7 +108,31 @@ describe('a pi terminal session', () => {
     expect(await tell('poll')).toEqual({ command: { type: 'interrupt' } })
     await tell('settled', { aborted: true })
     vi.useRealTimers()
-    expect(loadRun(root, begun.runId)).toMatchObject({ status: 'interrupted', terminalReason: 'stalled' })
+    expect(loadRun(root, begun.runId)).toMatchObject({ status: 'interrupted', terminalReason: 'stalled', terminalCode: 'stalled' })
+  })
+  it('records provider failures separately from user aborts and stalled interruptions', async () => {
+    const { tell, root } = await setup()
+    await tell('ready')
+    const aborted = await tell('begin', { text: 'Abort' })
+    await tell('settled', { aborted: true })
+    expect(loadRun(root, aborted.runId)).toMatchObject({ status: 'interrupted', terminalCode: 'user_abort' })
+    const failed = await tell('begin', { text: 'Fail' })
+    await tell('settled', { error: 'Provider failed', errorCode: 'provider_error', aborted: false })
+    expect(loadRun(root, failed.runId)).toMatchObject({ status: 'failed', terminalCode: 'provider_error' })
+  })
+  it('records terminal compaction telemetry', async () => {
+    const { tell, root } = await setup()
+    await tell('ready')
+    const run = await tell('begin', { text: 'Work' })
+    const start = { reason: 'threshold', contextTokens: 100, contextWindow: 200 }
+    const end = { reason: 'threshold', aborted: false, tokensBefore: 100, willRetry: false, summary: 'Summary' }
+    await tell('compaction.started', start)
+    await tell('compaction.ended', end)
+    await tell('settled', {})
+    expect(readEvents(root, run.runId)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'compaction.started', payload: start }),
+      expect.objectContaining({ type: 'compaction.ended', payload: end })
+    ]))
   })
   it('launches OpenTUI on the pinned account with compiled instructions, the extension, and the session socket', async () => {
     const { launch, account, harness, sessionFolder, root } = await setup()
@@ -297,6 +321,26 @@ describe('a pi terminal session', () => {
     expect(harness.terminals.state('term-1')).toEqual({ ready: true, dirty: false, active: false })
     // The run has the pack its session started with.
     expect(JSON.parse(readFileSync(join(root, 'runs', runId, 'context.json'), 'utf8')).runId).toBe(runId)
+  })
+
+  it('records terminal tool refusals on the active run', async () => {
+    const { tell, root, events } = await setup()
+    await tell('ready', {})
+    await tell('begin', { text: 'Inspect' })
+    const runId = events[0].runId
+    const refusal = { toolCallId: 'call-1', name: 'write', code: 'plan_mode', reason: 'Research only.' }
+    await tell('refusal', refusal)
+    await tell('settled', {})
+    expect(readEvents(root, runId)).toContainEqual(expect.objectContaining({ type: 'tool.refused', payload: refusal }))
+  })
+
+  it('records a terminal work-slice stop code', async () => {
+    const { tell, root, events } = await setup()
+    await tell('ready', {})
+    await tell('begin', { text: 'Work' })
+    const runId = events[0].runId
+    await tell('settled', { reason: 'slice_complete', code: 'compaction_thrash' })
+    expect(loadRun(root, runId)).toMatchObject({ status: 'interrupted', terminalReason: 'slice_complete', terminalCode: 'compaction_thrash' })
   })
 
   it('delivers an instruction through the extension and reserves its run first', async () => {
@@ -657,7 +701,10 @@ describe('decisions in the Harness-owned frontend', () => {
       run: { id: runId }, events: expect.arrayContaining([expect.objectContaining({ type: 'message.completed' })])
     })
 
+    await expect(socketCall(connection, 'terminal.trajectory.details', { runId })).rejects.toMatchObject({ code: 'unauthorized' })
+    await expect(socketCall(connection, 'terminal.trajectory.details', { runId }, 1000, key)).resolves.toMatchObject({ runId })
     await tell('ready', { nativeSessionId: '/history/another.jsonl' })
+    await expect(socketCall(connection, 'terminal.trajectory.details', { runId }, 1000, key)).rejects.toMatchObject({ code: 'not_found' })
     await expect(socketCall(connection, 'terminal.trajectory.events', { runId }, 1000, key)).rejects.toMatchObject({ code: 'not_found' })
     await expect(socketCall(connection, 'terminal.trajectory.list', {}, 1000, key)).resolves.toEqual({ runs: [] })
   })

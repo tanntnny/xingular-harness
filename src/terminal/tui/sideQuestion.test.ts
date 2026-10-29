@@ -188,11 +188,31 @@ describe('the side question dock', () => {
     await side.ask('show me the full answer')
     await vi.waitFor(() => expect(side.state).toBe('answered'))
     expect(rows().join('\n')).toContain('line 0')
+    expect(side.scrollable).toBe(true)
     side.scroll('down')
     expect(rows().join('\n')).toContain('line 6')
+    for (let press = 0; press < 10; press++) side.scroll('down')
+    expect(rows().join('\n')).toContain('line 29')
     await side.copyAnswer()
     expect(copyText).toHaveBeenCalledWith(lines)
     for (let width = 0; width <= 100; width++) for (const row of dock()!.render(width)) expect(visibleWidth(row), `width ${width}`).toBeLessThanOrEqual(width)
+  })
+
+  it('reports the answer as scrollable only while it overflows the dock', async () => {
+    const short = setup({ reads: async () => result('completed', [event(0, 'message.completed', { messageId: 'a', role: 'assistant', text: 'Short answer.' }), event(1, 'completed', {})]) })
+    await short.side.ask('short')
+    await vi.waitFor(() => expect(short.side.state).toBe('answered'))
+    short.rows()
+    expect(short.side.scrollable).toBe(false)
+
+    const lines = Array.from({ length: 30 }, (_, index) => `- line ${index}`).join('\n')
+    const long = setup({ reads: async () => result('completed', [event(0, 'message.completed', { messageId: 'a', role: 'assistant', text: lines }), event(1, 'completed', {})]) })
+    await long.side.ask('long')
+    await vi.waitFor(() => expect(long.side.state).toBe('answered'))
+    long.rows()
+    expect(long.side.scrollable).toBe(true)
+    await long.side.dismiss()
+    expect(long.side.scrollable).toBe(false)
   })
 
   it('keeps a long Markdown answer, including a table and a link, within the dock width', async () => {

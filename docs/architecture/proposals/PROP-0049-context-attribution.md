@@ -92,7 +92,7 @@ Three facts are read, and nothing new is written per request:
 | sections, `toolGroups`, variant, `delivery` | `runs/<id>/context.json` | recorded at compile time |
 
 One constant, `CHARS_PER_TOKEN = 4`, the same ratio Pi, opencode, DeepSeek and Kimi use, so a row
-in this view and the terminal's status band never disagree by more than rounding.
+in this view and the `/context` header never disagree by more than rounding.
 
 `compile.render()` records the rendered size of each section (including the `## Title` framing and
 the gaps between sections) and, inside a section, the characters contributed by each `Source`. That
@@ -390,6 +390,12 @@ deleting the page, the method and the extra pack field; no data depends on it.
   page yet, so the Context tab is the only App entry point.
 - `context.attribution` takes `{ runId }` only; the session-scoped case is `terminal.context`, which is
   the surface that has a session rather than a run.
+
+**Amendment (2026-10-29).** The composer status band carries no context reading in either
+renderer: at the person's request the terminal shows the share of the window only on `/context`,
+whose header reads the figure above (`18.3%/1M`). The compact-meter wireframe and the visual
+verification step that compares against the band record the accepted design, not the current
+band. The App composer ring is unchanged.
 
 ## Open questions
 

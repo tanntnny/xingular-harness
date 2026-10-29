@@ -54,9 +54,9 @@ terminal command or page, a host screen.
   extensions use a normalized package name or the package's `harness.commandPrefix`, and loose
   extensions use their normalized extension name. Prefix collisions and duplicate commands within
   one owner are rejected with owner diagnostics. Built-in plugin modules may declare a default
-  command for their namespace root. The former owner-qualified and `/plugin:<command>` forms of
-  promoted Harness commands remain hidden compatibility aliases for one release. Prompt templates
-  and `/skill:<name>` keep their existing forms. Built-in plugin categories remain documented in
+  command for their namespace root. Package-owned prompt templates use the same owner namespace;
+  standalone prompt templates and `/skill:<name>` keep their existing forms. Bare plugin and generic
+  `/plugin:<command>` aliases are not routes. Built-in plugin categories remain documented in
   page 06, not public metadata.
 - A capability may be limited to a run mode when Harness resolves the callable set; the register
   records that restriction for both surfaces. `ask_user` is available only in attended plan runs,

@@ -77,6 +77,10 @@ export default async function (pi: ExtensionAPI, planRun?: TerminalPlanRunState,
   let turnStartedAt = 0
   let polling = false
   let failure: string | undefined
+  let failureCode: 'provider_error' | undefined
+  let messageAborted = false
+  let turnActive = false
+  let lastContextTokens: number | undefined
   let planRepairAttempted = false
   let lastPlanText = ''
   const emptyUsage = () => ({ inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, requests: 0, costUsd: 0 })
@@ -84,6 +88,7 @@ export default async function (pi: ExtensionAPI, planRun?: TerminalPlanRunState,
   let reasoningTokens: number | undefined
   let costReported = false
   let requestStartedAt: number | null = null
+  let pendingRefusals: Promise<unknown>[] = []
   const toolStartedAt = new Map<string, number>()
   const fileTools = new Map<string, string>()
   const writeAuthorizations = new Map<string, WorkspaceWriteAuthorization>()
@@ -190,7 +195,12 @@ export default async function (pi: ExtensionAPI, planRun?: TerminalPlanRunState,
   const slicePolicy = parseWorkSlice(undefined)
   const sliceState = createSliceState(slicePolicy)
   // `XINGULAR_WORK_SLICE=off` at launch leaves terminal replies unbounded, as before PROP-0041.
-  if (slicePolicy.enabled) workSliceGuard({ policy: slicePolicy, state: sliceState, checkpointAvailable: () => !planRun?.active || planRun.allowedTools.has(CHECKPOINT_WRITE) })(pi)
+  if (slicePolicy.enabled) workSliceGuard({
+    policy: slicePolicy,
+    state: sliceState,
+    checkpointAvailable: () => !planRun?.active || planRun.allowedTools.has(CHECKPOINT_WRITE),
+    onRefuse: (event, reason) => { pendingRefusals.push(terminalCall('refusal', { toolCallId: event.toolCallId, name: event.toolName, code: 'work_slice', reason: reason.slice(0, 2_000) }).catch(() => {})) }
+  })(pi)
 
   // Only the latest screenshots stay in what the model sees (world/images.ts).
   pi.on('context', (event) => {
@@ -231,6 +241,9 @@ export default async function (pi: ExtensionAPI, planRun?: TerminalPlanRunState,
   pi.on('before_agent_start', async (event, ctx) => {
     context = ctx
     failure = undefined
+    failureCode = undefined
+    messageAborted = false
+    lastContextTokens = undefined
     planRepairAttempted = false
     lastPlanText = ''
     usage = emptyUsage()
@@ -238,6 +251,7 @@ export default async function (pi: ExtensionAPI, planRun?: TerminalPlanRunState,
     costReported = false
     // A run a plugin starts with a custom message has no user prompt to record; it still begins a turn.
     const begun = await terminalCall<{ runId: string; workspaceRoot: string }>('begin', { text: event.messageType === 'user' ? event.prompt : '', model: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : null, effort: pi.getThinkingLevel?.() ?? null })
+    turnActive = true
     workspaceRoot = typeof begun.workspaceRoot === 'string' ? begun.workspaceRoot : null
     if (!workspaceRoot) throw new Error('The active project workspace could not be resolved; the turn was not started.')
     // Every turn marks its run on the branch, so a reopened conversation finds its latest one.
@@ -279,20 +293,28 @@ export default async function (pi: ExtensionAPI, planRun?: TerminalPlanRunState,
     const started = Date.now()
     await terminalCall('tool', { phase: 'start', id, name: 'bash', summary: command.slice(0, 200), input: JSON.stringify(args) })
     let refusal: string | undefined
+    let refusalCode: string | undefined
     let result: Awaited<ReturnType<AgentSession['executeBash']>> | undefined
     if (!command) {
       refusal = 'Enter a Bash command after !outside.'
     } else if (planRun?.active) {
       refusal = 'Bash commands are disabled while a plan request is running.'
+      refusalCode = 'plan_mode'
     } else {
+      let checkingGate = true
       try {
         const policy = await terminalCall<{ allowed: boolean; reason?: string; requiresApproval?: boolean }>('policy', { tool: 'bash', args })
         if (policy.requiresApproval) {
           const approval = await terminalCall<{ decision: string }>('approval', { requestId: id, tool: 'bash', args })
-          if (approval.decision !== 'approved') refusal = 'The user denied this Bash command.'
+          if (approval.decision !== 'approved') {
+            refusal = 'The user denied this Bash command.'
+            refusalCode = 'approval_denied'
+          }
         } else if (!policy.allowed) {
           refusal = policy.reason ?? 'This Bash command is outside what the terminal allows.'
+          refusalCode = 'policy'
         }
+        checkingGate = false
         if (!refusal) {
           const session = getSession?.()
           if (!session) refusal = 'The native session is unavailable.'
@@ -300,8 +322,10 @@ export default async function (pi: ExtensionAPI, planRun?: TerminalPlanRunState,
         }
       } catch (error) {
         refusal = error instanceof Error ? error.message : 'The Bash policy or command failed.'
+        if (checkingGate) refusalCode = 'controller_unavailable'
       }
     }
+    if (refusal && refusalCode) await terminalCall('refusal', { toolCallId: id, name: 'bash', code: refusalCode, reason: refusal.slice(0, 2_000) }).catch(() => {})
     const output = result?.output ?? refusal ?? 'The command did not complete.'
     const outputTruncated = output.length > 24_000
     await terminalCall('tool', {
@@ -426,12 +450,17 @@ export default async function (pi: ExtensionAPI, planRun?: TerminalPlanRunState,
     streamTimer = null
     streamText = ''
     streamId = null
-    if (event.message.stopReason === 'error' || event.message.stopReason === 'aborted') failure = event.message.errorMessage ?? `Pi stopped: ${event.message.stopReason}`
+    if (event.message.stopReason === 'error') {
+      failure = event.message.errorMessage || 'Pi stopped: error'
+      failureCode = 'provider_error'
+    }
+    if (event.message.stopReason === 'aborted') messageAborted = true
     const text = event.message.content.filter((part) => part.type === 'text').map((part) => part.text).join('\n')
     lastPlanText = text
     if (text) await terminalCall('message', messageId ? { id: messageId, text } : { text })
     if (event.message.usage) {
       const reported = event.message.usage
+      lastContextTokens = (reported.input ?? 0) + (reported.cacheRead ?? 0) + (reported.cacheWrite ?? 0)
       usage.inputTokens += reported.input ?? 0
       usage.outputTokens += reported.output ?? 0
       usage.cacheReadTokens += reported.cacheRead ?? 0
@@ -469,24 +498,46 @@ export default async function (pi: ExtensionAPI, planRun?: TerminalPlanRunState,
       requestStartedAt = null
     }
   })
+  pi.on('session_before_compact', async (event, ctx) => {
+    if (!turnActive) return
+    await terminalCall('compaction.started', { reason: event.reason, ...(lastContextTokens === undefined ? {} : { contextTokens: lastContextTokens }), ...(ctx.model?.contextWindow ? { contextWindow: ctx.model.contextWindow } : {}) })
+  })
+  pi.on('session_compact', async (event) => {
+    if (!turnActive) return
+    sliceState.compactions += 1
+    const summary = event.compactionEntry.summary
+    const chars = Array.from(summary)
+    const marker = '\n…[truncated]'
+    const truncated = chars.length > 24_000
+    await terminalCall('compaction.ended', { reason: event.reason, aborted: false, tokensBefore: event.compactionEntry.tokensBefore, willRetry: event.willRetry, ...(summary ? { summary: truncated ? `${chars.slice(0, 24_000 - Array.from(marker).length).join('')}${marker}` : summary, ...(truncated ? { summaryTruncated: true } : {}) } : {}) })
+  })
+  pi.on('session_compact_failed', async (event) => {
+    if (!turnActive) return
+    sliceState.compactions += 1
+    await terminalCall('compaction.ended', { reason: event.reason, aborted: event.aborted, willRetry: event.willRetry, ...(event.errorMessage ? { error: event.errorMessage.slice(0, 1_000) } : {}) })
+  })
   pi.on('turn_start', async () => {
     requestStartedAt = Date.now()
   })
   pi.on('tool_call', async (event, ctx) => {
+    const refuse = async (code: string, reason: string) => {
+      await terminalCall('refusal', { toolCallId: event.toolCallId, name: event.toolName, code, reason: reason.slice(0, 2_000) }).catch(() => {})
+      return { block: true as const, reason }
+    }
     if (planRun?.active && !planRun.allowedTools.has(event.toolName)) {
       const reason = planRefusal(event.toolName, new Set(), event.input) ?? `Plan mode is research-only: ${event.toolName} is not available in this session.`
-      return { block: true, reason }
+      return refuse('plan_mode', reason)
     }
     if (planRun?.active && event.toolName === SPAWN_SUBAGENT) {
       try {
         const eligibility = await controlCall<{ allowed: boolean; reason?: string }>('terminal.subagents.planSafe', { input: event.input })
-        if (!eligibility.allowed) return { block: true, reason: eligibility.reason ?? 'This profile is not eligible for plan-mode research.' }
+        if (!eligibility.allowed) return refuse('plan_mode', eligibility.reason ?? 'This profile is not eligible for plan-mode research.')
       } catch (error) {
-        return { block: true, reason: `Plan-mode research eligibility could not be verified: ${error instanceof Error ? error.message : 'controller unavailable'}` }
+        return refuse('controller_unavailable', `Plan-mode research eligibility could not be verified: ${error instanceof Error ? error.message : 'controller unavailable'}`)
       }
     } else if (planRun?.active) {
       const reason = planRefusal(event.toolName, new Set(PLAN_RESEARCH_TOOLS), event.input)
-      if (reason) return { block: true, reason }
+      if (reason) return refuse('plan_mode', reason)
     }
     let authorization: WorkspaceWriteAuthorization | undefined
     if ((event.toolName === 'edit' || event.toolName === 'write') && typeof event.input.path === 'string') {
@@ -503,16 +554,16 @@ export default async function (pi: ExtensionAPI, planRun?: TerminalPlanRunState,
           authorized: false
         }
       } catch (error) {
-        return { block: true, reason: error instanceof Error ? error.message : 'The active project workspace could not be verified.' }
+        return refuse('workspace', error instanceof Error ? error.message : 'The active project workspace could not be verified.')
       }
     }
     try {
       const policy = await controlCall<{ allowed: boolean; reason?: string; requiresApproval?: boolean }>('terminal.policy', { tool: event.toolName, args: event.input })
       if (policy.requiresApproval) {
         const approval = await controlCall<{ decision: string }>('terminal.approval', { requestId: event.toolCallId, tool: event.toolName, args: event.input })
-        if (approval.decision !== 'approved') return { block: true, reason: 'The user denied this action. Ask how they would like to proceed.' }
+        if (approval.decision !== 'approved') return refuse('approval_denied', 'The user denied this action. Do not repeat it or ask for permission in a message; choose another approach or report what is blocked.')
       } else if (!policy.allowed) {
-        return { block: true, reason: policy.reason ?? 'Outside what this session may do.' }
+        return refuse('policy', policy.reason ?? 'Outside what this session may do.')
       }
       if (authorization) {
         authorization.authorized = true
@@ -520,7 +571,7 @@ export default async function (pi: ExtensionAPI, planRun?: TerminalPlanRunState,
       }
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error)
-      return { block: true, reason: `The terminal controller is unavailable: ${detail}` }
+      return refuse('controller_unavailable', `The terminal controller is unavailable: ${detail}`)
     }
   })
   pi.on('tool_execution_start', async (event) => {
@@ -538,6 +589,8 @@ export default async function (pi: ExtensionAPI, planRun?: TerminalPlanRunState,
     if (!event.isError && path) await terminalCall('file', { path, change: 'modified' })
   })
   pi.on('agent_settled', async (event, ctx) => {
+    await Promise.all(pendingRefusals)
+    pendingRefusals = []
     if (heartbeat) clearInterval(heartbeat)
     heartbeat = null
     if (subagentParent && !event.aborted && !failure) {
@@ -547,7 +600,9 @@ export default async function (pi: ExtensionAPI, planRun?: TerminalPlanRunState,
     // A reply that stopped at its work-slice boundary is not a completed task: the record says so,
     // so a host can offer the continuation instead of treating it as done (PROP-0041).
     const reason = sliceState.endedBy ? 'slice_complete' : undefined
-    await terminalCall('settled', { error: failure, aborted: event.aborted, ...(reason ? { reason } : {}) })
+    const code = sliceState.endedBy === 'compaction-thrash' ? 'compaction_thrash' : sliceState.endedBy === 'budget' ? 'slice_budget' : undefined
+    await terminalCall('settled', { error: failure, ...(failureCode ? { errorCode: failureCode } : {}), aborted: event.aborted || messageAborted, ...(reason ? { reason } : {}), ...(code ? { code } : {}) })
+    turnActive = false
   })
   pi.on('user_bash', async () => {
     throw new Error('Use the ! command composer so this action can be checked.')
@@ -558,6 +613,7 @@ export default async function (pi: ExtensionAPI, planRun?: TerminalPlanRunState,
     if (heartbeat) clearInterval(heartbeat)
     heartbeat = null
     context = null
+    turnActive = false
     sessionState = null
     stateDelivered = false
     autoNameTried = false

@@ -41,6 +41,14 @@ describe('Harness diagnostics integration', () => {
     expect(listRuns(harness.env.root, {})).toHaveLength(0)
     expect(await table['doctor.cancel']({ id: report.id })).toEqual(report)
   })
+  it('reports application capture as unavailable or unverified without capturing a window', async () => {
+    const { harness, context } = setup()
+    const absent = await wait(harness, harness.doctor.start({ context, checks: ['computer.capture'] }))
+    expect(absent.findings[0]).toMatchObject({ id: 'computer.capture', status: 'blocked' })
+    const listed = await wait(harness, harness.doctor.start({ context: { ...context, tools: ['computer_screenshot'] }, checks: ['computer.capture'] }))
+    expect(listed.findings[0]).toMatchObject({ id: 'computer.capture', status: 'unverified' })
+    expect(listRuns(harness.env.root, {})).toHaveLength(0)
+  })
   it('inspects model availability offline and never switches the pinned account', async () => {
     const { harness, context } = setup()
     const account = harness.accounts.create('Doctor test', 'apiKey').accounts[0]
@@ -59,6 +67,10 @@ describe('Harness diagnostics integration', () => {
     await expect(diagnosticProbe(harness, { ...context, tools: ['diagnostic_test'] }, new AbortController().signal, probe => probe.call('diagnostic_test', {}))).rejects.toMatchObject({ code: 'doctor_blocked' })
     expect(scope).toHaveBeenCalledOnce()
     expect(execute).not.toHaveBeenCalled()
+    const [blocked] = listRuns(harness.env.root, {})
+    const refusal = readEvents(harness.env.root, blocked.id).find(event => event.type === 'tool.refused')
+    expect(refusal?.payload).toMatchObject({ name: 'diagnostic_test', code: 'scope', reason: 'The tool policy refused this diagnostic call.' })
+    expect(JSON.stringify(refusal)).not.toContain('Refused for this test')
     await expect(diagnosticProbe(harness, { ...context, tools: [] }, new AbortController().signal, probe => probe.call('diagnostic_test', {}))).rejects.toMatchObject({ code: 'doctor_blocked' })
     expect(scope).toHaveBeenCalledOnce()
     expect(harness.runs.activeRunIds()).toEqual([])

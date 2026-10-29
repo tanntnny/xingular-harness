@@ -126,6 +126,15 @@ run.requestApproval(...)                ─► standing approvals may answer whe
 policy.authorize(call) again            ─► run or refuse
 ```
 
+An approval is a control a person clicks, never a permission asked for or granted in a message. The
+gate pauses that exact call and the run reports `waiting_for_approval`; allowing it resumes the same
+call in the same turn, and denying it resolves back to the running turn as a tool result. The
+compiled prompt says so, so a model calls the tool instead of ending its turn to ask. Every surface
+that can ask presents a control: a decision dock, a keypress, or a paired phone's choices. A surface
+that cannot ask a person refuses the call instead of waiting.
+
+Structured sessions and the terminal record gate and work-slice refusals as `tool.refused`, with the call id, name, bounded reason and a code (`plan_mode`, `workspace`, `scope`, `policy`, `capability`, `approval_denied`, `unattended`, `work_slice` or `controller_unavailable`). The terminal relay is best effort if its controller is unreachable. The existing tool-result text is unchanged. Refusals inside a tool after it starts are not gate refusals.
+
 Standing approvals (`approvals.json`): an always-approve switch per key (`chat`, or the run's
 `harness`), tools allowed across the state directory per key, and targets remembered per
 session. `humanOnly` calls are never answered by remembered tools, and by the switch only when
@@ -184,6 +193,11 @@ beside the choices (INV-RC-3, INV-RC-4).
   remains subject to host policy, authorization, read-only, plan, unattended, probe, improver and
   reflection restrictions. The rule does not protect against a peer process running as the same user.
   On Windows the atomic replacement runs without an OS-enforced scope (ADR-0042).
+- **INV-GATE-9** An approval is a control, never a message. The gate pauses the exact call and the
+  run reports `waiting_for_approval`; Allow resumes that same call in the same turn, and Deny returns a
+  tool result on the still-running turn. The compiled prompt tells the model to call the tool rather
+  than ask for permission in a message or end its turn to wait, and no surface accepts a typed
+  approval instead of a control.
 
 ## Data
 

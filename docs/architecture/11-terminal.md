@@ -101,10 +101,11 @@ Screen: transcript above the composer, centred dialogs, full-screen resource bro
   mirrors the main run's redacted prompt and public evidence, starts a separate tool-free run, and
   leaves the main conversation untouched. The dock streams, scrolls and copies the complete answer.
   Aliases remain callable and searchable, but help and palette show only the canonical
-  entry. `/context` opens the context attribution page: what the latest request was made of, one row
-  per contributor with its tokens and share of the window, grouped by owner (foundation, variant,
-  application, conversation) with the compaction reserve and free space below it. `/context growth`
-  opens its second tab, the window at each measured request with its compaction markers. The page
+  entry. `/context` opens the Context page, with Run details and Context usage tabs. Run details
+  shows recorded run configuration, available tools and connectors, skills loaded via `skill_load`,
+  and observed activated extensions; unrecorded facts remain unknown. The run selector stays within the current native conversation, and the page links
+  to `/trajectory` for the selected run. Context usage shows contributor attribution, reserve and
+  free space; `/context growth` opens measured request history and compaction markers. The page
   reads `terminal.context`, never computes a figure of its own, and says `?` where nothing measured a
   window. `/usage:` and `/usage:analysis` open the usage page's Analysis tab, and `/usage:limit`
   opens its Limits tab (PROP-0042); `/usage:accounts` opens the All accounts limits tab. These are plugin-owned namespaced routes. All-account refresh reads due providers using their own account credentials without switching the session account. The usage page is a
@@ -112,8 +113,11 @@ Screen: transcript above the composer, centred dialogs, full-screen resource bro
   50% or more left, amber from 20–49%, and red below 20%. `commands.list`
   publishes the effective routes; the browser-safe core catalogue is `commands/registry.ts`. First-class Harness commands are unprefixed and live in that registry,
   independently of plugin command metadata. Every plugin-owned command uses
-  `/<owner-prefix>:<command>`; the namespace root is offered only by plugins that declare a default
-  command. Prompt templates and `/skill:<name>` keep their existing forms.
+  `/<owner-prefix>:<command>`; plugin-owned prompt templates use the same owner namespace as
+  extension commands. A plugin namespace root is offered only for an explicit default: built-in
+  default commands remain supported, and a package's `harness.defaultPrompt` selects its own named
+  template for `/<owner-prefix>:`. Standalone prompt templates retain their existing forms, as does
+  `/skill:<name>` (ADR-0061).
 
 The `/plugins` Proposals tab previews the complete stored files and generated manifest before
 confirmation. Accept and reject pass the preview hash through the control-key-protected socket;
@@ -146,12 +150,17 @@ the proposal service checks it again. Acceptance leaves the package switched off
 - **INV-TUI-7** Harness core commands use unprefixed names and are registered independently of
   feature-plugin command metadata. This includes `/doctor`, `/worktree`, `/trajectory`, `/subagents`
   and `/agents`; `/history` remains session-branch navigation, and `/mcp` remains a Connections
-  shortcut. Every plugin-owned terminal command uses `/<owner-prefix>:<command>`, for required and
-  optional built-ins and Pi extensions alike. Completions, help and dispatch use the same stable
-  owner prefix. Prefixes are unique to an owner; a prefix collision or duplicate command within an
-  owner is rejected with owner diagnostics. `/skill:<name>` remains reserved for skill invocation.
-  For one release, the former owner-qualified and `/plugin:<command>` forms of promoted Harness
-  commands remain hidden compatibility aliases; aliases are not listed in help or completion.
+  shortcut. Every plugin-owned terminal command, including a plugin-owned prompt template, uses
+  `/<owner-prefix>:<command>` for required and optional built-ins and Pi packages alike. There are
+  no bare plugin command or template aliases. Completions, help, recognition and dispatch use the
+  same owner-qualified routes. Prefixes are unique to an owner; a prefix collision or duplicate
+  route within an owner, including a template/extension collision, fails closed with owner
+  diagnostics rather than choosing a winner. A package root `/<owner-prefix>:` resolves only to the
+  package's explicitly declared, valid and unambiguous `harness.defaultPrompt`; built-in default
+  commands retain their roots. Standalone prompt templates keep their existing forms and
+  `/skill:<name>` remains reserved for skill invocation. Core commands and their core aliases remain
+  independent of plugin attachment. The prior temporary aliases for promoted core commands are not
+  a route to plugin-owned contributions (ADR-0061).
 - **INV-TUI-8** Terminal sessions use the Harness-pinned workspace root and the same write
   boundary as SDK sessions. Native file mutations use revalidated atomic replacement under an OS
   scope; default Bash scans for external hard-link aliases and runs inside the sandbox. The terminal
@@ -173,6 +182,7 @@ the proposal service checks it again. Acceptance leaves the package switched off
 [ADR-0028](../decisions/ADR-0028-xingular-agent-product-identity.md),
 [ADR-0031](../decisions/ADR-0031-plugin-command-owner-namespaces.md),
 [ADR-0034](../decisions/ADR-0034-first-class-harness-terminal-commands.md),
+[ADR-0061](../decisions/ADR-0061-strict-plugin-command-namespaces.md),
 [ADR-0036](../decisions/ADR-0036-workspace-write-operation-boundary.md). Experiments:
 EXP-0001, EXP-0002 in `../experiments/`.
 
@@ -253,8 +263,10 @@ same actions from a shell.
 Pending questions appear in a flat block above the composer, with a tab for each 1–2 word question
 label above its title. Tabs can be clicked; Left/Right also switch questions and preserve staged
 answers. The header has no pager or collapse control, and the dock stays expanded until the answer
-is submitted or Escape cancels the pending question. While it is active, the chat composer and its
-lower status bar are hidden. `n` opens a note for the focused selected choice; Tab and Shift+Tab
+is accepted or Escape cancels the pending question. A refused answer stays in the dock with its
+choices, notes and typed text, and the refusal reason appears inside the dock; the same rule is
+checked before the answer leaves the terminal. While it is active, the chat composer and its lower
+status bar are hidden. `n` opens a note for the focused selected choice; Tab and Shift+Tab
 navigate existing note fields, the free-text answer and the action without creating notes. Notes
 and the “Something else” answer wrap across lines. Choice recommendations remain visual only and
 never preselect an answer.
@@ -344,6 +356,8 @@ without a model request; an empty list is a one-line notice. `/checklist` remain
 release.
 
 ## Work-slice checkpoint (PROP-0041)
+
+Terminal tool-gate and work-slice refusals are relayed as `tool.refused` events with a code and reason; the original refusal text remains the tool response. Interrupted terminal runs record stop codes for work-slice limits, user abort, stalls and terminal closure.
 
 Terminal replies carry the same work-slice guard as structured runs: 320 tool calls or 60 minutes,
 with no new-token limit by default (PROP-0044), then a refusal that asks for `checkpoint_write`. The

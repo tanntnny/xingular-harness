@@ -1599,6 +1599,38 @@ describe('OpenTuiApplication', () => {
     await app.shutdown()
   })
 
+  it('gives PageUp/PageDown to an overflowing btw answer instead of the transcript', async () => {
+    const runtime = {
+      session: {},
+      interrupt: vi.fn(async () => {}),
+      dispose: vi.fn(async () => {}),
+      snapshot: vi.fn(() => undefined)
+    }
+    const scroll = vi.fn()
+    const app = new OpenTuiApplication([])
+    const internals = app as unknown as {
+      runtime?: TerminalRuntime
+      sideQuestion?: { visible: boolean; scrollable: boolean; scroll(direction: 'up' | 'down'): void }
+    }
+    internals.runtime = runtime as unknown as TerminalRuntime
+    internals.sideQuestion = { visible: true, scrollable: true, scroll }
+
+    expect(app.view().sideQuestionScrollable).toBe(true)
+    expect(app.handleKey(key('pageup', '\x1b[5~'))).toBe(true)
+    expect(app.handleKey(key('pagedown', '\x1b[6~'))).toBe(true)
+    expect(app.scrollSideQuestion('up')).toBe(true)
+    expect(scroll.mock.calls).toEqual([['up'], ['down'], ['up']])
+
+    internals.sideQuestion.scrollable = false
+    expect(app.view().sideQuestionScrollable).toBe(false)
+    expect(app.handleKey(key('pageup', '\x1b[5~'))).toBe(false)
+    expect(app.scrollSideQuestion('down')).toBe(false)
+    expect(scroll.mock.calls).toHaveLength(3)
+
+    internals.sideQuestion = undefined
+    await app.shutdown()
+  })
+
   it('interrupts a pending question when Escape cancels its dock', async () => {
     const runtime = {
       pending: vi.fn(async () => [question('q1')]),
@@ -1623,6 +1655,44 @@ describe('OpenTuiApplication', () => {
     expect(runtime.interrupt).toHaveBeenCalledOnce()
     expect(runtime.answer).not.toHaveBeenCalled()
     expect(app.view().questionDock).toBeNull()
+
+    internals.runtime = undefined
+    await app.shutdown()
+  })
+
+  it('keeps the same question dock and its drafts when the server refuses the answer', async () => {
+    const answerBatch = vi.fn()
+      .mockRejectedValueOnce(new Error('Question "Q": a note is attached to "X", which is not selected.'))
+      .mockResolvedValueOnce(undefined)
+    const runtime = {
+      pending: vi.fn(async () => [question('q1', { batchId: 'b1', options: [{ label: 'First', recommended: true }, { label: 'Second' }] })]),
+      answer: vi.fn(async () => {}),
+      answerBatch,
+      interrupt: vi.fn(async () => {}),
+      snapshot: vi.fn(() => undefined)
+    }
+    const app = new OpenTuiApplication([])
+    const internals = app as unknown as {
+      runtime?: TerminalRuntime
+      decisions(): Promise<void>
+      questionDock?: { activateOption(index: number): boolean; activateAction(): void }
+    }
+    internals.runtime = runtime as unknown as TerminalRuntime
+
+    const decision = internals.decisions()
+    for (let index = 0; index < 5 && !app.view().questionDock; index += 1) await Promise.resolve()
+    const dock = internals.questionDock!
+    dock.activateOption(0)
+    dock.activateAction()
+    await vi.waitFor(() => expect(app.view().questionDock?.error).toBe('Question "Q": a note is attached to "X", which is not selected.'))
+    expect(internals.questionDock).toBe(dock)
+    expect(app.view().questionDock).toMatchObject({ selected: ['First'], submitting: false })
+    expect(answerBatch).toHaveBeenCalledOnce()
+
+    dock.activateAction()
+    await decision
+    expect(answerBatch).toHaveBeenCalledTimes(2)
+    expect(internals.questionDock).toBeUndefined()
 
     internals.runtime = undefined
     await app.shutdown()

@@ -182,9 +182,9 @@ export class TerminalController {
     return run
   }
 
-  private finish(outcome: 'completed' | 'failed' | 'interrupted', message?: string, reason?: string): void {
+  private finish(outcome: 'completed' | 'failed' | 'interrupted', message?: string, reason?: string, code?: import('../sessions/contracts').RunStopCode): void {
     this.stopStallWatch()
-    this.run?.finish(outcome, message ? { code: 'terminal_attention', message } : undefined, reason)
+    this.run?.finish(outcome, message ? { code: code === 'provider_error' ? 'provider_error' : 'terminal_attention', message } : undefined, reason, code)
     this.run = null
     this.seen.clear()
     if (this.pending.size) { this.pending.clear(); this.pendingChanged() }
@@ -465,16 +465,17 @@ export class TerminalController {
     }
     if (event === 'shutdown') {
       this.ready = false
-      this.finish('interrupted')
+      this.finish('interrupted', undefined, undefined, 'terminal_closed')
       return {}
     }
     if (event === 'settled') {
       // A reply that stopped at its work-slice boundary is interrupted, not completed: the record
       // says `slice_complete` (or `stalled`) so a host can continue it (PROP-0041).
       const stalled = this.stallRequested !== null && this.stallRequested === this.run?.runId
-      const reason = stalled ? 'stalled' : typeof data.reason === 'string' ? data.reason : undefined
+      const reason = data.error ? undefined : stalled ? 'stalled' : typeof data.reason === 'string' ? data.reason : undefined
       const outcome = data.error ? 'failed' : data.aborted || reason ? 'interrupted' : 'completed'
-      this.finish(outcome, data.error ? String(data.error) : undefined, reason)
+      const code = data.error ? data.errorCode === 'provider_error' ? 'provider_error' : undefined : stalled ? 'stalled' : data.code === 'slice_budget' || data.code === 'compaction_thrash' ? data.code : data.aborted ? 'user_abort' : undefined
+      this.finish(outcome, data.error ? String(data.error) : undefined, reason, code)
       return {}
     }
     const run = this.run
@@ -513,6 +514,8 @@ export class TerminalController {
       }
     }
     if (event === 'usage') run.emit('usage.updated', data)
+    else if (event === 'refusal') run.emit('tool.refused', data)
+    else if (event === 'compaction.started' || event === 'compaction.ended') run.emit(event, data)
     else if (event === 'heartbeat') run.emit('heartbeat', data)
     else if (event === 'todo' || event === 'checklist') run.emit('todo.updated', { items: data.items })
     else if (event === 'checkpoint') run.emit('checkpoint', data)
@@ -540,7 +543,7 @@ export class TerminalController {
     this.ready = false
     this.delivery?.reject(new Error('The terminal stopped before prompt acknowledgement.'))
     this.delivery = null
-    this.finish('interrupted')
+    this.finish('interrupted', undefined, undefined, 'terminal_closed')
     this.subagents.clear()
     this.subagentParentRunId = null
   }

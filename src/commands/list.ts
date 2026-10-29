@@ -2,6 +2,7 @@
 // terminal palette and a host's menu both read it, so they never keep their own lists.
 import { BUILTIN_PLUGIN_REGISTRY } from '../plugins/builtin'
 import { pluginCommandPrefix } from '../plugins/commandPrefix'
+import { packageManifest } from '../plugins/manifest'
 import type { Plugin } from '../plugins/types'
 import { CORE_COMMANDS, type ListedCommand } from './registry'
 import { commandRoutes, promptCommandAvailable, type CommandRoute } from './routes'
@@ -58,8 +59,19 @@ export function listCommands(plugins: readonly Plugin[]): ListedCommand[] {
         }
       }
       // Catalogue entries without a path are observed extension commands, not templates.
-      if (contribution.kind === 'command' && contribution.path && promptCommandAvailable(contribution.name, taken, extensionCommandNames) && !out.has(contribution.name)) {
-        out.set(contribution.name, { name: contribution.name, description: contribution.description, group: 'Prompts', source: 'prompt', owner: plugin.id })
+      if (contribution.kind === 'command' && contribution.path) {
+        const packageRoot = (plugin.source === 'package' || plugin.id.startsWith('package:')) ? plugin.path : null
+        const producer = plugin.contributions.find(item => item.kind === 'code' && item.state === 'on' && item.path && item.registered?.resources?.some(resource => resource.kind === 'command' && resource.path === contribution.path))
+        if (packageRoot || producer?.path) {
+          const prefix = pluginCommandPrefix(packageRoot ? { path: contribution.path, origin: 'package', baseDir: packageRoot } : { path: producer!.path! })
+          const name = packageRoot && packageManifest(packageRoot).defaultPrompt === contribution.name ? '' : contribution.name
+          if (/^[a-z][a-z0-9-]*$/.test(name) || name === '') {
+            extensions.push({ prefix, name, owner: packageRoot ? `package:${packageRoot}` : `extension:${producer!.path}`, path: contribution.path,
+              listed: { name: `${prefix}:${name}`, description: contribution.description, group: 'Prompts', source: 'prompt', owner: plugin.id } })
+          }
+        } else if (promptCommandAvailable(contribution.name, taken, extensionCommandNames) && !out.has(contribution.name)) {
+          out.set(contribution.name, { name: contribution.name, description: contribution.description, group: 'Prompts', source: 'prompt', owner: plugin.id })
+        }
       }
       if (contribution.kind === 'skill') {
         const name = `skill:${contribution.name}`

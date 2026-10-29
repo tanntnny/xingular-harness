@@ -16,6 +16,7 @@ import { BUILTIN_PLUGIN_REGISTRY } from '../plugins/builtin'
 import * as install from '../plugins/install'
 import * as proposals from '../plugins/proposals'
 import { attribution } from '../context/attribution'
+import { runDetails } from '../context/runDetails'
 import { compile, load, render, type Launch } from '../prompt/compile'
 import { continuationOf } from '../sessions/continuation'
 import * as control from '../sessions/control'
@@ -211,6 +212,7 @@ export function methods(harness: Harness): Record<string, Handler> {
       return params.render ? { pack, text: render(env, pack) } : pack
     },
     'context.runPack': (params: Params) => load(root(), text(params, 'runId')),
+    'context.runDetails': (params: Params) => runDetails(root(), text(params, 'runId')),
     // What the request was made of: one row per contributor, reconciled to the provider's figure.
     'context.attribution': (params: Params) => attribution(env, text(params, 'runId')),
 

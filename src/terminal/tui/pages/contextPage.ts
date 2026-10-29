@@ -9,7 +9,22 @@ import { CHROME_PAD, padded, selectedRow, type TabInfo } from '../chrome'
 import type { TerminalPage } from '../page'
 import { SERIES_COLORS } from '../theme'
 
-export type ContextTab = 'request' | 'growth'
+export type ContextTab = 'details' | 'request' | 'growth'
+
+export interface RunDetails {
+  runId: string
+  status: string | null
+  mode: string | null
+  model: string | null
+  effort: string | null
+  variantScope: string | null
+  variantVersion: string | null
+  workspaceRoot: string | null
+  tools: string[] | null
+  connectors: string[] | null
+  skills: string[] | null
+  plugins: string[] | null
+}
 export type ContextGrouping = 'owner' | 'kind'
 
 interface ContextPageOptions {
@@ -17,6 +32,10 @@ interface ContextPageOptions {
   call(method: string, params?: Record<string, unknown>): Promise<unknown>
   changed(): void
   initialTab?: ContextTab
+  initialRunId?: string
+  runs?(): Promise<Array<{ id: string }>>
+  readDetails?(runId: string): Promise<RunDetails>
+  openTrajectory?(runId: string): void
   /** Opens the variant editor for the row the person wants to shrink. */
   openVariant?(): void
   /** Runs the session's compaction, after the page confirms what it would free. */
@@ -169,6 +188,12 @@ export class ContextPage implements TerminalPage {
   presentation = 'fullscreen' as const
   focused = false
   private tab: ContextTab
+  private runs: Array<{ id: string }> = []
+  private runIndex = 0
+  private runDetails: RunDetails | null = null
+  private runError: string | null = null
+  private runLoading = false
+  private runGeneration = 0
   private grouping: ContextGrouping = 'owner'
   private data: ContextAttribution | null = null
   private detail: { id: string; title: string; text: string } | null = null
@@ -188,15 +213,15 @@ export class ContextPage implements TerminalPage {
   }
 
   tabs(): readonly TabInfo[] {
-    return [{ id: 'request', title: 'Request' }, { id: 'growth', title: 'Growth' }]
+    return [{ id: 'details', title: 'Run details' }, { id: 'request', title: 'Context usage' }]
   }
 
   activeTab(): string {
-    return this.tab
+    return this.tab === 'growth' ? 'request' : this.tab
   }
 
   selectTab(id: string): void {
-    if (id !== 'request' && id !== 'growth') return
+    if (id !== 'details' && id !== 'request' && id !== 'growth') return
     if (id === this.tab) return
     this.tab = id
     this.offset = 0
@@ -207,13 +232,47 @@ export class ContextPage implements TerminalPage {
 
   hint(): string {
     if (this.detail) return '↑/↓ scroll · esc close · q close page'
+    if (this.tab === 'details') return '[ ] runs · t trajectory · r refresh · ↑/↓ scroll · q close'
     return this.tab === 'request'
-      ? '↑/↓ move · space fold · enter text · g group · c compact · v variant · r refresh · q close'
+      ? '↑/↓ move · space fold · enter text · g group · h growth · c compact · v variant · r refresh · q close'
       : '↑/↓ scroll · r refresh · q close'
   }
 
   activate(): void {
     if (!this.data) void this.load()
+    if (this.options.runs) void this.loadRuns()
+  }
+
+  private async loadRuns(): Promise<void> {
+    try {
+      this.runs = await this.options.runs!()
+      const at = this.options.initialRunId ? this.runs.findIndex(run => run.id === this.options.initialRunId) : 0
+      if (this.options.initialRunId && at < 0) throw new Error('Run not found in this native session')
+      this.runIndex = Math.max(0, at)
+      await this.loadRun()
+      await this.load()
+    } catch (error) {
+      this.runError = error instanceof Error ? error.message : String(error)
+      this.options.changed()
+    }
+  }
+
+  private async loadRun(): Promise<void> {
+    const run = this.runs[this.runIndex]
+    const generation = ++this.runGeneration
+    this.runDetails = null
+    this.runError = null
+    if (!run || !this.options.readDetails) { this.options.changed(); return }
+    this.runLoading = true
+    this.options.changed()
+    try {
+      const details = await this.options.readDetails(run.id)
+      if (!this.disposed && generation === this.runGeneration) this.runDetails = details
+    } catch (error) {
+      if (!this.disposed && generation === this.runGeneration) this.runError = error instanceof Error ? error.message : String(error)
+    } finally {
+      if (!this.disposed && generation === this.runGeneration) { this.runLoading = false; this.options.changed() }
+    }
   }
 
   dispose(): void {
@@ -230,7 +289,8 @@ export class ContextPage implements TerminalPage {
     this.error = null
     this.options.changed()
     try {
-      const answer = await this.options.call('terminal.context', section ? { section } : {}) as { attribution?: ContextAttribution | null; text?: { id: string; title: string; text: string } | null }
+      const runId = this.runs[this.runIndex]?.id
+      const answer = await this.options.call('terminal.context', { ...(runId ? { runId } : {}), ...(section ? { section } : {}) }) as { attribution?: ContextAttribution | null; text?: { id: string; title: string; text: string } | null }
       if (this.disposed) return
       this.data = answer.attribution ?? null
       // Start on the first row so space and enter act on something the person can see.
@@ -267,11 +327,24 @@ export class ContextPage implements TerminalPage {
       return true
     }
     if (matchesKey(data, 'tab') || matchesKey(data, 'shift+tab')) {
-      const tabs: ContextTab[] = ['request', 'growth']
+      const tabs: ContextTab[] = ['details', 'request']
       const direction = matchesKey(data, 'shift+tab') ? -1 : 1
-      this.selectTab(tabs[(tabs.indexOf(this.tab) + direction + tabs.length) % tabs.length]!)
+      this.selectTab(tabs[(tabs.indexOf(this.tab === 'growth' ? 'request' : this.tab) + direction + tabs.length) % tabs.length]!)
       return true
     }
+    if (this.tab === 'details') {
+      if (data === '[' || data === ']') {
+        const next = this.runIndex + (data === '[' ? 1 : -1)
+        if (next >= 0 && next < this.runs.length) { this.runIndex = next; this.offset = 0; void this.loadRun(); void this.load() }
+      } else if (data === 't' && this.runs[this.runIndex]) this.options.openTrajectory?.(this.runs[this.runIndex]!.id)
+      else if (data === 'r') void this.loadRuns()
+      else if (matchesKey(data, 'down')) this.offset++
+      else if (matchesKey(data, 'up')) this.offset = Math.max(0, this.offset - 1)
+      else return false
+      this.options.changed()
+      return true
+    }
+    if (data === 'h') { this.tab = this.tab === 'growth' ? 'request' : 'growth'; this.offset = 0; this.options.changed(); return true }
     const entries = this.entries()
     const found = entries.findIndex((entry) => entry.row.id === this.selectedId)
     const current = found >= 0 ? found : 0
@@ -355,7 +428,7 @@ export class ContextPage implements TerminalPage {
     if (width < 1 || rows < 1) return []
     const theme = this.options.theme()
     // The overlay owns the tab strip, both rules and the hint; the body starts at the reading.
-    const body = this.detail ? this.detailBody(width, theme) : this.tab === 'growth' ? this.growthBody(width, theme) : this.requestBody(width, theme)
+    const body = this.detail ? this.detailBody(width, theme) : this.tab === 'details' ? this.runBody(width, theme) : this.tab === 'growth' ? this.growthBody(width, theme) : this.requestBody(width, theme)
     const room = Math.max(1, rows)
     this.scrollRows = room
     this.maxOffset = Math.max(0, body.length - room)
@@ -364,6 +437,23 @@ export class ContextPage implements TerminalPage {
     if (this.detail) this.detailOffset = offset
     else this.offset = offset
     return body.slice(offset, offset + room).map((line) => truncateToWidth(line, width, ''))
+  }
+
+  private runBody(width: number, theme: Theme): string[] {
+    if (this.runError) return [padded(theme.fg('error', this.runError), width)]
+    const run = this.runs[this.runIndex]
+    if (!run) return [padded(theme.fg('dim', 'No runs recorded for this conversation.'), width)]
+    if (this.runLoading || !this.runDetails) return [padded(theme.fg('dim', 'Loading run details…'), width)]
+    const details = this.runDetails
+    const fields: Array<[string, string | string[] | null]> = [
+      ['Status', details.status], ['Mode', details.mode], ['Model', details.model], ['Effort', details.effort],
+      ['Variant scope', details.variantScope], ['Variant version', details.variantVersion], ['Workspace root', details.workspaceRoot],
+      ['Tools', details.tools], ['Connectors', details.connectors], ['Skills loaded via skill_load', details.skills], ['Activated extensions', details.plugins]
+    ]
+    const inner = Math.max(8, width - CHROME_PAD * 2)
+    return [padded(theme.bold(theme.fg('accent', `Run ${this.runIndex + 1}/${this.runs.length} · ${run.id}`)), width), '',
+      ...fields.flatMap(([label, value]) => wrapTextWithAnsi(`${label}: ${value === null ? 'Unknown' : Array.isArray(value) ? (value.length ? value.join(', ') : 'None') : value}`, inner).map(line => padded(line, width))),
+      '', padded(theme.fg('accent', 't  Open trajectory'), width)]
   }
 
   private requestBody(width: number, theme: Theme): string[] {

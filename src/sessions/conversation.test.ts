@@ -113,7 +113,7 @@ describe('a whole reply, with a scripted model', () => {
     const { harness, model, start, until, settled, of } = await setup()
     const account = harness.accounts.context(harness.accounts.resolve(null, null))
     writeFile(join(account.configDir, 'extensions/command.ts'), `export default function(pi) { pi.registerCommand('hello', { description: 'Hello', handler: async (args, ctx) => ctx.ui.notify('hello ' + args) }) }`)
-    const id = await start({ text: '/hello original arguments', preamble: '[A note for the next request]' })
+    const id = await start({ text: '/command:hello original arguments', preamble: '[A note for the next request]' })
     await until(() => settled(id))
     expect(of(id).at(-1)?.type).toBe('completed')
     expect(of(id).find((event) => event.type === 'extension.notice')?.payload).toMatchObject({ text: 'hello original arguments' })

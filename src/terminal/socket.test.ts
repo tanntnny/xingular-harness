@@ -1,10 +1,10 @@
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
-import { createConnection } from 'node:net'
+import { createConnection, createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
-import { socketCall } from './client'
+import { socketCall, socketCallOnce } from './client'
 import { SessionSocket, socketPath } from './socket'
 
 const handlers = { memory: () => '', apps: async () => null }
@@ -19,6 +19,25 @@ function onPlatform<T>(platform: NodeJS.Platform, body: () => T): T {
     Object.defineProperty(process, 'platform', original)
   }
 }
+
+describe('one-shot socket execution', () => {
+  it.skipIf(process.platform === 'win32')('does not replay an effect when the reply is lost', async () => {
+    const base = mkdtempSync(join(tmpdir(), 'sock-once-'))
+    const path = join(base, 'socket')
+    let effects = 0
+    const server = createServer(stream => {
+      stream.once('data', () => { effects += 1; stream.destroy() })
+    })
+    try {
+      await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(path, resolve) })
+      await expect(socketCallOnce({ socket: path, token: 'token' }, 'terminal.computer.call')).rejects.toMatchObject({ code: 'outcome_unknown' })
+      expect(effects).toBe(1)
+    } finally {
+      await new Promise<void>(resolve => server.close(() => resolve()))
+      rmSync(base, { recursive: true, force: true })
+    }
+  })
+})
 
 describe('session socket path', () => {
   it('keeps a socket file of its own, named for the process, in the state folder on Unix', () => {

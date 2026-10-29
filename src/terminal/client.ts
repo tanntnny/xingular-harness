@@ -135,6 +135,19 @@ export function socketCall<T = unknown>(connection: SocketConnection, call: stri
   return request<T>(connection, { call, params, ...(control ? { control } : {}) }, call, timeoutMs, signal)
 }
 
+/** Effectful requests must never be replayed after an ambiguous disconnect. Use a fresh connection
+ * and report an unknown outcome if it closes, times out or is cancelled without a reply. */
+export async function socketCallOnce<T = unknown>(connection: SocketConnection, call: string, params: Record<string, unknown> = {}, timeoutMs = 120_000, control?: string, signal?: AbortSignal): Promise<T> {
+  try {
+    return await attempt<T>(connection, { call, params, ...(control ? { control } : {}) }, call, timeoutMs, undefined, signal)
+  } catch (error) {
+    if (error instanceof SocketError && ['unavailable', 'timeout', 'aborted'].includes(error.code)) {
+      throw new SocketError('outcome_unknown', `${call} did not return a result. Its outcome is unknown; inspect before retrying.`)
+    }
+    throw error
+  }
+}
+
 /** Telemetry and decisions from the native `pi` process. Approvals may wait on a person, so the default wait is long. */
 export function terminalCall<T = Record<string, unknown>>(event: string, data: Record<string, unknown> = {}, timeoutMs = 600_000): Promise<T> {
   return request<T>(connectionFromEnv(), { event, data }, event, timeoutMs)

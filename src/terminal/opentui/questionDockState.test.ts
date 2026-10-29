@@ -91,6 +91,40 @@ describe('QuestionDockState', () => {
     }])
   })
 
+  it('keeps the drafts and shows why an answer was refused until a retry succeeds', async () => {
+    const state = new QuestionDockState([question('q1', {
+      options: [{ label: 'A', recommended: true }, { label: 'B' }]
+    })])
+
+    state.activateOption(0)
+    state.focusOption(0)
+    state.openFocusedNote()
+    state.setNote('A', 'keep this note')
+    state.activateAction()
+    const first = await state.result
+    expect(first).toEqual([{ questionId: 'q1', answer: { selected: ['A'], notes: { A: 'keep this note' } } }])
+
+    state.fail('Question "Question q1": an answer was refused.')
+    expect(state.view).toMatchObject({ error: 'Question "Question q1": an answer was refused.', submitting: false, selected: ['A'] })
+    expect(state.view.options[0]).toMatchObject({ selected: true, note: 'keep this note' })
+
+    state.setSubmitting(true)
+    state.activateAction()
+    expect(state.view.submitting).toBe(true)
+    state.setSubmitting(false)
+    state.activateAction()
+
+    await expect(state.result).resolves.toEqual(first)
+  })
+
+  it('clears a refusal once the answer it describes changes', () => {
+    const state = new QuestionDockState([question('q1')])
+    state.fail('Question "Question q1" takes one choice, but 2 were selected.')
+    expect(state.view.error).toBeDefined()
+    state.toggleOption(0)
+    expect(state.view.error).toBeUndefined()
+  })
+
   it('clears a choice note when that choice is deselected', async () => {
     const state = new QuestionDockState([question('q1', { options: [{ label: 'A', recommended: true }] })])
 

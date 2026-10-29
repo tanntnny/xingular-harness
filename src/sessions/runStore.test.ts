@@ -232,3 +232,26 @@ test('a silent run from before heartbeats is settled as abandoned', () => {
   expect(loadRun(root, 'run-1').terminalReason).toBe('owner_gone')
   closeIndex(root)
 })
+
+
+test('stop codes persist, recover, and legacy records read as null', () => {
+  const root = temp()
+  fixtureRun(root, 'running')
+  expect(loadRun(root, 'run-1').terminalCode).toBeNull()
+  appendEvent(root, fixtureEvent(0, 'status.changed', { status: 'interrupted', reason: 'slice_complete', code: 'slice_budget' }))
+  markInterruptedRuns(root)
+  expect(loadRun(root, 'run-1')).toMatchObject({ status: 'interrupted', terminalCode: 'slice_budget' })
+  closeIndex(root)
+
+  const restart = temp()
+  fixtureRun(restart, 'running')
+  markInterruptedRuns(restart)
+  expect(loadRun(restart, 'run-1').terminalCode).toBe('harness_restart')
+  expect(readEvents(restart, 'run-1').at(-1)?.payload).toMatchObject({ code: 'harness_restart' })
+  closeIndex(restart)
+})
+
+test('refusals require a known code and a bounded reason', () => {
+  expect(valid('tool.refused', { toolCallId: 't', name: 'write', code: 'plan_mode', reason: 'read only' })).toBe(true)
+  expect(valid('tool.refused', { toolCallId: 't', name: 'write', code: 'unknown', reason: 'read only' })).toBe(false)
+})

@@ -27,6 +27,9 @@ export function renderEvents(events: readonly RunEvent[], options: { obsTrunc: n
         out.push(`${payload.ok === false ? '[ERROR]' : '[OBSERVATION]'} ${String(payload.name ?? 'tool')}${typeof payload.durationMs === 'number' ? ` (${Math.round(payload.durationMs)} ms)` : ''}\n${clip(text, options.obsTrunc)}${payload.outputTruncated ? '\n(the tool output was already bounded when it was recorded)' : ''}`)
         break
       }
+      case 'tool.refused':
+        out.push(`[ERROR] ${String(payload.name ?? 'tool')} refused${typeof payload.code === 'string' ? ` (${payload.code})` : ''}${typeof payload.reason === 'string' && payload.reason ? `: ${clip(payload.reason, options.obsTrunc)}` : ''}`)
+        break
       case 'retry.started':
         out.push(`[ERROR] model request failed, retrying (${String(payload.attempt)}/${String(payload.maxAttempts)}): ${String(payload.error ?? '')}`)
         break
@@ -43,7 +46,10 @@ export function renderEvents(events: readonly RunEvent[], options: { obsTrunc: n
         out.push(`[ERROR] run failed: ${String(payload.message ?? payload.code ?? '')}`)
         break
       case 'status.changed':
-        if (payload.status === 'interrupted') out.push('[ERROR] run interrupted')
+        if (payload.status === 'interrupted') {
+          const reason = typeof payload.reason === 'string' && payload.reason ? payload.reason : typeof payload.code === 'string' ? payload.code : ''
+          out.push(`[ERROR] run interrupted${reason ? `: ${clip(reason, options.obsTrunc)}` : ''}`)
+        }
         break
       default:
         break

@@ -15,6 +15,27 @@ import { piSessionFactory } from './runner'
 const open: Harness[] = []
 afterEach(async () => { for (const harness of open.splice(0)) await harness.close() })
 
+it('expands package-owned prompt routes and rejects their bare names in structured sessions', async () => {
+  const base = mkdtempSync(join(tmpdir(), 'structured-prompts-'))
+  const pkg = join(base, 'package')
+  const prompt = join(pkg, 'prompts/diagnose.md')
+  writeFile(join(pkg, 'package.json'), JSON.stringify({ name: 'devkit', harness: { commandPrefix: 'xdiag', defaultPrompt: 'diagnose' } }))
+  writeFile(prompt, 'Diagnose $1')
+  const harness = createHarness({ dataRoot: join(base, 'data'), stateDir: join(base, 'state'), secrets: memorySecretStore(), resolver: async () => [{ kind: 'prompt', path: prompt, origin: 'package', packageRoot: pkg, source: pkg, project: false, enabled: true }] })
+  open.push(harness)
+  harness.accounts.create('Main', 'apiKey')
+  const account = harness.accounts.context(harness.accounts.resolve(null, null))
+  const faux = await fauxModel(harness)
+  faux.script([faux.says('Done')])
+  const session = await piSessionFactory({ params: { runId: 'r', cwd: base, workspaceRoot: resolveWorkspaceRoot(base), sessionDir: join(base, 'history'), historyFile: null, model: faux.model, text: '', account, system: '', update: null,
+    plugins: { loading: () => harness.plugins.loading({ cwd: base, agentDir: account.configDir }), loaded: records => harness.plugins.loaded(records) } },
+    allow: ['read'], tools: [], gate: { check: async () => null }, runtime: () => harness.accounts.runtime(account), extensions: { ask: async () => ({ selected: [] }), notice: () => {} } })
+  await expect(session.prompt('/diagnose item')).rejects.toThrow('requires its owner prefix')
+  await session.prompt('/xdiag: item')
+  expect(faux.lastUserTexts()).toContain('Diagnose item')
+  session.dispose()
+})
+
 it('attributes discovered resources and tools, respects caller switches, and discards stale observations', async () => {
   const base = mkdtempSync(join(tmpdir(), 'runtime-resources-'))
   const harness = createHarness({ dataRoot: join(base, 'data'), stateDir: join(base, 'state'), secrets: memorySecretStore() })

@@ -109,6 +109,7 @@ resolve relevant drift by updating the implementation and specification together
 
 | ID | Where | What disagrees |
 |---|---|---|
+| D-23 | Terminal model-tool caller identity, pages 07 and 08 — resolved | `ownTools` used the session caller without the active run id, so `trajectory_read` with `run: 'current'` failed over `tools.call`. It now derives the caller on each execution and clears the identity after settlement. |
 | D-1 | `AGENTS.md` (before this spec), `INV-RUN-6` | The old rule said only `sessions/runStore.ts` writes `runs/<id>/`. In code, four other harness modules also write side files there: `prompt/compile.ts` (`context.json`), `sessions/sessions.ts` (`caller.json`), `capabilities/runSnapshot.ts` (`capabilities.json`), `mcp/service.ts` (`mcp-context.json`). The spec states the rule the code keeps (see `INV-RUN-6`); whether to route all of them through `runStore.ts` is open. |
 | D-2 | Plugin proposal review surfaces | `plugin_propose` and hash-bound proposal APIs now exist; a terminal review UI is pending and no App review UI is claimed. See [PAR-017](../parity.md#gaps). |
 | D-3 | `README.md` "External curation" | Describes `externalMaintenance`, `vaultAccess`, `MAINTENANCE_PLUGIN`, `maintenance.*` methods and tools. None exist in `src/`. |

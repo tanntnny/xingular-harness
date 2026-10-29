@@ -373,19 +373,31 @@ describe('session turns on Pi', () => {
     expect(JSON.stringify(events)).not.toContain('must-not-persist')
   })
 
+  it('records classified plan refusals without changing the gate text', async () => {
+    const { events, run } = setup(async ({ gate, params }) => fakeSession(async () => {
+      const refusal = await gate.checkDetailed!('write', { path: 'file' })
+      expect(refusal?.code).toBe('plan_mode')
+      expect(await gate.check('write', { path: 'file' })).toBe(refusal?.reason)
+      params.onRefusal!('call-plan', 'write', refusal!)
+    }, gate))
+    await run('plan-refusal', { plan: true })
+    await tick(80)
+    expect(events.find(event => event.type === 'tool.refused')?.payload).toMatchObject({ toolCallId: 'call-plan', name: 'write', code: 'plan_mode' })
+  })
+
   it('records bounded retry and compaction events without exposing thinking text', async () => {
     const { events, run } = setup(async ({ gate }) =>
       fakeSession(async (emit) => {
         emit({ type: 'auto_retry_start', attempt: 1, maxAttempts: 3, delayMs: 250, errorMessage: 'Temporary failure' } as unknown as PiEvent)
         emit({ type: 'auto_retry_end', attempt: 1, success: true } as unknown as PiEvent)
         emit({ type: 'compaction_start', reason: 'threshold' } as unknown as PiEvent)
-        emit({ type: 'compaction_end', reason: 'threshold', aborted: false, willRetry: true, result: { summary: 'kept the latest messages' } } as unknown as PiEvent)
+        emit({ type: 'compaction_end', reason: 'threshold', aborted: false, willRetry: true, result: { summary: 'kept the latest messages', tokensBefore: 12345 } } as unknown as PiEvent)
       }, gate)
     )
     await run('run-1')
     await tick()
     expect(events.filter((event) => event.type.startsWith('retry.') || event.type.startsWith('compaction.')).map((event) => event.type)).toEqual(['retry.started', 'retry.ended', 'compaction.started', 'compaction.ended'])
-    expect(events.find((event) => event.type === 'compaction.ended')?.payload).toMatchObject({ aborted: false, willRetry: true, summary: '{"summary":"kept the latest messages"}' })
+    expect(events.find((event) => event.type === 'compaction.ended')?.payload).toMatchObject({ aborted: false, willRetry: true, tokensBefore: 12345, summary: '{"summary":"kept the latest messages","tokensBefore":12345}' })
   })
 
   it('leaves out the cost and reasoning figures nobody reported', async () => {
@@ -398,8 +410,12 @@ describe('session turns on Pi', () => {
   })
 
   it('pauses gated tools for approval and blocks on deny', async () => {
-    let blockReason: string | null | undefined
-    const { events, run, harness } = setup(async ({ gate }) => fakeSession(async (_emit, check) => void (blockReason = await check()), gate))
+    const blockReasons: (string | null)[] = []
+    const { events, run, harness } = setup(async ({ gate }) => fakeSession(async (_emit, check) => {
+      blockReasons.push(await check())
+      // The denial does not end the turn: its next call asks for its own approval.
+      blockReasons.push(await check())
+    }, gate))
     await run('run-2', { text: 'list files' })
     await tick()
     const approval = events.find((event) => event.type === 'approval.requested')!.payload as { approvalId: string }
@@ -407,8 +423,14 @@ describe('session turns on Pi', () => {
     expect(loadRun(harness.env.root, 'run-2').status).toBe('waiting_for_approval')
     harness.runs.resolveApproval('run-2', approval.approvalId, 'denied')
     await tick()
-    expect(blockReason).toMatch(/denied/)
+    expect(blockReasons[0]).toMatch(/user denied this action/i)
+    expect(blockReasons[0]).toMatch(/do not repeat it or ask for permission in a message/i)
     expect(events.some((event) => event.type === 'approval.resolved')).toBe(true)
+    const next = events.filter((event) => event.type === 'approval.requested')[1]!.payload as { approvalId: string }
+    expect(next.approvalId).not.toBe(approval.approvalId)
+    harness.runs.resolveApproval('run-2', next.approvalId, 'approved')
+    await tick()
+    expect(blockReasons[1]).toBeNull()
   })
 
   it("asks before a tool an extension brought, and relays the extension's question and notice as run events", async () => {
@@ -641,6 +663,7 @@ describe('session turns on Pi', () => {
     ])
     const allowedTools = ['read', 'bash', 'write', 'lookup', 'change', 'browser', 'mcp_call_tool']
     await run('plan-run', { plan: true, tools: { allow: allowedTools } })
+    expect(loadRun(harness.env.root, 'plan-run').effectiveMode).toBe('plan')
     await tick()
     await run('normal-run', { tools: { allow: allowedTools } })
     await tick()
@@ -1249,11 +1272,12 @@ describe('work slices', () => {
     const { harness, events, run } = setup(async (input) => fakeSession(async () => {
       const slice = driveGuard(input)
       slice.start()
-      for (let step = 0; step < 4; step += 1) slice.call({ toolName: 'read', input: { path: `file-${step}` } })
+      for (let step = 0; step < 4; step += 1) slice.call({ toolCallId: `call-${step}`, toolName: 'read', input: { path: `file-${step}` } })
     }, input.gate))
     await run('slice-budget', { workSlice: { maxToolCalls: 3, continue: false } })
     await tick(120)
-    expect(loadRun(harness.env.root, 'slice-budget')).toMatchObject({ status: 'interrupted', terminalReason: 'slice_complete' })
+    expect(loadRun(harness.env.root, 'slice-budget')).toMatchObject({ status: 'interrupted', terminalReason: 'slice_complete', terminalCode: 'slice_budget' })
+    expect(events.find((event) => event.type === 'tool.refused')?.payload).toMatchObject({ toolCallId: 'call-2', name: 'read', code: 'work_slice' })
     const checkpoint = events.find((event) => event.type === 'checkpoint')
     expect(checkpoint?.payload).toMatchObject({ slice: 1, reason: 'budget' })
   })
@@ -1273,7 +1297,7 @@ describe('work slices', () => {
           next: 'Fix the failing sandbox test'
         })
         slice.result({ toolName: 'checkpoint_write', isError: false, input: {} })
-        for (let step = 0; step < 4; step += 1) slice.call({ toolName: 'read', input: { path: `file-${step}` } })
+        for (let step = 0; step < 4; step += 1) slice.call({ toolCallId: `call-${step}`, toolName: 'read', input: { path: `file-${step}` } })
       }, input.gate)
     })
     await run('slice-first', { workSlice: { maxToolCalls: 3, maxSlices: 2, continue: true } })

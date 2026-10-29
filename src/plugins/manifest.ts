@@ -16,6 +16,8 @@ export interface PackageManifest {
   extends: string[]
   /** Stable terminal command namespace, or `null` to use the normalized package name. */
   commandPrefix: string | null
+  /** A prompt template name exposed only at the package namespace root. */
+  defaultPrompt: string | null
   /** The hooks file, inside the package, or `null` when it has none. */
   hooks: string | null
   /** The folder of subagent profiles, inside the package. `agents` unless the manifest names another. */
@@ -82,7 +84,7 @@ export function packageManifest(packageRoot: string): PackageManifest {
   const manifest = readJsonOr<Raw>(join(packageRoot, 'package.json'), {})
   // Only a package without a name of its own is described by its plugin.json.
   const plugin = text(manifest.name) ? {} : pluginJson(packageRoot)
-  const own = (manifest.harness && typeof manifest.harness === 'object' && !Array.isArray(manifest.harness) ? manifest.harness : {}) as { extends?: unknown; hooks?: unknown; agents?: unknown; connectors?: unknown; commandPrefix?: unknown }
+  const own = (manifest.harness && typeof manifest.harness === 'object' && !Array.isArray(manifest.harness) ? manifest.harness : {}) as { extends?: unknown; hooks?: unknown; agents?: unknown; connectors?: unknown; commandPrefix?: unknown; defaultPrompt?: unknown }
   const pluginName = text(plugin.name)
   return {
     name: text(manifest.name) ?? (pluginName && /^[a-z0-9][a-z0-9._-]*$/i.test(pluginName) ? pluginName : basename(packageRoot)),
@@ -90,6 +92,7 @@ export function packageManifest(packageRoot: string): PackageManifest {
     version: text(manifest.version) ?? text(plugin.version),
     extends: (Array.isArray(own.extends) ? own.extends : typeof own.extends === 'string' ? [own.extends] : []).filter((id): id is string => typeof id === 'string' && !!id),
     commandPrefix: typeof own.commandPrefix === 'string' && /^[a-z][a-z0-9-]*$/i.test(own.commandPrefix) && !['plugin', 'skill'].includes(own.commandPrefix.toLowerCase()) ? own.commandPrefix.toLowerCase() : null,
+    defaultPrompt: typeof own.defaultPrompt === 'string' && /^[a-z][a-z0-9-]*$/.test(own.defaultPrompt) ? own.defaultPrompt : null,
     hooks: inside(own.hooks),
     agents: inside(own.agents) ?? 'agents',
     connectorTemplates: (Array.isArray(own.connectors) ? own.connectors : []).flatMap((value) => {

@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto'
 import { log } from '../core/bus'
 import { HarnessError } from '../core/errors'
 import type { AutomaticReason } from './approvals'
-import { isActiveStatus, questionSketchError, runEventSchema, type QuestionOption, type RunEvent, type RunEventType, type RunRecord } from './contracts'
+import { isActiveStatus, questionAnswerProblem, questionSketchError, runEventSchema, type QuestionOption, type RunEvent, type RunEventType, type RunRecord, type RunStopCode } from './contracts'
 import { findRun, persistEvent, readEvents, runFamily } from './runStore'
 
 export type ApprovalDecision = 'approved' | 'denied' | 'native'
@@ -83,7 +83,11 @@ export interface ActiveRun {
   requestAnswer(input: QuestionInput): Promise<QuestionAnswer>
   /** Asks one to five related questions and resolves only after the whole batch is answered. */
   requestAnswers(inputs: QuestionInput[]): Promise<QuestionAnswer[]>
-  finish(outcome: 'completed' | 'failed' | 'interrupted', failure?: { code: string; message: string }, reason?: string): void
+  /**
+   * Settles the run once. An interruption carries its stop `code` (PROP-0050) and, when there is
+   * more to say than the code, a human `reason`; a failure's code is `failure.code`.
+   */
+  finish(outcome: 'completed' | 'failed' | 'interrupted', failure?: { code: string; message: string }, reason?: string, code?: RunStopCode): void
   readonly finished: boolean
 }
 
@@ -249,14 +253,14 @@ export class RunRegistry {
         emit('status.changed', { status: 'waiting_for_input' })
         return Promise.all(answers)
       },
-      finish: (outcome, failure, reason) => {
+      finish: (outcome, failure, reason, code) => {
         if (finished || finishing) return
         finishing = true
         // Persist cancellation receipts while emit is still open, so every interface clears them.
         for (const [, approval] of [...this.approvals]) if (approval.runId === runId) approval.resolve('denied')
         for (const [, question] of [...this.questions]) if (question.runId === runId) question.resolve({ selected: [] })
         if (outcome === 'failed') emit('failed', failure ?? { code: 'failed', message: 'The run failed.' })
-        else if (outcome === 'interrupted') emit('status.changed', { status: 'interrupted', ...(reason ? { reason } : {}) })
+        else if (outcome === 'interrupted') emit('status.changed', { status: 'interrupted', ...(reason ? { reason } : {}), ...(code ? { code } : {}) })
         else emit('completed', {})
         finished = true
         this.runs.delete(runId)
@@ -274,7 +278,7 @@ export class RunRegistry {
       },
       interrupt: async () => {
         // Release approvals/questions before SDK abort waits for their blocked tools.
-        run.finish('interrupted')
+        run.finish('interrupted', undefined, undefined, 'user_abort')
         for (const handler of interruptHandlers) {
           try {
             await handler()
@@ -289,7 +293,7 @@ export class RunRegistry {
     emit('started', {})
     emit('status.changed', { status: 'running' })
     const record = findRun(this.options.root(), runId)
-    if (record?.parentRunId && this.hasStoppedAncestor(record.parentRunId)) run.finish('interrupted')
+    if (record?.parentRunId && this.hasStoppedAncestor(record.parentRunId)) run.finish('interrupted', undefined, undefined, 'parent_stopped')
     return run
   }
 
@@ -398,22 +402,23 @@ export class RunRegistry {
 
   private validateAnswer(input: QuestionInput, answer: QuestionAnswer): QuestionAnswer {
     const selected = answer.selected
-    const selectedLabels = new Set(selected)
     const notes: Record<string, string> = {}
     for (const [label, note] of Object.entries(answer.notes ?? {})) {
       const normalized = typeof note === 'string' ? note.trim() : ''
       if (normalized) notes[label] = normalized
     }
     const text = answer.text?.trim()
-    if (
-      (!input.multiSelect && selected.length > 1) ||
-      selectedLabels.size !== selected.length ||
-      selected.some((label) => !input.options.some((option) => option.label === label)) ||
-      (text && !input.allowText) ||
-      Object.keys(notes).some((label) => !selectedLabels.has(label)) ||
-      Object.values(notes).some((note) => note.length > 10_000)
-    ) {
-      throw new HarnessError('invalid_answer', 'Choose the offered options or an allowed text answer, and attach notes only to selected choices.')
+    const problem = questionAnswerProblem(input, { selected, ...(text ? { text } : {}), notes })
+    if (problem) {
+      // Shape only: the answer content is the person's, and never belongs in a diagnostic log.
+      log('a question answer was refused', {
+        summary: input.summary ?? null,
+        field: problem.field,
+        selected: selected.length,
+        notes: Object.keys(notes).length,
+        textLength: text?.length ?? 0
+      })
+      throw new HarnessError('invalid_answer', problem.message)
     }
     return { selected, ...(text ? { text } : {}), ...(Object.keys(notes).length ? { notes } : {}) }
   }

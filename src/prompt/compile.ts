@@ -36,6 +36,9 @@ export const REFERENCES_BUDGET = 12000
 const VARIANT_BUDGET = 30_000
 const NOTES_LISTED = 25
 
+/** An approval is a control the person clicks; the model never asks for permission in a message. */
+export const APPROVAL_GUIDANCE = 'Approvals: when a call needs a person, the Harness pauses that exact call and shows them Allow and Deny. Never ask for permission in a message, never end your turn to wait for an answer, and never call a task blocked on approval before trying: a denial arrives as the tool result, and you continue from it.'
+
 /** Where the harness's own sections sit; an application's sections are placed among them by `order`. */
 export const SECTION_ORDER = { harnessIdentity: 5, system: 25, sessionState: 30, guardrails: 40, memory: 45, references: 50, requiredSkills: 52, subagents: 64, scripts: 66, wiki: 80, tools: 90, reporting: 95 } as const
 
@@ -265,7 +268,7 @@ export function toolGroups(context: CallerContext, launch: Launch, dataRoot?: st
   const native = NATIVE_GROUP.filter((name) => enabled.includes(name))
   const wikiTools = WIKI_GROUP.filter((name) => name !== 'wiki_write' || enabled.includes(name))
   const readGuidance = `Read-only file tools accept absolute paths and paths beginning with ~ anywhere this process has operating-system read access. The working folder is a default location, not a read boundary.${dataRoot ? ` The Harness data root is ${dataRoot}.` : ''}`
-  const writeGuidance = 'Keep native file writes and Bash filesystem effects inside the active project workspace. Outside file targets require one-call approval; remembered tool grants do not satisfy it. Bash, including an initial ! command, may read as before but writes are sandboxed to the workspace unless the explicit Full Permission switch is on. Keep task outputs in the project, following an existing artifacts/ or outputs/ convention when present.'
+  const writeGuidance = 'Keep native file writes and Bash filesystem effects inside the active project workspace, where they run without asking. An outside file target is allowed too: call the tool and the Harness pauses that one call until the person clicks Allow or Deny, so nothing outside changes first. Remembered tool grants do not answer an outside target; only the explicit Full Permission switch answers it for the run. Bash, including an initial ! command, may read as before but writes are sandboxed to the workspace unless that switch is on. Keep task outputs in the project, following an existing artifacts/ or outputs/ convention when present.'
   // One wording for every front end: the terminal and a host give the same tools the same words (INV-PAR-1).
   const nativeGuidance = `Files and shell: ${readGuidance} ${writeGuidance} Edits and commands still pass through the Harness gate.`
   const groups: OrderedGroup[] = [
@@ -320,7 +323,7 @@ export function toolGroups(context: CallerContext, launch: Launch, dataRoot?: st
 
 /** One paragraph per tool group the caller has, then the harness's own tool guidance. */
 function tools(groups: readonly OrderedGroup[], guidance: string, pointer: string): Section | null {
-  let text = ''
+  let text = `${APPROVAL_GUIDANCE}\n\n`
   for (const group of groups) if (group.guidance) text += `${group.guidance}\n\n`
   if (guidance.trim()) text += `### How to use your tools\n\n${guidance.trim()}\n`
   return section('tools', 'Tools', text, TOOLS_BUDGET, pointer, [])

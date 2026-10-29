@@ -7,6 +7,8 @@ enabled tools, MCP connections, plugins and skills, pinned variant, runtime and 
 provider requests, token refreshes, browser launch, permission prompts or computer input. A local
 pass does not establish live connectivity. Other accounts show their saved status and timestamp.
 Providers without diagnostics report unverified. Disabled capabilities are not failures.
+The application-window capture check reports blocked when no screenshot tool is listed, and
+unverified when one is listed; it does not capture a window or establish backend isolation.
 
 The shell check reports which `bash` the session would run and whether the platform's
 write-boundary sandbox (sandbox-exec on macOS, bubblewrap on Linux) is installed, because a missing

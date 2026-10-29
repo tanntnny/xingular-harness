@@ -153,6 +153,7 @@ describe('the harness served to a host', () => {
     expect(await request('runs.checklist', { runId: 'r1' })).toEqual([])
     expect(await request('runs.continuation', { runId: 'r1' })).toMatchObject({ runId: 'r1', resumable: false, reason: 'completed' })
     expect((await request('context.runPack', { runId: 'r1' })).sections.map((section: { id: string }) => section.id)).toContain('tools')
+    expect(await request('context.runDetails', { runId: 'r1' })).toMatchObject({ runId: 'r1', status: 'completed', mode: 'normal', skills: [], plugins: null })
   })
 
   it('lets a host that is not a Node program supply secrets, policy, names, and tools over the protocol', async () => {

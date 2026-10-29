@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { afterEach, expect, test } from 'vitest'
 
 import { closeIndex } from '../core/index'
-import { runEventPayloadSchemas, runRecordSchema, type RunEvent } from './contracts'
+import { questionAnswerProblem, runEventPayloadSchemas, runRecordSchema, type RunEvent } from './contracts'
 import { RunRegistry } from './registry'
 import { readEvents, saveRun } from './runStore'
 
@@ -58,7 +58,7 @@ test('question batches validate all answers before resolving and retain choice n
   expect(() => registry.answerQuestions('run-1', first.batchId, [
     { questionId: first.questionId, answer: { selected: ['UI'] } },
     { questionId: second.questionId, answer: { selected: ['Later'], notes: { Soon: 'wrong choice' } } }
-  ])).toThrow(/selected choices/)
+  ])).toThrow(/which is not selected/)
   await Promise.resolve()
   expect(settled).toBe(false)
 
@@ -156,4 +156,65 @@ test('answer batch method rejects duplicate and foreign question ids without set
   expect(events.filter((event) => event.type === 'question.answered')).toHaveLength(0)
   registry.answerQuestions('run-1', first.batchId, answers)
   await expect(result).resolves.toHaveLength(2)
+})
+
+test('an answer is checked with a reason that names the question and the field', () => {
+  const question = {
+    summary: 'Sections',
+    options: [{ label: 'Run setup' }, { label: 'Skills' }, { label: 'Usage activity' }],
+    multiSelect: true,
+    allowText: true
+  }
+  expect(questionAnswerProblem(question, { selected: ['Run setup'], notes: { 'Run setup': 'keep it' } })).toBeNull()
+  expect(questionAnswerProblem(question, { selected: ['Run setup'], text: 'also this' })).toBeNull()
+  expect(questionAnswerProblem(question, { selected: ['Run setup'], notes: { 'Usage activity': 'not selected' } }))
+    .toEqual({ field: 'notes', message: 'Question "Sections": a note is attached to "Usage activity", which is not selected.' })
+  expect(questionAnswerProblem(question, { selected: ['Run setup', 'Run setup'] }))
+    .toEqual({ field: 'selection', message: 'Question "Sections" lists the same choice more than once.' })
+  expect(questionAnswerProblem(question, { selected: ['Nope'] }))
+    .toEqual({ field: 'selection', message: 'Question "Sections" does not offer "Nope".' })
+  expect(questionAnswerProblem({ ...question, allowText: false }, { selected: ['Run setup'], text: 'typed' }))
+    .toEqual({ field: 'text', message: 'Question "Sections" does not take a typed answer; choose one of its options.' })
+  expect(questionAnswerProblem({ summary: 'Timing', options: [{ label: 'Latest run' }, { label: 'Both' }] }, { selected: ['Both', 'Latest run'] }))
+    .toEqual({ field: 'selection', message: 'Question "Timing" takes one choice, but 2 were selected.' })
+  expect(questionAnswerProblem(question, { selected: ['Run setup'], notes: { 'Run setup': 'x'.repeat(10_001) } }))
+    .toEqual({ field: 'notes', message: 'Question "Sections": the note for "Run setup" is longer than 10,000 characters.' })
+})
+
+test('the reported five-question batch accepts choices, text and notes', async () => {
+  const { root, registry, run } = fixture()
+  const labels = [
+    ['Compact strip', 'Expandable card', 'Button only'],
+    ['Context page', 'Separate page', 'Side panel'],
+    ['Run setup', 'Skills', 'Plugins', 'Tools and connectors', 'Usage activity', 'Context usage'],
+    ['Latest run', 'Upcoming setup', 'Both', 'Nothing'],
+    ['Current and history', 'Current only']
+  ]
+  const summaries = ['Chat layout', 'Detail layout', 'Sections', 'Timing', 'History']
+  const questions = summaries.map((summary, index) => ({
+    summary,
+    question: `Question ${index + 1}?`,
+    options: labels[index]!.map((label, position) => ({ label, recommended: position === 0 })),
+    multiSelect: index === 2,
+    allowText: true
+  }))
+  const result = run.requestAnswers(questions)
+  const requested = readEvents(root, 'run-1').filter((event) => event.type === 'question.requested')
+  const batchId = (requested[0]!.payload as { batchId: string }).batchId
+  const ids = requested.map((event) => (event.payload as { questionId: string }).questionId)
+  const answers: Array<{ questionId: string; answer: { selected: string[]; text?: string; notes?: Record<string, string> } }> = [
+    { questionId: ids[0]!, answer: { selected: ['Compact strip'], text: 'Keep the transcript quiet.' } },
+    { questionId: ids[1]!, answer: { selected: ['Context page'], notes: { 'Context page': 'Beside token usage.' } } },
+    { questionId: ids[2]!, answer: { selected: ['Run setup', 'Skills', 'Plugins'], notes: { Skills: 'Show active ones.' } } },
+    { questionId: ids[3]!, answer: { selected: ['Latest run'], text: 'Label it completed or stopped.' } },
+    { questionId: ids[4]!, answer: { selected: ['Current and history'] } }
+  ]
+  const questionById = new Map(requested.map((event, index) => [(event.payload as { questionId: string }).questionId, questions[index]!]))
+  for (const { questionId, answer } of answers) {
+    expect(questionAnswerProblem(questionById.get(questionId)!, answer)).toBeNull()
+  }
+  registry.answerQuestions('run-1', batchId, answers)
+  await expect(result).resolves.toHaveLength(5)
+  const recorded = readEvents(root, 'run-1').filter((event) => event.type === 'question.answered')
+  expect(recorded.find((event) => (event.payload as { notes?: Record<string, string> }).notes)?.payload).toMatchObject({ notes: { 'Context page': 'Beside token usage.' } })
 })

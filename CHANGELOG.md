@@ -2,6 +2,37 @@
 
 ## Unreleased
 
+- Require owner-prefixed plugin commands on terminal and structured sessions. Plugin-owned prompt
+  templates join extension commands under `/<owner-prefix>:<name>`, with no bare plugin aliases.
+  A package can select a root template with `harness.defaultPrompt`; owner and route collisions fail
+  closed. Standalone templates, `/skill:<name>` and core commands remain (ADR-0061).
+
+- Make an approval a control, never a typed permission. The compiled guidance now tells the model to
+  call the tool, the Harness pauses that exact call (`waiting_for_approval`), and Allow resumes it in
+  the same turn; a denial returns a tool result on the still-running turn and says so, instead of
+  inviting another prose request. Nothing outside the workspace changes before the click, and Full
+  Permission remains the standing bypass (INV-GATE-9, ADR-0060).
+
+- Record structured tool refusals and run stop codes, and expose them in trajectory search and the
+  terminal trajectory page. Compaction events include available token measurements; older run
+  records remain readable without these fields.
+
+- Keep a refused question answer in the terminal. A choice, note or typed answer that the Harness
+would reject now stays in the dock with an inline reason, instead of closing the form and losing the
+draft; the reason names the question and the field (selection, typed answer or note), and the answer
+is checked against the server rule before it is sent. The terminal was previously reopening an empty
+question after any rejection, so a second Continue skipped everything.
+
+- Scroll a `/btw` answer taller than its block. PageUp/PageDown now reach the side-question dock
+while it is open, and the mouse wheel over the block browses it too; before this the transcript
+consumed those keys, so the block's `PgUp/PgDn/wheel browse` hint did nothing. When the answer fits, the
+keys scroll the transcript as before.
+
+- Drop the context-use reading from the terminal's composer status line, so it no longer ends the
+token group with a figure such as `6.6%/?`. The line keeps the project and branch, account, model
+and effort, and input/cache hit rate/output tokens; the share of the window stays on the `/context`
+page. Both the OpenTUI status bar and the exported `tui/status` band lose the reading.
+
 - Render the `/btw` side answer as Markdown instead of plain text. Headings, emphasis, lists,
   quotes, links, tables and fenced code use the theme's markdown colours, and a streaming answer
   re-renders in place. Terminal control sequences in model output are still removed.

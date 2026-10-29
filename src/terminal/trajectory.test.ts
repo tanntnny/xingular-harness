@@ -37,7 +37,8 @@ it('lists newest runs only for the current terminal session and native conversat
   for (const item of [
     run('run-1', 'terminal-1', '/history/one.jsonl'),
     run('run-2', 'terminal-1', '/history/two.jsonl'),
-    run('run-3', 'terminal-2', '/history/one.jsonl')
+    run('run-3', 'terminal-2', '/history/one.jsonl'),
+    { ...run('run-4', 'terminal-1', '/history/two.jsonl'), trigger: 'side-question' }
   ]) saveRun(root, item)
 
   expect(listTerminalTrajectoryRuns(root, 'terminal-1', '/history/one.jsonl').map(item => item.id)).toEqual(['run-1'])
@@ -62,5 +63,7 @@ it('does not reveal runs from a different terminal or native conversation', () =
 
   expect(() => readTerminalTrajectory(root, 'terminal-2', '/history/one.jsonl', 'run-1')).toThrow('Run was not found')
   expect(() => readTerminalTrajectory(root, 'terminal-1', '/history/two.jsonl', 'run-1')).toThrow('Run was not found')
+  saveRun(root, { ...run('run-2', 'terminal-1', '/history/two.jsonl'), trigger: 'side-question' })
+  expect(() => readTerminalTrajectory(root, 'terminal-1', '/history/one.jsonl', 'run-2')).toThrow('Run was not found')
   expect(() => readTerminalTrajectory(root, 'terminal-1', '/history/one.jsonl', 'run-1', -1)).toThrow('Run was not found')
 })

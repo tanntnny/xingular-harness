@@ -151,6 +151,7 @@ function handoffRequest(limit: string, state: SliceState, checkpointAvailable = 
 }
 
 interface ToolCall {
+  toolCallId: string
   toolName: string
 }
 interface ToolResult {
@@ -173,6 +174,7 @@ export interface WorkSliceGuardOptions {
   checkpointAvailable?: boolean | (() => boolean)
   /** Called when a triggering call terminates the reply; the runner ends it. */
   onEnd?: (end: SliceEnd, limit: string) => void
+  onRefuse?: (event: ToolCall, reason: string) => void
 }
 
 /**
@@ -211,6 +213,7 @@ export function workSliceGuard(options: WorkSliceGuardOptions): (pi: GuardApi) =
     })
     pi.on('tool_call', (event) => {
       const name = event.toolName
+      const refuse = <T extends { reason: string }>(result: T): T => { options.onRefuse?.(event, result.reason); return result }
       state.steps += 1
       state.lastTool = name
       const canCheckpoint = checkpointAvailable()
@@ -220,7 +223,7 @@ export function workSliceGuard(options: WorkSliceGuardOptions): (pi: GuardApi) =
         const reason = state.checkpointWritten
           ? 'This reply is over. Its checkpoint is recorded; nothing else runs.'
           : 'This reply is over. The Harness will record an evidence-derived checkpoint; nothing else runs.'
-        return handoff ? undefined : { block: true, terminate: true, reason }
+        return handoff ? undefined : refuse({ block: true, terminate: true, reason })
       }
       if (state.compactions >= 3) {
         if (handoff) {
@@ -228,7 +231,7 @@ export function workSliceGuard(options: WorkSliceGuardOptions): (pi: GuardApi) =
           state.endedByLimit = 'three compactions'
           return undefined
         }
-        return end('compaction-thrash', 'three compactions')
+        return refuse(end('compaction-thrash', 'three compactions'))
       }
       const limit = sliceLimitReached(policy, state)
       if (limit) {
@@ -237,7 +240,7 @@ export function workSliceGuard(options: WorkSliceGuardOptions): (pi: GuardApi) =
         state.endedBy = 'budget'
         state.endedByLimit = limit
         state.refusedAt ??= state.steps
-        return handoff ? undefined : { block: true, reason: handoffRequest(limit, state, canCheckpoint) }
+        return handoff ? undefined : refuse({ block: true, reason: handoffRequest(limit, state, canCheckpoint) })
       }
     })
   }

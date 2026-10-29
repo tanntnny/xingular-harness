@@ -48,5 +48,5 @@ export async function askForAction(ask: ActionAsk): Promise<string | null> {
     rememberable: false,
     standing: 'none'
   })
-  return decision === 'approved' ? null : 'The user denied this action. Ask how they would like to proceed.'
+  return decision === 'approved' ? null : 'The user denied this action. Do not repeat it or ask for permission in a message; choose another approach or report what is blocked.'
 }

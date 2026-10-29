@@ -445,9 +445,11 @@ and stops sharing them.
 ## Pending messages and barriers
 
 The terminal shows pending steering, follow-up and deferred plan/Bash inputs above the working
-line, distinguishing their delivery type. A steering message is
-intended for the active reply; a follow-up waits until it finishes. With no active reply, a normal
-message starts a turn. Pi's steering and follow-up settings determine delivery within those queues.
+line, one row per item: `Steer:` or `Follow-up:` in the accent blue for the two native queues, and a
+muted `Plan:`, `Bash:` or `Prompt:` for deferred input, followed by the single-line text. A steering
+message is intended for the active reply; a follow-up waits until it finishes. With no active reply,
+a normal message starts a turn. Pi's steering and follow-up settings determine delivery within
+those queues.
 
 A queued plan or `!` Bash command is a barrier: it runs as a standalone turn after the current
 response, and subsequent inputs wait behind it rather than entering Pi's native queues and
@@ -555,10 +557,11 @@ In the extracted `pi-tui` package, `src/theme/defaults/titanium.json` establishe
 palette and its indexed-color fallbacks. Harness adapts these into
 [`theme.ts`](../src/terminal/tui/theme.ts) and
 [`opentui/theme.ts`](../src/terminal/opentui/theme.ts). The OpenTUI status bar shows the project name and
-branch together as `<repo>:<branch>`, followed by account, model, context use and current-session input/output totals. Input totals add cache
-reads and exclude cache writes; its `R<percentage>%` hit rate is cache reads divided by total input.
-Token counts below 1,000 show as whole numbers; larger counts use floor-rounded K/M/B suffixes
-without decimals.
+branch together as `<repo>:<branch>`, followed by account, model and current-session
+input/output totals. Input totals add cache reads and exclude cache writes; its `R<percentage>%`
+hit rate is cache reads divided by total input. Token counts below 1,000 show as whole numbers;
+larger counts use floor-rounded K/M/B suffixes without decimals. The band carries no context-use
+reading; `/context` reports the share of the window.
 
 The OpenTUI composer follows the observed composer of Claude Code 2.1.302, reproduced from its
 visible values; no code is copied. The command palette follows the same borderless convention.
@@ -719,7 +722,9 @@ column, and begins with an accent-colored `Note:` label. Tab only visits note fi
 open. Notes are submitted by choice label and cleared when that choice is deselected. Notes and
 free-text answers wrap across lines. Tab takes precedence over normal thinking and plan-mode shortcuts. Up
 and Down navigate choices. Enter selects a choice, activates the focused action, or submits the
-answer or note field. Escape cancels the pending question and interrupts the run.
+answer or note field. Escape cancels the pending question and interrupts the run. A refused answer
+keeps the dock, its choices, notes and typed text, shows the reason inside the dock, and can be
+submitted again after the change; writing a different answer clears the message.
 
 Questions may set `uiSketch: true` to enable a choice sketch preview. Every choice must then include
 an ASCII sketch of 1–24 LF-separated lines, no more than 80 printable ASCII characters per line
@@ -807,8 +812,9 @@ Hidden reasoning and image bytes are excluded; the side run has no tools. Its bl
 question after `/btw`, shows the normal animated spinner while answering, renders the answer as
 Markdown, and separates the answer and hint by one blank row; it has no status labels. Headings,
 emphasis, lists, quotes, links, tables and fenced code keep the theme's markdown colours, and a
-streaming answer re-renders as it grows. PageUp/PageDown browse a long answer and Ctrl+X
-copies the full answer. Escape or either command with no question dismisses the dock and interrupts
+streaming answer re-renders as it grows. PageUp/PageDown, or the mouse wheel over the block, browse
+an answer taller than the block; Ctrl+X copies the full answer. Escape or either command with no
+question dismisses the dock and interrupts
 only that side run; the main reply continues. `/stop` interrupts the current main reply. The `/accounts` page handles sign-in
 and sign-out. `/components` browses reusable skills, prompts and rules; a confirmed skill or rule addition
 creates a variant version for future sessions while the current terminal keeps its pinned version. `/reload` applies trusted resource and keybinding changes.

@@ -90,9 +90,9 @@ export function createTerminalCommands(host: TerminalCommandHost) {
     return session.resourceLoader.getSkills().skills.map((skill) => ({ name: skill.name, description: skill.description }))
   }
 
-  async function openPage(id: CommandPageId, options: { runId?: string; url?: string; annotate?: AnnotateStart; usageTab?: 'analysis' | 'limit' | 'accounts'; usagePeriod?: 'today' | '7d' | '30d' | 'all'; contextTab?: 'request' | 'growth' } = {}) {
+  async function openPage(id: CommandPageId, options: { runId?: string; url?: string; annotate?: AnnotateStart; usageTab?: 'analysis' | 'limit' | 'accounts'; usagePeriod?: 'today' | '7d' | '30d' | 'all'; contextTab?: 'details' | 'request' | 'growth' } = {}) {
     let close = () => {}
-    const page = createCommandPage(host, id, { ...options, close: () => close(), navigate: (target) => { close(); setTimeout(() => void openPage(target), 0) } })
+    const page = createCommandPage(host, id, { ...options, close: () => close(), navigate: (target, runId) => { close(); setTimeout(() => void openPage(target, { runId }), 0) } })
     await host.ui.custom<void>((tui, _theme, _keys, done) => {
       close = () => done(undefined)
       return new PageOverlay({ page, tui, theme: () => host.ui.theme, close, changed: host.changed })
@@ -141,51 +141,16 @@ export function createTerminalCommands(host: TerminalCommandHost) {
     } catch (error) { host.ui.notify(error instanceof Error ? error.message : String(error), 'error') }
   }
 
-  const runLegacyPluginCommand = async (name: string, argument: string): Promise<void> => {
-    const session = host.session()
-    if (coreCommandNames(session).has(name)) {
-      host.ui.notify(`Use /${name}; /plugin:${name} is unavailable because a core command or prompt already uses that name.`, 'error')
-      return
-    }
-    const builtins = BUILTIN_PLUGIN_REGISTRY.commandsNamed(name)
-    const extensions = extensionCommands()
-    if (builtins.length > 1) {
-      host.ui.notify(`Legacy plugin command /plugin:${name} is ambiguous. Use its owner-qualified command.`, 'error')
-      return
-    }
-    if (builtins.length === 1) {
-      const competitors = extensions.byName.get(name) ?? []
-      if (competitors.length) {
-        host.ui.notify(`Extension command /plugin:${name} from ${competitors.map(command => command.sourceInfo.path).join(', ')} is unavailable because the name belongs to the built-in ${builtins[0]!.pluginId} plugin.`, 'error')
-      }
-      await runBuiltinPluginCommand(builtins[0]!, argument)
-      return
-    }
-    const matches = extensions.byName.get(name) ?? []
-    if (matches.length > 1) {
-      host.ui.notify(`Legacy plugin command /plugin:${name} is ambiguous. Registered by: ${matches.map(command => command.sourceInfo.path).join(', ')}. Use its owner-qualified command.`, 'error')
-      return
-    }
-    if (matches.length === 1) {
-      if (extensions.conflictingPrefixes.has(matches[0]!.prefix)) {
-        host.ui.notify(`Plugin prefix /${matches[0]!.prefix}: is ambiguous or reserved. Owners: ${extensions.conflictingPrefixes.get(matches[0]!.prefix)!.join(', ')}.`, 'error')
-        return
-      }
-      await runExtensionCommand(matches[0]!, argument, `plugin:${name}`)
-      return
-    }
-    host.ui.notify(`Unknown plugin command: /plugin:${name}. Use /help to list the commands.`, 'error')
-  }
-
   const runNamespacedCommand = async (typedName: string, argument: string): Promise<boolean> => {
     const separator = typedName.indexOf(':')
     if (separator < 1) return false
     const prefix = typedName.slice(0, separator)
     const name = typedName.slice(separator + 1)
     if (prefix === 'plugin') {
-      await runLegacyPluginCommand(name, argument)
+      host.ui.notify(`Unknown plugin command: /${typedName}. Use its owner-qualified command.`, 'error')
       return true
     }
+    if (host.session().resourceLoader.getPrompts().prompts.some(prompt => prompt.name === typedName)) return false
     const builtin = name ? BUILTIN_PLUGIN_REGISTRY.command(prefix, name) : BUILTIN_PLUGIN_REGISTRY.defaultCommand(prefix)
     const extensions = extensionCommands()
     const isBuiltinPrefix = builtinPrefixes.has(prefix)
@@ -223,16 +188,7 @@ export function createTerminalCommands(host: TerminalCommandHost) {
   const legacyAliases = (): string[] => {
     const session = host.session()
     const coreNames = coreCommandNames(session)
-    const aliases = new Set<string>(LEGACY_BUILTIN_COMMAND_ALIASES.keys())
-    for (const command of pluginCommands) {
-      if (command.rootOnly || coreNames.has(command.name)) continue
-      aliases.add(`plugin:${command.name}`)
-      if (command.legacyBare) aliases.add(command.name)
-    }
-    for (const name of extensionCommands().byName.keys()) {
-      if (!coreNames.has(name)) aliases.add(`plugin:${name}`)
-    }
-    return [...aliases]
+    return [...LEGACY_BUILTIN_COMMAND_ALIASES.keys()].filter(name => !name.startsWith('plugin:') && !coreNames.has(name))
   }
 
   const completions = (): TerminalCommandCompletion[] => {
@@ -260,7 +216,7 @@ export function createTerminalCommands(host: TerminalCommandHost) {
     }
     const extensionNames = new Set(extensions.byName.keys())
     for (const prompt of prompts) {
-      if (promptCommandAvailable(prompt.name, new Set([...commands.keys(), ...COMMAND_ALIASES.keys()]), extensionNames)) commands.set(prompt.name, { name: prompt.name, description: prompt.description, group: 'Prompts' })
+      if ((prompt.name.includes(':') || promptCommandAvailable(prompt.name, new Set([...commands.keys(), ...COMMAND_ALIASES.keys()]), extensionNames)) && !commands.has(prompt.name)) commands.set(prompt.name, { name: prompt.name, description: prompt.description, group: 'Prompts' })
     }
     return [...commands.values()]
   }
@@ -270,27 +226,16 @@ export function createTerminalCommands(host: TerminalCommandHost) {
     if (!match) return false
     const typedName = match[1]!
     const argument = match[2]?.trim() ?? ''
-    const legacyBuiltin = LEGACY_BUILTIN_COMMAND_ALIASES.get(typedName)
+    const legacyBuiltin = typedName.startsWith('plugin:') ? undefined : LEGACY_BUILTIN_COMMAND_ALIASES.get(typedName)
     if (!legacyBuiltin && await runNamespacedCommand(typedName, argument)) return true
     const session = host.session()
     const name = coreCommand(legacyBuiltin ?? typedName)?.name ?? legacyBuiltin ?? typedName
     const builtin = BUILTINS.find(item => item.name === name)
-    if (!builtin && !coreCommandNames(session).has(name)) {
-      const legacyBare = BUILTIN_PLUGIN_REGISTRY.commandsNamed(name).filter(command => command.legacyBare)
-      if (legacyBare.length > 1) {
-        host.ui.notify(`Legacy command /${name} is ambiguous. Use its owner-qualified command.`, 'error')
-        return true
-      }
-      if (legacyBare.length === 1) {
-        await runBuiltinPluginCommand(legacyBare[0]!, argument)
-        return true
-      }
-    }
     if (!builtin) {
       // A skill is offered as $name; the typed /skill:name form still reaches the SDK, which expands it.
       if (skills().some(skill => `skill:${skill.name}` === name)) return false
       const prompt = session.resourceLoader.getPrompts().prompts.some(item => item.name === name)
-      if (prompt && promptCommandAvailable(name, CORE_PROMPT_NAMES, new Set(extensionCommands().byName.keys()))) return false
+      if (prompt && (name.includes(':') || promptCommandAvailable(name, CORE_PROMPT_NAMES, new Set(extensionCommands().byName.keys())))) return false
       host.ui.notify(`Unknown command: /${name}. Use /help to list commands.`, 'error')
       return true
     }
@@ -428,7 +373,7 @@ export function createTerminalCommands(host: TerminalCommandHost) {
           break
         }
         case 'log': await openPage('log'); break
-        case 'context': await openPage('context', { contextTab: argument === 'growth' ? 'growth' : 'request' }); break
+        case 'context': await openPage('context', { contextTab: argument === 'growth' ? 'growth' : argument === 'request' ? 'request' : 'details' }); break
         case 'remote-control': {
           const choice = argument.toLowerCase()
           if (choice === 'off' || choice === 'stop') {

@@ -126,6 +126,16 @@ test('read-only file guidance names absolute and home paths plus the configured 
   expect(tools).not.toContain('within this session\'s working folder')
 })
 
+test('the tools section makes an approval a control the person clicks, never a message to ask for', () => {
+  const env = setup()
+  const tools = compile(env, agent(), hosted()).sections.find((entry) => entry.id === 'tools')!.body
+  expect(tools).toContain('the Harness pauses that exact call')
+  expect(tools).toContain('Never ask for permission in a message')
+  expect(tools).toContain('a denial arrives as the tool result')
+  expect(tools).toContain('call the tool and the Harness pauses that one call')
+  expect(tools).not.toContain('Outside file targets require one-call approval')
+})
+
 test('a tool-free side run does not receive main tool guidance', () => {
   const env = setup()
   const pack = compile(env, agent(), { ...hosted(), hideToolGuidance: true })

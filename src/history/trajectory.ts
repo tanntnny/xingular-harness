@@ -82,6 +82,8 @@ function summary(env: HarnessEnv, run: RunRecord, projects: ReturnType<typeof li
     project: project ? { id: project.id, name: project.name, slug: project.slug } : null,
     mode: run.mode,
     status: run.status,
+    terminalReason: run.terminalReason ?? null,
+    terminalCode: run.terminalCode ?? null,
     goal: goal.length > 500 ? `${goal.slice(0, 497)}…` : goal || null,
     startedAt: run.startedAt,
     endedAt: run.endedAt,

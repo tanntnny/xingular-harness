@@ -28,7 +28,7 @@ import { statusBarText } from './statusBar'
 import { workingLineParts, workingLineText, workingVerbShimmerProfile } from './workingLine'
 import { toastLayout, type ToastLayout } from './toastLayout'
 import { homeBrand } from './homeBrand'
-import { pendingMessageLines, type PendingMessage } from './pendingMessages'
+import { pendingMessageRows, type PendingMessage } from './pendingMessages'
 
 const theme = opentuiTheme
 const scrollbarColor = RGBA.fromHex(theme.dim)
@@ -576,11 +576,16 @@ function StatusBar(props: { view: OpenTuiView }) {
 }
 
 function PendingMessages(props: { messages: readonly PendingMessage[]; width: number; height: number }) {
-  const lines = () => pendingMessageLines(props.messages, props.width, Math.min(4, Math.max(0, props.height - 8)))
+  const rows = () => pendingMessageRows(props.messages, props.width, Math.min(4, Math.max(0, props.height - 8)))
   return (
-    <Show when={lines().length > 0}>
+    <Show when={rows().length > 0}>
       <box width='100%' paddingX={1} flexDirection='column' flexShrink={0}>
-        <For each={lines()}>{line => <text fg={theme.muted} wrapMode='none' truncate={true}>{line}</text>}</For>
+        <For each={rows()}>{row => (
+          <text fg={theme.muted} wrapMode='none' truncate={true}>
+            <Show when={row.label}><Span fg={row.accent ? theme.accent : theme.muted}>{`${row.label} `}</Span></Show>
+            <Span fg={theme.muted}>{row.text}</Span>
+          </text>
+        )}</For>
       </box>
     </Show>
   )
@@ -1171,7 +1176,7 @@ export function OpenTuiRoot(props: { app: OpenTuiApplication }) {
     if (prompt?.focused) props.app.setDraft(prompt.plainText, indexForBufferOffset(prompt.plainText, prompt.cursorOffset))
     const current = view()
     const page = Math.max(1, Math.floor((dimensions().height - 8) / 2))
-    if (!current.overlay && !current.questionDock && (key.name === 'pageup' || key.name === 'pagedown' || (key.ctrl && (key.name === 'home' || key.name === 'end')))) {
+    if (!current.overlay && !current.questionDock && !current.sideQuestionScrollable && (key.name === 'pageup' || key.name === 'pagedown' || (key.ctrl && (key.name === 'home' || key.name === 'end')))) {
       if (key.name === 'pageup') scroll?.scrollBy({ x: 0, y: -page })
       else if (key.name === 'pagedown') scroll?.scrollBy({ x: 0, y: page })
       else if (key.name === 'home') scroll?.scrollTo({ x: 0, y: 0 })
@@ -1239,6 +1244,20 @@ export function OpenTuiRoot(props: { app: OpenTuiApplication }) {
         <For each={view().widgets.above}>
           {lines => <AnsiView lines={lines} fg={theme.text} />}
         </For>
+        <Show when={view().sideQuestionDock} fallback={<box height={0} flexShrink={0} />}>
+          {(lines: () => readonly AnsiLine[]) => (
+            <box
+              flexShrink={0}
+              onMouseScroll={event => {
+                const direction = event.scroll?.direction
+                if (direction !== 'up' && direction !== 'down') return
+                if (props.app.scrollSideQuestion(direction)) event.stopPropagation()
+              }}
+            >
+              <AnsiView lines={lines()} fg={theme.text} />
+            </box>
+          )}
+        </Show>
         <Show when={view().planChoice} fallback={<box height={0} flexShrink={0} />}>
           {(choice: () => PlanChoiceView) => <PlanChoiceBlock app={props.app} choice={choice()} />}
         </Show>

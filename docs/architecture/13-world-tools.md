@@ -30,6 +30,25 @@ The contract itself does not prove that a host implements these requirements. In
 existing macOS host capture has not yet adopted this contract and captures a display; it must not
 be represented as approved-window-only capture. The standalone terminal has no capture backend.
 
+`computer/contracts.ts` and `computer/control.ts` define an unregistered, session-bound adapter for
+future approved-window interaction. Its opaque target and screenshot IDs, bounded inputs, stale
+capture checks and concurrency guard do not authorize a call. A provider must enforce the gate and
+human approval independently, and its backend must enforce target identity, window isolation,
+sensitive-field refusal and run liveness at the point of effect. No terminal computer tools are
+registered through this adapter. `computer/boundary.ts` adds an unregistered, run-bound transaction
+that asks for a fresh human decision for each action and revalidates after approval; it is not a
+replacement for the normal gate or for point-of-effect enforcement in the backend. The terminal
+socket has a one-shot client operation that does not replay a request after a lost reply. Neither is
+wired to computer tools. `computer/terminalCapture.ts` adds an unregistered read-only bridge with
+person-controlled selection, per-capture approval and revocation; its host must still enforce
+window isolation at capture time. `computer/volatileImages.ts` is an unregistered experiment that
+sanitizes computer screenshot results before Pi session persistence and restores their images to an
+in-memory request projection; it is not connected to a runtime and cannot protect host logs or
+provider retention. `native/computer/` contains disabled capture and picker prototypes: isolation
+and continuous approval are not established. Terminal integration and native input delivery need a
+verified authorization boundary before they can be exposed; an implementation that cannot enforce
+window confinement must refuse rather than post global input.
+
 
 ## Shared browser contract and native WebKit limits (PROP-0040)
 

@@ -30,10 +30,14 @@ rebuildable SQLite index.
 - **Recall scope.** A `Code` caller (a session in a project) reads only session runs of its project,
   or its own session. A `Chat` caller reads its agent's conversations. `recallExcludeAgents` hides
   named agents' conversations. A caller never reads a run outside its scope.
+- **Trajectory search** returns run summaries including `terminalReason` and `terminalCode`, each
+  null when unavailable (including older records without a code). Trajectory reads include the same
+  summary.
 - **Trajectory reads** return pages of canonical execution events, including active runs,
-  bounded and marked when truncated. They omit account identifiers, credential fields,
-  attachment bytes, native adapter payloads and provider reasoning text. They report evidence,
-  never a score.
+  bounded and marked when truncated. `run: 'current'` resolves to the caller's active run on
+  structured and terminal model-tool paths; without an active run it fails rather than using a
+  previous run. They omit account identifiers, credential fields, attachment bytes, native adapter
+  payloads and provider reasoning text. They report evidence, never a score.
 - **Lessons** (PROP-0008, [ADR-0010](../decisions/ADR-0010-lessons-in-the-wiki.md)). When the
   first-party `lessons` plugin is on for a run's caller (its contribution is in the run's
   `capabilities.json`), a **completed, top-level** run that made at least `minToolCalls` tool calls

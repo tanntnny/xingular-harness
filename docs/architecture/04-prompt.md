@@ -118,9 +118,11 @@ compile ──► pack ──► stable sections ──► system prompt (+ "Con
 - Native file guidance states that absolute and `~` paths work for reads when the operating
   system permits access, names the configured data root, and describes the working folder as a
   default location. Native writes and Bash filesystem effects default to the run's pinned project
-  or worktree root; outside file targets require one-call approval, and Bash is sandboxed unless
-  the eligible user explicitly enables Full Permission. Edits and commands remain subject to the
-  gate.
+  or worktree root; an outside file target is allowed, and the Harness pauses that one call until
+  the person allows or denies it with a control. The tools section opens with the approval rule:
+  call the tool, never ask for permission in a message, and never end the turn to wait for an
+  answer. Bash is sandboxed unless the eligible user explicitly enables Full Permission. Edits and
+  commands remain subject to the gate.
 - A side-question launch attributes its fixed no-tool instruction to the `side-questions` plugin.
   Its launch suppresses tool guidance entirely. The main run's effective prompt and current context
   update are included in the separately bounded, redacted context message (PROP-0019).

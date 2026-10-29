@@ -11,6 +11,8 @@ import * as recall from '../history/recall'
 import * as trajectory from '../history/trajectory'
 import * as notes from '../wiki/notes'
 import * as proposals from '../plugins/proposals'
+import { findRun, updateRun } from '../sessions/runStore'
+import { isActiveStatus } from '../sessions/contracts'
 import type { HarnessCall } from './definitions'
 import { defaultSkillPaths, readSkillFile, SKILL_NAME } from './defaultSkills'
 
@@ -65,14 +67,21 @@ export function dispatch(env: DispatchEnv, context: CallerContext, call: Harness
       return `Proposed ${proposal.name} (${proposal.id}). A person can review it in the plugin manager; it is not installed or enabled.`
     }
     case 'skill.load':
-      return loadSkill(options.variantDir ?? null, str(params, 'name'))
+      return loadSkill(options.variantDir ?? null, str(params, 'name'), (name) => {
+        if (!context.runId) return
+        const run = findRun(env.root, context.runId)
+        if (!run || !isActiveStatus(run.status) || !run.loadedSkills) return
+        updateRun(env.root, context.runId, (record) => {
+          if (record.loadedSkills && !record.loadedSkills.includes(name)) record.loadedSkills.push(name)
+        })
+      })
     default:
       throw new HarnessError('unknown_method', `Unknown harness call ${call}.`)
   }
 }
 
 /** A skill's text from the run's variant, or the list of its skills. */
-export function loadSkill(variantDir: string | null, name: string): string {
+export function loadSkill(variantDir: string | null, name: string, onLoad?: (name: string) => void): string {
   const skills = variantDir && existsSync(join(variantDir, 'skills')) ? readdirSync(join(variantDir, 'skills'), { withFileTypes: true }).filter((entry) => entry.isDirectory() && existsSync(join(variantDir, 'skills', entry.name, 'SKILL.md'))).map((entry) => entry.name).sort() : []
   if (!skills.includes('plugin-authoring') && defaultSkillPaths(variantDir).length) skills.push('plugin-authoring')
   skills.sort()
@@ -83,5 +92,7 @@ export function loadSkill(variantDir: string | null, name: string): string {
   const skill = readSkillFile(variantDir, wanted)
   if (!skill) return `There is no skill named ${wanted}.${skills.length ? ` Your skills: ${skills.join(', ')}.` : ''}`
   const helperNote = skill.helpers.length ? `\n\n(This skill's helpers are in ${join(skill.baseDir, 'scripts')}: ${skill.helpers.join(', ')}.)` : ''
-  return `${readFileSync(skill.path, 'utf8')}${helperNote}`
+  const text = readFileSync(skill.path, 'utf8')
+  onLoad?.(wanted)
+  return `${text}${helperNote}`
 }

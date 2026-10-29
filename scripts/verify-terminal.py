@@ -56,6 +56,13 @@ def has_truecolor_foreground(raw, color):
     return re.search(pattern, raw) is not None
 
 
+def has_styled_text(raw, color, text):
+    channels = bytes.fromhex(color.removeprefix('#'))
+    pattern = (rb'\x1b\[[0-9;]*38;2;' + b';'.join(str(channel).encode() for channel in channels)
+               + rb'(?:;[0-9]+)*m(?:\x1b\[[0-9;]*m)*' + re.escape(text))
+    return re.search(pattern, raw) is not None
+
+
 def has_slim_scrollbar_at_right_edge(output, width):
     glyph = '▕'.encode()
     for marker in re.finditer(re.escape(glyph), output):
@@ -130,6 +137,22 @@ def wireframe_fixture(mark):
     return '\n'.join(lines)
 
 
+def current_user_message(messages):
+    """Skip Harness session-state updates without looking through an earlier user turn."""
+    for index in range(len(messages) - 1, -1, -1):
+        item = messages[index]
+        if item.get('role') != 'user':
+            continue
+        content = item.get('content', '')
+        text = ' '.join(part.get('text', '') for part in content if isinstance(part, dict) and part.get('type') == 'text') if isinstance(content, list) else str(content)
+        if ('Todo for this run:' in text and
+                ('This is the first turn in this native session.' in text or
+                 'This run continues the conversation; the todo list resets for each run.' in text)):
+            continue
+        return index, text
+    return -1, ''
+
+
 class LocalProvider(http.server.BaseHTTPRequestHandler):
     protocol_version = 'HTTP/1.1'
     requests = []
@@ -149,24 +172,24 @@ class LocalProvider(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         request = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
         messages = request.get('messages', [])
-        user_index = max((i for i, item in enumerate(messages) if item.get('role') == 'user'), default=-1)
-        user = str(messages[user_index].get('content', '')) if user_index >= 0 else ''
+        user_index, user = current_user_message(messages)
+        probe = user.lower()
         results = [item for item in messages[user_index + 1:] if item.get('role') == 'tool']
         index = len(results)
         sequence = []
-        if 'verify-todo' in user:
+        if 'verify-todo' in probe:
             sequence = [('todo_write', {'items': [
                 {'text': 'CHECK_DONE: Completed row ' + 'wrapping word ' * 13 + 'CHECK_WRAP_TAIL', 'status': 'completed'},
                 {'text': 'CHECK_ACTIVE: Active row', 'status': 'in_progress'},
                 {'text': 'CHECK_PENDING: Pending row', 'status': 'pending'}
             ]})]
-        elif 'verify-flow' in user:
+        elif 'verify-flow' in probe:
             outside_write = LocalProvider.root.parent / f'approved-write-{LocalProvider.root.name}.txt'
             bash_command = f"printf 'LOCAL_BASH_EXECUTED\\n' | tee {shlex.quote(str(outside_write))}"
             sequence = [
                 ('read', {'path': str(LocalProvider.root / 'fixture.txt')}),
                 ('bash', {'command': bash_command, 'workspaceWriteScope': 'outside'})]
-        elif 'verify-wireframe' in user:
+        elif 'verify-wireframe' in probe:
             sequence = [('ask_user', {'questions': [{
                 'summary': 'UI layout', 'question': 'Compare contextual layouts', 'uiSketch': True,
                 'options': [
@@ -174,7 +197,7 @@ class LocalProvider(http.server.BaseHTTPRequestHandler):
                     {'label': 'LongMastheadLabelWithoutSpaces', 'description': 'DESC_B retains neighboring panels.', 'sketch': wireframe_fixture('B')}
                 ]
             }]})]
-        elif 'verify-question-layout' in user:
+        elif 'verify-question-layout' in probe:
             sequence = [('ask_user', {'questions': [{
                 'summary': 'Dock layout', 'question': 'LAYOUT_QUESTION_TITLE: Choose a configuration for this test.',
                 'options': [
@@ -184,7 +207,7 @@ class LocalProvider(http.server.BaseHTTPRequestHandler):
                     {'label': 'Other', 'description': 'Describe another Harness area or test scenario, including the surrounding workflow and relevant constraints; LAYOUT_DESC_4_END.'}
                 ]
             }]})]
-        elif 'verify-batch' in user:
+        elif 'verify-batch' in probe:
             sequence = [('ask_user', {'questions': [
                 {'summary': 'Batch choice', 'question': 'LOCAL_BATCH_CHOICE', 'uiSketch': True, 'options': [{'label': 'Batch A', 'description': 'First batch answer', 'recommended': True, 'sketch': '+----------+\n|A_SKETCH  |\n+----------+'}, {'label': 'Batch B', 'description': 'Second batch answer', 'sketch': '+----------+\n|B_SKETCH  |\n+----------+'}], 'multiSelect': True},
                 {'summary': 'Batch reason', 'question': 'LOCAL_BATCH_REASON', 'options': [
@@ -192,15 +215,15 @@ class LocalProvider(http.server.BaseHTTPRequestHandler):
                     {'label': 'Reason B', 'description': 'Use reason B.'},
                     {'label': 'Reason C', 'description': 'Use reason C.'}
                 ]}]})]
-        elif 'verify-plan' in user and 'revise' not in user:
+        elif 'verify-plan' in probe and 'revise' not in probe:
             sequence = [('ask_user', {'questions': [
                 {'summary': 'Plan choice', 'question': 'LOCAL_PLAN_QUESTION', 'options': [{'label': 'Research first', 'description': 'Use the safe research path.', 'recommended': True}]}]})]
-        elif 'verify-deny' in user or 'verify-approval-cancel' in user:
-            decision = 'denied' if 'verify-deny' in user else 'cancelled'
+        elif 'verify-deny' in probe or 'verify-approval-cancel' in probe:
+            decision = 'denied' if 'verify-deny' in probe else 'cancelled'
             outside_write = LocalProvider.root.parent / f'{decision}-write-{LocalProvider.root.name}.txt'
             bash_command = f"printf 'blocked\\n' > {shlex.quote(str(outside_write))}"
             sequence = [('bash', {'command': bash_command, 'workspaceWriteScope': 'outside'})]
-        elif 'verify-question-cancel' in user:
+        elif 'verify-question-cancel' in probe:
             sequence = [('ask_user', {'questions': [{'summary': 'Cancel check', 'question': 'LOCAL_CANCEL_QUESTION', 'options': [{'label': 'Continue', 'description': 'Continue with the test.', 'recommended': True}]}]})]
         offered = [tool.get('function', {}).get('name') for tool in request.get('tools', [])]
         parts = messages[user_index].get('content') if user_index >= 0 else None
@@ -224,7 +247,7 @@ class LocalProvider(http.server.BaseHTTPRequestHandler):
             chunk({'role': 'assistant'})
             chunk({'reasoning_content': 'LOCAL_THINKING: inspect the real isolated fixture. '})
             time.sleep(0.08)
-            if 'verify-cancel' in user or 'verify-stop' in user:
+            if 'verify-cancel' in probe or 'verify-stop' in probe:
                 for number in range(200):
                     chunk({'content': f'CANCEL_STREAM_{number:03d} '})
                     time.sleep(0.08)
@@ -241,9 +264,9 @@ class LocalProvider(http.server.BaseHTTPRequestHandler):
                 self.wfile.flush()
                 return
             else:
-                if 'Implement the plan' in user:
+                if 'implement the plan' in probe:
                     texts = ['LOCAL_IMPLEMENTED: ', 'the plan was carried out.\n']
-                elif 'verify-markdown' in user:
+                elif 'verify-markdown' in probe:
                     texts = [
                         'LOCAL_MARKDOWN_START\n',
                         '# Primary heading\n\n',
@@ -258,9 +281,9 @@ class LocalProvider(http.server.BaseHTTPRequestHandler):
                         '---\n\n![Alt text](https://example.test/image.png)\n',
                         'LOCAL_MARKDOWN_DONE'
                     ]
-                elif 'verify-plan' in user:
+                elif 'verify-plan' in probe:
                     texts = ['LOCAL_PLAN: here is the plan. ', '<proposed_plan>', '# Verified plan\n\n', '1. Read `fixture.txt`.\n', '2. Confirm the result.\n', '</proposed_plan>']
-                elif 'verify-scroll-latest' in user:
+                elif 'verify-scroll-latest' in probe:
                     rows = '\n\n'.join(f'LOCAL_SCROLL_ROW_{number:02d}' for number in range(40))
                     texts = [f'LOCAL_SCROLL_START\n\n{rows}\n\nLOCAL_SCROLL_TAIL']
                 else:
@@ -570,6 +593,7 @@ def main():
     parser.add_argument('--attachments-only', action='store_true', help='Verify pasted images, collapsed large pastes, whole-label deletion and image delivery in an isolated PTY')
     parser.add_argument('--dialog-paste-only', action='store_true', help='Verify bracketed paste into a centered dialog input in an isolated PTY')
     parser.add_argument('--thinking-only', action='store_true', help='Verify /thinking show, hide, and toggle in an isolated PTY')
+    parser.add_argument('--queue-only', action='store_true', help='Verify the pending steering and follow-up labels in an isolated PTY')
     parser.add_argument('--compaction-only', action='store_true', help='Verify the persisted compaction history: earlier chat, rules, shown summary, click to hide and Ctrl+O to show')
     parser.add_argument('--cli', type=Path, default=REPOSITORY / 'dist' / 'cli.js', help='Actual bundled Harness CLI to exercise (including an embedding sidecar CLI)')
     parser.add_argument('--save-evidence', type=Path, help='Save concise durable verification evidence and compressed representative PTY captures')
@@ -597,7 +621,7 @@ def main():
             sizes = ['40x20', '80x24', '120x40']
         elif not args.sizes and args.accounts_only:
             sizes = ['80x24', '120x40']
-        elif not args.sizes and (args.attachments_only or args.dialog_paste_only or args.composer_only or args.file_completion_only or args.history_only or args.todo_only or args.questions_only or args.jump_latest_only or args.thinking_only or args.compaction_only):
+        elif not args.sizes and (args.attachments_only or args.dialog_paste_only or args.composer_only or args.file_completion_only or args.history_only or args.todo_only or args.questions_only or args.jump_latest_only or args.thinking_only or args.queue_only or args.compaction_only):
             sizes = ['80x24']
         elif not args.sizes and args.markdown_only:
             sizes = ['120x40']
@@ -752,6 +776,50 @@ def main():
                     profile['checks'].append(f'Xingular Agent welcome identity, orange/blue accents, and /help transition at {dimensions}')
                     terminal.send('/quit\r')
                     print(f'PASS {dimensions}: welcome identity and /help transition', flush=True)
+                    continue
+                if args.queue_only:
+                    start = len(terminal.data)
+                    terminal.send('verify-cancel\r')
+                    terminal.wait('CANCEL_STREAM_000', start, timeout=30)
+                    terminal.type_text('STEER_QUEUED_TEXT')
+                    terminal.send('\x1b[13;5u')
+                    terminal.type_text('FOLLOW_QUEUED_TEXT')
+                    terminal.send('\r')
+                    terminal.wait('Follow-up: FOLLOW_QUEUED_TEXT', start, timeout=15)
+                    terminal.wait('Steer: STEER_QUEUED_TEXT', start, timeout=15)
+                    terminal.read(0.4)
+                    terminal.snapshot('queue-labels')
+                    if terminal.screen is None:
+                        raw = bytes(terminal.data[start:])
+                        text = normalized(raw)
+                        for label, body in [('Steer: ', 'STEER_QUEUED_TEXT'), ('Follow-up: ', 'FOLLOW_QUEUED_TEXT')]:
+                            assert has_styled_text(raw, '#8ab4f8', label.encode()), f'{label.strip()} label was not emitted in the accent blue'
+                            assert has_styled_text(raw, '#8b8b95', body.encode()), f'{label.strip()} body was not emitted in the muted tone'
+                        assert text.find('Steer: STEER_QUEUED_TEXT') < text.find('Follow-up: FOLLOW_QUEUED_TEXT'), 'Steering should be listed before the follow-up'
+                        assert 'Steering ·' not in text and 'Follow-up ·' not in text, 'The retired dot separator was still emitted'
+                        profile['checks'].append('queued steering and follow-up are labelled with a colon and the accent colour')
+                    else:
+                        lines = terminal.screen.display
+                        def queue_row(text):
+                            matches = [index for index, line in enumerate(lines) if text in line]
+                            assert len(matches) == 1, f'Expected {text!r} once on the pending queue: {lines!r}'
+                            return matches[0]
+                        steer_row = queue_row('Steer: STEER_QUEUED_TEXT')
+                        follow_row = queue_row('Follow-up: FOLLOW_QUEUED_TEXT')
+                        assert steer_row < follow_row, f'Steering should be listed before the follow-up: {steer_row}, {follow_row}'
+                        for row, label in [(steer_row, 'Steer:'), (follow_row, 'Follow-up:')]:
+                            label_x = lines[row].index(label)
+                            label_color = terminal.screen.buffer[row][label_x].fg
+                            assert label_color == '8ab4f8', f'{label} label should be Harness blue, got {label_color!r}'
+                            body_color = terminal.screen.buffer[row][label_x + len(label) + 1].fg
+                            assert body_color == '8b8b95', f'{label} body should stay muted, got {body_color!r}'
+                        visible = '\n'.join(lines)
+                        assert 'Steering ·' not in visible and 'Follow-up ·' not in visible, f'The retired dot separator is still rendered: {lines!r}'
+                        profile['checks'].append('queued steering and follow-up render as blue Steer:/Follow-up: labels with muted bodies above the composer')
+                    terminal.send('\x1b')
+                    terminal.read(0.5)
+                    terminal.send('/quit\r')
+                    print(f'PASS {dimensions}: pending steering and follow-up labels', flush=True)
                     continue
                 if args.dialog_paste_only:
                     requests_before = len(LocalProvider.requests)

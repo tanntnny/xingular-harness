@@ -68,6 +68,9 @@ harness → host   { v: 1, id, call, params }          host → harness   { v: 1
 - The run-event stream adds `checkpoint` (the bounded handoff) and `heartbeat` (steps, elapsed time,
   last tool, compactions, slice, call budget). Hosts must accept both; an unknown event type is still
   relayed in order (INV-RUN-3).
+- Run streams also carry `tool.refused` with the call id, name, refusal code and bounded reason.
+  Run records expose nullable `terminalCode`; `terminalReason` remains descriptive text. Older
+  records and events may omit the code. Trajectory search exposes both fields (pages 02 and 08).
 - Errors carry a stable `code`, a message and an optional hint (`core/errors.ts`).
 
 ## Plugin proposals
@@ -93,7 +96,8 @@ on page 06.
 | Method | Input | Reply |
 |---|---|---|
 | `context.attribution` | `{ runId }` | `ContextAttribution`: the model and window, the measured `used` and its `share`, `source` (`measured` or `estimate`), the request index, the compaction reserve and `free`, one row per contributor (`tokens`, share, owner group, `always`, `estimated`, budget, cut, tool breakdown, note), `history` of the window at each request, `compactions`, `onDemand` variant components, group totals and the reconciliation `note` |
-| `terminal.context` | `{ section? }` | `{ attribution, text }` for this terminal's latest run: the same attribution, and one row's text when `section` names it |
+| `context.runDetails` | `{ runId }` | Recorded status, effective mode, model, effort, variant, workspace, tool names, connectors, successful named `skill_load` calls and observed activated extensions; unknown observations are `null`, not inferred from available contributions |
+| `terminal.context` | `{ runId?, section? }` | `{ attribution, text }` for the selected run in this terminal's native conversation, or its latest run when omitted; one row's text when `section` names it |
 
 The rows are read from what the run recorded — `runs/<id>/context.json` for the sections and their
 rendered sizes, `context.snapshot` for the prompt, the update and every tool schema, `usage.updated`
@@ -101,7 +105,7 @@ for the provider's own figure. Nothing is written. A row is estimated at four ch
 the conversation row is the measured total less the rows above it, so the rows add up to the figure
 the provider reported rather than to an estimate of their own. When the pack carries no rendered
 sizes, or the snapshot was truncated, the reply says the split is approximate. `terminal.context`
-resolves the run from the terminal session, never from the request.
+checks a supplied run against the terminal's native conversation; without one it resolves the latest run. Skill observations cover `skill_load`, not direct file reads; extension observations are unavailable when the loader cannot establish ownership, including terminal runs.
 
 ## Usage (PROP-0042)
 
@@ -122,7 +126,15 @@ comes from the terminal session, never from the request.
 optional `aliases`, `args`, `description`, `owner`, plus `group`, `source`
 (`core | plugin | extension | prompt | skill`) and optional core `kind` (`session | page | local`).
 Core metadata comes from `commands/registry.ts`; effective plugin contributions supply other routes.
-Namespace/collision rules are shared; discovery neither runs a command nor proves surface acceptance.
+Under the approved ADR-0061 contract, plugin-owned extension commands and package-owned prompt
+templates are listed only by their owner-qualified `/<owner-prefix>:<name>` routes, with an
+explicit root `/<owner-prefix>:` only for a declared default (a package uses
+`harness.defaultPrompt` for its own template). No bare plugin alias is listed or dispatched.
+Standalone templates, `/skill:<name>`, core commands and their core aliases retain their existing
+forms. Owner-prefix and same-owner route collisions fail closed with owner diagnostics, not a
+winner chosen by discovery order. Discovery, completion and dispatch share these rules;
+listing neither runs a command nor proves surface acceptance. This is an approved contract, not
+a claim that every surface has implemented or passed it.
 
 For the methods below, `ref` means `{ sessionDir, sessionFile?, cwd? }`.
 

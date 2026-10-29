@@ -56,7 +56,7 @@ export const TRAJECTORY_TOOLS: HarnessToolDefinition[] = [
     name: 'trajectory_search',
     call: 'trajectory.search',
     label: 'Search trajectories',
-    description: 'List recorded runs across this {product} data root, including active runs. Filter by agent name or id, project name or slug, mode, status, or start time. Results are newest first; use the returned cursor to continue. Then use trajectory_read for captured prompts, context snapshots, model and tool events, decisions, retries, compaction, and usage. Hidden agents excluded by the host stay hidden.',
+    description: 'List recorded runs across this {product} data root, including active runs. Filter by agent name or id, project name or slug, mode, status, or start time. Results include terminalReason and terminalCode (null when unavailable) and are newest first; use the returned cursor to continue. Then use trajectory_read for captured prompts, context snapshots, model and tool events, decisions, retries, compaction, and usage. Hidden agents excluded by the host stay hidden.',
     parameters: {
       type: 'object',
       properties: {
