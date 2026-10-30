@@ -104,7 +104,10 @@ export interface RegistryOptions {
   redact?: (event: RunEvent) => void
 }
 
-type LiveRun = ActiveRun & { interrupt: () => Promise<void>; steer: (text: string) => Promise<void> }
+/** Why an interrupt stops a run; a person's interrupt is `user_abort`. */
+export interface InterruptStop { reason?: string; code: RunStopCode }
+
+type LiveRun = ActiveRun & { interrupt: (stop?: InterruptStop) => Promise<void>; steer: (text: string) => Promise<void> }
 
 export class RunRegistry {
   private readonly runs = new Map<string, LiveRun>()
@@ -276,9 +279,9 @@ export class RunRegistry {
       get finished() {
         return finished
       },
-      interrupt: async () => {
+      interrupt: async (stop?: InterruptStop) => {
         // Release approvals/questions before SDK abort waits for their blocked tools.
-        run.finish('interrupted', undefined, undefined, 'user_abort')
+        run.finish('interrupted', undefined, stop?.reason, stop?.code ?? 'user_abort')
         for (const handler of interruptHandlers) {
           try {
             await handler()
@@ -353,7 +356,7 @@ export class RunRegistry {
     await run.steer(text)
   }
 
-  async interrupt(runId: string): Promise<void> {
+  async interrupt(runId: string, stop?: InterruptStop): Promise<void> {
     const run = this.runs.get(runId)
     if (!run) throw new HarnessError('run_not_active', 'This run is not active.')
     if (this.stopping.has(runId)) return
@@ -361,7 +364,7 @@ export class RunRegistry {
     const active = family.runs.map(({ run: member }) => member.id).filter((id) => this.runs.has(id))
     for (const id of active) this.stopping.add(id)
     try {
-      await Promise.allSettled(active.map((id) => this.runs.get(id)?.interrupt()))
+      await Promise.allSettled(active.map((id) => this.runs.get(id)?.interrupt(stop)))
     } finally {
       for (const id of active) this.stopping.delete(id)
     }

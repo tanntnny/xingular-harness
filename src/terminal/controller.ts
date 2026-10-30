@@ -7,7 +7,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { HarnessError } from '../core/errors'
 import { runStatusSchema, type RunEvent, type RunRecord, type RunStopCode } from '../sessions/contracts'
 import { briefTitle } from '../sessions/subagents'
-import type { ActiveRun, ApprovalDecision, QuestionAnswer, QuestionInput } from '../sessions/registry'
+import type { ActiveRun, ApprovalDecision, InterruptStop, QuestionAnswer, QuestionInput } from '../sessions/registry'
 import { MAIN_PROFILE, SubagentMonitor, type TerminalSubagentActivity, type TerminalSubagentProfile, type TerminalSubagentRun } from './subagentMonitor'
 import { replyStalled } from './stallWatch'
 
@@ -73,7 +73,7 @@ export interface ControllerHooks {
    */
   hydrate?(owners: string[]): void
   telemetry(event: string): void
-  interrupt?(runId: string): Promise<void>
+  interrupt?(runId: string, stop?: InterruptStop): Promise<void>
   resolveApproval?(runId: string, requestId: string, decision: ApprovalDecision): void
   answerQuestion?(runId: string, requestId: string, answer: QuestionAnswer): void
   answerQuestions?(runId: string, batchId: string, answers: Array<{ questionId: string; answer: QuestionAnswer }>): void
@@ -334,7 +334,12 @@ export class TerminalController {
     }
     if (call === 'terminal.pending') return { requests: [...this.pending.values()] }
     if (call === 'terminal.pending.wait') return this.waitPending(data.revision)
-    if (call === 'terminal.interrupt') return this.activeRun && this.hooks.interrupt ? this.hooks.interrupt(this.activeRun.runId) : {}
+    if (call === 'terminal.interrupt') {
+      const run = this.activeRun
+      if (!run || !this.hooks.interrupt) return {}
+      // Pi's abort reports through here as a person's Esc does; one the stall watch asked for is a stall.
+      return this.hooks.interrupt(run.runId, this.stallRequested === run.runId ? { reason: 'stalled', code: 'stalled' } : undefined)
+    }
     if (call === 'terminal.policy') {
       const run = this.activeRun
       if (!run || typeof data.tool !== 'string' || !data.tool) throw new HarnessError('invalid_request', 'An active run and tool name are required.')

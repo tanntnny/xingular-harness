@@ -1093,7 +1093,12 @@ export class Terminals {
       return { runId: run.runId, connectors: capabilities.connectors, subagentProfiles, notice }
     }
     if (call === 'terminal.subagents.verify') { await service!.verify(run.runId, params.history); return {} }
-    if (call === 'terminal.subagents.delivery') return service!.delivery(run.runId, params.history, params.settle === true)
+    if (call === 'terminal.subagents.delivery') {
+      // Waiting for children to settle ends when the parent is interrupted, a stall included.
+      const stop = new AbortController()
+      run.onInterrupt(() => stop.abort())
+      return service!.delivery(run.runId, params.history, params.settle === true, stop.signal)
+    }
     if (call === 'terminal.subagents.call') {
       const tool = subagentTools(service!, run.runId).find(tool => tool.name === params.name)
       if (!tool) throw invalid('Unknown subagent tool.')
@@ -1299,7 +1304,7 @@ export class Terminals {
           allowToolGlobally: target => { this.options.approvals.allowTool('pi', target) },
           native: (nativeSessionId) => bus.emit({ type: 'terminal.native', sessionId, nativeSessionId }),
           telemetry: (event) => bus.emit({ type: 'terminal.telemetry', sessionId, event }),
-          interrupt: runId => this.options.runs.interrupt(runId),
+          interrupt: (runId, stop) => this.options.runs.interrupt(runId, stop),
           resolveApproval: (runId, id, decision) => this.options.runs.resolveApproval(runId, id, decision),
           answerQuestion: (runId, id, answer) => this.options.runs.answerQuestion(runId, id, answer),
           answerQuestions: (runId, batchId, answers) => this.options.runs.answerQuestions(runId, batchId, answers)

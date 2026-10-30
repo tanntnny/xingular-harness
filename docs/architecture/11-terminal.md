@@ -402,9 +402,12 @@ terminal reply that stopped reporting by the same five-minute rule as a structur
 A heartbeat proves the turn is alive, not that it is working. A reply that produces no event other
 than a heartbeat for fifteen minutes — the state a model request that never returns leaves it in —
 is ended: the controller queues the same `interrupt` command the person's Esc queues, the native turn
-aborts, and the run records `interrupted` with reason `stalled`. A reply whose oldest running tool
+aborts, and the run records `interrupted` with reason `stalled`. Pi's abort reports back through
+`terminal.interrupt` as Esc does; the controller passes that interrupt on as `stalled`, not
+`user_abort`, when the stall watch asked for it. A reply whose oldest running tool
 has run for thirty minutes ends the same way, and a reply waiting on an approval or question is never
-cut short.
+cut short. An interrupt, a stall included, also ends a settling reply's wait for its subagents
+(`terminal.subagents.delivery`).
 
 ## Subagent activity monitor
 

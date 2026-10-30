@@ -26,6 +26,10 @@
   failed with `invalid_grant` and the account needed a new sign-in. A terminal now reads and refreshes
   through the host store (`accounts.credentials.*`, INV-ACC-5), holding its lock for the refresh. An
   `auth.json` left by an older terminal is folded in, newest token first.
+- **A stalled terminal reply is recorded as `stalled`.** Pi's abort reports back through
+  `terminal.interrupt` like a person's Esc, which closed the run as `user_abort` before the reply
+  settled as `stalled`; one silent 15-minute hang was recorded as the person's abort. The interrupt
+  now carries the stall. An interrupt also ends a settling reply's wait for its subagents.
 
 - **A reply can no longer quietly stop with work open (ADR-0069).**
   - **Stop gate.** In attended top-level runs, terminal included, a reply that ends while its todo

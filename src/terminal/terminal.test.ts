@@ -110,6 +110,20 @@ describe('a pi terminal session', () => {
     vi.useRealTimers()
     expect(loadRun(root, begun.runId)).toMatchObject({ status: 'interrupted', terminalReason: 'stalled', terminalCode: 'stalled' })
   })
+  it('records a stall as stalled when the native abort reports back through the interrupt path', async () => {
+    const { tell, root, connection } = await setup()
+    const { key } = await socketCall<{ key: string }>(connection, 'control.claim')
+    await tell('ready')
+    vi.useFakeTimers()
+    const begun = await tell('begin', { text: 'Carry on' })
+    await vi.advanceTimersByTimeAsync(REPLY_STALL_MS + 31_000)
+    expect(await tell('poll')).toEqual({ command: { type: 'interrupt' } })
+    vi.useRealTimers()
+    // Pi's abort handler calls terminal.interrupt, as a person's Esc does, before the reply settles.
+    await socketCall(connection, 'terminal.interrupt', {}, 1000, key)
+    await tell('settled', { aborted: true }).catch(() => undefined)
+    expect(loadRun(root, begun.runId)).toMatchObject({ status: 'interrupted', terminalReason: 'stalled', terminalCode: 'stalled' })
+  })
   it('records provider failures separately from user aborts and stalled interruptions', async () => {
     const { tell, root } = await setup()
     await tell('ready')
