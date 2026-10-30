@@ -76,8 +76,8 @@ guidance for the effective tools. Terminal preparation defaults to standard sect
 attributed add-on and task context, not a duplicate standard role or connection policy (PROP-0040).
 
 Budgets (characters): variant sections 30,000 each (already capped at save, so never cut here);
-references 12,000; Wiki pointer 2,500; tools 8,000; reporting 2,000; application sections their
-own `budget`.
+references 12,000; Wiki pointer 2,500; tools 8,000; reporting 2,400 (ADR-0068); application sections
+their own `budget`.
 
 ## Reporting
 
@@ -92,10 +92,33 @@ could not perform or observe it, the optional **Need human inspection** heading 
 unverified, why, and the specific check the person should make. Report only checks actually run,
 with their results. Markdown tables are used where they help compare options or present repeated
 fields or check results; any format the person, application or current mode asks for takes
-precedence. The section names no application, is never dynamic, and is never cut. See
+precedence. The section names no application, is never dynamic, and is never cut. Two headings are
+required when they apply ([ADR-0068](../decisions/ADR-0068-scope-and-completion-report.md)):
+`## Beyond what you asked` when the run did anything beyond the request, naming each piece and why
+the work needed it, and `## What would make this complete` when the run could be more complete,
+listing the concrete remaining steps in order and naming the ones only the person can decide. Every
+other heading stays optional; the guidance still forbids a fixed set. See
 [PROP-0001](proposals/PROP-0001-reporting-section.md),
 [PROP-0004](proposals/PROP-0004-flexible-reporting-guidance.md), and
 [ADR-0008](../decisions/ADR-0008-flexible-reporting-guidance.md).
+
+## When a reply may end
+
+A reply ends when the request is done, when the work-slice guard ends it (INV-RUN-13), when a person
+interrupts, or when the work is blocked on a person's decision. An open todo item, a passing check or
+a partial result is not such a reason. The rule is prompt text, not a stop rule in the runner: a run
+whose reply ended while work remained settles `completed` like any other, so the words are what ask
+the model to continue. The standard session states it in the `role` paragraph
+(`prompt/standard.ts`, `ROLE`), the `reporting` section says it in its opening paragraph, and
+`TODO_GUIDANCE` (`tools/todo.ts`) calls an unfinished step work to continue rather than a reason to
+end the turn. All three are fixed text in the stable prefix, so changing them changes the cached
+prefix once.
+
+The `role` paragraph also sets how far the work reaches: the job the request implies, not only its
+literal words — the obvious adjacent step, what the work itself exposes, the check it needs — inside
+the working folder and away from what a person must decide (a deploy, a secret, remote data, money),
+without asking first inside those bounds. That is a scope rule, not a second stop rule: the same
+paragraph names the only reasons to end early.
 
 ## Delivery
 

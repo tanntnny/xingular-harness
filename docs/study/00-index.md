@@ -23,6 +23,9 @@ written and the claim moves to checked behavior. Cite material as
 - [Why a long run takes hours](STUDY-0003-long-horizon-runs.md) — measured diagnosis of two 70–97
   minute replies (447 and 266 tool calls, 5 and 2 compactions, zero assistant text), what other
   harnesses do about it, and the fixes proposed in [PROP-0041](../architecture/proposals/PROP-0041-bounded-work-slices.md).
+- [How other harnesses control the end of a turn](STUDY-0004-turn-end-controls.md) — stop hooks,
+  completion tools, follow-up loops and lint-driven re-prompts across ten harnesses, with sources;
+  why a self-ended reply settles `completed` here, and the one deterministic layer to add.
 
 ## Sources
 

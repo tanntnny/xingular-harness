@@ -309,8 +309,13 @@ test('the reporting guidance closes the stable prefix and never rides in a conte
   expect(first.update!.content).not.toContain('Reporting your work')
   expect(first.pack.delivery!.systemSectionIds.at(-1)).toBe('reporting')
   expect(REPORTING_GUIDANCE).toContain('Lead with the outcome, not the steps taken to reach it')
+  expect(REPORTING_GUIDANCE).toContain('Reporting is for work that is finished or genuinely blocked: do not end a turn to report work you can still do')
   expect(REPORTING_GUIDANCE).toContain('use as much structure as the answer needs')
-  expect(REPORTING_GUIDANCE).toContain('do not force a fixed set of report headings')
+  expect(REPORTING_GUIDANCE).toContain('do not force a fixed set of report headings apart from the two named below')
+  expect(REPORTING_GUIDANCE).toContain('`## Beyond what you asked`')
+  expect(REPORTING_GUIDANCE).toContain('`## What would make this complete`')
+  expect(REPORTING_GUIDANCE).toContain('say why the work needed it')
+  expect(REPORTING_GUIDANCE).toContain('name the ones only the person can decide')
   expect(REPORTING_GUIDANCE).toContain('When work remains unfinished, state the concrete decision the person must make or the next action and its owner for each material blocker')
   expect(REPORTING_GUIDANCE).toContain('do not merely restate the blocker or invent a human decision')
   expect(REPORTING_GUIDANCE).toContain('**Need human inspection** only when a concrete verification requires a person')
@@ -321,6 +326,20 @@ test('the reporting guidance closes the stable prefix and never rides in a conte
   expect(sessionLaunch(env, agent(), hosted(), null).system).toBe(first.system)
 })
 
+
+test('a person\'s own session is told when a reply may end', () => {
+  const env = setup()
+  const pack = compile(env, agent(), { standard: { cwd: '/src/site' }, tools: ['read', 'todo_write'] })
+  const rendered = render(env, pack)
+  expect(rendered).toContain('Keep working until the request is done')
+  expect(rendered).toContain('an open todo item, a passing check or a partial result is not a reason to end the turn')
+  expect(rendered).toContain('End the reply early only when the work is blocked on a person\'s decision, the work-slice guard hands it back, or the person interrupts')
+  expect(rendered).toContain('Do the job the request implies, not only its literal words')
+  expect(rendered).toContain('fix what your own work exposes')
+  expect(rendered).toContain('inside those bounds you do not ask first')
+  expect(rendered).toContain('an unfinished step is work to continue in this reply, not a reason to end it')
+  expect(pack.sections.find(entry => entry.id === 'role')!.cut).toBe(false)
+})
 
 test('describes naming only when available, including for CLI callers', () => {
   const env = setup()

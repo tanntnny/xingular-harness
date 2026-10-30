@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- Do the job the request implies, and report it apart from the request. A standard session's role
+  paragraph now sets the scope of the work — the obvious adjacent step, what the work itself exposes,
+  the check it needs, inside the working folder and away from what a person must decide (a deploy, a
+  secret, remote data, money), without asking first inside those bounds — and the reporting guidance
+  requires two headings when they apply: `## Beyond what you asked` and
+  `## What would make this complete` (ADR-0068). The reporting budget rises from 2,000 to 2,400
+  characters so both fit uncut. All of it is stable-prefix text, so the cached prefix changes once
+  per session.
+- Say in the prompt when a reply may end. The standard session's role paragraph, the opening of the
+  reporting guidance and the todo guidance now say that an open todo item, a passing check or a
+  partial result is not a reason to end the turn, and name the reasons that are: the request is done,
+  the work-slice guard hands the reply back, a person's decision is needed, or the person interrupts.
+  A reply the model still ends early settles `completed` as before — this changes the words, not the
+  runner or the slice guard. A sweep of 822 runs in seven days found 207 that ended with work left
+  (137 within 30 tool calls, median 17, and 191 with no checkpoint), which is what the wording is
+  for. All three texts are in the stable prefix, so this changes the cached prefix once.
 - Reword the final-reply guidance so the outcome leads and structure follows what the answer needs. The
   reporting guidance is part of every request's stable prefix, so this changes the cached prefix.
 - Keep the provider cache working after a compaction (ADR-0067). The compaction checkpoint now arms only

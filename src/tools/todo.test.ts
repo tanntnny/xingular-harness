@@ -34,6 +34,7 @@ describe('the todo list', () => {
     expect(tool.description).toContain('before your first other tool call')
     expect(tool.description).toContain(TODO_GUIDANCE)
     expect(tool.description).toContain('Before your final reply, write one final update')
+    expect(tool.description).toContain('an unfinished step is work to continue in this reply, not a reason to end it')
     expect(await tool.execute({ items: 'nope' })).toContain('whole todo list')
     expect(await tool.execute({ items: [{ text: 'x'.repeat(501), status: 'pending' }] })).toContain('Every step needs text')
     expect(await tool.execute({ items: [{ text: '  Ship it  ', status: 'pending' }] })).toBe('[ ] Ship it')

@@ -334,7 +334,11 @@ is approved but remains in progress; no completed cross-surface catalog is impli
   check or recorded a finished item, and never after a checkpoint that is `blocked`. A run may turn
   the guard off with `workSlice.enabled: false`, and a launch may set `XINGULAR_WORK_SLICE=off` for
   every run in that process; with it off a reply has no boundary — no checkpoint, no continuation —
-  and ends only when the model stops or a person interrupts.
+  and ends only when the model stops or a person interrupts. A reply the model ends on its own (or
+  with the guard off) settles `completed`, and no stop rule reads the run's todo list at that point:
+  the prompt asks the model to continue while an open, unblocked item remains
+  ([04 Prompt](04-prompt.md#when-a-reply-may-end)), and a continuation carries the todo it left
+  (`continuation.ts`).
 - **INV-RUN-14** A run event stream carries `checkpoint` (the handoff `checkpoint_write` records or
   the harness derives from the run's own evidence when the model wrote none) and `heartbeat`
   (steps, elapsed time, last tool, compactions, slice, and the call budget). Every live reply emits a

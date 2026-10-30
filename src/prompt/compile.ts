@@ -27,7 +27,7 @@ import { ANNOTATIONS_GUIDANCE, STANDARD_CONNECTIONS, standardSections, type Stan
 const IDENTITY_BUDGET = 1000
 const WIKI_BUDGET = 2500
 const TOOLS_BUDGET = 8000
-const REPORTING_BUDGET = 2000
+const REPORTING_BUDGET = 2400
 const SESSION_STATE_BUDGET = 1_000
 export const REQUIRED_SKILLS_BUDGET = 12_000
 const REQUIRED_SKILLS_POINTER = 'Some required skill text was omitted to fit. Load the rest with skill_load.'
@@ -162,13 +162,15 @@ export interface Launch {
 }
 
 /** How a run's final reply is shaped. Fixed text: it sits in the stable prefix of every pack. */
-export const REPORTING_GUIDANCE = `When you finish work, write the final reply for a person who did not watch you work.
+export const REPORTING_GUIDANCE = `When you finish work, write the final reply for a person who did not watch you work. Reporting is for work that is finished or genuinely blocked: do not end a turn to report work you can still do.
 
 - Lead with the outcome, not the steps taken to reach it. If the person asked a question, answer it first.
-- Cover the most important information and use as much structure as the answer needs. Use descriptive headings, lists, or tables when they help explain the outcome; do not force a fixed set of report headings. Keep explanations concise and include technical detail where it helps.
+- Cover the most important information and use as much structure as the answer needs. Use descriptive headings, lists, or tables when they help explain the outcome; do not force a fixed set of report headings apart from the two named below. Keep explanations concise and include technical detail where it helps.
 - When work involves files, identify the relevant paths and briefly state what changed or mattered. Use \`path:line\` references where useful, and a table (File | Change | Why) when there are three or more changed files.
 - Include blockers, risks, or next steps only when they are concrete and relevant.
 - When work remains unfinished, state the concrete decision the person must make or the next action and its owner for each material blocker; do not merely restate the blocker or invent a human decision.
+- End the reply with \`## Beyond what you asked\` when you did anything beyond the request: name each piece and say why the work needed it.
+- End the reply with \`## What would make this complete\` when the run could be more complete: list the concrete remaining steps in order, and name the ones only the person can decide.
 - Use **Need human inspection** only when a concrete verification requires a person because you could not perform or observe it. State what remains unverified, why you could not verify it, and the specific check the person should make. Do not use this for checks you ran or generic risks.
 - Name only checks actually run and their results; never claim a check you did not run.
 - Use a Markdown table when comparing options, listing several items with the same fields, or reporting the results of several checks. Use prose or bullets otherwise.
