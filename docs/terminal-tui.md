@@ -226,8 +226,9 @@ rule; then the work that followed. The summary is shown by default. Clicking eit
 shows it, and Ctrl+O shows every summary again. On a narrow screen the rule drops the click hint, then
 the token count. Earlier compactions in the same session keep their own rules and summary in place.
 Notices stay after the message they followed. The model sees the summary and recent messages plus a
-bounded, hidden checkpoint of the active request, todo list and plan instructions when available;
-the checkpoint is regenerated for each post-compaction request until the run settles. The visible
+bounded, hidden checkpoint of the active request, todo list and plan instructions when available,
+for a compaction that happened during the running reply. It is built once per compaction and sits
+unchanged right after the summary until the run settles, so later requests keep the provider cache. The visible
 transcript remains a presentation of the full history, not the model context.
 Transcript entry ids follow positions in the displayed message list, so when a rebuilt list moves a
 different kind of entry onto an id, the renderer builds a new component for it instead of reusing the
@@ -235,8 +236,14 @@ old layout, and each entry draws inside its own error boundary. A run therefore 
 through a compaction; it does not need `/resume` to show its later output.
 A successful copy shows a temporary, opaque toast anchored at the terminal's top-right. Interactive blocks and widgets remain docked above the composer. A wrapping status bar
 below the composer shows `<repo>:<branch>`, account, model, effort and token totals, with `|` between groups. After
-the input token count it shows cache hit rate as `R<percentage>%`, calculated from cache reads divided
-by total input tokens. The footer shows status messages without a shortcut-hint row. Press `?` with an empty
+the input token count it shows cache hit rate as `R<percentage>%`: cache reads divided by input
+tokens over the last 10 model responses in the current context (`CACHE_HIT_WINDOW`), so a collapse
+shows within a few requests instead of being averaged away by a healthy start. Responses without
+prompt tokens, such as aborted ones, are skipped. Below 70 percent the rate gets a `⚠` after it, in the
+warning yellow; below 40 percent, in the error red. A single response only writes the cache, so the
+rate is judged once the window holds two, and a window with no cache reads or writes is not judged,
+since its provider may not report them. Each drop to a worse level posts one transcript notice,
+`Cache hit rate is N% over the last K requests, below T%.`, and a recovery posts nothing. The footer shows status messages without a shortcut-hint row. Press `?` with an empty
 composer to open the shortcut reference. Transcript entries include
 messages, thinking, tools, notices and extension ANSI components. Image blocks returned by tools
 appear as separate image-result entries immediately after their tool call, within the scrollable
@@ -566,7 +573,8 @@ palette and its indexed-color fallbacks. Harness adapts these into
 [`opentui/theme.ts`](../src/terminal/opentui/theme.ts). The OpenTUI status bar shows the project name and
 branch together as `<repo>:<branch>`, followed by account, model and current-session
 input/output totals. Input totals add cache reads and exclude cache writes; its `R<percentage>%`
-hit rate is cache reads divided by total input. Token counts below 1,000 show as whole numbers;
+hit rate is cache reads divided by input over the last 10 responses, not the session total. A rate under 70 percent carries the `⚠` glyph and
+colour described in the composer status bar, and under 40 percent it is red. Token counts below 1,000 show as whole numbers;
 larger counts use floor-rounded K/M/B suffixes without decimals. The band carries no context-use
 reading; `/context` reports the share of the window.
 

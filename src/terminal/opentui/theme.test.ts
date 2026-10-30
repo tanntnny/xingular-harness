@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest'
 
-import { blendHexColor, composerRuleColor, opentuiTheme } from './theme'
+import { blendHexColor, cacheHitColor, composerRuleColor, opentuiTheme } from './theme'
+
+describe('cache hit colors', () => {
+  it('uses the warning color below the warning threshold and the error color below the critical one', () => {
+    expect(cacheHitColor(opentuiTheme, 'warning')).toBe(opentuiTheme.warning)
+    expect(cacheHitColor(opentuiTheme, 'critical')).toBe(opentuiTheme.error)
+  })
+})
 
 describe('theme color blending', () => {
   it('blends the warm primary and warning colors smoothly', () => {

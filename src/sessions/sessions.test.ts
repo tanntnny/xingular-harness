@@ -853,9 +853,10 @@ describe('session turns on Pi', () => {
     const api = { on: (event: string, handler: (event: any) => unknown) => { handlers.set(event, handler); return () => undefined } } as unknown as ExtensionAPI
     await checkpointFactory!(api)
     await handlers.get('before_agent_start')!({ messageType: 'user', prompt: 'Research this bounded question' })
-    const result = await handlers.get('context')!({ messages: [{ role: 'compactionSummary', summary: 'Earlier research.', tokensBefore: 50_000, timestamp: 1 }] }) as { messages: { content?: string }[] }
-    expect(result.messages.at(-1)?.content).toContain(PLAN_RESEARCH_SUBAGENT_INSTRUCTIONS)
-    expect(result.messages.at(-1)?.content).not.toContain('Plan mode is on for this request')
+    await handlers.get('context')!({ messages: [{ role: 'user', content: 'Research this bounded question', timestamp: 1 }] })
+    const result = await handlers.get('context')!({ messages: [{ role: 'compactionSummary', summary: 'Earlier research.', tokensBefore: 50_000, timestamp: 2 }] }) as { messages: { content?: string }[] }
+    expect(result.messages[1]?.content).toContain(PLAN_RESEARCH_SUBAGENT_INSTRUCTIONS)
+    expect(result.messages[1]?.content).not.toContain('Plan mode is on for this request')
   })
 
   it('records the todo the model writes, whole, and allows it in plan mode', async () => {

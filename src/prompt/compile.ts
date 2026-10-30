@@ -211,7 +211,7 @@ export function clip(text: string, limit: number): string {
 export function renderCompactionCheckpoint(input: { goal: string; todo: readonly TodoItem[]; planInstructions?: string | null }): string | null {
   if (!input.todo.length && !input.planInstructions) return null
   const parts = [
-    'This is current state from the active run after context compaction, not a new user request. Continue the same request. Do not infer that omitted details or decisions were settled.',
+    'This is the state of the active run when its context was compacted, not a new user request. Continue the same request; todo updates later in the conversation supersede the list below. Do not infer that omitted details or decisions were settled.',
     input.goal.trim() ? `## Current request\n\n${clip(input.goal.trim(), 1_000)}` : '',
     input.planInstructions ? `## Active plan instructions\n\n${clip(input.planInstructions, 8_000)}` : ''
   ].filter(Boolean)

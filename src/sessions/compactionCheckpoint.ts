@@ -13,6 +13,14 @@ export interface CompactionCheckpointOptions {
   planInstructions?: () => string | null
 }
 
+interface CheckpointMessage {
+  role: 'custom'
+  customType: typeof COMPACTION_CHECKPOINT_EXTENSION
+  content: string
+  display: false
+  timestamp: number
+}
+
 function validatedTodo(value: unknown): TodoItem[] | null {
   if (!Array.isArray(value) || value.length > MAX_TODO_ITEMS) return null
   const items: TodoItem[] = []
@@ -28,27 +36,30 @@ function validatedTodo(value: unknown): TodoItem[] | null {
   return items
 }
 
-/** Adds only the active run's explicit state to requests made after a compaction. */
+/**
+ * Restores the active run's explicit state after a compaction that happened during that run. A run
+ * that starts from already-compacted history keeps its request, todo and plan in live history, so it
+ * gets nothing. The checkpoint is built once per compaction and sits right after the summary, so each
+ * request stays the previous one plus new items; a moving checkpoint defeats provider caching.
+ */
 export function compactionCheckpoint(options: CompactionCheckpointOptions = {}) {
   return (pi: ExtensionAPI): void => {
     let goal = ''
     let todo = validatedTodo(options.initialTodo ?? []) ?? []
-    let lastCompactionKey: string | null = null
-    let compacted = false
+    // The summary already in context at the run's first request; undefined until that request.
+    let baseline: { key: string | null } | undefined
+    let checkpoint: { key: string; message: CheckpointMessage | null } | undefined
 
-    const reset = (): void => {
-      goal = ''
+    const reset = (prompt = ''): void => {
+      goal = prompt
       todo = validatedTodo(options.initialTodo ?? []) ?? []
-      lastCompactionKey = null
-      compacted = false
+      baseline = undefined
+      checkpoint = undefined
     }
 
     pi.on('before_agent_start', (event) => {
       if (event.messageType !== 'user') return
-      goal = event.prompt
-      todo = validatedTodo(options.initialTodo ?? []) ?? []
-      lastCompactionKey = null
-      compacted = false
+      reset(event.prompt)
     })
 
     pi.on('tool_result', (event) => {
@@ -58,33 +69,30 @@ export function compactionCheckpoint(options: CompactionCheckpointOptions = {}) 
     })
 
     pi.on('context', (event) => {
-      const summary = event.messages.findLast((message) => message.role === 'compactionSummary')
-      const compactionKey = summary ? `${summary.timestamp}:${summary.tokensBefore}` : null
-      const planInstructions = options.planInstructions?.() ?? null
+      const index = event.messages.findLastIndex((message) => message.role === 'compactionSummary')
+      const summary = index >= 0 ? event.messages[index] as { timestamp?: number; tokensBefore?: number } : undefined
+      const key = summary ? `${summary.timestamp}:${summary.tokensBefore}` : null
 
-      if (compactionKey && compactionKey !== lastCompactionKey) {
-        lastCompactionKey = compactionKey
-        compacted = true
-      } else if (!compactionKey) {
-        lastCompactionKey = null
-        compacted = false
+      if (!baseline) {
+        baseline = { key }
+        return
       }
+      if (!key || key === baseline.key) return
 
-      if (!compacted) return
-      const content = renderCompactionCheckpoint({ goal, todo, planInstructions })
-      if (!content) return
-      return {
-        messages: [...event.messages, {
-          role: 'custom',
-          customType: COMPACTION_CHECKPOINT_EXTENSION,
-          content,
-          display: false,
-          timestamp: Date.now()
-        }]
+      if (checkpoint?.key !== key) {
+        const content = renderCompactionCheckpoint({ goal, todo, planInstructions: options.planInstructions?.() ?? null })
+        checkpoint = {
+          key,
+          message: content
+            ? { role: 'custom', customType: COMPACTION_CHECKPOINT_EXTENSION, content, display: false, timestamp: Date.now() }
+            : null
+        }
       }
+      if (!checkpoint.message) return
+      return { messages: [...event.messages.slice(0, index + 1), checkpoint.message, ...event.messages.slice(index + 1)] }
     })
 
-    pi.on('agent_settled', reset)
-    pi.on('session_tree', reset)
+    pi.on('agent_settled', () => reset())
+    pi.on('session_tree', () => reset())
   }
 }

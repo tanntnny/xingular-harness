@@ -178,11 +178,15 @@ A session that cannot open ends its run as `failed` and returns `nativeSessionId
   run events, tool permissions and cached prompt boundary; old transcripts, including legacy
   clarification blocks and untagged replies, remain intact and visible, not silently promoted to
   plans. Do not require clients to understand a new event type.
-- **Compaction checkpoint** (PROP-0033, ADR-0032). After compaction, an active run's model context
-  receives a bounded, ephemeral checkpoint with the current user request and the latest validated
-  todo list or applicable plan instructions, when either is available to restore. It is re-added to
-  each request while that run continues;
-  its state is cleared when the run settles or the session branch changes. The message changes no
+- **Compaction checkpoint** (PROP-0033, ADR-0032, ADR-0067). After a compaction that happens
+  during an active run, its model context receives a bounded, ephemeral checkpoint with the current
+  user request and the todo list or applicable plan instructions as they were at that compaction,
+  when either is available to restore. A run that starts from already-compacted history gets none:
+  its request, todo and plan are in live history. The checkpoint is built once per compaction and
+  re-added to each request at the same place, directly after the compaction summary, so each
+  request stays the previous one plus new items and provider caching keeps working. Later
+  `todo_write` calls in history supersede its list. Its state is cleared when the run settles or the
+  session branch changes. The message changes no
   tools, permissions, run events or native history. An interrupted run still uses the durable
   todo list and normal continuation path.
 - **Continuation** (PROP-0007). `continuationOf(root, runId, sessionDir?)` (`runs.continuation`)
@@ -342,11 +346,12 @@ is approved but remains in progress; no completed cross-surface catalog is impli
   running tool has run for thirty minutes the same ending. An unanswered approval or question is
   never cut short. The watchdog never restarts work (ADR-0054).
 - **INV-RUN-12** A post-compaction checkpoint is a bounded context projection of the active request,
-  the latest validated todo list and applicable plan instructions. It is compiled by
-  `prompt/compile.ts`, supplied only to model requests in the active run, and never persists hidden
+  the validated todo list and applicable plan instructions as of a compaction that happened during
+  that run. It is compiled by `prompt/compile.ts` once per compaction and placed, unchanged, directly
+  after the compaction summary in each later model request of the active run, and never persists hidden
   reasoning or changes permissions, stable prompt text, native history or run-event schemas. Its
   in-memory state is cleared when the run settles or the active session branch changes
-  (PROP-0033, ADR-0032).
+  (PROP-0033, ADR-0032, ADR-0067).
 
 ## Data
 

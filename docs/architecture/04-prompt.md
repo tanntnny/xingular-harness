@@ -110,9 +110,12 @@ compile ──► pack ──► stable sections ──► system prompt (+ "Con
   was given can be attributed after the fact without replaying the compiler.
 - An update lists only the dynamic sections that changed, and announces a withdrawn one.
   `references` and `required-skills` are always resent when present, because they belong to the current request.
-- After successful compaction, the foundation checkpoint extension detects the compacted context and
-  uses `renderCompactionCheckpoint` to append one hidden, ephemeral context message to each model
-  request while the active run continues, when a todo list or applicable plan instructions exist.
+- After a compaction during the active run, the foundation checkpoint extension detects the new
+  summary and uses `renderCompactionCheckpoint` once to build one hidden, ephemeral context message.
+  It inserts that same message directly after the summary in each later model request while the run
+  continues, when a todo list or applicable plan instructions existed at the compaction. A moving
+  message would make each request differ from the previous one before its end and defeat provider
+  caching (ADR-0067). A run that starts from already-compacted history gets no checkpoint.
   It contains only the current request and available state. It is not written to native history, and its state is
   discarded when the run settles or the branch changes.
 - The session appends the update as a hidden custom message and saves its snapshot in the
@@ -165,8 +168,9 @@ file SecretStore with a host Keychain. See [parity](../parity.md).
   the working folder itself is not the boundary. Side-question runs with no callable tools omit
   tool guidance.
 - **INV-PRM-10** Compaction checkpoints are assembled by this compiler, bounded, and delivered only
-  as ephemeral context while their active run continues. They do not change the stable system prompt
-  or native history, and do not carry hidden reasoning (PROP-0033, ADR-0032). A work-slice handoff is
+  as ephemeral context while their active run continues, at a fixed place right after the compaction
+  summary and unchanged until the next compaction. They do not change the stable system prompt
+  or native history, and do not carry hidden reasoning (PROP-0033, ADR-0032, ADR-0067). A work-slice handoff is
   the same kind of bounded projection: the `checkpoint` event is rendered into the continuation
   section by `continuationBody`, never into the system prompt (PROP-0041).
 - **INV-PRM-11** The Progress group names `checkpoint_write` when it is in the frozen capability

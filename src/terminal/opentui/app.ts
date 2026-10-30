@@ -45,6 +45,7 @@ import { PlanChoice, type PlanChoiceView } from './planChoice'
 import { QuestionDockState, type QuestionDockAnswers, type QuestionDockQuestion, type QuestionDockView } from './questionDockState'
 import { questionAnswerProblem } from '../../sessions/contracts'
 import { linkTarget, openLink as openWithDefaultHandler, type LinkTarget } from '../../core/links'
+import { CACHE_HIT_CRITICAL_PERCENT, CACHE_HIT_WARNING_PERCENT, cacheHitLevel, cacheHitPercent, recentCacheUsage, type CacheHitLevel, type CacheUsage } from './statusBar'
 import { subagentRoster, type SubagentRosterView } from './subagentsWidget'
 import type { PendingMessage } from './pendingMessages'
 import { skillTokenAt } from '../tui/skillInvocation'
@@ -65,6 +66,17 @@ function retryNotice(attempt: number, maxAttempts: number, delayMs: number, erro
 
 /** Session statistics walk the whole history, so a streamed reply refreshes them at most this often. */
 const STATISTICS_INTERVAL_MS = 250
+/** A session's snapshot and token totals, as the status bar reads them. */
+interface SessionStatistics {
+  at: number
+  snapshot: ReturnType<TerminalRuntime['snapshot']> | undefined
+  sessionId?: string
+  inputTokens: number
+  outputTokens: number
+  /** The most recent requests, which the cache hit rate is judged on. */
+  cache: CacheUsage
+}
+const CACHE_HIT_RANK: Record<CacheHitLevel, number> = { ok: 0, warning: 1, critical: 2 }
 type Mounted = Component & { dispose?(): void }
 type EditorFactory = Parameters<ExtensionUIContext['setEditorComponent']>[0]
 type HeaderFactory = Parameters<ExtensionUIContext['setHeader']>[0]
@@ -134,8 +146,8 @@ export interface OpenTuiView {
   model?: { name: string; provider: string; reasoning: boolean; contextWindow: number }
   thinking: string
   inputTokens: number
-  cacheReadTokens: number
   outputTokens: number
+  cache: CacheUsage
   subscription: boolean
   items: readonly TranscriptItem[]
   hasUserMessages: boolean
@@ -383,7 +395,9 @@ export class OpenTuiApplication {
   private lastPublish = 0
   /** Set while handling a key or action of a person's, so what it changes publishes at once. */
   private interactive = false
-  private statistics?: { at: number; snapshot: ReturnType<TerminalRuntime['snapshot']> | undefined; inputTokens: number; cacheReadTokens: number; outputTokens: number }
+  private statistics?: SessionStatistics
+  /** The cache level last reported for a session; a notice is posted only when it drops to a worse one. */
+  private cacheHit: { sessionId?: string; level: CacheHitLevel } = { level: 'ok' }
 
   /**
    * Schedules one view publication. A burst of changes, such as the events of a streamed reply,
@@ -842,6 +856,8 @@ export class OpenTuiApplication {
       this.transcript.appendBashOutput(event.id, event.delta)
     }
     if (event.type === 'turn_start') this.requestStartedAt = performance.now()
+    // turn_end follows the persistence of the reply, so the session's totals already include it.
+    if (event.type === 'turn_end') this.reportCacheHitLevel()
     if (event.type === 'message_end' && event.message.role === 'assistant') {
       const outputTokens = event.message.usage?.output
       const requestStartedAt = this.requestStartedAt
@@ -2061,20 +2077,38 @@ export class OpenTuiApplication {
     const now = performance.now()
     if (this.startedAt !== null && this.statistics && now - this.statistics.at < STATISTICS_INTERVAL_MS) return this.statistics
     const snapshot = this.runtime?.snapshot()
+    let sessionId: string | undefined
     let inputTokens = 0
-    let cacheReadTokens = 0
     let outputTokens = 0
+    let cache: CacheUsage = { inputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, requests: 0 }
     try {
-      const usage = this.session.getSessionStats().tokens
-      cacheReadTokens = usage.cacheRead ?? 0
-      inputTokens = (usage.input ?? 0) + cacheReadTokens
+      const stats = this.session.getSessionStats()
+      const usage = stats.tokens
+      sessionId = stats.sessionId
+      inputTokens = (usage.input ?? 0) + (usage.cacheRead ?? 0)
       outputTokens = usage.output ?? 0
+      cache = recentCacheUsage(this.session.messages)
     } catch { /* A session being replaced has no statistics for a frame. */ }
-    return this.statistics = { at: now, snapshot, inputTokens, cacheReadTokens, outputTokens }
+    return this.statistics = { at: now, snapshot, sessionId, inputTokens, outputTokens, cache }
+  }
+
+  /**
+   * Posts a notice when the recent cache hit rate has dropped to a worse level since the last turn.
+   * Recovering is silent, so a rate that falls again is reported again.
+   */
+  private reportCacheHitLevel(): void {
+    const { sessionId, cache } = this.sessionStatistics()
+    const level = cacheHitLevel(cache)
+    const previous = this.cacheHit.sessionId === sessionId ? this.cacheHit.level : 'ok'
+    this.cacheHit = { sessionId, level }
+    if (level === 'ok' || CACHE_HIT_RANK[level] <= CACHE_HIT_RANK[previous]) return
+    const percent = cacheHitPercent(cache.cacheReadTokens, cache.inputTokens)
+    const threshold = level === 'critical' ? CACHE_HIT_CRITICAL_PERCENT : CACHE_HIT_WARNING_PERCENT
+    this.notify(`Cache hit rate is ${percent}% over the last ${cache.requests} requests, below ${threshold}%.`, level === 'critical' ? 'error' : 'warning')
   }
 
   view(): OpenTuiView {
-    const { snapshot, inputTokens, cacheReadTokens, outputTokens } = this.sessionStatistics()
+    const { snapshot, inputTokens, outputTokens, cache } = this.sessionStatistics()
     const transcript = this.transcript.view()
     const width = Math.max(20, this.host.columns - 4)
     const above: AnsiLine[][] = []
@@ -2095,8 +2129,8 @@ export class OpenTuiApplication {
       model: snapshot?.model,
       thinking: snapshot?.thinkingLevel ?? 'off',
       inputTokens,
-      cacheReadTokens,
       outputTokens,
+      cache,
       subscription: snapshot?.subscription ?? false,
       items: transcript.items,
       hasUserMessages: transcript.hasUserMessages,

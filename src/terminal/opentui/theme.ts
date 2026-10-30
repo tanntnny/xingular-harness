@@ -108,6 +108,11 @@ export function noticeColor(theme: OpenTuiTheme, type: string): string {
   return theme.muted
 }
 
+/** A flagged cache hit rate in the status bar: yellow below the warning threshold, red below the critical one. */
+export function cacheHitColor(theme: OpenTuiTheme, level: 'warning' | 'critical'): string {
+  return level === 'critical' ? theme.error : theme.warning
+}
+
 export function toolColor(theme: OpenTuiTheme, status: 'running' | 'ok' | 'error' | 'pending'): string {
   if (status === 'error') return theme.error
   if (status === 'running') return theme.warning

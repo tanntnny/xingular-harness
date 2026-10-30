@@ -156,13 +156,15 @@ describe('terminal bridge lifecycle', () => {
       content: []
     }, ctx)
 
-    const compacted = { messages: [{ role: 'compactionSummary', summary: 'Earlier research.', tokensBefore: 50_000, timestamp: 2 }] }
+    const summary = { role: 'compactionSummary', summary: 'Earlier research.', tokensBefore: 50_000, timestamp: 2 }
+    const compacted = { messages: [summary, { role: 'user', content: 'Kept message', timestamp: 3 }] }
     const first = await handlers.get('context')!(compacted, ctx) as { messages: { content?: string }[] }
-    expect(first.messages.at(-1)?.content).toContain('Plan the migration')
-    expect(first.messages.at(-1)?.content).toContain('Resolve the API question')
-    expect(first.messages.at(-1)?.content).toContain('Plan mode is on for this request')
+    expect(first.messages[1]?.content).toContain('Plan the migration')
+    expect(first.messages[1]?.content).toContain('Resolve the API question')
+    expect(first.messages[1]?.content).toContain('Plan mode is on for this request')
+    expect(first.messages.at(-1)?.content).toBe('Kept message')
     const next = await handlers.get('context')!(compacted, ctx) as { messages: { content?: string }[] }
-    expect(next.messages.at(-1)?.content).toContain('Resolve the API question')
+    expect(next.messages[1]).toEqual(first.messages[1])
 
     state.active = false
     await handlers.get('agent_settled')!({}, ctx)

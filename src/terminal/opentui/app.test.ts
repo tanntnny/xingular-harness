@@ -23,6 +23,7 @@ import { terminalKeybindings } from '../tui/keybindings'
 import type { TerminalDecision, TerminalRuntime } from '../tui/runtime'
 import type { TerminalSubagentActivity } from '../subagentMonitor'
 import type { TerminalCommandHelpGroup } from '../commandHelp'
+import { CACHE_HIT_WINDOW } from './statusBar'
 
 function question(requestId: string, overrides: Partial<TerminalDecision> = {}): TerminalDecision {
   return {
@@ -140,19 +141,76 @@ describe('OpenTuiApplication', () => {
     await app.shutdown()
   })
 
-  it('exposes cache-read tokens and includes them in the input total', async () => {
+  it('includes cache reads in the session input total and judges the cache on recent responses', async () => {
     const app = new OpenTuiApplication([])
     const internals = app as unknown as { runtime?: TerminalRuntime }
+    const reply = (input: number, cacheRead: number) => ({ role: 'assistant', content: [], usage: { input, cacheRead, cacheWrite: 0, output: 4 } })
     internals.runtime = {
       session: {
-        messages: [], state: {},
+        messages: [reply(100, 900), { role: 'user', content: 'next' }, reply(800, 200)], state: {},
         getSessionStats: () => ({ tokens: { input: 200, cacheRead: 800, output: 40 } })
       },
       snapshot: () => undefined,
       dispose: async () => {}
     } as unknown as TerminalRuntime
 
-    expect(app.view()).toMatchObject({ inputTokens: 1000, cacheReadTokens: 800, outputTokens: 40 })
+    expect(app.view()).toMatchObject({
+      inputTokens: 1000, outputTokens: 40,
+      cache: { inputTokens: 2000, cacheReadTokens: 1100, cacheWriteTokens: 0, requests: 2 }
+    })
+    await app.shutdown()
+  })
+
+  it('posts a notice once each time the recent cache hit rate drops to a worse level', async () => {
+    const app = new OpenTuiApplication([])
+    const internals = app as unknown as { accept(event: AgentSessionEvent): void; runtime?: TerminalRuntime }
+    const messages: unknown[] = []
+    internals.runtime = {
+      session: { messages, state: {}, getSessionStats: () => ({ sessionId: 'session-a', tokens: { input: 0, cacheRead: 0, output: 1 } }) },
+      snapshot: () => undefined,
+      dispose: async () => {}
+    } as unknown as TerminalRuntime
+    // Each turn fills the window with responses at one hit rate, then ends.
+    const turnEnds = (...percents: number[]) => {
+      for (const percent of percents) {
+        for (let index = 0; index < CACHE_HIT_WINDOW; index++) {
+          messages.push({ role: 'assistant', content: [], usage: { input: 100 - percent, cacheRead: percent, cacheWrite: 1, output: 1 } })
+        }
+        internals.accept({ type: 'turn_end' } as AgentSessionEvent)
+      }
+    }
+    const notices = () => app.view().items.flatMap(item => item.kind === 'notice' ? [item.text] : [])
+
+    turnEnds(80, 80)
+    expect(notices()).toEqual([])
+    turnEnds(60)
+    expect(notices()).toEqual(['Cache hit rate is 60% over the last 10 requests, below 70%.'])
+    turnEnds(60)
+    expect(notices()).toHaveLength(1)
+    turnEnds(30)
+    expect(notices()).toHaveLength(2)
+    expect(app.view().items.at(-1)).toMatchObject({ kind: 'notice', level: 'error' })
+    turnEnds(95)
+    expect(notices()).toHaveLength(2)
+    turnEnds(60)
+    expect(notices()).toHaveLength(3)
+    await app.shutdown()
+  })
+
+  it('flags a collapse that a healthy session total would hide', async () => {
+    const app = new OpenTuiApplication([])
+    const internals = app as unknown as { accept(event: AgentSessionEvent): void; runtime?: TerminalRuntime }
+    const reply = (input: number, cacheRead: number) => ({ role: 'assistant', content: [], usage: { input, cacheRead, cacheWrite: 0, output: 1 } })
+    const messages = [...Array.from({ length: 1_000 }, () => reply(100, 9_900)), ...Array.from({ length: CACHE_HIT_WINDOW }, () => reply(80_000, 20_000))]
+    internals.runtime = {
+      // The session total reads 92%; the last ten responses read 20%.
+      session: { messages, state: {}, getSessionStats: () => ({ sessionId: 'session-b', tokens: { input: 900_000, cacheRead: 10_100_000, output: 1_010 } }) },
+      snapshot: () => undefined,
+      dispose: async () => {}
+    } as unknown as TerminalRuntime
+
+    internals.accept({ type: 'turn_end' } as AgentSessionEvent)
+    expect(app.view().items.at(-1)).toMatchObject({ kind: 'notice', level: 'error', text: 'Cache hit rate is 20% over the last 10 requests, below 40%.' })
     await app.shutdown()
   })
 

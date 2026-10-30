@@ -1,6 +1,8 @@
 # ADR-0032 — Rehydrate bounded run checkpoints after compaction
 
-Status: Accepted (PROP-0033, 2026-10-25).
+Status: Accepted (PROP-0033, 2026-10-25). Delivery superseded in part by
+[ADR-0067](ADR-0067-cache-stable-compaction-checkpoint.md): the checkpoint arms only for a compaction
+during its run and sits, unchanged, right after the summary.
 Related: [PROP-0033](../architecture/proposals/PROP-0033-compaction-plan-checkpoints.md),
 [02 Sessions and runs](../architecture/02-sessions-and-runs.md),
 [04 Prompt](../architecture/04-prompt.md),

@@ -22,9 +22,9 @@ import { terminalSelectionText } from './terminalSelection'
 import { paletteCommandColumnWidth, paletteTextLines } from './palette'
 import { indexForBufferOffset, syncAttachmentMarks, syncSkillInvocationMark, syncSlashCommandMark } from './composerMarks'
 import { splitUserMessageText } from './slashCommandHighlight'
-import { blendHexColor, composerRuleColor, opentuiTheme, noticeColor, profileColor, toolColor, type OpenTuiTheme } from './theme'
+import { blendHexColor, cacheHitColor, composerRuleColor, opentuiTheme, noticeColor, profileColor, toolColor, type OpenTuiTheme } from './theme'
 import type { SubagentRosterView, SubagentRowView } from './subagentsWidget'
-import { statusBarText } from './statusBar'
+import { statusBarPieces } from './statusBar'
 import { workingLineParts, workingLineText, workingVerbShimmerProfile } from './workingLine'
 import { toastLayout, type ToastLayout } from './toastLayout'
 import { homeBrand } from './homeBrand'
@@ -569,7 +569,9 @@ function StatusBar(props: { view: OpenTuiView }) {
   return (
     <box paddingX={1} flexShrink={0}>
       <text fg={theme.muted} wrapMode='word'>
-        {statusBarText(props.view)}
+        <For each={statusBarPieces(props.view)}>{piece => (
+          <Span fg={piece.cacheHit ? cacheHitColor(theme, piece.cacheHit) : theme.muted}>{piece.text}</Span>
+        )}</For>
       </text>
     </box>
   )

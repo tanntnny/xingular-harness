@@ -47,7 +47,8 @@ Screen: transcript above the composer, centred dialogs, full-screen resource bro
   boundary and resumes the same native conversation (`TerminalRelaunch.variantVersion`, ADR-0065).
 - Each turn a person types records a workspace snapshot before the agent acts (page 02); `/refine`
   replays the latest one (page 05). The shared compaction checkpoint extension reintroduces the active
-  request and latest todo list into post-compaction model context until the run settles.
+  request and its todo list, as of a compaction during the run, right after the summary until the
+  run settles (ADR-0067).
 - The terminal runtime, not Pi, decides the model a conversation starts on. A fresh conversation
   starts on the account's latest normal-mode choice; a resumed one keeps the model in its own
   history while this account offers it and holds credentials for its provider. When it does not,

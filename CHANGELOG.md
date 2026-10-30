@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Keep the provider cache working after a compaction (ADR-0067). The compaction checkpoint now arms only
+  for a compaction during the running reply, is built once, and sits right after the summary instead
+  of being rebuilt at the end of every request. A request after a compaction is again the previous
+  request plus new items, so Codex WebSocket continuation and prefix caching apply. Before, every later
+  turn of a compacted session resent its whole context: one measured session fell from 94–99% to
+  18–24% cache hits after its first compaction.
+- Flag a low prompt-cache hit rate in the terminal's composer status bar. `R<percentage>%` now covers the
+  last 10 model responses instead of the whole session (`recentCacheUsage`, `CACHE_HIT_WINDOW`), and
+  gets a yellow `⚠` below 70 percent and a red one below 40 percent. Each drop to a worse level posts
+  one transcript notice. A window of one response, or one with no cache reads or writes, is not judged
+  (`cacheHitLevel`, `CACHE_HIT_WARNING_PERCENT`, `CACHE_HIT_CRITICAL_PERCENT`).
+
 - Refine a variant from the terminal and keep checkpoints of it (PROP-0052, ADR-0065, ADR-0066).
   `/refine [what to look at]` replays the latest request typed in this chat from a snapshot of the
   folder as that turn found it, in throwaway shared clones, after a confirmation that shows the run
