@@ -399,6 +399,40 @@ describe('terminal bridge lifecycle', () => {
     expect(transport.telemetry).toHaveBeenLastCalledWith('settled', expect.objectContaining({ reason: 'slice_complete', code: 'compaction_thrash' }))
   })
 
+  it('continues a reply in place at its work-slice budget, then hands it back at the slice cap', async () => {
+    vi.stubEnv('XINGULAR_WORK_SLICE', 'maxToolCalls=2,maxMinutes=0,maxSlices=2')
+    transport.telemetry.mockClear()
+    const original = transport.socket.getMockImplementation()!
+    transport.socket.mockImplementation(async (connection, call, params) => call === 'terminal.policy' ? { allowed: true } : original(connection, call, params))
+    try {
+      const { api, ctx, handlers } = extension()
+      await terminalExtension(api)
+      await handlers.get('before_agent_start')!({ messageType: 'user', prompt: 'Long task', systemPromptOptions: { sections: {} } }, ctx)
+      await handlers.get('agent_start')?.({}, ctx)
+      const slice = async (id: string) => {
+        expect(await handlers.get('tool_call')!({ toolName: 'bash', toolCallId: `${id}-1`, input: { command: 'true' } }, ctx)).toBeUndefined()
+        await handlers.get('tool_result')!({ toolName: 'bash', toolCallId: `${id}-1`, input: { command: 'true' }, isError: false, content: [] }, ctx)
+        expect(await handlers.get('tool_call')!({ toolName: 'bash', toolCallId: `${id}-2`, input: { command: 'true' } }, ctx)).toMatchObject({ block: true })
+        return handlers.get('agent_before_settle')!({ outcome: 'completed', entries: [] }, ctx) as Promise<{ continue?: boolean; entries?: Array<{ customType?: string }> } | undefined>
+      }
+      const first = await slice('a')
+      expect(first?.continue).toBe(true)
+      expect(first?.entries?.at(-1)?.customType).toBe('xingular-slice-continue')
+      expect(transport.telemetry).toHaveBeenCalledWith('checkpoint', expect.objectContaining({ reason: 'budget', slice: 1 }))
+      expect(transport.telemetry).not.toHaveBeenCalledWith('settled', expect.anything())
+
+      await handlers.get('before_agent_start')!({ messageType: 'custom', systemPromptOptions: { sections: {} } }, ctx)
+      const second = await slice('b')
+      expect(second?.continue).not.toBe(true)
+      await handlers.get('agent_settled')!({ aborted: false }, ctx)
+      expect(transport.telemetry).toHaveBeenCalledWith('checkpoint', expect.objectContaining({ reason: 'budget', slice: 2 }))
+      expect(transport.telemetry).toHaveBeenLastCalledWith('settled', expect.objectContaining({ reason: 'slice_complete', code: 'slice_budget' }))
+    } finally {
+      transport.socket.mockImplementation(original)
+      vi.unstubAllEnvs()
+    }
+  })
+
   it('records an initial Bash policy refusal without executing the command', async () => {
     const { api, ctx, handlers } = extension()
     const executeBash = vi.fn()

@@ -56,6 +56,17 @@ const LIMITS: Record<Exclude<keyof SlicePolicy, 'enabled' | 'continue'>, { min: 
 
 export class WorkSliceError extends Error {}
 
+/** `XINGULAR_WORK_SLICE=maxToolCalls=15,maxSlices=3` at launch: the same fields as a run's policy. */
+function launchPolicy(text: string): Record<string, unknown> {
+  const record: Record<string, unknown> = {}
+  for (const part of text.split(',')) {
+    const [key, raw] = part.split('=').map((value) => value.trim())
+    if (!key || raw === undefined) throw new WorkSliceError(`XINGULAR_WORK_SLICE must be off or key=value pairs, not ${JSON.stringify(text)}.`)
+    record[key] = raw === 'true' ? true : raw === 'false' ? false : Number(raw)
+  }
+  return record
+}
+
 /**
  * The policy a run asked for, or the defaults. `XINGULAR_WORK_SLICE=off` at launch turns the guard
  * off for every run in this process; nothing is persisted, so restarting without it restores the
@@ -63,8 +74,10 @@ export class WorkSliceError extends Error {}
  */
 export function parseWorkSlice(input: unknown): SlicePolicy {
   if (input === undefined || input === null) {
-    const launch = process.env.XINGULAR_WORK_SLICE?.trim().toLowerCase()
-    return { ...DEFAULT_SLICE_POLICY, ...(launch === 'off' || launch === '0' || launch === 'false' ? { enabled: false } : {}) }
+    const launch = process.env.XINGULAR_WORK_SLICE?.trim()
+    if (launch === undefined || launch === '') return { ...DEFAULT_SLICE_POLICY }
+    if (['off', '0', 'false'].includes(launch.toLowerCase())) return { ...DEFAULT_SLICE_POLICY, enabled: false }
+    return parseWorkSlice(launchPolicy(launch))
   }
   if (typeof input !== 'object' || Array.isArray(input)) throw new WorkSliceError('workSlice must be an object.')
   const record = input as Record<string, unknown>
@@ -111,10 +124,12 @@ export interface SliceState {
   endedByLimit: string | null
   /** Steps past which every non-exempt tool call is refused, once one was refused. */
   refusedAt: number | null
+  /** Whether this slice did work: a successful command or file change. A fruitless slice is not continued. */
+  progressed: boolean
 }
 
 export function createSliceState(_policy: SlicePolicy, slice = 1, now = Date.now()): SliceState {
-  return { slice, steps: 0, tokens: 0, startedAt: now, lastTool: null, compactions: 0, endedBy: null, endedByLimit: null, refusedAt: null }
+  return { slice, steps: 0, tokens: 0, startedAt: now, lastTool: null, compactions: 0, endedBy: null, endedByLimit: null, refusedAt: null, progressed: false }
 }
 
 /** Counters start again for each reply; a terminal session keeps one guard across replies. */
@@ -127,6 +142,18 @@ export function resetSliceState(state: SliceState, now = Date.now()): void {
   state.endedBy = null
   state.endedByLimit = null
   state.refusedAt = null
+  state.progressed = false
+}
+
+/**
+ * The next slice of the same reply: fresh counters and clock, one more slice. Compactions carry
+ * over, so a reply that keeps compacting still ends.
+ */
+export function beginNextSlice(state: SliceState, now = Date.now()): void {
+  const compactions = state.compactions
+  resetSliceState(state, now)
+  state.compactions = compactions
+  state.slice += 1
 }
 
 /** The first limit this reply has passed, named as a person would say it. */
@@ -230,6 +257,75 @@ export function workSliceGuard(options: WorkSliceGuardOptions): (pi: GuardApi) =
         state.endedByLimit = limit
         state.refusedAt ??= state.steps
         return handoff ? undefined : refuse({ block: true, reason: handoffRequest(limit, state) })
+      }
+    })
+  }
+}
+
+export const SLICE_CONTINUE_CUSTOM_TYPE = 'xingular-slice-continue'
+
+/** The part of Pi's extension API the continuation uses. Structural, so the module needs no Pi import. */
+interface ContinuationApi {
+  on(event: 'before_agent_start', handler: (event: { messageType?: string }) => unknown): void
+  on(event: 'tool_result', handler: (event: { toolName: string; isError?: boolean }) => unknown): void
+  on(event: 'agent_before_settle', handler: (event: { outcome?: string; continue?: boolean; entries: unknown[] }, ctx?: { signal?: AbortSignal }) => unknown): void
+}
+
+export interface SliceContinuationOptions {
+  policy: SlicePolicy
+  state: SliceState
+  /** False while a plan runs: a plan is not continued. */
+  active?: () => boolean
+  failed?: () => boolean
+  /** True when the reply declared with `finish` that it needs the person. */
+  blocked?: () => boolean
+  /** The todo list: when every item is done, the work is not continued. */
+  todo?: () => readonly { status: string }[]
+  /** The next open step, for the continue message. */
+  next?: () => string
+  /** Called before the next slice starts, with the slice that ended. */
+  onContinue?: (ended: { slice: number; steps: number; limit: string | null }) => void
+}
+
+/** Successful tools that change the workspace count as progress. */
+const PROGRESS_TOOLS = new Set(['bash', 'edit', 'write'])
+
+/**
+ * Continues a reply in place when its slice ended at the budget (PROP-0041, ADR-0070): the same
+ * run and the same cached prompt, with fresh counters, up to `maxSlices`. Never after a fruitless,
+ * blocked, failed, aborted or plan slice, or when every todo item is done. A person's message
+ * starts again at slice 1.
+ */
+export function sliceContinuation(options: SliceContinuationOptions): (pi: ContinuationApi) => void {
+  const { policy, state } = options
+  return (pi) => {
+    pi.on('before_agent_start', (event) => {
+      if (event.messageType !== undefined && event.messageType !== 'user') return
+      state.slice = 1
+    })
+    pi.on('tool_result', (event) => {
+      if (!event.isError && PROGRESS_TOOLS.has(event.toolName)) state.progressed = true
+    })
+    pi.on('agent_before_settle', (event, ctx) => {
+      if (event.outcome !== 'completed' || event.continue || ctx?.signal?.aborted) return
+      if (!policy.enabled || !policy.continue || state.endedBy !== 'budget') return
+      if (options.active && !options.active()) return
+      if (options.failed?.() || options.blocked?.() || !state.progressed) return
+      if (state.slice >= policy.maxSlices) return
+      const todo = options.todo?.() ?? []
+      if (todo.length && todo.every((item) => item.status === 'completed')) return
+      const ended = { slice: state.slice, steps: state.steps, limit: state.endedByLimit }
+      options.onContinue?.(ended)
+      beginNextSlice(state)
+      const next = options.next?.().trim()
+      const content = clip(
+        `Work slice ${ended.slice} reached its limit (${ended.limit ?? 'budget'}). Slice ${state.slice} of up to ${policy.maxSlices} starts now with a fresh budget. ` +
+        `Continue the task from ${next ? `the next step: ${next}` : 'the next step you reported'}. Do not redo finished work.`,
+        900
+      )
+      return {
+        entries: [...event.entries, { type: 'custom_message', customType: SLICE_CONTINUE_CUSTOM_TYPE, content, display: true }],
+        continue: true
       }
     })
   }

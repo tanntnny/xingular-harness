@@ -4,6 +4,9 @@ import {
   createSliceState,
   DEFAULT_SLICE_POLICY,
   parseWorkSlice,
+  SLICE_CONTINUE_CUSTOM_TYPE,
+  sliceContinuation,
+  type SliceContinuationOptions,
   sliceLimitReached,
   WorkSliceError,
   workSliceGuard,
@@ -202,5 +205,115 @@ describe('work slice guard', () => {
     }
     expect(guard.state.steps).toBe(18)
     expect(guard.state.endedBy).toBeNull()
+  })
+})
+
+describe('XINGULAR_WORK_SLICE at launch', () => {
+  it('accepts key=value pairs with the same bounds as a run policy', () => {
+    vi.stubEnv('XINGULAR_WORK_SLICE', 'maxToolCalls=15, maxSlices=3,continue=true')
+    expect(parseWorkSlice(undefined)).toEqual({ ...DEFAULT_SLICE_POLICY, maxToolCalls: 15, maxSlices: 3 })
+    vi.stubEnv('XINGULAR_WORK_SLICE', 'maxToolCalls=0.5')
+    expect(() => parseWorkSlice(undefined)).toThrow(WorkSliceError)
+    vi.stubEnv('XINGULAR_WORK_SLICE', 'sometimes')
+    expect(() => parseWorkSlice(undefined)).toThrow(WorkSliceError)
+  })
+})
+
+/** The guard and the continuation together, as the terminal registers them, without a Pi session. */
+function sliceHarness(limits: SlicePolicy, options: Partial<SliceContinuationOptions> = {}) {
+  const handlers = new Map<string, Array<(event: unknown, ctx?: unknown) => unknown>>()
+  const api = { on: (name: string, handler: (event: unknown, ctx?: unknown) => unknown) => { handlers.set(name, [...handlers.get(name) ?? [], handler]) } } as never
+  const state = createSliceState(limits)
+  const continued: Array<{ slice: number; steps: number; limit: string | null }> = []
+  workSliceGuard({ policy: limits, state })(api)
+  sliceContinuation({ policy: limits, state, onContinue: (ended) => continued.push(ended), ...options })(api)
+  const call = (name: string, event: unknown = {}, ctx?: unknown): unknown => {
+    let result: unknown
+    for (const handler of handlers.get(name) ?? []) result = handler(event, ctx) ?? result
+    return result
+  }
+  /** Runs `count` successful tool calls of `tool`. */
+  const work = (count: number, tool = 'bash') => {
+    const refusals: unknown[] = []
+    for (let index = 0; index < count; index += 1) {
+      const refusal = call('tool_call', { toolCallId: `c${index}`, toolName: tool, input: {} })
+      if (refusal) refusals.push(refusal)
+      else call('tool_result', { toolName: tool, isError: false })
+    }
+    return refusals
+  }
+  const settle = (extra: Record<string, unknown> = {}, ctx?: unknown) => call('agent_before_settle', { outcome: 'completed', entries: [], ...extra }, ctx) as { entries: Array<{ customType?: string; content?: string }>; continue: boolean } | undefined
+  return { call, state, continued, work, settle, start: () => call('before_agent_start', { messageType: 'user' }) }
+}
+
+describe('work slice continuation', () => {
+  const limits = policy({ maxToolCalls: 3, maxMinutes: 0, maxSlices: 3 })
+
+  it('continues a reply that did work and reached its budget, up to the slice cap', () => {
+    const run = sliceHarness(limits, { next: () => 'Migrate the admin pages' })
+    run.start()
+    expect(run.work(3)).toHaveLength(1)
+    const first = run.settle()
+    expect(first?.continue).toBe(true)
+    expect(first?.entries.at(-1)?.customType).toBe(SLICE_CONTINUE_CUSTOM_TYPE)
+    expect(first?.entries.at(-1)?.content).toContain('Slice 2 of up to 3')
+    expect(first?.entries.at(-1)?.content).toContain('Migrate the admin pages')
+    expect(run.continued).toEqual([{ slice: 1, steps: 3, limit: '3 tool calls' }])
+    expect(run.state).toMatchObject({ slice: 2, steps: 0, endedBy: null, progressed: false })
+
+    // The continuation is not a person's message, so the next slice keeps counting from slice 2.
+    run.call('before_agent_start', { messageType: 'custom' })
+    run.work(3)
+    expect(run.settle()?.continue).toBe(true)
+    expect(run.state.slice).toBe(3)
+    run.work(3)
+    expect(run.settle()).toBeUndefined()
+    expect(run.state.endedBy).toBe('budget')
+
+    // A person's message starts again at slice 1.
+    run.start()
+    expect(run.state.slice).toBe(1)
+  })
+
+  it('hands back a fruitless slice', () => {
+    const run = sliceHarness(limits)
+    run.start()
+    run.work(3, 'read')
+    expect(run.settle()).toBeUndefined()
+    expect(run.continued).toEqual([])
+  })
+
+  it('does not continue a reply that ended for another reason or must stop', () => {
+    const cases: Array<[string, Partial<SliceContinuationOptions>, Record<string, unknown>, unknown]> = [
+      ['not at the budget', {}, {}, undefined],
+      ['blocked by finish', { blocked: () => true }, {}, undefined],
+      ['failed', { failed: () => true }, {}, undefined],
+      ['in plan mode', { active: () => false }, {}, undefined],
+      ['all todo items done', { todo: () => [{ status: 'completed' }] }, {}, undefined],
+      ['already continuing', {}, { continue: true }, undefined],
+      ['aborted', {}, {}, { signal: AbortSignal.abort() }]
+    ]
+    for (const [label, options, extra, ctx] of cases) {
+      const run = sliceHarness(limits, options)
+      run.start()
+      run.work(label === 'not at the budget' ? 2 : 3)
+      expect(run.settle(extra, ctx), label).toBeUndefined()
+    }
+  })
+
+  it('keeps counting compactions across slices', () => {
+    const run = sliceHarness(limits)
+    run.start()
+    run.state.compactions = 2
+    run.work(3)
+    expect(run.settle()?.continue).toBe(true)
+    expect(run.state.compactions).toBe(2)
+  })
+
+  it('does nothing when continuation is off', () => {
+    const run = sliceHarness({ ...limits, continue: false })
+    run.start()
+    run.work(3)
+    expect(run.settle()).toBeUndefined()
   })
 })

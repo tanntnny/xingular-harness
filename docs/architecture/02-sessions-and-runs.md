@@ -327,7 +327,9 @@ is approved but remains in progress; no completed cross-surface catalog is impli
   limit the guard refuses the next tool call and asks the model to stop and report where it is; the
   harness then writes the checkpoint itself from the reply's files, checks and todo list (the model
   has no checkpoint tool since ADR-0069). A non-handoff tool call after the refusal ends the reply. A
-  budget-ended reply is `interrupted` with terminal reason `slice_complete` (ADR-0053). The budget
+  budget-ended reply is `interrupted` with terminal reason `slice_complete` (ADR-0053), unless it
+  continues: a headless run as a new run (`continueSlice`), a terminal reply in place as its next
+  slice (ADR-0070), both up to `maxSlices` and never after a fruitless or blocked slice. The budget
   covers the whole reply: Pi emits `agent_start` for every continuation (a stop-gate nudge, delivered
   subagent results, a plan repair), so the guard starts a new slice only on a person's message.
   No call is refused for repeating: identical calls, a Bash check that keeps failing and repeated

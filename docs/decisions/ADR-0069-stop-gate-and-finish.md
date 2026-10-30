@@ -78,7 +78,8 @@ Other harnesses enforce the end of a turn rather than describe it (STUDY-0004):
    - otherwise `unfinished`.
    The runner (or the terminal extension) writes its checkpoint from evidence: done and next from the
    todo list, blocked from the declaration, files and checks from the reply. Neither auto-continues;
-   the person continues the run.
+   the person continues the run. (A terminal reply that ended at its work-slice budget, not one of
+   these, continues in place since ADR-0070.)
 4. **No model-written checkpoint.** `checkpoint_write` is removed. At a work-slice budget the guard
    asks the model to stop and report, and the harness writes the checkpoint. A capability set pinned
    before the removal gets `finish` in its place.

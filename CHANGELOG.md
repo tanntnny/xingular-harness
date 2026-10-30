@@ -14,6 +14,11 @@
   without `edit`, `write`, browser and connected-app tools. One recorded session implemented a whole
   plan that way. The terminal now marks each plan request in the session and restores the normal
   set after any rebuild.
+- **Terminal replies continue across work slices (ADR-0070).** A terminal reply that reaches its
+  320-call or 60-minute budget after doing work now continues in place as the next slice, with a
+  checkpoint and a notice, up to 8 slices, instead of waiting for "continue" and re-sending the
+  whole context uncached. Fruitless, blocked, failed, aborted and plan slices still stop.
+  `XINGULAR_WORK_SLICE` also accepts key=value pairs such as `maxToolCalls=15,maxSlices=3`.
 
 - **A reply can no longer quietly stop with work open (ADR-0069).**
   - **Stop gate.** In attended top-level runs, terminal included, a reply that ends while its todo

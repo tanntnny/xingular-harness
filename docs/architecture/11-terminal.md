@@ -382,12 +382,15 @@ where it is. Terminal replies also carry the stop gate (INV-RUN-15, ADR-0069): t
 registers `finish`, sends a reply that ends with open todo items back up to three times (each nudge
 is `notice` telemetry, recorded as `extension.notice`), and at settle sends a harness-written
 `checkpoint` and the `needs_person` or `unfinished` code, which the controller records on the active
-run, so an App reading the same session sees the handoff. Plan replies are not gated. Terminal replies are not
-auto-continued: at the boundary the person decides, which is what the terminal's own turn model
-already does. The run record says `interrupted` with terminal reason `slice_complete`, so a host can
-continue it; a checkpoint card in the transcript is not built yet (PAR-004). Start the terminal with
-`XINGULAR_WORK_SLICE=off` to launch a reply with no
-boundary at all; it is not persisted, so the next launch without it restores the guard.
+run, so an App reading the same session sees the handoff. Plan replies are not gated. A reply that
+reaches its budget after doing work continues in place as its next slice (ADR-0070): a
+`xingular-slice-continue` message in the same run, a checkpoint and a notice per boundary, up to
+`maxSlices` (8). A fruitless, blocked, failed, aborted or plan slice, or one whose todo items are all
+done, is not continued; the reply then settles `interrupted` with terminal reason `slice_complete`
+so the person or a host can continue it. A checkpoint card in the transcript is not built yet
+(PAR-004). Start the terminal with `XINGULAR_WORK_SLICE=off` to launch a reply with no boundary at
+all, or with key=value pairs such as `maxToolCalls=15,maxSlices=3` for a smaller policy; neither is
+persisted, so the next launch without it restores the defaults.
 
 ## Liveness and a reply that stops working (INV-RUN-14, ADR-0054)
 

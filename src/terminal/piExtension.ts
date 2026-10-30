@@ -17,7 +17,7 @@ import { askUserTool } from '../tools/askUser'
 import { TODO_WRITE, todoTool } from '../tools/todo'
 import { finishTool } from '../tools/finish'
 import { createStopGateState, handoffFields, stopCheckpointReason, stopGate, stopOutcome, stopSummary, STOP_GATE_EXTENSION } from '../sessions/stopGate'
-import { createSliceState, parseWorkSlice, workSliceGuard } from '../sessions/workSlice'
+import { createSliceState, DEFAULT_SLICE_POLICY, parseWorkSlice, sliceContinuation, workSliceGuard, type SlicePolicy } from '../sessions/workSlice'
 import { DEFAULT_COMMAND_TIMEOUT_SECONDS, withCommandBudget } from '../core/commandBudget'
 import { SESSION_NAME, deriveSessionName, sessionNameTool } from '../tools/sessionName'
 import { CAPABILITY_DISCOVERY, describeCapabilities } from '../tools/getCapabilities'
@@ -192,9 +192,15 @@ export default async function (pi: ExtensionAPI, planRun?: TerminalPlanRunState,
   })
   compactionCheckpoint({ planInstructions: () => planRun?.active ? PLAN_INSTRUCTIONS : null })(pi)
 
-  // A terminal reply is bounded like any other (PROP-0041): a checkpoint at the boundary, then the
-  // person decides whether to continue.
-  const slicePolicy = parseWorkSlice(undefined)
+  // A terminal reply is bounded like any other (PROP-0041): a checkpoint at each boundary, and the
+  // reply continues in place up to the policy's slice cap (ADR-0070) before the person decides.
+  let slicePolicy: SlicePolicy
+  try {
+    slicePolicy = parseWorkSlice(undefined)
+  } catch (error) {
+    slicePolicy = { ...DEFAULT_SLICE_POLICY }
+    console.error(`${error instanceof Error ? error.message : String(error)} Using the default work slices.`)
+  }
   const sliceState = createSliceState(slicePolicy)
   // `XINGULAR_WORK_SLICE=off` at launch leaves terminal replies unbounded, as before PROP-0041.
   // One stop-gate state per terminal session; each reply resets it, and `finish` reads it.
@@ -438,6 +444,21 @@ export default async function (pi: ExtensionAPI, planRun?: TerminalPlanRunState,
       void terminalCall('notice', { kind: 'notify', level: 'info', extension: STOP_GATE_EXTENSION, text: `Stop gate ${count}: the reply ended with ${open.length} open todo item${open.length === 1 ? '' : 's'}; continuing.` }).catch(() => undefined)
     }
   })(pi)
+  // After the stop gate, which stays silent at a slice boundary: a reply that did work and reached
+  // its budget continues as the next slice of the same run (ADR-0070).
+  if (slicePolicy.enabled) sliceContinuation({
+    policy: slicePolicy,
+    state: sliceState,
+    active: () => !planRun?.active,
+    failed: () => Boolean(failure),
+    blocked: () => Boolean(gateState.finish && gateState.finish.status !== 'done'),
+    todo: () => gateState.todo,
+    next: () => handoffFields(gateState).next,
+    onContinue: (ended) => {
+      void terminalCall('checkpoint', { summary: `Work slice ${ended.slice} reached its limit after ${ended.steps} steps; the reply continues.`, ...handoffFields(gateState), files: [], checks: [], decisions: [], slice: ended.slice, reason: 'budget' }).catch(() => undefined)
+      void terminalCall('notice', { kind: 'notify', level: 'info', extension: STOP_GATE_EXTENSION, text: `Work slice ${ended.slice} reached ${ended.limit ?? 'its limit'}; continuing with slice ${ended.slice + 1} of up to ${slicePolicy.maxSlices}.` }).catch(() => undefined)
+    }
+  })(pi)
   // Reply text as it streams, batched, for a paired phone (remote control). The completed message
   // carries the same id and replaces whatever streamed.
   let streamId: string | null = null
@@ -619,10 +640,10 @@ export default async function (pi: ExtensionAPI, planRun?: TerminalPlanRunState,
     const aborted = event.aborted || messageAborted
     const stop = !sliceState.endedBy && !failure && !aborted && !planRun?.active ? stopOutcome(gateState) : null
     if (stop) {
-      await terminalCall('checkpoint', { summary: stopSummary(stop), ...handoffFields(gateState), files: [], checks: [], decisions: [], slice: 1, reason: stopCheckpointReason(stop) }).catch(() => undefined)
+      await terminalCall('checkpoint', { summary: stopSummary(stop), ...handoffFields(gateState), files: [], checks: [], decisions: [], slice: sliceState.slice, reason: stopCheckpointReason(stop) }).catch(() => undefined)
     } else if (sliceState.endedBy && !failure && !aborted) {
       // The guard ended the reply and promised the model the harness would keep its state.
-      await terminalCall('checkpoint', { summary: `The reply stopped after ${sliceState.steps} steps at its work-slice boundary.`, ...handoffFields(gateState), files: [], checks: [], decisions: [], slice: 1, reason: sliceState.endedBy }).catch(() => undefined)
+      await terminalCall('checkpoint', { summary: `The reply stopped after ${sliceState.steps} steps at its work-slice boundary.`, ...handoffFields(gateState), files: [], checks: [], decisions: [], slice: sliceState.slice, reason: sliceState.endedBy }).catch(() => undefined)
     }
     const reason = sliceState.endedBy ? 'slice_complete' : stop?.code
     const code = sliceState.endedBy === 'compaction-thrash' ? 'compaction_thrash' : sliceState.endedBy === 'budget' ? 'slice_budget' : stop?.code
