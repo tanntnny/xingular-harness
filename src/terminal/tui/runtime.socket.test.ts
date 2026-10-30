@@ -193,6 +193,74 @@ describe('a native SDK runtime on the actual Harness terminal socket', () => {
     expect(session.getActiveToolNames()).not.toContain('spawn_subagent')
   })
 
+  it('keeps normal-mode tools when the session is rebuilt from its transcript after a plan', async () => {
+    const { runtime } = await setup()
+    const ai = await import('@earendil-works/pi-ai')
+    const faux = ai.fauxProvider()
+    runtime.services.modelRuntime.registerNativeProvider(faux.provider)
+    await runtime.session.setModel(faux.getModel())
+    const sent: string[][] = []
+    const reply = (text: string): Parameters<typeof faux.setResponses>[0][number] => (context) => {
+      sent.push(ai.getCurrentTools(context.messages.filter(message => message.role === 'system')).map(tool => tool.name))
+      return ai.fauxAssistantMessage(text)
+    }
+    const normal = [...runtime.session.getActiveToolNames()].sort()
+    expect(normal).toEqual(expect.arrayContaining(['edit', 'write']))
+    const rebuild = async () => {
+      await runtime.switchSession(runtime.session.sessionFile!)
+      await runtime.session.setModel(faux.getModel())
+    }
+    const implement = async (text: string) => {
+      faux.setResponses([reply('Done')])
+      await runtime.submit(text)
+      expect(sent.at(-1)).toEqual(expect.arrayContaining(['edit', 'write']))
+      expect(sent.at(-1)).not.toContain('ask_user')
+    }
+
+    // Back and forth: a plan, a rebuild before any normal request, then normal work.
+    for (const cycle of [1, 2, 3]) {
+      faux.setResponses([reply(`<proposed_plan># Plan ${cycle}\nDo it.</proposed_plan>`)])
+      await runtime.submitPlan(`Plan ${cycle}`)
+      expect(sent.at(-1)).toContain('ask_user')
+      expect(sent.at(-1)).not.toContain('edit')
+      await rebuild()
+      expect([...runtime.session.getActiveToolNames()].sort()).toEqual(normal)
+      await implement(`Implement ${cycle}`)
+    }
+
+    // The recorded failure: a plan aborted, planned again (which declares nothing new), then rebuilt.
+    const prompt = runtime.session.prompt.bind(runtime.session)
+    const aborted = vi.spyOn(runtime.session, 'prompt').mockImplementationOnce(async (text, options) => {
+      faux.setResponses([reply('<proposed_plan># Partial\nStart.</proposed_plan>')])
+      await prompt(text, options)
+      throw new Error('Request aborted')
+    })
+    await expect(runtime.submitPlan('Plan again')).rejects.toThrow('Request aborted')
+    aborted.mockRestore()
+    faux.setResponses([reply('<proposed_plan># Again\nDo it.</proposed_plan>')])
+    await runtime.submitPlan('Plan again')
+    await rebuild()
+    expect([...runtime.session.getActiveToolNames()].sort()).toEqual(normal)
+    await implement('Implement the plan: Again')
+  })
+
+  it('keeps normal-mode tools, including a disabled one, when tree navigation lands inside a plan', async () => {
+    const { runtime } = await setup()
+    const ai = await import('@earendil-works/pi-ai')
+    const faux = ai.fauxProvider()
+    runtime.services.modelRuntime.registerNativeProvider(faux.provider)
+    await runtime.session.setModel(faux.getModel())
+    const normal = runtime.session.getActiveToolNames().filter(name => name !== 'web_fetch')
+    runtime.session.setActiveToolsByName(normal)
+    faux.setResponses([ai.fauxAssistantMessage('<proposed_plan># Plan\nDo it.</proposed_plan>')])
+    await runtime.submitPlan('Plan inside the tree')
+    const reply = runtime.session.sessionManager.getBranch().filter(entry => entry.type === 'message' && entry.message.role === 'assistant').at(-1)!
+    const result = await runtime.navigateTree(reply.id, { summarize: false })
+    expect(result.cancelled).toBe(false)
+    expect([...runtime.session.getActiveToolNames()].sort()).toEqual([...normal].sort())
+    expect(runtime.session.getActiveToolNames()).not.toContain('web_fetch')
+  })
+
   it('freezes actual callable tools even when delegation is disabled, without Pi CLI builtins', async () => {
     const { harness, runtime } = await setup({ subagents: null, connections: false })
     const ai = await import('@earendil-works/pi-ai')

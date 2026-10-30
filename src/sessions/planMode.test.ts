@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest'
 
 import { CONTEXT_MESSAGE_TYPE, CONTEXT_SNAPSHOT_KEY, fit } from '../prompt/compile'
 import { GET_CAPABILITIES } from '../tools/getCapabilities'
-import { deniedPlanBashCommand, finalizePlanOutcome, normalModeTools, PLAN_INSTRUCTIONS, PLAN_REPAIR_INSTRUCTIONS, PLAN_SECTION_ID, parsePlanOutcome, parseProposedPlan, planModeTools, planRefusal, planSection, QUESTION_TOOL_NAMES } from './planMode'
+import { deniedPlanBashCommand, finalizePlanOutcome, normalModeTools, normalToolsForBranch, PLAN_INSTRUCTIONS, PLAN_TOOLS_ENTRY, PLAN_REPAIR_INSTRUCTIONS, PLAN_SECTION_ID, parsePlanOutcome, parseProposedPlan, planModeTools, planRefusal, planSection, QUESTION_TOOL_NAMES } from './planMode'
 
 function history(sectionIds: string[]): string {
   const file = join(mkdtempSync(join(tmpdir(), 'plan-history-')), 'session.jsonl')
@@ -147,5 +147,35 @@ describe('parseProposedPlan', () => {
 
   it('returns null when the reply has no block', () => {
     expect(parseProposedPlan('Just an answer.')).toBeNull()
+  })
+})
+
+describe('normalToolsForBranch', () => {
+  const declared = (added: string[], removed: string[] = []) => ({ type: 'message', message: { role: 'system', toolsAdded: added.map(name => ({ name })), toolsRemoved: removed.map(name => ({ name })) } })
+  const patch = { type: 'message', message: { role: 'system' } }
+  const user = { type: 'message', message: { role: 'user' } }
+  const begin = (normal: string[]) => ({ type: 'custom', customType: PLAN_TOOLS_ENTRY, data: { phase: 'begin', normal } })
+  const end = { type: 'custom', customType: PLAN_TOOLS_ENTRY, data: { phase: 'end' } }
+  const normal = ['read', 'bash', 'edit', 'write']
+
+  it('leaves a branch alone when its last tool set was declared in normal mode', () => {
+    expect(normalToolsForBranch([])).toBeNull()
+    expect(normalToolsForBranch([declared(normal), user])).toBeNull()
+    expect(normalToolsForBranch([declared(normal), begin(normal), declared(['ask_user'], ['edit', 'write']), end, declared(['edit', 'write'], ['ask_user']), user])).toBeNull()
+  })
+
+  it('returns the normal tools when the last tool set is a plan set, ended or not', () => {
+    expect(normalToolsForBranch([declared(normal), begin(normal), declared(['ask_user'], ['edit', 'write']), user, end])).toEqual(normal)
+    expect(normalToolsForBranch([declared(normal), begin(normal), declared(['ask_user'], ['edit', 'write']), user])).toEqual(normal)
+  })
+
+  it('looks past a later plan that declared nothing new and past messages without tool changes', () => {
+    const later = ['read', 'bash', 'edit', 'write', 'web_fetch']
+    expect(normalToolsForBranch([declared(normal), begin(normal), declared(['ask_user'], ['edit']), end, begin(later), patch, end, user])).toEqual(normal)
+  })
+
+  it('ignores malformed entries', () => {
+    const broken = { type: 'custom', customType: PLAN_TOOLS_ENTRY, data: { phase: 'begin', normal: 'edit' } }
+    expect(normalToolsForBranch([declared(normal), broken, declared(['ask_user'], ['edit'])])).toBeNull()
   })
 })

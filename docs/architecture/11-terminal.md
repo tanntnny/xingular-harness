@@ -58,7 +58,7 @@ Screen: transcript above the composer, centred dialogs, full-screen resource bro
   (ADR-0064). With no usable saved selection, Pi's own fallback message stands.
 - Normal mode keeps `ask_user` out of the active tool set. An attended plan request enables the
   shared tool alongside its read-only set and restores the normal set on success, failure or
-  interruption. The question blocks until answered, then planning continues in the same run. There
+  interruption, and again after any rebuild from the transcript (page 02, `INV-RUN-8`). The question blocks until answered, then planning continues in the same run. There
   is no terminal-only question alias (PROP-0040).
 - The approved plan outcome contract on page 02 applies equally to the terminal and server:
   only `plan_ready` offers a plan card and Implement; `blocked` reports unavailable required input

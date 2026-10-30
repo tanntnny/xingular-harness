@@ -8,6 +8,12 @@
   through shell scripts instead: one 2-hour terminal run made 156 script edits (14 failed) and no
   `edit` call. `createWorkspaceFileTools` now restores the prompt line and guidelines, as Pi's own
   `createBashTool` does, for both the terminal and the runner. The stable prefix changes once.
+- **A plan no longer leaks its tools into normal mode.** A terminal plan request narrows the active
+  tools, and Pi records the restored normal set only with the next request. A rebuild before then
+  (a new runtime, resume, switch, fork or tree navigation) replayed the plan set, so normal work ran
+  without `edit`, `write`, browser and connected-app tools. One recorded session implemented a whole
+  plan that way. The terminal now marks each plan request in the session and restores the normal
+  set after any rebuild.
 
 - **A reply can no longer quietly stop with work open (ADR-0069).**
   - **Stop gate.** In attended top-level runs, terminal included, a reply that ends while its todo

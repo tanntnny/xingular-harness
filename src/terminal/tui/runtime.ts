@@ -8,7 +8,7 @@ import { closeSync, existsSync, openSync, readSync, realpathSync } from 'node:fs
 import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 
 import terminalExtension, { type TerminalPlanRunState } from '../piExtension'
-import { normalModeTools, planModeTools, QUESTION_TOOL_NAMES } from './planMode'
+import { normalModeTools, normalToolsForBranch, planModeTools, PLAN_TOOLS_ENTRY, QUESTION_TOOL_NAMES } from './planMode'
 import { claimTerminalControl, controlCall } from '../control'
 import { observeProviderResponses } from '../../usage/limits/capture'
 import { limitHeaders } from '../../usage/limits/normalize'
@@ -267,6 +267,11 @@ export async function createTerminalRuntime(args: string[], host: TerminalRuntim
       ?? session.settingsManager.getDefaultThinkingLevel() ?? 'medium') as AgentSession['thinkingLevel']
   }
   const applyMode = (): Promise<void> => modeChoices.apply(native.session, currentMode, modelFor, defaultEffort(native.session))
+  // Pi rebuilds the active tools from the transcript, where the last recorded set may be a plan's.
+  const restoreNormalTools = (session: AgentSession): void => {
+    const recorded = normalToolsForBranch(session.sessionManager.getBranch() as never)
+    session.setActiveToolsByName(normalModeTools(recorded ?? session.getActiveToolNames()))
+  }
   const restoreChoice = async (session: AgentSession, previous: { model: AgentSession['model']; effort: AgentSession['thinkingLevel'] }): Promise<void> => {
     if (previous.model && (session.model?.provider !== previous.model.provider || session.model?.id !== previous.model.id)) {
       await session.setModel(previous.model, { persist: false }).catch(() => undefined)
@@ -355,7 +360,7 @@ export async function createTerminalRuntime(args: string[], host: TerminalRuntim
       ...(thinkingLevel ? { thinkingLevel } : {})
     })
     installPluginCommandRouter(created.session, resourceOwners, barePrompts)
-    created.session.setActiveToolsByName(normalModeTools(created.session.getActiveToolNames()))
+    restoreNormalTools(created.session)
     const services: AgentSessionServices = { cwd, agentDir, modelRuntime, settingsManager, resourceLoader, diagnostics: [] }
     host.resources?.(services)
     return { ...created, services, diagnostics: services.diagnostics }
@@ -448,6 +453,7 @@ export async function createTerminalRuntime(args: string[], host: TerminalRuntim
       planRun.allowedTools = new Set(allowedTools)
       planRun.active = true
       try {
+        session.sessionManager.appendCustomEntry(PLAN_TOOLS_ENTRY, { phase: 'begin', normal: originalTools })
         session.setActiveToolsByName(allowedTools)
         await modeChoices.apply(session, 'plan', modelFor, defaultEffort(session))
         await session.prompt(text, { expandPromptTemplates: false, ...(images?.length ? { images } : {}) })
@@ -456,6 +462,7 @@ export async function createTerminalRuntime(args: string[], host: TerminalRuntim
         planRun.allowedTools = new Set()
         if (!disposed && native.session === session) {
           session.setActiveToolsByName(originalTools)
+          session.sessionManager.appendCustomEntry(PLAN_TOOLS_ENTRY, { phase: 'end' })
           await modeChoices.quietly(() => restoreChoice(session, previous))
           if (pendingApply) {
             pendingApply = false
@@ -491,6 +498,7 @@ export async function createTerminalRuntime(args: string[], host: TerminalRuntim
     fork: (entryId, options) => exclusive(() => native.fork(entryId, options)),
     navigateTree: (targetId, options) => exclusive(async () => {
       const result = await native.session.navigateTree(targetId, options)
+      if (!result.cancelled && !planRun.active) restoreNormalTools(native.session)
       if (!result.cancelled) await announce()
       return result
     }),

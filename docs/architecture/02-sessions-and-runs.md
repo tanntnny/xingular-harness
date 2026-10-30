@@ -300,7 +300,12 @@ is approved but remains in progress; no completed cross-surface catalog is impli
   commands. Generic browser actions and connected-app calls remain unavailable in plan mode. The
   gate refuses unsafe calls before approvals, and the service rechecks before launch. The terminal activates plan-eligible
   tools only for a plan request, then restores its normal set. Provider-cache effects of the tool-list
-  difference are not assumed (page 04, `INV-PRM-8`).
+  difference are not assumed (page 04, `INV-PRM-8`). Pi records a tool-set change only with the next
+  request, so the terminal brackets each plan request with `xingular-plan-tools` entries (`begin`
+  carries the normal set it replaced, then `end`). Whenever Pi rebuilds the active tools from the
+  transcript (a new runtime, resume, switch, fork or tree navigation), `normalToolsForBranch` returns
+  the bracketed normal set if the last recorded set is a plan's, so a plan never leaks into normal
+  mode.
 - **INV-RUN-9** Subagent results reach the parent at native turn boundaries, at most once
   automatically (typed receipts in native history). A parent joins outstanding children before it
   completes.

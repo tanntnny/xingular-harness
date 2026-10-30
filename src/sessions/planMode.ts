@@ -1,6 +1,8 @@
-// Plan mode: a run that may research, ask and recall, and ends with a proposed plan. The tool list
-// the model sees is unchanged, so switching the mode does not change the cached prompt prefix; the
-// gate refuses everything else, and the instruction arrives as a context update.
+// Plan mode: a run that may research, ask and recall, and ends with a proposed plan. In a headless
+// run the tool list the model sees is unchanged, so switching the mode does not change the cached
+// prompt prefix; the gate refuses everything else, and the instruction arrives as a context update.
+// The terminal also narrows its active tools to `planModeTools` for the plan request and records the
+// window with `PLAN_TOOLS_ENTRY`, so a rebuild can tell a plan tool set from a normal one.
 import { deliveredSnapshot, type HostSection } from '../prompt/compile'
 import { ASK_USER } from '../tools/askUser'
 import { TODO_WRITE } from '../tools/todo'
@@ -112,6 +114,55 @@ export function planModeTools(normal: readonly string[], readOnly: Iterable<stri
   const allowed = new Set([...PLAN_READ_ONLY_TOOLS, ...PLAN_RESEARCH_TOOLS, SPAWN_SUBAGENT, PLAN_BASH, ...readOnly])
   const questions = [...planOnlyQuestions].filter((name) => QUESTION_TOOL_NAMES.has(name))
   return [...new Set([...normal, ...questions])].filter((name) => allowed.has(name))
+}
+
+/**
+ * A custom session entry around a terminal plan request: `begin` holds the normal-mode tools it
+ * replaced and `end` follows their restoration. Pi records a tool-set change only on the next
+ * request, so between a plan and the next normal request the transcript's last tool set is the
+ * plan's; a rebuild from the transcript (resume, switch, fork, tree navigation) would make it the
+ * normal set. `normalToolsForBranch` reads these entries to undo that.
+ */
+export const PLAN_TOOLS_ENTRY = 'xingular-plan-tools'
+
+export type PlanToolsEntry = { phase: 'begin'; normal: string[] } | { phase: 'end' }
+
+interface BranchEntry {
+  type: string
+  customType?: string
+  data?: unknown
+  message?: { role?: string; toolsAdded?: unknown; toolsRemoved?: unknown }
+}
+
+function planToolsEntry(entry: BranchEntry): PlanToolsEntry | null {
+  if (entry.type !== 'custom' || entry.customType !== PLAN_TOOLS_ENTRY) return null
+  const data = entry.data as Partial<{ phase: unknown; normal: unknown }> | undefined
+  if (data?.phase === 'end') return { phase: 'end' }
+  if (data?.phase === 'begin' && Array.isArray(data.normal) && data.normal.every((name) => typeof name === 'string')) {
+    return { phase: 'begin', normal: data.normal as string[] }
+  }
+  return null
+}
+
+/**
+ * The normal-mode tools a branch should have when its last recorded tool set was declared inside a
+ * plan window, or null when the recorded set is already the normal one. The plan window is the
+ * last `begin` before that declaration up to the first `end` after it, or the end of the branch.
+ */
+export function normalToolsForBranch(entries: readonly BranchEntry[]): string[] | null {
+  let declared = -1
+  entries.forEach((entry, index) => {
+    const message = entry.type === 'message' ? entry.message : undefined
+    if (message?.role === 'system' && (message.toolsAdded || message.toolsRemoved)) declared = index
+  })
+  if (declared < 0) return null
+  for (let index = declared - 1; index >= 0; index -= 1) {
+    const marker = planToolsEntry(entries[index])
+    if (!marker) continue
+    if (marker.phase === 'end') return null
+    return marker.normal
+  }
+  return null
 }
 
 /** Why a plan-mode run may not call this tool, or null when it may. */
