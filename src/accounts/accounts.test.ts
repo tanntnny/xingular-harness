@@ -210,87 +210,51 @@ test('a failed terminal credential launch can retry without a stale reference co
   await accounts.writeCredential(account.id, 'openai', { type: 'api_key', key: 'probe' })
   const auth = join(configDir(dir, account), 'auth.json')
   mkdirSync(auth)
-  await expect(accounts.terminalBegin(account)).rejects.toThrow()
+  await expect(accounts.terminalBegin(account)).rejects.toThrow('not readable')
+  expect(accounts.terminalCount(account.id)).toBe(0)
   rmdirSync(auth)
   await accounts.terminalBegin(account)
-  expect(statSync(auth).isFile()).toBe(true)
-  expect(statSync(auth).mode & 0o777).toBe(0o600)
+  expect(accounts.terminalCount(account.id)).toBe(1)
   await accounts.terminalEnd(account)
-  expect(existsSync(auth)).toBe(false)
+  expect(accounts.terminalCount(account.id)).toBe(0)
 })
 
-test('a terminal round-trips credentials through auth.json', async () => {
+test('a terminal keeps no auth.json and leaves the stored credentials as they are', async () => {
   const { dir, accounts } = service()
   const account = addAccount(dir, 'A', 'apiKey')
   ensureHome(dir, account)
   await accounts.writeCredential(account.id, 'openai', { type: 'api_key', key: 'k1' })
   await accounts.terminalBegin(account)
   const auth = join(configDir(dir, account), 'auth.json')
-  expect(readFileSync(auth, 'utf8')).toContain('k1')
-  writeFileSync(auth, JSON.stringify({ anthropic: { type: 'oauth', access: 'a', refresh: 'r', expires: 1 } }))
-  await accounts.terminalEnd(account)
   expect(existsSync(auth)).toBe(false)
-  expect(loadState(dir, account.id).piProviders).toEqual(['anthropic'])
-  expect((await accounts.readCredential(account.id, 'anthropic'))?.refresh).toBe('r')
-})
-
-test('a key saved while a terminal runs is kept when that terminal ends', async () => {
-  const { dir, accounts } = service()
-  const account = addAccount(dir, 'A', 'apiKey')
-  ensureHome(dir, account)
-  await accounts.terminalBegin(account)
   await accounts.writeCredential(account.id, 'deepseek', { type: 'api_key', key: 'k-late' })
   await accounts.terminalEnd(account)
-  expect((await accounts.readCredential(account.id, 'deepseek'))?.key).toBe('k-late')
-  expect(loadState(dir, account.id).piProviders).toEqual(['deepseek'])
+  expect(existsSync(auth)).toBe(false)
+  expect(loadState(dir, account.id).piProviders).toEqual(['deepseek', 'openai'])
+  expect((await accounts.readCredential(account.id, 'openai'))?.key).toBe('k1')
 })
 
-test('a terminal leaves auth.json alone while another live process has a terminal on the account', async () => {
+test('an auth.json an older terminal left is folded in without replacing a newer token', async () => {
   const { dir, accounts } = service()
   const account = addAccount(dir, 'A', 'apiKey')
   ensureHome(dir, account)
-  await accounts.writeCredential(account.id, 'openai', { type: 'api_key', key: 'k1' })
+  await accounts.writeCredential(account.id, 'openai', { type: 'oauth', access: 'a5', refresh: 'r5', expires: 5 })
+  await accounts.writeCredential(account.id, 'deepseek', { type: 'api_key', key: 'stored' })
   const auth = join(configDir(dir, account), 'auth.json')
-  const leases = join(dir, account.id, 'terminal-leases')
-  mkdirSync(leases, { recursive: true })
-  // The parent process stands in for another Harness that is running.
-  const other = join(leases, String(process.ppid))
-  writeFileSync(other, '{}')
-  writeFileSync(auth, JSON.stringify({ openai: { type: 'oauth', access: 'fresh', refresh: 'r2', expires: 2 } }))
+  writeFileSync(auth, JSON.stringify({
+    openai: { type: 'oauth', access: 'a2', refresh: 'r2', expires: 2 },
+    deepseek: { type: 'api_key', key: 'file' },
+    anthropic: { type: 'oauth', access: 'n', refresh: 'rn', expires: 9 }
+  }))
   await accounts.terminalBegin(account)
-  expect(readFileSync(auth, 'utf8')).toContain('fresh')
-  await accounts.terminalEnd(account)
-  expect(existsSync(auth)).toBe(true)
-  rmSync(other)
-  await accounts.terminalBegin(account)
-  writeFileSync(auth, JSON.stringify({ openai: { type: 'oauth', access: 'fresh', refresh: 'r2', expires: 2 } }))
-  await accounts.terminalEnd(account)
   expect(existsSync(auth)).toBe(false)
-  expect((await accounts.readCredential(account.id, 'openai'))?.refresh).toBe('r2')
+  expect((await accounts.readCredential(account.id, 'openai'))?.refresh).toBe('r5')
+  expect((await accounts.readCredential(account.id, 'deepseek'))?.key).toBe('stored')
+  expect((await accounts.readCredential(account.id, 'anthropic'))?.refresh).toBe('rn')
+  await accounts.terminalEnd(account)
 })
 
-test('a terminal that joins a running one gets the keys saved since, and keeps the tokens already in auth.json', async () => {
-  const { dir, accounts } = service()
-  const account = addAccount(dir, 'A', 'apiKey')
-  ensureHome(dir, account)
-  const auth = join(configDir(dir, account), 'auth.json')
-  const leases = join(dir, account.id, 'terminal-leases')
-  mkdirSync(leases, { recursive: true })
-  writeFileSync(join(leases, String(process.ppid)), '{}')
-  writeFileSync(auth, JSON.stringify({ openai: { type: 'oauth', access: 'fresh', refresh: 'r2', expires: 2 } }))
-  await accounts.writeCredential(account.id, 'openai', { type: 'api_key', key: 'k1' })
-  await accounts.writeCredential(account.id, 'deepseek', { type: 'api_key', key: 'k-late' })
-  await accounts.terminalBegin(account)
-  const merged = JSON.parse(readFileSync(auth, 'utf8'))
-  expect(merged.openai.access).toBe('fresh')
-  expect(merged.deepseek.key).toBe('k-late')
-  rmSync(join(leases, String(process.ppid)))
-  await accounts.terminalEnd(account)
-  expect(existsSync(auth)).toBe(false)
-  expect((await accounts.readCredential(account.id, 'deepseek'))?.key).toBe('k-late')
-})
-
-test('a refresh made by a terminal is saved when it ends, even while another process still uses auth.json', async () => {
+test('a newer token in an auth.json an older terminal left is saved, and the file stays while another process uses it', async () => {
   const { dir, accounts } = service()
   const account = addAccount(dir, 'A', 'apiKey')
   ensureHome(dir, account)
@@ -298,6 +262,7 @@ test('a refresh made by a terminal is saved when it ends, even while another pro
   const auth = join(configDir(dir, account), 'auth.json')
   const leases = join(dir, account.id, 'terminal-leases')
   mkdirSync(leases, { recursive: true })
+  // The parent process stands in for an older Harness whose terminal still reads auth.json.
   const other = join(leases, String(process.ppid))
   writeFileSync(other, '{}')
   await accounts.terminalBegin(account)
@@ -305,6 +270,10 @@ test('a refresh made by a terminal is saved when it ends, even while another pro
   await accounts.terminalEnd(account)
   expect((await accounts.readCredential(account.id, 'openai'))?.refresh).toBe('r2')
   expect(existsSync(auth)).toBe(true)
+  rmSync(other)
+  await accounts.terminalBegin(account)
+  expect(existsSync(auth)).toBe(false)
+  await accounts.terminalEnd(account)
 })
 
 test('a lease left by a process that has ended is removed and does not keep the account busy', async () => {
@@ -314,10 +283,88 @@ test('a lease left by a process that has ended is removed and does not keep the 
   const leases = join(dir, account.id, 'terminal-leases')
   mkdirSync(leases, { recursive: true })
   writeFileSync(join(leases, '2147483646'), '{}')
+  writeFileSync(join(configDir(dir, account), 'auth.json'), '{}')
   await accounts.terminalBegin(account)
   expect(existsSync(join(leases, '2147483646'))).toBe(false)
-  await accounts.terminalEnd(account)
   expect(existsSync(join(configDir(dir, account), 'auth.json'))).toBe(false)
+  await accounts.terminalEnd(account)
+})
+
+/** The terminal side of `accounts.credentials.*`, as the host's socket handlers answer it. */
+function terminalCalls(accounts: Accounts, accountId: string) {
+  return async (call: string, params: Record<string, unknown> = {}): Promise<unknown> => {
+    switch (call) {
+      case 'accounts.credentials.read': return { credential: (await accounts.readCredential(accountId, params.provider as string)) ?? null }
+      case 'accounts.credentials.list': return { credentials: await accounts.listCredentials(accountId) }
+      case 'accounts.credentials.lease': {
+        const lease = await accounts.leaseCredential(accountId, params.provider as string)
+        return { leaseId: lease.leaseId, current: lease.current ?? null }
+      }
+      case 'accounts.credentials.commit': return { credential: (await accounts.commitCredentialLease(accountId, params.leaseId as string, params.credential as never)) ?? null }
+      case 'accounts.credentials.delete': await accounts.writeCredential(accountId, params.provider as string, null); return {}
+      default: throw new Error(`Unexpected call ${call}`)
+    }
+  }
+}
+
+test('terminals and the host refresh one OAuth token once, under one lock', async () => {
+  const { dir, accounts } = service()
+  const account = addAccount(dir, 'A', 'subscription')
+  ensureHome(dir, account)
+  await accounts.writeCredential(account.id, 'openai', { type: 'oauth', access: 'a1', refresh: 'r1', expires: Date.now() - 1 })
+  // Like OpenAI: a refresh token works once. Like Pi: the expiry is checked again under the lock.
+  const spent = new Set<string>()
+  let refreshes = 0
+  const refresh = async (current: Record<string, unknown> | undefined) => {
+    if (!current || (current.expires as number) > Date.now()) return undefined
+    if (spent.has(current.refresh as string)) throw new Error('OpenAI OAuth token request failed (400): {"error": "invalid_grant"}')
+    spent.add(current.refresh as string)
+    refreshes += 1
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    return { type: 'oauth' as const, access: `a${refreshes + 1}`, refresh: `r${refreshes + 1}`, expires: Date.now() + HOUR }
+  }
+  const { terminalCredentialStore } = await import('../terminal/credentialStore')
+  const first = terminalCredentialStore(terminalCalls(accounts, account.id) as never)
+  const second = terminalCredentialStore(terminalCalls(accounts, account.id) as never)
+  const results = await Promise.all([
+    first.modify('openai', refresh as never),
+    accounts.modifyCredential(account.id, 'openai', refresh as never),
+    second.modify('openai', refresh as never)
+  ])
+  expect(refreshes).toBe(1)
+  expect(results.map((credential) => (credential as { refresh?: string } | undefined)?.refresh)).toEqual(['r2', 'r2', 'r2'])
+  expect(((await first.read('openai')) as { refresh?: string } | undefined)?.refresh).toBe('r2')
+  expect((await first.list()).map((item) => item.providerId)).toEqual(['openai'])
+})
+
+test('a terminal sign-in, sign-out and failed refresh go through the store', async () => {
+  const { dir, accounts } = service()
+  const account = addAccount(dir, 'A', 'subscription')
+  ensureHome(dir, account)
+  const { terminalCredentialStore } = await import('../terminal/credentialStore')
+  const terminal = terminalCredentialStore(terminalCalls(accounts, account.id) as never)
+  await terminal.modify('openai', async () => ({ type: 'oauth', access: 'a', refresh: 'r', expires: 1 }) as never)
+  expect((await accounts.readCredential(account.id, 'openai'))?.refresh).toBe('r')
+  await expect(terminal.modify('openai', async () => { throw new Error('refresh failed') })).rejects.toThrow('refresh failed')
+  expect((await accounts.readCredential(account.id, 'openai'))?.refresh).toBe('r')
+  await terminal.delete('openai')
+  expect(await accounts.readCredential(account.id, 'openai')).toBeNull()
+})
+
+test('an abandoned credential lease releases the lock and changes nothing', async () => {
+  const { dir, accounts } = service()
+  const account = addAccount(dir, 'A', 'apiKey')
+  ensureHome(dir, account)
+  await accounts.writeCredential(account.id, 'openai', { type: 'api_key', key: 'k1' })
+  const lease = await accounts.leaseCredential(account.id, 'openai', 30)
+  expect(lease.current?.key).toBe('k1')
+  const other = addAccount(dir, 'B', 'apiKey')
+  await expect(accounts.commitCredentialLease(other.id, lease.leaseId, { type: 'api_key', key: 'stolen' })).rejects.toThrow('lease has ended')
+  // Waits for the abandoned lease to time out, then runs.
+  await accounts.modifyCredential(account.id, 'openai', async () => ({ type: 'api_key', key: 'k2' }))
+  expect((await accounts.readCredential(account.id, 'openai'))?.key).toBe('k2')
+  await expect(accounts.commitCredentialLease(account.id, lease.leaseId, { type: 'api_key', key: 'late' })).rejects.toThrow('lease has ended')
+  expect((await accounts.readCredential(account.id, 'openai'))?.key).toBe('k2')
 })
 
 test('creating, renaming and removing an account is audited and announced', async () => {

@@ -1,5 +1,5 @@
 import type { ExtensionUIContext } from '@earendil-works/pi-coding-agent'
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -117,6 +117,20 @@ describe('a native SDK runtime on the actual Harness terminal socket', () => {
     expect(prompt).toMatch(/^- edit: /m)
     expect(prompt).toMatch(/^- write: /m)
     expect(sent).toEqual(expect.arrayContaining(['read', 'bash', 'edit', 'write']))
+  })
+
+  it('reads and refreshes credentials through the host store, with no auth.json', async () => {
+    const { harness, runtime, account } = await setup()
+    await harness.accounts.writeCredential(account.id, 'openai', { type: 'oauth', access: 'a1', refresh: 'r1', expires: 1 })
+    expect((await runtime.services.modelRuntime.listCredentials()).map(item => item.providerId)).toContain('openai')
+    const { terminalCredentialStore } = await import('../credentialStore')
+    const store = terminalCredentialStore()
+    const refreshed = await store.modify('openai', async current => ({ ...current!, access: 'a2', refresh: 'r2', expires: 2 }) as never)
+    expect((refreshed as { refresh?: string } | undefined)?.refresh).toBe('r2')
+    expect((await harness.accounts.readCredential(account.id, 'openai'))?.refresh).toBe('r2')
+    const agentDir = process.env.PI_CODING_AGENT_DIR
+    expect(agentDir).toBeTruthy()
+    expect(existsSync(join(agentDir!, 'auth.json'))).toBe(false)
   })
 
   it('hides question tools in normal mode and activates them only during plan requests', async () => {

@@ -60,6 +60,15 @@ skills, prompts, rules and Pi packages.
 - **INV-ACC-4** A terminal's `/accounts` goes through the session socket's `accounts.*` calls, and
   every one needs the session's control key. A command the model runs in the shell cannot make
   an account change.
+- **INV-ACC-5** A credential has one copy. A terminal's Pi keeps no `auth.json`: it reads its own
+  account's credentials with `accounts.credentials.read`/`list`, and a refresh or sign-in holds the
+  store's cross-process lock from `accounts.credentials.lease` to `accounts.credentials.commit`
+  (`terminal/credentialStore.ts`, at most 20 seconds, then the lease lapses unchanged). Like every
+  `accounts.*` call they need the control key, so the model's shell never sees a token. Two copies of
+  a rotating refresh token, each under its own lock, let the second refresh send a spent token and
+  fail with `invalid_grant`. An `auth.json` a terminal of an older version left is folded in under the
+  lock, a newer stored token never replaced, and removed once no other process has a terminal on the
+  account.
 - **INV-MCP-1** Connector secrets live in the `SecretStore`; `connections.json` holds no secret.
   Run events and traces are redacted before they are stored or shown.
 - **INV-MCP-2** A session reaches only the connections its scope and the policy allow, and loses

@@ -662,11 +662,13 @@ describe('a pi terminal session', () => {
     expect(harness.terminals.has('term-1')).toBe(false)
   })
 
-  it('writes the account credentials for the pi command only while a terminal runs', async () => {
+  it('never writes the account credentials to a file for the terminal', async () => {
     const { harness, account } = await setup()
     const auth = join(harness.accounts.dir, account.id, 'home', 'pi', 'auth.json')
-    expect(JSON.parse(readFileSync(auth, 'utf8'))).toEqual({})
+    expect(harness.accounts.terminalCount(account.id)).toBe(1)
+    expect(() => readFileSync(auth, 'utf8')).toThrow()
     await harness.terminals.dispose('term-1')
+    expect(harness.accounts.terminalCount(account.id)).toBe(0)
     expect(() => readFileSync(auth, 'utf8')).toThrow()
   })
 })

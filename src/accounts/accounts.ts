@@ -1,7 +1,7 @@
 // The accounts service: everything that needs the secret store, the Pi runtime, or a notice.
 // Credentials go to the embedding application's secret store; nothing here writes one to the
-// harness's own files, except a terminal session's `auth.json` while that terminal runs.
-import { chmodSync, existsSync, mkdirSync, readdirSync, rmSync } from 'node:fs'
+// harness's own files. A terminal's Pi reaches them through `accounts.credentials.*`.
+import { existsSync, mkdirSync, readdirSync, rmSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 
@@ -70,6 +70,22 @@ function sameCredential(a: Credential | undefined, b: Credential | undefined): b
   return JSON.stringify(a, Object.keys(a).sort()) === JSON.stringify(b, Object.keys(b).sort())
 }
 
+/**
+ * Whether a credential found outside the store should replace the stored one. The store is the
+ * truth; an OAuth token wins only when it expires later, because OpenAI and others rotate the
+ * refresh token on every refresh and an older one is already spent.
+ */
+function preferCredential(candidate: Credential, stored: Credential | undefined): boolean {
+  if (!stored) return true
+  if (sameCredential(candidate, stored)) return false
+  if (candidate.type !== 'oauth' || stored.type !== 'oauth') return false
+  const expires = (credential: Credential): number => typeof credential.expires === 'number' ? credential.expires : 0
+  return expires(candidate) > expires(stored)
+}
+
+/** How long a terminal may hold a provider's credential lock; shorter than another waiter's lock timeout. */
+export const CREDENTIAL_LEASE_MS = 20_000
+
 function validProvider(provider: string): string {
   if (provider && provider.length <= 64 && /^[A-Za-z0-9._-]+$/.test(provider)) return provider
   throw invalid('Invalid provider name.')
@@ -124,10 +140,10 @@ export class Accounts {
   private readonly runtimes = new Map<string, Promise<ModelRuntime>>()
   private readonly logins = new Map<string, PendingLogin>()
   private readonly latestLogins = new Map<string, AccountLoginSnapshot>()
-  /** How many of this process's terminals use each account's auth.json. */
+  /** How many of this process's terminals run on each account. */
   private readonly terminals = new Map<string, number>()
-  /** The credentials this process wrote to, or found in, each account's auth.json when its first terminal began. */
-  private readonly terminalSnapshots = new Map<string, Record<string, Credential>>()
+  /** Open credential leases: a terminal holds a provider's lock while its Pi refreshes or signs in. */
+  private readonly leases = new Map<string, { accountId: string; commit: (credential: Credential | undefined) => void; done: Promise<Credential | undefined> }>()
   private installationDeviceIdPromise: Promise<string> | null = null
   /**
    * Lets the limits service observe each account runtime's provider responses. The Harness sets
@@ -242,6 +258,51 @@ export class Accounts {
       modify: (providerId: string, change: (current: Credential | undefined) => Promise<Credential | undefined>) => this.modifyCredential(accountId, providerId, change),
       delete: (providerId: string) => this.writeCredential(accountId, providerId, null)
     }
+  }
+
+  /**
+   * Takes a provider's cross-process credential lock for a terminal whose Pi will refresh or sign in
+   * with the current credential, and holds it until `commitCredentialLease` or `CREDENTIAL_LEASE_MS`.
+   * A terminal reads and writes credentials only this way, so one refresh token has one lock: two
+   * copies refreshed under separate locks made the second refresh fail with `invalid_grant`.
+   */
+  async leaseCredential(accountId: string, provider: string, timeoutMs = CREDENTIAL_LEASE_MS): Promise<{ leaseId: string; current: Credential | undefined }> {
+    this.find(accountId)
+    const name = validProvider(provider)
+    const leaseId = randomUUID()
+    let grant!: (current: Credential | undefined) => void
+    const granted = new Promise<Credential | undefined>((resolve) => { grant = resolve })
+    let commit!: (credential: Credential | undefined) => void
+    const committed = new Promise<Credential | undefined>((resolve) => { commit = resolve })
+    const done = this.modifyCredential(accountId, name, async (current) => {
+      grant(current)
+      // An abandoned lease changes nothing.
+      const timer = setTimeout(() => commit(undefined), timeoutMs)
+      timer.unref?.()
+      try {
+        return await committed
+      } finally {
+        clearTimeout(timer)
+      }
+    }).finally(() => this.leases.delete(leaseId))
+    this.leases.set(leaseId, { accountId, commit, done })
+    // The lock can fail (a wait timeout) before it is granted; once granted, how it ends is the commit's concern.
+    const ended = done.then(() => { throw new Error('The credential lease ended before it was granted.') })
+    ended.catch(() => undefined)
+    const current = await Promise.race([granted, ended])
+    return { leaseId, current }
+  }
+
+  /** Ends a lease, storing `credential` when one is given. Resolves with the stored credential afterwards. */
+  async commitCredentialLease(accountId: string, leaseId: string, credential?: Credential): Promise<Credential | undefined> {
+    const lease = this.leases.get(leaseId)
+    if (!lease || lease.accountId !== accountId) throw new HarnessError('not_found', 'That credential lease has ended.')
+    if (credential !== undefined && (!credential || typeof credential !== 'object' || (credential.type !== 'oauth' && credential.type !== 'api_key'))) {
+      lease.commit(undefined)
+      throw invalid('Invalid credential.')
+    }
+    lease.commit(credential)
+    return lease.done
   }
 
   /** Pi's OAuth device ID belongs to this Harness installation, not to one isolated account. */
@@ -638,54 +699,31 @@ export class Accounts {
 
   // ---- Terminal sessions --------------------------------------------------------------------
 
-  /**
-   * The `pi` command reads `auth.json` from its agent folder. For a terminal session the
-   * account's stored credentials are written there (mode 0600) while the terminal runs, then
-   * read back and removed.
-   */
   /** How many terminal sessions are running on this account right now. */
   terminalCount(accountId: string): number {
     return this.terminals.get(accountId) ?? 0
   }
 
   /**
-   * Starts a terminal's use of the account's auth.json. The file is written from the store when the
-   * first terminal of the account begins. While another process's terminal still uses it, the tokens
-   * already in the file stay, because that terminal may have refreshed them; only a provider the file
-   * lacks is added from the store, so a key saved after the other terminal began still reaches this one.
+   * Starts a terminal on the account. Its Pi reads and writes credentials through this store over
+   * the terminal's control socket (`accounts.credentials.*`), so nothing is written to `auth.json`.
+   * A file an older terminal left is folded into the store, newest token first.
    */
   async terminalBegin(account: Account): Promise<void> {
     const count = (this.terminals.get(account.id) ?? 0) + 1
     this.terminals.set(account.id, count)
     if (count > 1) return
-    const path = join(env.configDir(this.dir, account), 'auth.json')
-    let shared = false
     try {
-      shared = this.otherTerminalProcesses(account.id)
       this.claimLease(account.id)
-      const existing = shared && existsSync(path) ? readAuth(path) : null
-      const data = await this.storedCredentials(account.id, existing ?? {})
-      if (!existing || Object.keys(data).length > Object.keys(existing).length) {
-        atomicWrite(path, JSON.stringify(data, null, 2))
-        chmodSync(path, 0o600)
-      }
-      this.terminalSnapshots.set(account.id, data)
+      await this.adoptAuthFile(account)
     } catch (error) {
       this.terminals.delete(account.id)
-      this.terminalSnapshots.delete(account.id)
       this.releaseLease(account.id)
-      if (!shared) rmSync(path, { force: true })
       throw error
     }
   }
 
-  /**
-   * Ends a terminal's use of the auth.json. Each terminal saves what its Pi changed since it began (a
-   * refreshed or new sign-in, or a provider it signed out of), even while another process still uses the
-   * file, so no refresh is lost when the other terminal ends first. A credential saved to the store after
-   * the terminal began is in neither the file nor the snapshot, so it stays. The last terminal of the
-   * account to end, in every process, removes the file.
-   */
+  /** Ends a terminal on the account; the last one in this process folds in any `auth.json` left behind. */
   async terminalEnd(account: Account): Promise<void> {
     const remaining = Math.max(0, (this.terminals.get(account.id) ?? 1) - 1)
     if (remaining > 0) {
@@ -693,40 +731,38 @@ export class Accounts {
       return
     }
     this.terminals.delete(account.id)
-    const snapshot = this.terminalSnapshots.get(account.id) ?? {}
-    this.terminalSnapshots.delete(account.id)
     this.releaseLease(account.id)
-    const path = join(env.configDir(this.dir, account), 'auth.json')
-    const data = readAuth(path)
-    if (data) {
-      let changed = false
-      for (const provider of new Set([...Object.keys(snapshot), ...Object.keys(data)])) {
-        if (provider in data) {
-          if (sameCredential(data[provider], snapshot[provider])) continue
-          await this.writeCredential(account.id, provider, data[provider]).catch(() => undefined)
-          changed = true
-        } else if (provider in snapshot) {
-          await this.writeCredential(account.id, provider, null).catch(() => undefined)
-          changed = true
-        }
-      }
-      if (changed) {
-        this.invalidate(account.id)
-        store.audit(this.dir, account.id, 'credentials.synced', 'Pi terminal sign-in saved to the Keychain.')
-      }
-    }
-    if (!this.otherTerminalProcesses(account.id)) rmSync(path, { force: true })
+    await this.adoptAuthFile(account)
   }
 
-  /** The account's stored credentials, with `existing` kept as it is for every provider it already has. */
-  private async storedCredentials(accountId: string, existing: Record<string, Credential>): Promise<Record<string, Credential>> {
-    const data = { ...existing }
-    for (const provider of store.loadState(this.dir, accountId).piProviders) {
-      if (provider in data) continue
-      const credential = await this.readCredential(accountId, provider).catch(() => null)
-      if (credential) data[provider] = credential
+  /**
+   * Saves what an older terminal's `auth.json` holds that the store lacks or holds older, under each
+   * provider's lock, and never replaces a newer token. The file is removed once no other process has
+   * a terminal on the account, since an older one may still be reading it.
+   */
+  private async adoptAuthFile(account: Account): Promise<void> {
+    const path = join(env.configDir(this.dir, account), 'auth.json')
+    if (!existsSync(path)) return
+    const data = readAuth(path)
+    if (!data) throw new Error(`The terminal credential file ${path} is not readable.`)
+    let changed = false
+    for (const [provider, candidate] of Object.entries(data)) {
+      if (!candidate || typeof candidate !== 'object' || (candidate.type !== 'oauth' && candidate.type !== 'api_key')) continue
+      try {
+        await this.modifyCredential(account.id, provider, async (stored) => {
+          if (!preferCredential(candidate, stored)) return undefined
+          changed = true
+          return candidate
+        })
+      } catch (error) {
+        log('terminal credentials', `${provider}: ${error instanceof Error ? error.message : String(error)}`)
+      }
     }
-    return data
+    if (changed) {
+      this.invalidate(account.id)
+      store.audit(this.dir, account.id, 'credentials.synced', 'A terminal sign-in from auth.json was saved to the Keychain.')
+    }
+    if (!this.otherTerminalProcesses(account.id)) rmSync(path, { force: true })
   }
 
   /**

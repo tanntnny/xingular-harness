@@ -125,8 +125,8 @@ describe('the persistent terminal SDK adapter', () => {
     expect(before).toHaveBeenCalledTimes(4)
     expect(transport.claim).toHaveBeenCalledTimes(1)
     expect(transport.call.mock.calls.length).toBeGreaterThanOrEqual(6)
-    // The account's saved model and effort are read when a conversation starts; nothing else is written here.
-    expect(transport.call.mock.calls.every(([call]) => ['terminal.resources', 'terminal.interrupt', 'accounts.session', 'accounts.choices.get'].includes(call))).toBe(true)
+    // The account's saved model and effort, and its credentials, are read when a conversation starts; nothing is written here.
+    expect(transport.call.mock.calls.every(([call]) => ['terminal.resources', 'terminal.interrupt', 'accounts.session', 'accounts.choices.get', 'accounts.credentials.read', 'accounts.credentials.list'].includes(call))).toBe(true)
     expect(readFileSync(firstFile, 'utf8')).toContain(cwd)
     expect(readdirSync(root)).not.toContain('.pi')
   })

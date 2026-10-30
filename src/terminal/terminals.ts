@@ -557,6 +557,24 @@ export class Terminals {
         return accounts.overview()
       case 'accounts.session':
         return { accountId: live.account.id, label: live.account.label }
+      // The terminal's Pi keeps no credential file: it reads and writes its own account's credentials
+      // here, under the store's cross-process lock, never an account the caller names.
+      case 'accounts.credentials.read':
+        return { credential: (await accounts.readCredential(live.account.id, text('provider'))) ?? null }
+      case 'accounts.credentials.list':
+        return { credentials: await accounts.listCredentials(live.account.id) }
+      case 'accounts.credentials.lease': {
+        const lease = await accounts.leaseCredential(live.account.id, text('provider'))
+        return { leaseId: lease.leaseId, current: lease.current ?? null }
+      }
+      case 'accounts.credentials.commit': {
+        const credential = params.credential && typeof params.credential === 'object' ? params.credential as Parameters<typeof accounts.commitCredentialLease>[2] : undefined
+        return { credential: (await accounts.commitCredentialLease(live.account.id, text('leaseId'), credential)) ?? null }
+      }
+      case 'accounts.credentials.delete':
+        await accounts.writeCredential(live.account.id, text('provider'), null)
+        accounts.invalidate(live.account.id)
+        return {}
       case 'accounts.create':
         return accounts.create(text('label'), optional('authKind') ?? 'subscription')
       case 'accounts.rename':

@@ -8,6 +8,7 @@ import { closeSync, existsSync, openSync, readSync, realpathSync } from 'node:fs
 import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 
 import terminalExtension, { type TerminalPlanRunState } from '../piExtension'
+import { terminalCredentialStore } from '../credentialStore'
 import { normalModeTools, normalToolsForBranch, planModeTools, PLAN_TOOLS_ENTRY, QUESTION_TOOL_NAMES } from './planMode'
 import { claimTerminalControl, controlCall } from '../control'
 import { observeProviderResponses } from '../../usage/limits/capture'
@@ -215,7 +216,8 @@ export async function createTerminalRuntime(args: string[], host: TerminalRuntim
   const account = identity && typeof identity.accountId === 'string' && typeof identity.label === 'string'
     ? Object.freeze({ accountId: identity.accountId, label: identity.label }) : null
   await loadPiAdapter()
-  const modelRuntime = await ModelRuntime.create({ authPath: join(agentDir, 'auth.json'), modelsPath: join(agentDir, 'models.json') })
+  // Credentials live in the host's store, read and refreshed under its lock (`terminalCredentialStore`).
+  const modelRuntime = await ModelRuntime.create({ credentials: terminalCredentialStore(), modelsPath: join(agentDir, 'models.json') })
   // This process makes the model requests, so it is where response headers are seen. Only the
   // limit-bearing headers cross the socket, and the parent throttles what it stores.
   observeProviderResponses(modelRuntime, (provider, response) => {

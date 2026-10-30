@@ -19,6 +19,13 @@
   checkpoint and a notice, up to 8 slices, instead of waiting for "continue" and re-sending the
   whole context uncached. Fruitless, blocked, failed, aborted and plan slices still stop.
   `XINGULAR_WORK_SLICE` also accepts key=value pairs such as `maxToolCalls=15,maxSlices=3`.
+- **One copy of each credential: no more `invalid_grant` from terminals.** A terminal's Pi kept the
+  account's tokens in `auth.json` under its own lock while the host, its subagents and usage probes
+  refreshed the same token in the Keychain under another, and `terminalEnd` copied the file back
+  over whatever the Keychain held. OpenAI rotates refresh tokens, so whichever side refreshed second
+  failed with `invalid_grant` and the account needed a new sign-in. A terminal now reads and refreshes
+  through the host store (`accounts.credentials.*`, INV-ACC-5), holding its lock for the refresh. An
+  `auth.json` left by an older terminal is folded in, newest token first.
 
 - **A reply can no longer quietly stop with work open (ADR-0069).**
   - **Stop gate.** In attended top-level runs, terminal included, a reply that ends while its todo
