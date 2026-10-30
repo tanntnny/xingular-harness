@@ -14,13 +14,15 @@ let last
 const deadline = Date.now() + 5 * 60_000
 while (Date.now() < deadline) {
   try {
-    // A cache-buster keeps a CDN copy of the old packument from looking like a missing version.
+    // A cache-buster keeps a CDN copy of the old packument from looking like a missing version. The
+    // dist-tags come from the packument, which is the slowest to catch up; the version's own document
+    // is read separately so a stale packument cannot hide the integrity and provenance it lacks.
     const metadata = await read(`https://registry.npmjs.org/@xingular%2fharness?ts=${Date.now()}`)
-    const published = metadata.versions?.[candidate.version]
-    assert.ok(published)
     const npmTag = candidate.version.includes('-unstable.') ? 'unstable' : 'latest'
     assert.equal(candidate.npmTag, npmTag)
-    assert.equal(metadata['dist-tags'][npmTag], candidate.version)
+    assert.equal(metadata['dist-tags']?.[npmTag], candidate.version)
+    const published = await read(`https://registry.npmjs.org/@xingular%2fharness/${candidate.version}?ts=${Date.now()}`)
+    assert.equal(published.version, candidate.version)
     assert.equal(published.dist.integrity, candidate.integrity)
     assert.ok(published.dist.attestations?.url, 'Published provenance is missing.')
     console.log(`Verified @xingular/harness@${candidate.version}, ${npmTag}, tarball integrity and provenance.`)
