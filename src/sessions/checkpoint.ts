@@ -1,5 +1,5 @@
 // A run's handoff record: where a reply stopped and what the next one must know. The harness writes
-// it from the run's own evidence (files, checks, todo, the `finish` declaration) when a reply stops
+// it from the run's own evidence (files, checks, todo, the completion check's verdict) when a reply stops
 // with work left; the model no longer writes it (ADR-0069 removed `checkpoint_write`). Older runs'
 // model-written checkpoints stay readable.
 import { runEventPayloadSchemas, type Checkpoint, type RunEvent } from './contracts'

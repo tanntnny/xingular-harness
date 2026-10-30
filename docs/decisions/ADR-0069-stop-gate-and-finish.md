@@ -11,6 +11,8 @@ related:
 ---
 # ADR-0069 — A stop gate and a finish tool; the model's checkpoint tool is removed
 
+> **Amended by [ADR-0071](ADR-0071-completion-check.md):** `finish` is removed; a completion check (the run's own model, fresh context) now decides `continue` / `needs_person` / `done` when a reply that did work ends with its list closed.
+
 ## Context
 
 A reply the model ended on its own settled `completed` (`sessions/runner.ts`), and only a

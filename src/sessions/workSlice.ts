@@ -277,7 +277,7 @@ export interface SliceContinuationOptions {
   /** False while a plan runs: a plan is not continued. */
   active?: () => boolean
   failed?: () => boolean
-  /** True when the reply declared with `finish` that it needs the person. */
+  /** True when the completion check said the reply needs the person (ADR-0071). */
   blocked?: () => boolean
   /** The todo list: when every item is done, the work is not continued. */
   todo?: () => readonly { status: string }[]

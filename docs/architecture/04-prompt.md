@@ -107,25 +107,31 @@ other heading stays optional; the guidance still forbids a fixed set. See
 A reply ends when the request is done, when the work-slice guard ends it (INV-RUN-13), when a person
 interrupts, or when the work cannot continue without the person. An open todo item, a passing check,
 a partial result or a long task is not such a reason. The rule is enforced, not only stated
-(ADR-0069): the stop gate (INV-RUN-15) sends back a reply that ends while its todo list has open
-items, up to three times, and the only explicit way to stop with work open is `finish` with
-`blocked` or `needs_decision`. A reply that settles with open items is `interrupted`
-(`needs_person` or `unfinished`), never `completed`.
+(ADR-0069, ADR-0071): the stop gate (INV-RUN-15) sends back a reply that ends while its todo list has
+open items, and a completion check — the same model, a fresh context — sends back one whose request
+is not done while the rest is work the agent can do itself. Only the check can decide that the
+person is needed; the agent has no tool to declare it. A reply that settles with work left is
+`interrupted` (`needs_person` or `unfinished`), never `completed`.
 
 The words still matter, because they decide what the model does before the gate has to act, and
 none of them may read as permission to stop with work left:
 
-- `role` (`prompt/standard.ts`, `ROLE`) names the only reasons to stop and tells the model to name
-  exactly what the person must do when it stops for them.
+- `role` (`prompt/standard.ts`, `ROLE`) says which decisions are the agent's own (which step first;
+  branches, worktrees and files in the working folder; dependencies; reasonable implementation
+  choices; another way to retry a check), that a document the request points to is the request, that
+  a question the request or files already answer is not a question for the person, and the only
+  reasons to stop (a deploy, a secret, remote data, money, missing access, a product choice the
+  request leaves open).
 - `TODO_GUIDANCE` (`tools/todo.ts`) asks for a list that is true at all times; an open step is work
   to do in this reply, not something to report. It no longer asks for a "final update before your
   final reply", which framed an incomplete list as a way to end.
 - `reporting` opens with "Reporting is for work that is finished or genuinely blocked". Its
   `## What would make this complete` heading applies only when the work stopped short — blocked,
   needing the person, or handed back by the guard — and says never to stop early to write it.
-- The `Progress` tool group explains the gate and `finish` when `finish` is enabled. There is no
-  checkpoint tool to call "before you stop on purpose": ADR-0069 removed it after a run used it as a
-  sign-off and stopped with work open.
+- In a person's own session the `Progress` tool group says that a reply with open items, or one a
+  completion check finds unfinished, is sent back. There is no tool to stop "on purpose": ADR-0069
+  removed `checkpoint_write` after a run used it as a sign-off, and ADR-0071 removed `finish` after a
+  live run used `needs_decision` to ask something the request already answered.
 
 All of these are fixed text in the stable prefix, so changing them changes the cached prefix once.
 A live terminal session keeps the pack, and the extension code, it started with; a harness update

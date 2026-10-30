@@ -5,3 +5,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 process.env.HOME = mkdtempSync(join(tmpdir(), 'harness-home-'))
+
+// The completion check (ADR-0071) is one more model request at the end of a reply that did work. A
+// scripted model would have to answer it in every test that runs real Pi, so it is off here; the
+// tests that are about it switch it on with vi.stubEnv('XINGULAR_COMPLETION_CHECK', 'on').
+process.env.XINGULAR_COMPLETION_CHECK = 'off'

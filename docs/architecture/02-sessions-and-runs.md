@@ -344,20 +344,25 @@ is approved but remains in progress; no completed cross-surface catalog is impli
   every run in that process; with it off a reply has no boundary — no checkpoint, no continuation —
   and ends only when the model stops or a person interrupts. A reply the model ends on its own is
   subject to the stop gate (INV-RUN-15); a continuation carries the todo it left (`continuation.ts`).
-- **INV-RUN-15** A reply may not quietly end with open work (ADR-0069). In an attended top-level run
-  (not plan, command, automatic, subagent or other related runs) the stop gate reads the reply's own
-  `todo_write` list at Pi's `agent_before_settle` boundary. When an item is `pending` or `in_progress`,
-  nothing was declared with `finish`, the slice was not ended by the guard and the reply did not fail
-  or abort, the gate appends one displayed `xingular-stop-gate` message naming the open items and
-  continues the same run — at most three times per reply, and never again after a nudge that produced
-  no tool call other than `todo_write` or `finish`. Each nudge is recorded as an `extension.notice`
-  from `stop-gate`. A reply with no todo list, or with every item `completed`, ends as before. The
-  only explicit way to stop with work open is `finish` with `blocked` or `needs_decision` and a
-  reason; `finish` with `done` is refused while an item is open. A reply that settles with open items
-  is `interrupted`, never `completed`: terminal code `needs_person` after a `finish` declaration,
-  otherwise `unfinished`, each with a harness-written checkpoint (done and next from the todo list,
-  blocked from the declaration). Neither auto-continues: a person continues it, which
-  `continuationOf` allows for an interrupted run.
+- **INV-RUN-15** A reply may not quietly end while work it can do itself is left (ADR-0069, ADR-0071).
+  In an attended top-level run (not plan, command, automatic, subagent or other related runs) the
+  stop gate acts at Pi's `agent_before_settle` boundary, unless the reply failed, aborted or was ended
+  by the slice guard. Two layers share one cap of three nudges per reply, and neither nudges again
+  after a nudge that produced no tool call other than `todo_write` or `session_name`:
+  1. **Todo gate.** An item still `pending` or `in_progress` sends the reply back with a displayed
+     `xingular-stop-gate` message naming the open items. No model is asked.
+  2. **Completion check.** When the list is closed or absent and the reply made a work tool call,
+     the run's own model, at low effort and with a fresh context, judges the person's request (for a
+     continuation, the request behind the chain) against the reply's transcript and todo list. It
+     answers `done`, `continue` (the reply is sent back with a `xingular-completion-check` message
+     carrying the reason and next step) or `needs_person`. Its request counts in the run's usage. Any
+     timeout, error or unreadable answer leaves the reply as it was.
+  Each nudge and check is an `extension.notice` from `stop-gate`. The doer never certifies its own
+  early stop: the reply settles `completed` only when no item is open and no check's `continue` or
+  `needs_person` stands; otherwise it is `interrupted` with terminal code `needs_person` (the check
+  said so) or `unfinished` (open items, or a `continue` the model did not act on), each with a
+  harness-written checkpoint. Neither auto-continues; a person continues it. `XINGULAR_STOP_GATE=off`
+  and `XINGULAR_COMPLETION_CHECK=off` at launch switch a layer off.
 - **INV-RUN-14** A run event stream carries `checkpoint` (the handoff the harness derives from the
   run's own evidence; runs written before ADR-0069 may hold one the model wrote) and `heartbeat`
   (steps, elapsed time, last tool, compactions, slice, and the call budget). Every live reply emits a

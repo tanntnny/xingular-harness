@@ -50,7 +50,6 @@ import { findRun, listRuns, loadRun, readEvents, recordedSubagents, saveRun, upd
 import { combineWorkspaceScope, inspectRunWorkspaceWrite } from '../sessions/workspaceBoundary'
 import type { ToolSpec } from '../tools/types'
 import { TODO_WRITE } from '../tools/todo'
-import { FINISH } from '../tools/finish'
 import { DEFAULT_TOOL_NAMES } from '../tools/definitions'
 import { harnessTools } from '../tools/harnessTools'
 import { HARNESS_PLUGINS } from '../plugins/builtin'
@@ -1270,7 +1269,7 @@ export class Terminals {
       this.packageProfiles.set(sessionId, loading?.profilePaths ?? [])
       const worldTools = await this.worldToolNames(input, preparedAccount)
       const ownTools = await this.ownToolNames(input, preparedAccount)
-      const launchTools = [...new Set([...(input.launch?.tools ?? []), TODO_WRITE, FINISH, SESSION_NAME, ...ownTools, ...(broker ? apps.toolNames : []), ...worldTools])]
+      const launchTools = [...new Set([...(input.launch?.tools ?? []), TODO_WRITE, SESSION_NAME, ...ownTools, ...(broker ? apps.toolNames : []), ...worldTools])]
       // The profiles replace the variant's own subagent list, which they include.
       const profiles = this.options.subagents && input.subagents !== null ? profileSection(root, input.cwd, variant?.dir ?? null, false, undefined, loading?.profilePaths ?? []) : null
       const launchSections = profiles ? [...(input.launch?.sections ?? []).filter((section) => section.id !== profiles.id), profiles] : input.launch?.sections

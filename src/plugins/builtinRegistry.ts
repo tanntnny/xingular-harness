@@ -7,7 +7,6 @@ import type { DispatchEnv } from '../tools/dispatch'
 import type { ToolSpec } from '../tools/types'
 import type { Subagents } from '../sessions/subagentService'
 import type { ActiveRun } from '../sessions/registry'
-import type { StopGateState } from '../sessions/stopGate'
 import type { PluginDescriptor } from './types'
 
 export interface BuiltinPluginCommand {
@@ -36,8 +35,6 @@ export interface BuiltinToolContext {
   harnessTools: boolean
   subagents: Subagents
   sessionName: ToolSpec
-  /** The stop gate's state for an attended reply (ADR-0069); `finish` is offered only with it. */
-  stopGate?: StopGateState
   connectionTools?: () => ToolSpec[]
 }
 

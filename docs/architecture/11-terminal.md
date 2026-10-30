@@ -378,9 +378,11 @@ Terminal tool-gate and work-slice refusals are relayed as `tool.refused` events 
 
 Terminal replies carry the same work-slice guard as structured runs: 320 tool calls or 60 minutes,
 with no new-token limit by default (PROP-0044), then a refusal that asks the model to stop and report
-where it is. Terminal replies also carry the stop gate (INV-RUN-15, ADR-0069): the extension
-registers `finish`, sends a reply that ends with open todo items back up to three times (each nudge
-is `notice` telemetry, recorded as `extension.notice`), and at settle sends a harness-written
+where it is. Terminal replies also carry the stop gate (INV-RUN-15, ADR-0069, ADR-0071): the
+extension sends a reply that ends with open todo items back, asks the completion check through the
+session's own model registry (`ctx.modelRegistry`, low effort) when a reply that did work ends with
+its list closed, and sends it back on `continue` — up to three nudges in all, each `notice` telemetry
+recorded as `extension.notice`, the check's request added to the reply's usage — and at settle sends a harness-written
 `checkpoint` and the `needs_person` or `unfinished` code, which the controller records on the active
 run, so an App reading the same session sees the handoff. Plan replies are not gated. A reply that
 reaches its budget after doing work continues in place as its next slice (ADR-0070): a

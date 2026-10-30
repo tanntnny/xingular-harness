@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- **A completion check replaces `finish` (ADR-0071).**
+  - **The check.** When a reply that did work ends with its todo list closed or absent, the run's
+    own model, at low effort and with a fresh context, judges the person's request against what the
+    reply did: `done`, `continue` (the reply is sent back with the reason and next step), or
+    `needs_person`. The request is the goal; there is no `/goal` command.
+  - **Shared cap.** It shares the stop gate's cap of three nudges per reply and its no-progress rule.
+  - **Usage and failure.** Its request counts in the run's usage, and any failure leaves the reply
+    as it was.
+  - **`finish` is removed.** A live GPT 6 Luna run used `needs_decision` after 23 seconds to ask
+    something the handoff already answered. Only the check can now decide that the person is needed.
+  - **Prompt.** The `role` paragraph names which decisions are the agent's own, says a document the
+    request points to is the request, and says a question the request or files already answer is not
+    a question for the person. Its budget rises from 1,500 to 2,200 characters, so it fits uncut with
+    the subagent paragraph.
+  - **Kill switches.** `XINGULAR_STOP_GATE=off` and `XINGULAR_COMPLETION_CHECK=off` at launch switch a
+    layer off, for experiments.
 - **The model is told it has `edit` and `write`.** Pi's `createEditTool` and `createWriteTool` drop
   the definition's prompt line and guidelines, and Pi lists only tools with a prompt line, so every
   terminal and headless run's system prompt named only `read` and `bash`. Models edited files
@@ -35,8 +51,8 @@
   - **Stop gate.** In attended top-level runs, terminal included, a reply that ends while its todo
     list has open items is sent back to the model, naming the items, up to three times per reply,
     and never after a nudge that produced no work.
-  - **`finish`.** The new `finish` tool is the one explicit way to stop with work open: `blocked` or
-    `needs_decision` with a reason. `done` is refused while items are open.
+  - **`finish`.** Added here as the one explicit way to stop with work open; removed again by ADR-0071
+    above.
   - **Honest stop codes.** Such a reply settles `interrupted` with the new stop codes `needs_person`
     or `unfinished`, never `completed`, with a checkpoint the harness writes from the todo list,
     files and checks.

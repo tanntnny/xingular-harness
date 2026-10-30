@@ -98,7 +98,7 @@ export interface TurnParams {
   command?: SessionCommand
   /** The work slice this reply is bounded by (PROP-0041); the guard updates it as the reply runs. */
   slice?: { state: SliceState; maxToolCalls: number }
-  /** The stop gate's view of this reply (ADR-0069): its todo list and `finish` declaration. */
+  /** The stop gate's view of this reply (ADR-0069, ADR-0071): its todo list and the completion check's verdict. */
   stopGate?: StopGateState
 }
 
@@ -327,7 +327,7 @@ const lastLine = (text: string): string => {
 /**
  * The checkpoint a reply leaves when it stops with work left: the run's own evidence, not a claim.
  * Files and checks come from the reply's tool calls, done and next from its todo list, and blocked
- * from its `finish` declaration (ADR-0069).
+ * from the completion check's verdict (ADR-0069, ADR-0071).
  */
 function derivedCheckpoint(ledger: SliceLedger, slice: number, reason: Checkpoint['reason'], fallback: string, gate?: StopGateState): Checkpoint {
   return {
@@ -413,6 +413,46 @@ export async function runTurn(run: ActiveRun, session: PiSessionLike, params: Tu
       throw error
     }
   })
+
+  // A completion check (ADR-0071) is a model request of this run outside Pi's loop: count it in the
+  // run's usage the same way, without touching the context size the session reports.
+  if (params.stopGate) {
+    params.stopGate.recordUsage = (raw) => {
+      const message = raw as { usage?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; reasoning?: number; cost?: { total?: number } }; model?: string; provider?: string; responseId?: string; stopReason?: string; durationMs?: number }
+      const reported = message.usage
+      requestIndex += 1
+      if (reported) {
+        usageReported = true
+        usage.inputTokens += reported.input ?? 0
+        usage.outputTokens += reported.output ?? 0
+        usage.cacheReadTokens += reported.cacheRead ?? 0
+        usage.cacheWriteTokens += reported.cacheWrite ?? 0
+        usage.costUsd += reported.cost?.total ?? 0
+        if (typeof reported.reasoning === 'number') reasoningTokens = (reasoningTokens ?? 0) + reported.reasoning
+      }
+      usage.requests = requestIndex
+      const cost = reported?.cost?.total
+      if (typeof cost === 'number') costReported = true
+      const { costUsd, ...tokens } = usage
+      run.emit('usage.updated', {
+        ...(usageReported ? tokens : { requests: requestIndex }),
+        ...(usageReported && costReported ? { costUsd, costSource: 'harness' as const } : {}),
+        ...(reasoningTokens === undefined ? {} : { reasoningTokens }),
+        ...(message.model ? { model: message.model } : {}),
+        ...(message.provider ? { provider: message.provider } : {}),
+        request: {
+          index: requestIndex,
+          ...(message.responseId ? { responseId: message.responseId } : {}),
+          ...(message.model ? { model: message.model } : {}),
+          ...(message.provider ? { provider: message.provider } : {}),
+          ...(reported ? { inputTokens: reported.input ?? 0, cacheReadTokens: reported.cacheRead ?? 0, cacheWriteTokens: reported.cacheWrite ?? 0, outputTokens: reported.output ?? 0, ...(typeof reported.reasoning === 'number' ? { reasoningTokens: reported.reasoning } : {}) } : {}),
+          ...(typeof cost === 'number' ? { costUsd: cost, costSource: 'harness' as const } : {}),
+          ...(typeof message.durationMs === 'number' ? { durationMs: message.durationMs } : {}),
+          ...(message.stopReason ? { stopReason: message.stopReason as UsageRequest['stopReason'] } : {})
+        }
+      })
+    }
+  }
 
   const unsubscribe = session.subscribe((event) => {
     switch (event.type) {
@@ -719,8 +759,8 @@ export async function runTurn(run: ActiveRun, session: PiSessionLike, params: Tu
       run.finish('interrupted', undefined, 'slice_complete', slice.endedBy === 'budget' ? 'slice_budget' : 'compaction_thrash')
       return
     }
-    // A reply that ended with open todo items is not complete (ADR-0069): it declared a blocker with
-    // `finish`, or the stop gate's nudges ran out. Either way the person can continue it.
+    // A reply that ended with work left is not complete (ADR-0069, ADR-0071): open todo items, or a
+    // completion check that said `continue` or `needs_person`. Either way the person can continue it.
     const stop = params.stopGate && !aborted && !lastError ? stopOutcome(params.stopGate) : null
     if (stop) {
       run.emit('checkpoint', derivedCheckpoint(ledger, slice?.slice ?? 1, stopCheckpointReason(stop), stopSummary(stop), params.stopGate))

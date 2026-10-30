@@ -9,6 +9,8 @@ related:
 ---
 # How other harnesses control the end of a turn
 
+> **Update (2026-10-31, [ADR-0071](../decisions/ADR-0071-completion-check.md)):** the model-judged evaluator rejected above was adopted after all, as an automatic completion check on the run's own model, because a live A/B showed a closed todo list hiding unfinished work and `finish(needs_decision)` used as an early exit; `finish` is removed.
+
 > **Outcome (2026-10-31):** adopted with changes in [ADR-0069](../decisions/ADR-0069-stop-gate-and-finish.md).
 > - **Gate placement.** The continuation is a stop gate at Pi's `agent_before_settle` boundary
 >   inside the same run, not a widened `continueSlice`. That covers the terminal and avoids

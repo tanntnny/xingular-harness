@@ -15,8 +15,8 @@ import { SPAWN_SUBAGENT, SUBAGENT_OWNER, SUBAGENT_RECEIPT, SUBAGENT_RESULTS, sub
 import { PLAN_RESEARCH_TOOLS } from '../agents/planResearch'
 import { askUserTool } from '../tools/askUser'
 import { TODO_WRITE, todoTool } from '../tools/todo'
-import { finishTool } from '../tools/finish'
-import { createStopGateState, handoffFields, stopCheckpointReason, stopGate, stopOutcome, stopSummary, STOP_GATE_EXTENSION } from '../sessions/stopGate'
+import { createStopGateState, handoffFields, sessionCheckModel, stopCheckpointReason, stopGate, stopGateNotice, stopOutcome, stopSummary, STOP_GATE_EXTENSION } from '../sessions/stopGate'
+import { launchSwitchOff } from '../sessions/completionCheck'
 import { createSliceState, DEFAULT_SLICE_POLICY, parseWorkSlice, sliceContinuation, workSliceGuard, type SlicePolicy } from '../sessions/workSlice'
 import { DEFAULT_COMMAND_TIMEOUT_SECONDS, withCommandBudget } from '../core/commandBudget'
 import { SESSION_NAME, deriveSessionName, sessionNameTool } from '../tools/sessionName'
@@ -203,8 +203,46 @@ export default async function (pi: ExtensionAPI, planRun?: TerminalPlanRunState,
   }
   const sliceState = createSliceState(slicePolicy)
   // `XINGULAR_WORK_SLICE=off` at launch leaves terminal replies unbounded, as before PROP-0041.
-  // One stop-gate state per terminal session; each reply resets it, and `finish` reads it.
+  // One stop-gate state per terminal session; each reply resets it.
   const gateState = createStopGateState()
+  // A completion check's model request counts with the reply's usage, like any other request.
+  gateState.recordUsage = (raw) => {
+    const message = raw as { usage?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; reasoning?: number; cost?: { total?: number } }; model?: string; provider?: string; responseId?: string; stopReason?: string; durationMs?: number }
+    const reported = message.usage
+    if (!reported) return
+    usage.inputTokens += reported.input ?? 0
+    usage.outputTokens += reported.output ?? 0
+    usage.cacheReadTokens += reported.cacheRead ?? 0
+    usage.cacheWriteTokens += reported.cacheWrite ?? 0
+    usage.requests += 1
+    if (typeof reported.reasoning === 'number') reasoningTokens = (reasoningTokens ?? 0) + reported.reasoning
+    const cost = reported.cost?.total
+    if (typeof cost === 'number') {
+      usage.costUsd += cost
+      costReported = true
+    }
+    const identity = { model: message.model, provider: message.provider }
+    const { costUsd, ...tokens } = usage
+    void terminalCall('usage', {
+      ...tokens,
+      ...(costReported ? { costUsd, costSource: 'harness' } : {}),
+      ...(reasoningTokens === undefined ? {} : { reasoningTokens }),
+      ...identity,
+      request: {
+        index: usage.requests,
+        ...identity,
+        responseId: message.responseId,
+        inputTokens: reported.input ?? 0,
+        cacheReadTokens: reported.cacheRead ?? 0,
+        cacheWriteTokens: reported.cacheWrite ?? 0,
+        outputTokens: reported.output ?? 0,
+        ...(typeof reported.reasoning === 'number' ? { reasoningTokens: reported.reasoning } : {}),
+        ...(typeof cost === 'number' ? { costUsd: cost, costSource: 'harness' } : {}),
+        ...(typeof message.durationMs === 'number' ? { durationMs: message.durationMs } : {}),
+        stopReason: message.stopReason
+      }
+    }).catch(() => undefined)
+  }
   if (slicePolicy.enabled) workSliceGuard({
     policy: slicePolicy,
     state: sliceState,
@@ -432,16 +470,17 @@ export default async function (pi: ExtensionAPI, planRun?: TerminalPlanRunState,
       continue: true
     }
   })
-  // The stop gate (ADR-0069), after subagent delivery and plan repair so it sees their continuations:
-  // a terminal reply that ends with open todo items is sent back, up to its cap, unless it declared
-  // with `finish` that the person is needed. Plan replies are not gated.
-  stopGate({
+  // The stop gate (ADR-0069, ADR-0071), after subagent delivery and plan repair so it sees their
+  // continuations: a terminal reply that ends with open todo items, or that the completion check finds
+  // unfinished, is sent back up to its cap. Plan replies are not gated.
+  if (!launchSwitchOff('XINGULAR_STOP_GATE')) stopGate({
     state: gateState,
     active: () => !planRun?.active,
     sliceEnded: () => sliceState.endedBy !== null,
     failed: () => Boolean(failure),
-    onNudge: (count, open) => {
-      void terminalCall('notice', { kind: 'notify', level: 'info', extension: STOP_GATE_EXTENSION, text: `Stop gate ${count}: the reply ended with ${open.length} open todo item${open.length === 1 ? '' : 's'}; continuing.` }).catch(() => undefined)
+    check: launchSwitchOff('XINGULAR_COMPLETION_CHECK') ? null : sessionCheckModel,
+    onEvent: (event) => {
+      void terminalCall('notice', { kind: 'notify', level: 'info', extension: STOP_GATE_EXTENSION, text: stopGateNotice(event) }).catch(() => undefined)
     }
   })(pi)
   // After the stop gate, which stays silent at a slice boundary: a reply that did work and reached
@@ -451,7 +490,7 @@ export default async function (pi: ExtensionAPI, planRun?: TerminalPlanRunState,
     state: sliceState,
     active: () => !planRun?.active,
     failed: () => Boolean(failure),
-    blocked: () => Boolean(gateState.finish && gateState.finish.status !== 'done'),
+    blocked: () => gateState.verdict?.verdict === 'needs_person',
     todo: () => gateState.todo,
     next: () => handoffFields(gateState).next,
     onContinue: (ended) => {
@@ -692,16 +731,6 @@ export default async function (pi: ExtensionAPI, planRun?: TerminalPlanRunState,
       await recorded
       const items = (input as { items?: unknown }).items
       if (Array.isArray(items)) lastTodo = items as TodoItem[]
-      return { content: [{ type: 'text', text: typeof result === 'string' ? result : result.text }], details: undefined }
-    }
-  })
-  // The one explicit way to end a reply with open todo items (ADR-0069); the stop gate reads what it records.
-  const finish = finishTool(gateState)
-  pi.registerTool({
-    name: finish.name, label: finish.label, description: finish.description,
-    parameters: Type.Unsafe(finish.parameters(Type) as Record<string, unknown>),
-    async execute(_id, input) {
-      const result = await finish.execute(input as Record<string, unknown>)
       return { content: [{ type: 'text', text: typeof result === 'string' ? result : result.text }], details: undefined }
     }
   })

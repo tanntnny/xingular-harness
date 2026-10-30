@@ -15,7 +15,7 @@ import * as notes from '../wiki/notes'
 import { SESSION_GUIDANCE } from '../tools/sessionName'
 import { TODO_GUIDANCE } from '../tools/todo'
 import { PLAN_INSTRUCTIONS, planSection } from '../sessions/planMode'
-import { compile, fit, load, render, renderCompactionCheckpoint, REPORTING_GUIDANCE, sessionFile, sessionLaunch, SECTION_ORDER, type ContextUpdate, type HostSection, type Launch } from './compile'
+import { compile, fit, load, render, renderCompactionCheckpoint, REPORTING_GUIDANCE, STOP_GATE_GUIDANCE, sessionFile, sessionLaunch, SECTION_ORDER, type ContextUpdate, type HostSection, type Launch } from './compile'
 
 const roots: string[] = []
 afterEach(() => roots.splice(0).forEach(closeIndex))
@@ -320,7 +320,7 @@ test('the reporting guidance closes the stable prefix and never rides in a conte
   expect(REPORTING_GUIDANCE).toContain('only when the work stopped short')
   expect(REPORTING_GUIDANCE).toContain('Never stop early in order to write this section')
   expect(REPORTING_GUIDANCE).not.toContain('when the run could be more complete')
-  expect(REPORTING_GUIDANCE).toContain('When the work stopped on a blocker or a decision, state the concrete decision the person must make or the next action and its owner')
+  expect(REPORTING_GUIDANCE).toContain('When the work stopped for the person, state the concrete thing they must do or decide for each item, and its owner')
   expect(REPORTING_GUIDANCE).toContain('do not merely restate the blocker or invent a human decision')
   expect(REPORTING_GUIDANCE).toContain('**Need human inspection** only when a concrete verification requires a person')
   expect(REPORTING_GUIDANCE).not.toContain('Worth a look')
@@ -337,7 +337,12 @@ test('a person\'s own session is told when a reply may end', () => {
   const rendered = render(env, pack)
   expect(rendered).toContain('Keep working until the request is done')
   expect(rendered).toContain('an open todo item, a passing check, a partial result or a long task is not a reason to end the turn')
-  expect(rendered).toContain('Stop with work still open only when it cannot continue without the person')
+  expect(rendered).toContain('Decisions inside the request are yours: which step comes first, creating branches, worktrees or files in the working folder, installing dependencies')
+  expect(rendered).toContain('A document the request points to (a handoff, a plan, a spec) is the request: work its steps in order.')
+  expect(rendered).toContain('A question the request or the files already answer is not a question for the person.')
+  expect(rendered).toContain('Stop with work still open only for what the person alone can do')
+  expect(rendered).toContain('A reply that ends while its todo list has open items, or that a completion check finds unfinished, is sent back to you')
+  expect(rendered).not.toContain('call finish')
   expect(rendered).toContain('otherwise the reply ends only when the work-slice guard hands it back or the person interrupts')
   expect(rendered).toContain('Do the job the request implies, not only its literal words')
   expect(rendered).toContain('fix what your own work exposes')
@@ -348,16 +353,17 @@ test('a person\'s own session is told when a reply may end', () => {
   expect(pack.sections.find(entry => entry.id === 'role')!.cut).toBe(false)
 })
 
-test('a session with finish learns that a reply with open items is sent back, and how to stop for the person', () => {
+test('only a person\'s own session is told that its replies are checked', () => {
   const env = setup()
-  const pack = compile(env, agent(), hosted({ tools: ['read', 'todo_write', 'finish'] }))
-  expect(pack.toolGroups).toContainEqual({ group: 'Progress', tools: ['todo_write', 'finish'] })
-  const rendered = render(env, pack)
-  expect(rendered).toContain('A reply that ends while its todo list has open items is sent back to you (up to three times)')
-  expect(rendered).toContain('call finish with blocked or needs_decision')
-  expect(rendered).toContain('the harness stops it and records a checkpoint from your todo list, files and checks')
-  expect(rendered).not.toContain('checkpoint_write')
-  expect(pack.sections.find(entry => entry.id === 'tools')!.cut).toBe(false)
+  const hostedPack = compile(env, agent(), hosted({ tools: ['read', 'todo_write'] }))
+  expect(hostedPack.toolGroups).toContainEqual({ group: 'Progress', tools: ['todo_write'] })
+  expect(render(env, hostedPack)).not.toContain('completion check')
+  const own = compile(env, agent(), { standard: { cwd: '/src/site' }, tools: ['read', 'todo_write', 'spawn_subagent'] })
+  expect(render(env, own)).toContain(STOP_GATE_GUIDANCE)
+  expect(render(env, own)).not.toContain('checkpoint_write')
+  // The longer role, with the subagent paragraph, still fits uncut.
+  expect(own.sections.find(entry => entry.id === 'role')!.cut).toBe(false)
+  expect(own.sections.find(entry => entry.id === 'tools')!.cut).toBe(false)
 })
 
 test('describes naming only when available, including for CLI callers', () => {

@@ -73,7 +73,7 @@ describe('terminal bridge lifecycle', () => {
     await terminalExtension(api)
     const tools = vi.mocked(api.registerTool).mock.calls.map(([tool]) => tool)
     expect(tools.some(tool => tool.name === 'checkpoint_write')).toBe(false)
-    expect(tools.some(tool => tool.name === 'finish')).toBe(true)
+    expect(tools.some(tool => tool.name === 'finish')).toBe(false)
     const boundary = { outcome: 'completed', continue: false, entries: [], context: { canContinue: true } }
     await handlers.get('before_agent_start')!({ messageType: 'user', prompt: 'Complete the handoff', systemPromptOptions: { sections: {} } }, ctx)
     await handlers.get('tool_result')!({ toolName: 'todo_write', toolCallId: 't1', isError: false, input: { items: [{ text: 'Port the auth module', status: 'in_progress' }, { text: 'Port the courses module', status: 'pending' }] }, content: [] }, ctx)
@@ -89,25 +89,39 @@ describe('terminal bridge lifecycle', () => {
     expect(transport.telemetry).toHaveBeenLastCalledWith('settled', expect.objectContaining({ reason: 'unfinished', code: 'unfinished', aborted: false }))
   })
 
-  it('settles a terminal reply that declared a blocker with finish as needing the person', async () => {
-    const { api, ctx, handlers } = extension()
-    await terminalExtension(api)
-    const finish = vi.mocked(api.registerTool).mock.calls.map(([tool]) => tool).find(tool => tool.name === 'finish')!
-    const boundary = { outcome: 'completed', continue: false, entries: [], context: { canContinue: true } }
-    await handlers.get('before_agent_start')!({ messageType: 'user', prompt: 'Cut over', systemPromptOptions: { sections: {} } }, ctx)
-    await handlers.get('tool_result')!({ toolName: 'todo_write', toolCallId: 't1', isError: false, input: { items: [{ text: 'Move the route', status: 'pending' }] }, content: [] }, ctx)
-    const done = await finish.execute('f0', { status: 'done' } as never, undefined, undefined, ctx as never) as { content: { text: string }[] }
-    expect(done.content[0].text).toContain('Not finished')
-    const recorded = await finish.execute('f1', { status: 'needs_decision', reason: 'Moving the route changes production.', needs: 'Approve the cutover.' } as never, undefined, undefined, ctx as never) as { content: { text: string }[] }
-    expect(recorded.content[0].text).toContain('Recorded: needs your decision')
-    expect(await handlers.get('agent_before_settle')!(boundary, ctx)).toBeUndefined()
-    await handlers.get('agent_settled')!({ aborted: false }, ctx)
-    expect(transport.telemetry).toHaveBeenCalledWith('checkpoint', expect.objectContaining({ blocked: 'Moving the route changes production. Needs: Approve the cutover.', reason: 'requested' }))
-    expect(transport.telemetry).toHaveBeenLastCalledWith('settled', expect.objectContaining({ reason: 'needs_person', code: 'needs_person' }))
-    // The next reply starts clean: no list, no declaration, a plain completed settle.
-    await handlers.get('before_agent_start')!({ messageType: 'user', prompt: 'Thanks', systemPromptOptions: { sections: {} } }, ctx)
-    await handlers.get('agent_settled')!({ aborted: false }, ctx)
-    expect(transport.telemetry).toHaveBeenLastCalledWith('settled', { error: undefined, aborted: false })
+  it('asks the completion check when a terminal reply that did work ends, and settles it as the check says (ADR-0071)', async () => {
+    vi.stubEnv('XINGULAR_COMPLETION_CHECK', 'on')
+    try {
+      const { api, ctx, handlers } = extension()
+      await terminalExtension(api)
+      const verdicts = [
+        '{"verdict":"continue","reason":"The handoff answers the worktree question.","next":"Create the worktree and start B0."}',
+        '{"verdict":"needs_person","reason":"Moving the production route needs approval.","next":""}'
+      ]
+      const streamSimple = vi.fn(() => ({ result: async () => ({ content: [{ type: 'text', text: verdicts.shift() }], stopReason: 'stop', model: 'gpt-6-luna', provider: 'openai-codex', usage: { input: 30, output: 10, cost: { total: 0.001 } } }) }))
+      const checkCtx = { ...ctx, model: { id: 'gpt-6-luna', provider: 'openai-codex', reasoning: true }, modelRegistry: { streamSimple } } as never
+      const boundary = { outcome: 'completed', continue: false, entries: [], context: { canContinue: true, llmMessages: [{ role: 'user', content: 'Work for the handoff' }] } }
+      await handlers.get('before_agent_start')!({ messageType: 'user', prompt: 'Work for the handoff', systemPromptOptions: { sections: {} } }, checkCtx)
+      await handlers.get('tool_call')!({ toolName: 'bash', toolCallId: 'b1', input: { command: 'git status' } }, checkCtx)
+      const nudged = await handlers.get('agent_before_settle')!(boundary, checkCtx) as { continue: boolean; entries: { customType: string; content: string }[] }
+      expect(nudged).toMatchObject({ continue: true, entries: [{ customType: 'xingular-completion-check' }] })
+      expect(nudged.entries[0].content).toContain('Next: Create the worktree and start B0.')
+      expect(streamSimple).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ systemPrompt: expect.stringContaining('You review whether an AI coding agent may end its reply') }), expect.objectContaining({ reasoning: 'low' }))
+      // The check's request is counted with the reply's usage.
+      expect(transport.telemetry).toHaveBeenCalledWith('usage', expect.objectContaining({ requests: 1, request: expect.objectContaining({ index: 1, inputTokens: 30 }) }))
+      expect(transport.telemetry).toHaveBeenCalledWith('notice', expect.objectContaining({ text: 'Completion check 1: continue — The handoff answers the worktree question.' }))
+      await handlers.get('tool_call')!({ toolName: 'bash', toolCallId: 'b2', input: { command: 'git worktree add ../b' } }, checkCtx)
+      expect(await handlers.get('agent_before_settle')!(boundary, checkCtx)).toBeUndefined()
+      await handlers.get('agent_settled')!({ aborted: false }, checkCtx)
+      expect(transport.telemetry).toHaveBeenCalledWith('checkpoint', expect.objectContaining({ blocked: 'Moving the production route needs approval.', reason: 'requested' }))
+      expect(transport.telemetry).toHaveBeenLastCalledWith('settled', expect.objectContaining({ reason: 'needs_person', code: 'needs_person' }))
+      // The next reply starts clean.
+      await handlers.get('before_agent_start')!({ messageType: 'user', prompt: 'Thanks', systemPromptOptions: { sections: {} } }, checkCtx)
+      await handlers.get('agent_settled')!({ aborted: false }, checkCtx)
+      expect(transport.telemetry).toHaveBeenLastCalledWith('settled', { error: undefined, aborted: false })
+    } finally {
+      vi.unstubAllEnvs()
+    }
   })
 
   it('registers one question tool with fixed-column sketch guidance, and no terminal-only alias', async () => {

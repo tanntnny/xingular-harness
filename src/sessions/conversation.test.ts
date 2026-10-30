@@ -4,7 +4,7 @@
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { memorySecretStore } from '../accounts/secrets'
 import { createHarness, type Harness } from '../harness'
@@ -16,6 +16,7 @@ import type { RunEvent } from './contracts'
 
 const open: Harness[] = []
 afterEach(async () => {
+  vi.unstubAllEnvs()
   for (const harness of open.splice(0)) await harness.close()
 })
 
@@ -88,19 +89,64 @@ describe('a whole reply, with a scripted model', () => {
     expect(of(id).find((event) => event.type === 'checkpoint')?.payload).toMatchObject({ next: 'Run the migration', summary: 'Still stopping.', reason: 'stuck' })
   })
 
-  it('lets a reply stop for the person through finish, with no nudge', async () => {
+  // ADR-0071: the completion check through real Pi. One scripted model answers both the agent and the
+  // check; a check request is told apart by its system prompt.
+  const routed = (model: Awaited<ReturnType<typeof fauxModel>>, agent: unknown[], check: string[]) => {
+    const isCheck = (context: { messages?: { role: string; content: unknown }[] }) => {
+      const last = context.messages?.at(-1)
+      const text = typeof last?.content === 'string' ? last.content : JSON.stringify(last?.content ?? '')
+      return last?.role === 'user' && text.includes("## The person's request")
+    }
+    const step = (context: { messages?: { role: string; content: unknown }[] }) => isCheck(context)
+      ? model.says(check.shift() ?? '{"verdict":"done","reason":"ok"}')
+      : agent.shift() ?? model.says('Done.')
+    model.script(Array(agent.length + check.length + 2).fill(step))
+  }
+
+  it('sends back a reply whose closed todo list hides unfinished work, and ends it once the check says done', async () => {
+    vi.stubEnv('XINGULAR_COMPLETION_CHECK', 'on')
     const { root, model, start, until, of } = await setup()
-    model.script([
-      model.calls(['todo_write', { items: [{ text: 'Move the production route', status: 'pending' }] } as never]),
-      model.calls(['finish', { status: 'needs_decision', reason: 'Moving the route changes production.', needs: 'Approve the cutover.' }]),
-      model.says('Waiting for your approval to move the route.')
+    routed(model, [
+      model.calls(['read', { path: 'src' }]),
+      model.calls(['todo_write', { items: [{ text: 'Implement B0', status: 'completed' }] } as never]),
+      model.says('B0 is done. Should I start B1 next?'),
+      model.calls(['read', { path: 'src' }]),
+      model.says('B1 is done too.')
+    ], [
+      '{"verdict":"continue","reason":"The handoff asks for B0 and B1; the order is already decided.","next":"Start B1."}',
+      '{"verdict":"done","reason":"B0 and B1 are done.","next":""}'
     ])
-    const id = await start()
+    const id = await start({ text: 'Implement B0 and B1 of the handoff.', launch: { standard: { cwd: root } } })
     await until(() => Boolean(status(of, id)))
-    expect(model.requests()).toBe(3)
+    expect(model.requests()).toBe(7)
+    const notices = of(id).filter((event) => event.type === 'extension.notice').map((event) => (event.payload as { text: string }).text)
+    expect(notices).toEqual(['Completion check 1: continue — The handoff asks for B0 and B1; the order is already decided.', 'Completion check 2: done — B0 and B1 are done.'])
+    const { loadRun } = await import('./runStore')
+    expect(loadRun(root, id)).toMatchObject({ status: 'completed', terminalReason: null })
+    // The check's two requests are counted with the run's own.
+    expect((of(id).filter((event) => event.type === 'usage.updated').at(-1)?.payload as { requests: number }).requests).toBe(7)
+  })
+
+  it('lets the check, not the doer, stop a reply for the person', async () => {
+    vi.stubEnv('XINGULAR_COMPLETION_CHECK', 'on')
+    const { root, model, start, until, of } = await setup()
+    routed(model, [model.calls(['read', { path: 'src' }]), model.says('The cutover is ready; it moves the production route.')], ['{"verdict":"needs_person","reason":"Moving the production route needs the person\'s approval.","next":""}'])
+    const id = await start({ text: 'Prepare and run the API cutover.' })
+    await until(() => Boolean(status(of, id)))
     const { loadRun } = await import('./runStore')
     expect(loadRun(root, id)).toMatchObject({ status: 'interrupted', terminalCode: 'needs_person' })
-    expect(of(id).some((event) => event.type === 'extension.notice' && (event.payload as { extension?: string }).extension === 'stop-gate')).toBe(false)
+    expect(of(id).find((event) => event.type === 'checkpoint')?.payload).toMatchObject({ blocked: 'Moving the production route needs the person\'s approval.', reason: 'requested' })
+  })
+
+  it('never checks a reply that did no work', async () => {
+    vi.stubEnv('XINGULAR_COMPLETION_CHECK', 'on')
+    const { root, model, start, until, of } = await setup()
+    model.script([model.says('B0 covers the workspace and CI.')])
+    const id = await start({ text: 'What does B0 cover?' })
+    await until(() => Boolean(status(of, id)))
+    expect(model.requests()).toBe(1)
+    const { loadRun } = await import('./runStore')
+    expect(loadRun(root, id)).toMatchObject({ status: 'completed' })
   })
 
   it('joins async native children and persists one result receipt before the final reply', async () => {

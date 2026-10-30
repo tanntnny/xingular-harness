@@ -286,7 +286,7 @@ describe('work slice continuation', () => {
   it('does not continue a reply that ended for another reason or must stop', () => {
     const cases: Array<[string, Partial<SliceContinuationOptions>, Record<string, unknown>, unknown]> = [
       ['not at the budget', {}, {}, undefined],
-      ['blocked by finish', { blocked: () => true }, {}, undefined],
+      ['blocked: the check needs the person', { blocked: () => true }, {}, undefined],
       ['failed', { failed: () => true }, {}, undefined],
       ['in plan mode', { active: () => false }, {}, undefined],
       ['all todo items done', { todo: () => [{ status: 'completed' }] }, {}, undefined],

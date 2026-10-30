@@ -28,9 +28,9 @@ import type { VariantTrust } from '../variant/trust'
 import { ASK_USER } from '../tools/askUser'
 import { defaultSkillPaths } from '../tools/defaultSkills'
 import { TODO_WRITE } from '../tools/todo'
-import { LEGACY_CHECKPOINT_WRITE, checkpointOf } from './checkpoint'
-import { FINISH } from '../tools/finish'
-import { createStopGateState, stopGate, STOP_GATE_EXTENSION } from './stopGate'
+import { checkpointOf } from './checkpoint'
+import { createStopGateState, sessionCheckModel, stopGate, stopGateNotice, STOP_GATE_EXTENSION } from './stopGate'
+import { launchSwitchOff } from './completionCheck'
 import { SESSION_NAME, deriveSessionName, sessionNameTool } from '../tools/sessionName'
 import { DEFAULT_TOOL_NAMES } from '../tools/definitions'
 import { GET_CAPABILITIES, getCapabilitiesTool } from '../tools/getCapabilities'
@@ -157,6 +157,19 @@ function checkCommand(command: SessionCommand, historyFile: string | null, input
 }
 
 const CONTINUE_TEXT = 'Continue from where you stopped.'
+
+/** The person's request behind a chain of continuations: the first goal that is not the continue text. */
+function requestOfChain(root: string, runId: string | null): string | null {
+  const seen = new Set<string>()
+  for (let current = runId; current && !seen.has(current); ) {
+    seen.add(current)
+    let record: ReturnType<typeof loadRun>
+    try { record = loadRun(root, current) } catch { return null }
+    if (record.goal && record.goal.trim() !== CONTINUE_TEXT) return record.goal
+    current = record.resumedFromRunId ?? null
+  }
+  return null
+}
 
 /** Fills a continuing run's input from the run it continues, refusing anything that would differ. */
 function continueInput(root: string, input: SessionRunInput): Continuation {
@@ -498,7 +511,7 @@ export class Sessions {
     const canAskUser = pinnedAskUser || (interactivePlan && harnessToolsEnabled)
     const requestedTools = [...new Set([
       ...input.tools.allow.filter((name) => name !== SPAWN_SUBAGENT && name !== WAIT_SUBAGENTS && (name !== ASK_USER || canAskUser)),
-      ...(harnessToolsEnabled ? [...(canAskUser ? [ASK_USER] : []), TODO_WRITE, FINISH, SESSION_NAME, GET_CAPABILITIES, ...DEFAULT_TOOL_NAMES] : []),
+      ...(harnessToolsEnabled ? [...(canAskUser ? [ASK_USER] : []), TODO_WRITE, SESSION_NAME, GET_CAPABILITIES, ...DEFAULT_TOOL_NAMES] : []),
       ...(broker?.toolNames ?? []),
       ...(canSpawn ? [SPAWN_SUBAGENT, WAIT_SUBAGENTS] : [])
     ])]
@@ -506,11 +519,9 @@ export class Sessions {
       ? await this.options.resolveCapabilities(caller, requestedTools, input.cwd)
       : { version: 1 as const, tools: requestedTools, connectors: [], contributions: [] }
     const requested = input.capabilities ? parseCapabilitySet(input.capabilities) : available
-    // A capability set pinned before ADR-0069 names checkpoint_write; finish took its place.
-    const pinnedTools = requested.tools.includes(LEGACY_CHECKPOINT_WRITE) ? [...requested.tools, FINISH] : requested.tools
     const capabilities: CapabilitySet = {
       version: 1,
-      tools: available.tools.filter((tool) => pinnedTools.includes(tool)),
+      tools: available.tools.filter((tool) => requested.tools.includes(tool)),
       connectors: available.connectors.filter((id) => requested.connectors.includes(id)),
       contributions: available.contributions.filter((id) => requested.contributions.includes(id))
     }
@@ -637,15 +648,17 @@ export class Sessions {
       throw error
     }
 
-    // A run with the harness's own tools is bounded; plan-research children are bounded too, though
-    // their read-only capability set omits those tools. `finish` marks the harness tool set.
-    const harnessStateTools = capabilities.tools.includes(FINISH)
+    // A top-level run with the harness's own tools is bounded; plan-research children are bounded too,
+    // though their read-only capability set omits those tools.
+    const harnessStateTools = harnessToolsEnabled && depth === 0 && capabilities.tools.includes(TODO_WRITE)
     const planResearchChild = input.plan === true && input.run.relation === 'subagent'
     const sliceEnabled = slicePolicy.enabled && (harnessStateTools || planResearchChild)
     const sliceState = createSliceState(slicePolicy, sliceOf(root, runId))
     // The stop gate (ADR-0069) keeps an attended top-level reply working while its todo list has open
     // items. Never for plan, command, automatic, subagent or other related runs.
-    const gateEnabled = harnessStateTools && depth === 0 && !input.plan && !input.command && !input.automatic && !input.run.relation
+    const gateEnabled = harnessStateTools && !input.plan && !input.command && !input.automatic && !input.run.relation && !launchSwitchOff('XINGULAR_STOP_GATE')
+    // The completion check judges the person's request, not "Continue from where you stopped.".
+    const originalRequest = input.text.trim() === CONTINUE_TEXT ? requestOfChain(root, previousRun?.id ?? null) : null
     const stopGateState = gateEnabled ? createStopGateState(continuation?.todo) : null
     const run = this.options.runs.start(input.run.sessionId, runId)
     if (run.finished) return { runId, nativeSessionId: null }
@@ -682,7 +695,6 @@ export class Sessions {
           harnessTools: harnessToolsEnabled,
           subagents: this.options.subagents,
           sessionName: naming,
-          ...(stopGateState ? { stopGate: stopGateState } : {}),
           ...(broker ? { connectionTools: () => broker.tools(session, { readOnly: typeof input.connections === 'object' && input.connections.readOnly === true }) } : {})
         })
       ]
@@ -746,8 +758,10 @@ export class Sessions {
           ...(stopGateState ? [{ name: STOP_GATE_EXTENSION, factory: stopGate({
             state: stopGateState,
             initialTodo: continuation?.todo,
+            request: () => originalRequest,
             sliceEnded: () => sliceEnabled && sliceState.endedBy !== null,
-            onNudge: (count, open) => run.emit('extension.notice', { kind: 'notify', level: 'info', extension: STOP_GATE_EXTENSION, text: `Stop gate ${count}: the reply ended with ${open.length} open todo item${open.length === 1 ? '' : 's'}; continuing.` })
+            check: launchSwitchOff('XINGULAR_COMPLETION_CHECK') ? null : sessionCheckModel,
+            onEvent: (event) => run.emit('extension.notice', { kind: 'notify', level: 'info', extension: STOP_GATE_EXTENSION, text: stopGateNotice(event) })
           }) }] : [])
         ],
         ...(plugins && loadPlugins ? { plugins: { loading: loadPlugins, loaded: (extensions) => plugins.loaded(extensions) } } : {}),
