@@ -15,6 +15,16 @@ describe('command budget', () => {
     expect(resolveCommandTimeout(COMMAND_TIMEOUT_MAX_SECONDS + 1, 'because')).toMatchObject({ ok: false })
   })
 
+  it('reads a timeout that only fits as milliseconds as milliseconds', () => {
+    // GPT 6 Luna sends timeout: 120000; refusing it refused every command the model ran.
+    expect(resolveCommandTimeout(120_000, undefined)).toEqual({ ok: true, timeout: 120 })
+    expect(resolveCommandTimeout(1_500, undefined)).toEqual({ ok: true, timeout: 2 })
+    // Converted values keep the ceiling and the maximum.
+    expect(resolveCommandTimeout(600_000, undefined)).toMatchObject({ ok: false })
+    expect(resolveCommandTimeout(600_000, 'the release build takes ten minutes')).toEqual({ ok: true, timeout: 600 })
+    expect(resolveCommandTimeout(2_000_000, 'because')).toEqual({ ok: false, message: 'timeout is in seconds, and a command may run for at most 900 seconds. Split it into smaller commands.' })
+  })
+
   it('stops a command at its budget and reaches the live shell', async () => {
     let aborted = false
     const result = await withCommandBudget(() => new Promise<string>((resolve) => setTimeout(() => resolve('late'), 5_000)), () => {

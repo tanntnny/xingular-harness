@@ -17,9 +17,13 @@ export type CommandTimeout =
 export function resolveCommandTimeout(requested: unknown, reason: unknown): CommandTimeout {
   const why = typeof reason === 'string' ? reason.trim() : ''
   if (typeof requested !== 'number' || !Number.isFinite(requested)) return { ok: true, timeout: DEFAULT_COMMAND_TIMEOUT_SECONDS }
-  const timeout = Math.floor(requested)
+  let timeout = Math.floor(requested)
   if (timeout < 1) return { ok: false, message: 'timeout must be a positive number of seconds.' }
-  if (timeout > COMMAND_TIMEOUT_MAX_SECONDS) return { ok: false, message: `A command may run for at most ${COMMAND_TIMEOUT_MAX_SECONDS} seconds. Split it into smaller commands.` }
+  // Some models send milliseconds (Claude Code's own bash tool takes them; GPT 6 Luna sends 120000).
+  // A value that only fits as milliseconds is read as milliseconds, instead of refusing every
+  // command that model sends.
+  if (timeout > COMMAND_TIMEOUT_MAX_SECONDS && timeout >= 1_000 && timeout / 1_000 <= COMMAND_TIMEOUT_MAX_SECONDS) timeout = Math.ceil(timeout / 1_000)
+  if (timeout > COMMAND_TIMEOUT_MAX_SECONDS) return { ok: false, message: `timeout is in seconds, and a command may run for at most ${COMMAND_TIMEOUT_MAX_SECONDS} seconds. Split it into smaller commands.` }
   if (timeout > COMMAND_TIMEOUT_CEILING_SECONDS && !why) {
     return { ok: false, message: `A command over ${COMMAND_TIMEOUT_CEILING_SECONDS} seconds needs a reason: pass reason with why it cannot be narrowed or run in smaller steps.` }
   }
