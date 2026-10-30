@@ -8,6 +8,8 @@ supersedes: partial — ADR-0008
 ---
 # ADR-0068 — Scope of the work and two required completion headings
 
+> **Amended by [ADR-0069](ADR-0069-stop-gate-and-finish.md):** `## What would make this complete` applies only when the work stopped short (blocked, needing the person, or handed back by the guard), and the deferred runner feature is now the stop gate.
+
 ## Context and decision
 
 ADR-0008 removed the fixed heading list from the `reporting` section and kept every heading

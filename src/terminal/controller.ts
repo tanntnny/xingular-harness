@@ -5,11 +5,14 @@
 import { createHash, randomUUID } from 'node:crypto'
 
 import { HarnessError } from '../core/errors'
-import { runStatusSchema, type RunEvent, type RunRecord } from '../sessions/contracts'
+import { runStatusSchema, type RunEvent, type RunRecord, type RunStopCode } from '../sessions/contracts'
 import { briefTitle } from '../sessions/subagents'
 import type { ActiveRun, ApprovalDecision, QuestionAnswer, QuestionInput } from '../sessions/registry'
 import { MAIN_PROFILE, SubagentMonitor, type TerminalSubagentActivity, type TerminalSubagentProfile, type TerminalSubagentRun } from './subagentMonitor'
 import { replyStalled } from './stallWatch'
+
+/** Stop codes the native extension may report for a reply it settled itself. */
+const SETTLED_CODES = new Set<unknown>(['slice_budget', 'compaction_thrash', 'needs_person', 'unfinished'])
 
 type MonitorRuntime = Pick<TerminalSubagentRun, 'accountLabel' | 'model' | 'effort'>
 
@@ -473,11 +476,12 @@ export class TerminalController {
     }
     if (event === 'settled') {
       // A reply that stopped at its work-slice boundary is interrupted, not completed: the record
-      // says `slice_complete` (or `stalled`) so a host can continue it (PROP-0041).
+      // says `slice_complete` (or `stalled`) so a host can continue it (PROP-0041). So is one that
+      // ended with open todo items: `needs_person` or `unfinished` (ADR-0069).
       const stalled = this.stallRequested !== null && this.stallRequested === this.run?.runId
       const reason = data.error ? undefined : stalled ? 'stalled' : typeof data.reason === 'string' ? data.reason : undefined
       const outcome = data.error ? 'failed' : data.aborted || reason ? 'interrupted' : 'completed'
-      const code = data.error ? data.errorCode === 'provider_error' ? 'provider_error' : undefined : stalled ? 'stalled' : data.code === 'slice_budget' || data.code === 'compaction_thrash' ? data.code : data.aborted ? 'user_abort' : undefined
+      const code = data.error ? data.errorCode === 'provider_error' ? 'provider_error' : undefined : stalled ? 'stalled' : SETTLED_CODES.has(data.code) ? data.code as RunStopCode : data.aborted ? 'user_abort' : undefined
       this.finish(outcome, data.error ? String(data.error) : undefined, reason, code)
       return {}
     }
@@ -522,6 +526,7 @@ export class TerminalController {
     else if (event === 'heartbeat') run.emit('heartbeat', data)
     else if (event === 'todo' || event === 'checklist') run.emit('todo.updated', { items: data.items })
     else if (event === 'checkpoint') run.emit('checkpoint', data)
+    else if (event === 'notice') run.emit('extension.notice', data)
     else if (event === 'file') run.emit('file.changed', data)
     else if (event === 'delta') run.emit('message.delta', { messageId: String(data.id ?? ''), text: String(data.text ?? '') })
     else if (event === 'message') run.emit('message.completed', { messageId: data.id ?? randomUUID(), role: data.role ?? 'assistant', text: String(data.text) })

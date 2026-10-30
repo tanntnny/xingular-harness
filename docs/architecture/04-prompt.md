@@ -105,20 +105,37 @@ other heading stays optional; the guidance still forbids a fixed set. See
 ## When a reply may end
 
 A reply ends when the request is done, when the work-slice guard ends it (INV-RUN-13), when a person
-interrupts, or when the work is blocked on a person's decision. An open todo item, a passing check or
-a partial result is not such a reason. The rule is prompt text, not a stop rule in the runner: a run
-whose reply ended while work remained settles `completed` like any other, so the words are what ask
-the model to continue. The standard session states it in the `role` paragraph
-(`prompt/standard.ts`, `ROLE`), the `reporting` section says it in its opening paragraph, and
-`TODO_GUIDANCE` (`tools/todo.ts`) calls an unfinished step work to continue rather than a reason to
-end the turn. All three are fixed text in the stable prefix, so changing them changes the cached
-prefix once.
+interrupts, or when the work cannot continue without the person. An open todo item, a passing check,
+a partial result or a long task is not such a reason. The rule is enforced, not only stated
+(ADR-0069): the stop gate (INV-RUN-15) sends back a reply that ends while its todo list has open
+items, up to three times, and the only explicit way to stop with work open is `finish` with
+`blocked` or `needs_decision`. A reply that settles with open items is `interrupted`
+(`needs_person` or `unfinished`), never `completed`.
+
+The words still matter, because they decide what the model does before the gate has to act, and
+none of them may read as permission to stop with work left:
+
+- `role` (`prompt/standard.ts`, `ROLE`) names the only reasons to stop and tells the model to name
+  exactly what the person must do when it stops for them.
+- `TODO_GUIDANCE` (`tools/todo.ts`) asks for a list that is true at all times; an open step is work
+  to do in this reply, not something to report. It no longer asks for a "final update before your
+  final reply", which framed an incomplete list as a way to end.
+- `reporting` opens with "Reporting is for work that is finished or genuinely blocked". Its
+  `## What would make this complete` heading applies only when the work stopped short — blocked,
+  needing the person, or handed back by the guard — and says never to stop early to write it.
+- The `Progress` tool group explains the gate and `finish` when `finish` is enabled. There is no
+  checkpoint tool to call "before you stop on purpose": ADR-0069 removed it after a run used it as a
+  sign-off and stopped with work open.
+
+All of these are fixed text in the stable prefix, so changing them changes the cached prefix once.
+A live terminal session keeps the pack, and the extension code, it started with; a harness update
+reaches it only when the session restarts.
 
 The `role` paragraph also sets how far the work reaches: the job the request implies, not only its
 literal words — the obvious adjacent step, what the work itself exposes, the check it needs — inside
 the working folder and away from what a person must decide (a deploy, a secret, remote data, money),
 without asking first inside those bounds. That is a scope rule, not a second stop rule: the same
-paragraph names the only reasons to end early.
+paragraph names the only reasons to stop.
 
 ## Delivery
 

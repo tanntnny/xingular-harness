@@ -412,6 +412,10 @@ export const runStopCodeSchema = z.enum([
   'slice_budget',
   /** Three compactions in one reply ended it. */
   'compaction_thrash',
+  /** The reply declared, with `finish`, that open work needs the person (ADR-0069). */
+  'needs_person',
+  /** The reply ended with open todo items after the stop gate's nudges ran out or produced no work (ADR-0069). */
+  'unfinished',
   /** The model request failed (auth, quota, rate limit, network, unsupported model). */
   'provider_error',
   /** The run stopped reporting progress or heartbeats. */

@@ -791,7 +791,7 @@ describe('session turns on Pi', () => {
     expect(received!.allow).not.toContain(ASK_USER)
     expect(received!.allow).toEqual(expect.arrayContaining(['history_search', 'wiki_search', 'wiki_read', 'skill_load', 'trajectory_read']))
     expect(received!.allow).not.toContain('wiki_write')
-    expect(received!.tools.map((tool) => tool.name)).toEqual(['get_capabilities', 'history_search', 'history_read', 'trajectory_search', 'trajectory_read', 'wiki_search', 'wiki_read', 'wiki_list', 'wiki_write', 'skill_load', 'plugin_propose', 'todo_write', 'checkpoint_write', 'session_name', 'spawn_subagent', 'wait_subagents', 'web_search', 'web_fetch', 'browser_navigate', 'browser_snapshot', 'browser_read', 'browser_screenshot', 'browser_click', 'browser_type', 'browser_select', 'browser_press', 'browser_scroll', 'browser_wait', 'browser_tabs', 'page_notes_list', 'page_notes_read', 'react'])
+    expect(received!.tools.map((tool) => tool.name)).toEqual(['get_capabilities', 'history_search', 'history_read', 'trajectory_search', 'trajectory_read', 'wiki_search', 'wiki_read', 'wiki_list', 'wiki_write', 'skill_load', 'plugin_propose', 'todo_write', 'finish', 'session_name', 'spawn_subagent', 'wait_subagents', 'web_search', 'web_fetch', 'browser_navigate', 'browser_snapshot', 'browser_read', 'browser_screenshot', 'browser_click', 'browser_type', 'browser_select', 'browser_press', 'browser_scroll', 'browser_wait', 'browser_tabs', 'page_notes_list', 'page_notes_read', 'react'])
     expect(await received!.tools.find((tool) => tool.name === 'skill_load')!.execute({})).toContain('plugin-authoring')
     expect(received!.params.system).toContain('# Xingular Agent context')
   })
@@ -1249,9 +1249,26 @@ describe('work slices', () => {
       }
     })
     return {
-      start: () => handlers.get('agent_start')!({}),
-      call: (event: unknown) => handlers.get('tool_call')!(event),
-      result: (event: unknown) => handlers.get('tool_result')!(event)
+      start: () => handlers.get('before_agent_start')!({ messageType: 'user' }),
+      call: (event: unknown) => handlers.get('tool_call')!(event)
+    }
+  }
+
+  /** Drives the stop gate the way Pi does, without a Pi session. */
+  function driveGate(input: Parameters<SessionFactory>[0]) {
+    const extension = (input.params.inline ?? []).find((candidate) => candidate.name === 'stop-gate')
+    expect(extension).toBeDefined()
+    const handlers = new Map<string, (event: unknown, ctx?: unknown) => unknown>()
+    ;(extension!.factory as (pi: unknown) => void)({
+      on: (name: string, handler: (event: unknown, ctx?: unknown) => unknown) => {
+        handlers.set(name, handler)
+      }
+    })
+    return {
+      start: () => handlers.get('before_agent_start')!({ messageType: 'user' }),
+      todo: (items: { text: string; status: string }[]) => handlers.get('tool_result')!({ toolName: 'todo_write', isError: false, input: { items } }),
+      call: (toolName: string) => handlers.get('tool_call')!({ toolName }),
+      settle: () => handlers.get('agent_before_settle')!({ outcome: 'completed', continue: false, entries: [] }, {}) as { continue?: boolean; entries?: { customType?: string; content?: string }[] } | undefined
     }
   }
 
@@ -1283,7 +1300,7 @@ describe('work slices', () => {
     expect(checkpoint?.payload).toMatchObject({ slice: 1, reason: 'budget' })
   })
 
-  it('keeps the checkpoint the model wrote and continues from it', async () => {
+  it('writes the next slice its checkpoint from the reply\'s own todo list and continues from it', async () => {
     const inputs: Parameters<SessionFactory>[0][] = []
     const { harness, run, sessionDir } = setup(async (input) => {
       inputs.push(input)
@@ -1291,13 +1308,12 @@ describe('work slices', () => {
       writeFileSync(join(sessionDir, 'saved.jsonl'), `${JSON.stringify({ type: 'session', id: 'native-1' })}\n`)
       return fakeSession(async () => {
         const slice = driveGuard(input)
+        const gate = driveGate(input)
         slice.start()
-        await input.tools.find((candidate) => candidate.name === 'checkpoint_write')!.execute({
-          summary: 'Halfway through the boundary work',
-          done: [{ item: 'Read the sandbox check', evidence: ['src/core/workspaceSandbox.ts'] }],
-          next: 'Fix the failing sandbox test'
-        })
-        slice.result({ toolName: 'checkpoint_write', isError: false, input: {} })
+        gate.start()
+        gate.todo([{ text: 'Read the sandbox check', status: 'completed' }, { text: 'Fix the failing sandbox test', status: 'in_progress' }])
+        // The model is never asked to write the handoff (ADR-0069): the tool is gone.
+        expect(input.tools.some((candidate) => candidate.name === 'checkpoint_write')).toBe(false)
         for (let step = 0; step < 4; step += 1) slice.call({ toolCallId: `call-${step}`, toolName: 'read', input: { path: `file-${step}` } })
       }, input.gate)
     })
@@ -1305,9 +1321,109 @@ describe('work slices', () => {
     await tick(250)
     expect(inputs).toHaveLength(2)
     expect(inputs[1].params.text).toBe('Continue from where you stopped.')
-    expect(inputs[1].params.update?.content ?? '').toContain('Halfway through the boundary work')
+    const update = inputs[1].params.update?.content ?? ''
+    expect(update).toContain('Done:\n- Read the sandbox check')
+    expect(update).toContain('Next step: Fix the failing sandbox test')
     expect(loadRun(harness.env.root, 'slice-first').terminalReason).toBe('slice_complete')
     expect(inputs[1].params.runId).not.toBe('slice-first')
+  })
+
+  it('sends back a reply that ends with open todo items, then settles it unfinished (ADR-0069)', async () => {
+    const { harness, events, run } = setup(async (input) => fakeSession(async () => {
+      const gate = driveGate(input)
+      gate.start()
+      gate.todo([{ text: 'Port the auth module', status: 'in_progress' }, { text: 'Port the courses module', status: 'pending' }])
+      gate.call('edit')
+      const first = gate.settle()
+      expect(first?.continue).toBe(true)
+      expect(first?.entries?.[0]).toMatchObject({ customType: 'xingular-stop-gate' })
+      expect(first?.entries?.[0].content).toContain('(1/3)')
+      expect(first?.entries?.[0].content).toContain('- Port the courses module')
+      // The model ended again without doing anything: a second nudge would not help.
+      expect(gate.settle()).toBeUndefined()
+    }, input.gate))
+    await run('gate-unfinished')
+    await tick(120)
+    expect(loadRun(harness.env.root, 'gate-unfinished')).toMatchObject({ status: 'interrupted', terminalReason: 'unfinished', terminalCode: 'unfinished' })
+    expect(events.find((event) => event.type === 'checkpoint')?.payload).toMatchObject({ next: 'Port the auth module', reason: 'stuck', done: [] })
+    const notices = events.filter((event) => event.type === 'extension.notice' && (event.payload as { extension?: string }).extension === 'stop-gate')
+    expect(notices).toHaveLength(1)
+  })
+
+  it('nudges at most three times while each nudge produces work', async () => {
+    const { harness, run } = setup(async (input) => fakeSession(async () => {
+      const gate = driveGate(input)
+      gate.start()
+      gate.todo([{ text: 'Finish the migration', status: 'in_progress' }])
+      for (let nudge = 1; nudge <= 3; nudge += 1) {
+        gate.call('bash')
+        expect(gate.settle()?.continue).toBe(true)
+      }
+      gate.call('bash')
+      expect(gate.settle()).toBeUndefined()
+    }, input.gate))
+    await run('gate-cap')
+    await tick(120)
+    expect(loadRun(harness.env.root, 'gate-cap')).toMatchObject({ status: 'interrupted', terminalCode: 'unfinished' })
+  })
+
+  it('lets a reply stop for the person when it declares the blocker with finish', async () => {
+    const { harness, events, run } = setup(async (input) => fakeSession(async () => {
+      const gate = driveGate(input)
+      gate.start()
+      gate.todo([{ text: 'Cut the API route over', status: 'pending' }])
+      const finish = input.tools.find((candidate) => candidate.name === 'finish')!
+      expect(await finish.execute({ status: 'blocked' })).toContain('needs a reason')
+      expect(await finish.execute({ status: 'needs_decision', reason: 'The cutover changes a production route.', needs: 'Approve moving api.example.com to the new worker.' })).toContain('Recorded: needs your decision')
+      expect(gate.settle()).toBeUndefined()
+    }, input.gate))
+    await run('gate-person')
+    await tick(120)
+    expect(loadRun(harness.env.root, 'gate-person')).toMatchObject({ status: 'interrupted', terminalReason: 'needs_person', terminalCode: 'needs_person' })
+    expect(events.find((event) => event.type === 'checkpoint')?.payload).toMatchObject({
+      blocked: 'The cutover changes a production route. Needs: Approve moving api.example.com to the new worker.',
+      next: 'Cut the API route over',
+      reason: 'requested'
+    })
+  })
+
+  it('refuses finish done while todo items are open, and completes a reply whose list is done', async () => {
+    const { harness, events, run } = setup(async (input) => fakeSession(async () => {
+      const gate = driveGate(input)
+      gate.start()
+      gate.todo([{ text: 'Write the test', status: 'completed' }, { text: 'Run the suite', status: 'in_progress' }])
+      const finish = input.tools.find((candidate) => candidate.name === 'finish')!
+      expect(await finish.execute({ status: 'done' })).toContain('Not finished: 1 todo item is still open — Run the suite')
+      gate.todo([{ text: 'Write the test', status: 'completed' }, { text: 'Run the suite', status: 'completed' }])
+      expect(await finish.execute({ status: 'done' })).toContain('Recorded: the work is done')
+      expect(gate.settle()).toBeUndefined()
+    }, input.gate))
+    await run('gate-done')
+    await tick(120)
+    expect(loadRun(harness.env.root, 'gate-done')).toMatchObject({ status: 'completed', terminalReason: null })
+    expect(events.some((event) => event.type === 'checkpoint')).toBe(false)
+  })
+
+  it('leaves an answer-only reply alone and never gates a plan run', async () => {
+    const received = new Map<string, Parameters<SessionFactory>[0]>()
+    const { harness, run } = setup(async (input) => {
+      received.set(input.params.runId, input)
+      return fakeSession(async () => {
+        if (input.params.plan) return
+        const gate = driveGate(input)
+        gate.start()
+        // No todo list: a one-line answer ends like it always did, with no nudge.
+        expect(gate.settle()).toBeUndefined()
+      }, input.gate)
+    })
+    await run('gate-answer')
+    await tick(80)
+    expect(loadRun(harness.env.root, 'gate-answer')).toMatchObject({ status: 'completed' })
+    await run('gate-plan', { plan: true })
+    await tick(80)
+    const plan = received.get('gate-plan')!
+    expect((plan.params.inline ?? []).some((extension) => extension.name === 'stop-gate')).toBe(false)
+    expect(plan.params.stopGate).toBeUndefined()
   })
 
   it('does not call a reply that rewrites its todo a stall', async () => {

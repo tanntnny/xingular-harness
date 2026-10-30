@@ -9,6 +9,8 @@ affects: [INV-RUN-2, INV-RUN-3, INV-RUN-4, INV-RUN-12, INV-PRM-1, INV-PRM-2, INV
 
 # PROP-0041: Bounded work slices, a durable checkpoint, and a stall guard
 
+> **Amended by [ADR-0069](../../decisions/ADR-0069-stop-gate-and-finish.md):** the model no longer writes the checkpoint — `checkpoint_write` is removed and the harness writes it from the reply's evidence; the slice budget now covers the whole reply, including Pi's own continuations.
+
 ## Problem
 
 A single reply can run for hours. Two measured sessions (STUDY-0003) ran 114 and 75 minutes in

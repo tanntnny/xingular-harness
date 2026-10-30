@@ -15,7 +15,8 @@ import { SPAWN_SUBAGENT, SUBAGENT_OWNER, SUBAGENT_RECEIPT, SUBAGENT_RESULTS, sub
 import { PLAN_RESEARCH_TOOLS } from '../agents/planResearch'
 import { askUserTool } from '../tools/askUser'
 import { TODO_WRITE, todoTool } from '../tools/todo'
-import { CHECKPOINT_WRITE, checkpointTool } from '../tools/checkpoint'
+import { finishTool } from '../tools/finish'
+import { createStopGateState, handoffFields, stopCheckpointReason, stopGate, stopOutcome, stopSummary, STOP_GATE_EXTENSION } from '../sessions/stopGate'
 import { createSliceState, parseWorkSlice, workSliceGuard } from '../sessions/workSlice'
 import { DEFAULT_COMMAND_TIMEOUT_SECONDS, withCommandBudget } from '../core/commandBudget'
 import { SESSION_NAME, deriveSessionName, sessionNameTool } from '../tools/sessionName'
@@ -195,10 +196,11 @@ export default async function (pi: ExtensionAPI, planRun?: TerminalPlanRunState,
   const slicePolicy = parseWorkSlice(undefined)
   const sliceState = createSliceState(slicePolicy)
   // `XINGULAR_WORK_SLICE=off` at launch leaves terminal replies unbounded, as before PROP-0041.
+  // One stop-gate state per terminal session; each reply resets it, and `finish` reads it.
+  const gateState = createStopGateState()
   if (slicePolicy.enabled) workSliceGuard({
     policy: slicePolicy,
     state: sliceState,
-    checkpointAvailable: () => !planRun?.active || planRun.allowedTools.has(CHECKPOINT_WRITE),
     onRefuse: (event, reason) => { pendingRefusals.push(terminalCall('refusal', { toolCallId: event.toolCallId, name: event.toolName, code: 'work_slice', reason: reason.slice(0, 2_000) }).catch(() => {})) }
   })(pi)
 
@@ -423,6 +425,18 @@ export default async function (pi: ExtensionAPI, planRun?: TerminalPlanRunState,
       continue: true
     }
   })
+  // The stop gate (ADR-0069), after subagent delivery and plan repair so it sees their continuations:
+  // a terminal reply that ends with open todo items is sent back, up to its cap, unless it declared
+  // with `finish` that the person is needed. Plan replies are not gated.
+  stopGate({
+    state: gateState,
+    active: () => !planRun?.active,
+    sliceEnded: () => sliceState.endedBy !== null,
+    failed: () => Boolean(failure),
+    onNudge: (count, open) => {
+      void terminalCall('notice', { kind: 'notify', level: 'info', extension: STOP_GATE_EXTENSION, text: `Stop gate ${count}: the reply ended with ${open.length} open todo item${open.length === 1 ? '' : 's'}; continuing.` }).catch(() => undefined)
+    }
+  })(pi)
   // Reply text as it streams, batched, for a paired phone (remote control). The completed message
   // carries the same id and replaces whatever streamed.
   let streamId: string | null = null
@@ -599,9 +613,19 @@ export default async function (pi: ExtensionAPI, planRun?: TerminalPlanRunState,
     subagentParent = false
     // A reply that stopped at its work-slice boundary is not a completed task: the record says so,
     // so a host can offer the continuation instead of treating it as done (PROP-0041).
-    const reason = sliceState.endedBy ? 'slice_complete' : undefined
-    const code = sliceState.endedBy === 'compaction-thrash' ? 'compaction_thrash' : sliceState.endedBy === 'budget' ? 'slice_budget' : undefined
-    await terminalCall('settled', { error: failure, ...(failureCode ? { errorCode: failureCode } : {}), aborted: event.aborted || messageAborted, ...(reason ? { reason } : {}), ...(code ? { code } : {}) })
+    // A reply that ended with open todo items is not completed either (ADR-0069): it stopped for the
+    // person, or the stop gate's nudges ran out. The harness writes its checkpoint from the todo list.
+    const aborted = event.aborted || messageAborted
+    const stop = !sliceState.endedBy && !failure && !aborted && !planRun?.active ? stopOutcome(gateState) : null
+    if (stop) {
+      await terminalCall('checkpoint', { summary: stopSummary(stop), ...handoffFields(gateState), files: [], checks: [], decisions: [], slice: 1, reason: stopCheckpointReason(stop) }).catch(() => undefined)
+    } else if (sliceState.endedBy && !failure && !aborted) {
+      // The guard ended the reply and promised the model the harness would keep its state.
+      await terminalCall('checkpoint', { summary: `The reply stopped after ${sliceState.steps} steps at its work-slice boundary.`, ...handoffFields(gateState), files: [], checks: [], decisions: [], slice: 1, reason: sliceState.endedBy }).catch(() => undefined)
+    }
+    const reason = sliceState.endedBy ? 'slice_complete' : stop?.code
+    const code = sliceState.endedBy === 'compaction-thrash' ? 'compaction_thrash' : sliceState.endedBy === 'budget' ? 'slice_budget' : stop?.code
+    await terminalCall('settled', { error: failure, ...(failureCode ? { errorCode: failureCode } : {}), aborted, ...(reason ? { reason } : {}), ...(code ? { code } : {}) })
     turnActive = false
   })
   pi.on('user_bash', async () => {
@@ -649,16 +673,13 @@ export default async function (pi: ExtensionAPI, planRun?: TerminalPlanRunState,
       return { content: [{ type: 'text', text: typeof result === 'string' ? result : result.text }], details: undefined }
     }
   })
-  // A bounded reply records its handoff here; the terminal reply is its own slice.
-  let checkpointRecorded: Promise<unknown> = Promise.resolve()
-  const checkpoint = checkpointTool({ emit: (_type, payload) => { checkpointRecorded = terminalCall('checkpoint', payload as Record<string, unknown>) } }, 1)
+  // The one explicit way to end a reply with open todo items (ADR-0069); the stop gate reads what it records.
+  const finish = finishTool(gateState)
   pi.registerTool({
-    name: checkpoint.name, label: checkpoint.label, description: checkpoint.description,
-    parameters: Type.Unsafe(checkpoint.parameters(Type) as Record<string, unknown>),
+    name: finish.name, label: finish.label, description: finish.description,
+    parameters: Type.Unsafe(finish.parameters(Type) as Record<string, unknown>),
     async execute(_id, input) {
-      checkpointRecorded = Promise.resolve()
-      const result = await checkpoint.execute(input as Record<string, unknown>)
-      await checkpointRecorded
+      const result = await finish.execute(input as Record<string, unknown>)
       return { content: [{ type: 'text', text: typeof result === 'string' ? result : result.text }], details: undefined }
     }
   })

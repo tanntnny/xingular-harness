@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+- **A reply can no longer quietly stop with work open (ADR-0069).**
+  - **Stop gate.** In attended top-level runs, terminal included, a reply that ends while its todo
+    list has open items is sent back to the model, naming the items, up to three times per reply,
+    and never after a nudge that produced no work.
+  - **`finish`.** The new `finish` tool is the one explicit way to stop with work open: `blocked` or
+    `needs_decision` with a reason. `done` is refused while items are open.
+  - **Honest stop codes.** Such a reply settles `interrupted` with the new stop codes `needs_person`
+    or `unfinished`, never `completed`, with a checkpoint the harness writes from the todo list,
+    files and checks.
+  - **`checkpoint_write` is removed.** A run used it as a sign-off and stopped with work open. At a
+    work-slice budget the harness now writes the checkpoint itself.
+  - **One budget per reply.** The work-slice budget now covers the whole reply: Pi's own
+    continuations (nudges, delivered subagent results, plan repair) no longer reset it.
+  - **Prompt wording.** The texts that read as permission to stop were rewritten: the todo guidance's
+    "final update before your final reply", and `## What would make this complete` "when the run
+    could be more complete".
+  - **Subagents.** `spawn_subagent` now returns the child's tools, and the read-only profiles say up
+    front when a brief needs a tool they lack.
+  - **Hosts.** Accept the two new stop codes and offer Continue for them.
+  - **Restart required.** A live terminal session keeps the code it started with, so restart it to
+    get the gate.
 - Do the job the request implies, and report it apart from the request. A standard session's role
   paragraph now sets the scope of the work — the obvious adjacent step, what the work itself exposes,
   the check it needs, inside the working folder and away from what a person must decide (a deploy, a
@@ -14,8 +35,7 @@
   reporting guidance and the todo guidance now say that an open todo item, a passing check or a
   partial result is not a reason to end the turn, and name the reasons that are: the request is done,
   the work-slice guard hands the reply back, a person's decision is needed, or the person interrupts.
-  A reply the model still ends early settles `completed` as before — this changes the words, not the
-  runner or the slice guard. A sweep of 822 runs in seven days found 207 that ended with work left
+  ADR-0069 below now enforces it in the runner. A sweep of 822 runs in seven days found 207 that ended with work left
   (137 within 30 tool calls, median 17, and 191 with no checkpoint), which is what the wording is
   for. All three texts are in the stable prefix, so this changes the cached prefix once.
 - Reword the final-reply guidance so the outcome leads and structure follows what the answer needs. The

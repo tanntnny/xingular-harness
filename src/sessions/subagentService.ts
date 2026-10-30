@@ -24,7 +24,8 @@ import { SPAWN_SUBAGENT, SUBAGENT_RELATION, SUBAGENT_OWNER, SUBAGENT_RECEIPT, SU
 
 type Started = { runId: string; nativeSessionId: string | null }
 /** What a spawn returns: the child, the profile it started from, and profile tools missing here. */
-export type SpawnedSubagent = Started & { agent?: string; unavailableTools?: string[]; continued?: string }
+/** `tools` is what the child can actually use, so the parent sees a brief/tool mismatch at once. */
+export type SpawnedSubagent = Started & { agent?: string; tools?: string[]; unavailableTools?: string[]; continued?: string }
 export interface SubagentRuntimeSettings { model: string | null; effort: Effort | null }
 
 export interface SubagentServiceOptions {
@@ -240,7 +241,7 @@ export class Subagents {
         ...(input.plan ? { connections: false, subagents: null } : {})
       }
       const result = await this.launchChild(parent, request, child)
-      return { ...result, ...(profile ? { agent: profile.name } : {}), ...(narrowed.unavailable.length ? { unavailableTools: narrowed.unavailable } : {}) }
+      return { ...result, ...(profile ? { agent: profile.name } : {}), tools, ...(narrowed.unavailable.length ? { unavailableTools: narrowed.unavailable } : {}) }
     } finally {
       this.release(request.parentRunId, runId)
     }

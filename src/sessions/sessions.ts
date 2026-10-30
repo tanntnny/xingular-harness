@@ -28,7 +28,9 @@ import type { VariantTrust } from '../variant/trust'
 import { ASK_USER } from '../tools/askUser'
 import { defaultSkillPaths } from '../tools/defaultSkills'
 import { TODO_WRITE } from '../tools/todo'
-import { CHECKPOINT_WRITE, checkpointOf } from '../tools/checkpoint'
+import { LEGACY_CHECKPOINT_WRITE, checkpointOf } from './checkpoint'
+import { FINISH } from '../tools/finish'
+import { createStopGateState, stopGate, STOP_GATE_EXTENSION } from './stopGate'
 import { SESSION_NAME, deriveSessionName, sessionNameTool } from '../tools/sessionName'
 import { DEFAULT_TOOL_NAMES } from '../tools/definitions'
 import { GET_CAPABILITIES, getCapabilitiesTool } from '../tools/getCapabilities'
@@ -496,7 +498,7 @@ export class Sessions {
     const canAskUser = pinnedAskUser || (interactivePlan && harnessToolsEnabled)
     const requestedTools = [...new Set([
       ...input.tools.allow.filter((name) => name !== SPAWN_SUBAGENT && name !== WAIT_SUBAGENTS && (name !== ASK_USER || canAskUser)),
-      ...(harnessToolsEnabled ? [...(canAskUser ? [ASK_USER] : []), TODO_WRITE, CHECKPOINT_WRITE, SESSION_NAME, GET_CAPABILITIES, ...DEFAULT_TOOL_NAMES] : []),
+      ...(harnessToolsEnabled ? [...(canAskUser ? [ASK_USER] : []), TODO_WRITE, FINISH, SESSION_NAME, GET_CAPABILITIES, ...DEFAULT_TOOL_NAMES] : []),
       ...(broker?.toolNames ?? []),
       ...(canSpawn ? [SPAWN_SUBAGENT, WAIT_SUBAGENTS] : [])
     ])]
@@ -504,9 +506,11 @@ export class Sessions {
       ? await this.options.resolveCapabilities(caller, requestedTools, input.cwd)
       : { version: 1 as const, tools: requestedTools, connectors: [], contributions: [] }
     const requested = input.capabilities ? parseCapabilitySet(input.capabilities) : available
+    // A capability set pinned before ADR-0069 names checkpoint_write; finish took its place.
+    const pinnedTools = requested.tools.includes(LEGACY_CHECKPOINT_WRITE) ? [...requested.tools, FINISH] : requested.tools
     const capabilities: CapabilitySet = {
       version: 1,
-      tools: available.tools.filter((tool) => requested.tools.includes(tool)),
+      tools: available.tools.filter((tool) => pinnedTools.includes(tool)),
       connectors: available.connectors.filter((id) => requested.connectors.includes(id)),
       contributions: available.contributions.filter((id) => requested.contributions.includes(id))
     }
@@ -633,11 +637,16 @@ export class Sessions {
       throw error
     }
 
-    // Plan-research children are bounded too, but their read-only capability set omits checkpoint_write.
-    const checkpointAvailable = capabilities.tools.includes(CHECKPOINT_WRITE)
+    // A run with the harness's own tools is bounded; plan-research children are bounded too, though
+    // their read-only capability set omits those tools. `finish` marks the harness tool set.
+    const harnessStateTools = capabilities.tools.includes(FINISH)
     const planResearchChild = input.plan === true && input.run.relation === 'subagent'
-    const sliceEnabled = slicePolicy.enabled && (checkpointAvailable || planResearchChild)
+    const sliceEnabled = slicePolicy.enabled && (harnessStateTools || planResearchChild)
     const sliceState = createSliceState(slicePolicy, sliceOf(root, runId))
+    // The stop gate (ADR-0069) keeps an attended top-level reply working while its todo list has open
+    // items. Never for plan, command, automatic, subagent or other related runs.
+    const gateEnabled = harnessStateTools && depth === 0 && !input.plan && !input.command && !input.automatic && !input.run.relation
+    const stopGateState = gateEnabled ? createStopGateState(continuation?.todo) : null
     const run = this.options.runs.start(input.run.sessionId, runId)
     if (run.finished) return { runId, nativeSessionId: null }
     if (variant?.untrustedPlugins.length) {
@@ -673,6 +682,7 @@ export class Sessions {
           harnessTools: harnessToolsEnabled,
           subagents: this.options.subagents,
           sessionName: naming,
+          ...(stopGateState ? { stopGate: stopGateState } : {}),
           ...(broker ? { connectionTools: () => broker.tools(session, { readOnly: typeof input.connections === 'object' && input.connections.readOnly === true }) } : {})
         })
       ]
@@ -731,12 +741,20 @@ export class Sessions {
           this.options.subagents.extension(runId),
           { name: 'image-pruning', factory: imagePruning() },
           { name: COMPACTION_CHECKPOINT_EXTENSION, factory: compactionCheckpoint({ initialTodo: continuation?.todo, planInstructions: checkpointPlanInstructions }) },
-          ...(sliceEnabled ? [{ name: WORK_SLICE_EXTENSION, factory: workSliceGuard({ policy: slicePolicy, state: sliceState, checkpointAvailable, onRefuse: (event, reason) => { if (typeof event.toolCallId === 'string') run.emit('tool.refused', { toolCallId: event.toolCallId, name: event.toolName, code: 'work_slice', reason: reason.slice(0, 2000) }) } }) }] : [])
+          ...(sliceEnabled ? [{ name: WORK_SLICE_EXTENSION, factory: workSliceGuard({ policy: slicePolicy, state: sliceState, onRefuse: (event, reason) => { if (typeof event.toolCallId === 'string') run.emit('tool.refused', { toolCallId: event.toolCallId, name: event.toolName, code: 'work_slice', reason: reason.slice(0, 2000) }) } }) }] : []),
+          // Last, so delivered subagent results and plan repair continue first and the gate sees them.
+          ...(stopGateState ? [{ name: STOP_GATE_EXTENSION, factory: stopGate({
+            state: stopGateState,
+            initialTodo: continuation?.todo,
+            sliceEnded: () => sliceEnabled && sliceState.endedBy !== null,
+            onNudge: (count, open) => run.emit('extension.notice', { kind: 'notify', level: 'info', extension: STOP_GATE_EXTENSION, text: `Stop gate ${count}: the reply ended with ${open.length} open todo item${open.length === 1 ? '' : 's'}; continuing.` })
+          }) }] : [])
         ],
         ...(plugins && loadPlugins ? { plugins: { loading: loadPlugins, loaded: (extensions) => plugins.loaded(extensions) } } : {}),
         activatedPlugins: (ids) => updateRun(root, runId, (record) => { record.activatedPlugins = ids }),
         system,
         ...(sliceEnabled ? { slice: { state: sliceState, maxToolCalls: slicePolicy.maxToolCalls } } : {}),
+        ...(stopGateState ? { stopGate: stopGateState } : {}),
         // A command sends no request of its own, so the context update waits for the next turn.
         update: input.command ? null : update,
         ...(input.command ? { command: input.command } : {})

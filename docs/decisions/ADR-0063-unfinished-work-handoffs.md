@@ -7,6 +7,8 @@ updated: 2026-10-30
 ---
 # ADR-0063 — Actionable handoffs for unfinished work
 
+> **Amended by [ADR-0069](ADR-0069-stop-gate-and-finish.md):** this guidance now applies only when the work stopped on a blocker or a decision (`finish`), never as a way to end a reply with work left.
+
 ## Context and decision
 
 A reply can accurately report blockers yet leave the person unable to tell what decision or

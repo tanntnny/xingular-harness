@@ -31,6 +31,7 @@ export const BUILTIN_PROFILES: readonly ProfileDefinition[] = [
       '- Search broadly first, then read the parts that matter.',
       '- Keep a todo list with todo_write when the search has several parts, and name your session with session_name.',
       '- Cite what you found as path:line.',
+      '- If the brief needs a tool you do not have (running tests or commands, editing), say so in your first line, then answer what you can by reading.',
       '- Return conclusions, not file dumps: what you found, where, and how sure you are.'
     ].join('\n'),
     tools: ['read', 'grep', 'find', 'ls', ...PROGRESS, ...RECALL, ...WEB],
@@ -44,6 +45,7 @@ export const BUILTIN_PROFILES: readonly ProfileDefinition[] = [
       'You investigate the bounded research question in your brief and return concise, evidence-backed findings to the parent.',
       '- Use read-only repository and public-web sources. Never modify files, run commands, call connected apps, or ask the user.',
       '- Prefer primary sources. Cite repository claims as path:line and external claims with source URLs.',
+      '- If the brief needs a tool you do not have (running tests or commands, editing), say so in your first line, then answer what you can by reading.',
       '- Separate observed facts from inference, state uncertainty, and return only findings relevant to the brief; do not implement.'
     ].join('\n'),
     tools: ['read', 'grep', 'find', 'ls', ...PROGRESS, ...RECALL, ...WEB],

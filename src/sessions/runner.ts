@@ -20,6 +20,7 @@ import type { ToolSpec } from '../tools/types'
 import { PLAN_REPAIR_CUSTOM_TYPE, PLAN_REPAIR_INSTRUCTIONS, finalizePlanOutcome } from './planMode'
 import { MAX_CHECKPOINT_CHECKS, MAX_CHECKPOINT_FILES, MAX_CHECKPOINT_SUMMARY, type Checkpoint, type CheckpointCheck } from './contracts'
 import { derivedReason, type SliceState } from './workSlice'
+import { handoffFields, stopCheckpointReason, stopOutcome, stopSummary, type StopGateState } from './stopGate'
 import { toolAttachmentRefsSchema, type UsageRequest } from './contracts'
 import { completedReasoningSummary, REASONING_SUMMARY_APIS, requestDetailedReasoningSummary } from './reasoningSummaries'
 import { extensionUi, type ExtensionHost } from './extensionUi'
@@ -97,6 +98,8 @@ export interface TurnParams {
   command?: SessionCommand
   /** The work slice this reply is bounded by (PROP-0041); the guard updates it as the reply runs. */
   slice?: { state: SliceState; maxToolCalls: number }
+  /** The stop gate's view of this reply (ADR-0069): its todo list and `finish` declaration. */
+  stopGate?: StopGateState
 }
 
 /** The session commands that need a model or a live Pi session, run as their own run. */
@@ -321,17 +324,20 @@ const lastLine = (text: string): string => {
   return (lines.at(-1) ?? '').slice(0, 300)
 }
 
-/** The checkpoint a slice writes when the model wrote none: the run's own evidence, not a claim. */
-function derivedCheckpoint(state: SliceState, ledger: SliceLedger): Checkpoint {
+/**
+ * The checkpoint a reply leaves when it stops with work left: the run's own evidence, not a claim.
+ * Files and checks come from the reply's tool calls, done and next from its todo list, and blocked
+ * from its `finish` declaration (ADR-0069).
+ */
+function derivedCheckpoint(ledger: SliceLedger, slice: number, reason: Checkpoint['reason'], fallback: string, gate?: StopGateState): Checkpoint {
   return {
-    summary: ledger.lastText.trim().slice(0, MAX_CHECKPOINT_SUMMARY) || `The reply stopped after ${state.steps} steps at its work-slice boundary.`,
-    done: [],
-    next: '',
+    summary: ledger.lastText.trim().slice(0, MAX_CHECKPOINT_SUMMARY) || fallback,
+    ...handoffFields(gate),
     files: [...ledger.files].slice(-MAX_CHECKPOINT_FILES).map(([path, why]) => ({ path: path.slice(0, 300), why: why.slice(0, 200) })),
     checks: ledger.checks.slice(-MAX_CHECKPOINT_CHECKS),
     decisions: [],
-    slice: state.slice,
-    reason: derivedReason(state.endedBy)
+    slice,
+    reason
   }
 }
 
@@ -708,9 +714,17 @@ export async function runTurn(run: ActiveRun, session: PiSessionLike, params: Tu
       }
     }
     if (slice?.endedBy && !aborted && !lastError) {
-      // The model stopped because its slice was over. Keep the state it did not write itself.
-      if (!slice.checkpointWritten) run.emit('checkpoint', derivedCheckpoint(slice, ledger))
+      // The model stopped because its slice was over. The harness keeps the state for the next slice.
+      run.emit('checkpoint', derivedCheckpoint(ledger, slice.slice, derivedReason(slice.endedBy), `The reply stopped after ${slice.steps} steps at its work-slice boundary.`, params.stopGate))
       run.finish('interrupted', undefined, 'slice_complete', slice.endedBy === 'budget' ? 'slice_budget' : 'compaction_thrash')
+      return
+    }
+    // A reply that ended with open todo items is not complete (ADR-0069): it declared a blocker with
+    // `finish`, or the stop gate's nudges ran out. Either way the person can continue it.
+    const stop = params.stopGate && !aborted && !lastError ? stopOutcome(params.stopGate) : null
+    if (stop) {
+      run.emit('checkpoint', derivedCheckpoint(ledger, slice?.slice ?? 1, stopCheckpointReason(stop), stopSummary(stop), params.stopGate))
+      run.finish('interrupted', undefined, stop.code, stop.code)
       return
     }
     if (aborted) run.finish('interrupted', undefined, undefined, 'user_abort')

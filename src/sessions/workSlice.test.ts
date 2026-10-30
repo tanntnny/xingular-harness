@@ -13,15 +13,15 @@ import {
 const policy = (overrides: Partial<SlicePolicy> = {}): SlicePolicy => ({ ...DEFAULT_SLICE_POLICY, ...overrides })
 
 /** The guard as Pi calls it, without a Pi session. */
-function guardHarness(limits: SlicePolicy, state = createSliceState(limits), checkpointAvailable = true) {
+function guardHarness(limits: SlicePolicy, state = createSliceState(limits)) {
   const handlers = new Map<string, (event: unknown) => unknown>()
-  workSliceGuard({ policy: limits, state, checkpointAvailable })({
+  workSliceGuard({ policy: limits, state })({
     on: (name: string, handler: (event: unknown) => unknown) => {
       handlers.set(name, handler)
     }
   } as never)
-  const call = (name: string, event: unknown = {}): unknown => handlers.get(name)!(event)
-  return { call, state, start: () => call('agent_start') }
+  const call = (name: string, event: unknown = {}): unknown => handlers.get(name)?.(event)
+  return { call, state, start: () => call('before_agent_start', { messageType: 'user' }) }
 }
 
 const toolCall = (toolName: string, input: Record<string, unknown> = {}): unknown => ({ toolName, input })
@@ -82,6 +82,21 @@ describe('work slice policy', () => {
     expect(state.endedBy).toBeNull()
   })
 
+  it('keeps one budget across the continuations of a reply', () => {
+    // Pi emits agent_start for every continuation (a stop-gate nudge, delivered subagent results, a
+    // plan repair); those are the same reply, so only a person's message starts a new slice.
+    const state = createSliceState(policy())
+    const guard = guardHarness(policy(), state)
+    guard.start()
+    guard.call('tool_call', toolCall('read', { path: 'a' }))
+    guard.call('agent_start')
+    guard.call('before_agent_start', { messageType: 'custom' })
+    guard.call('tool_call', toolCall('read', { path: 'b' }))
+    expect(state.steps).toBe(2)
+    guard.call('before_agent_start', { messageType: 'user' })
+    expect(state.steps).toBe(0)
+  })
+
   it('does not end a reply that only re-sent a cached prefix (the "Confirm plan model support" thread)', () => {
     // The real usage of that thread: five requests, 52 238 new tokens, 63 k cached prefix.
     // Counting the prefix made the old guard stop after four requests with nothing done.
@@ -106,22 +121,24 @@ describe('work slice policy', () => {
 })
 
 describe('work slice guard', () => {
-  it('refuses the call past the budget, asks for a checkpoint, then ends the reply', () => {
+  it('refuses the call past the budget, asks for a short report, then ends the reply', () => {
     const guard = guardHarness(policy({ maxToolCalls: 2 }))
     guard.start()
     expect(guard.call('tool_call', toolCall('read', { path: 'a' }))).toBeUndefined()
     const refusal = guard.call('tool_call', toolCall('read', { path: 'b' })) as { block: boolean; reason: string }
     expect(refusal.block).toBe(true)
-    expect(refusal.reason).toContain('checkpoint_write')
+    expect(refusal.reason).toContain('Stop using tools')
+    // The harness writes the checkpoint itself (ADR-0069); the model is never asked for one.
+    expect(refusal.reason).not.toContain('checkpoint_write')
     expect(guard.state.endedBy).toBe('budget')
     expect(guard.call('tool_call', toolCall('read', { path: 'c' }))).toMatchObject({ block: true, terminate: true })
   })
 
-  it('lets the checkpoint through, even as the very first call past the budget', () => {
+  it('lets a session name through, even as the very first call past the budget', () => {
     const guard = guardHarness(policy({ maxToolCalls: 1 }))
     guard.start()
     guard.call('tool_call', toolCall('read', { path: 'a' }))
-    expect(guard.call('tool_call', toolCall('checkpoint_write'))).toBeUndefined()
+    expect(guard.call('tool_call', toolCall('session_name', { name: 'Fix the guard' }))).toBeUndefined()
     expect(guard.state.endedBy).toBe('budget')
     expect(guard.call('tool_call', toolCall('read', { path: 'b' }))).toMatchObject({ terminate: true })
   })

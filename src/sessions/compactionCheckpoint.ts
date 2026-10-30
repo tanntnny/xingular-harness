@@ -21,7 +21,8 @@ interface CheckpointMessage {
   timestamp: number
 }
 
-function validatedTodo(value: unknown): TodoItem[] | null {
+/** A todo list as `todo_write` received it, validated; `null` when any item is unusable. */
+export function validatedTodo(value: unknown): TodoItem[] | null {
   if (!Array.isArray(value) || value.length > MAX_TODO_ITEMS) return null
   const items: TodoItem[] = []
   for (const valueItem of value) {

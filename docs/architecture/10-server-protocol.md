@@ -79,6 +79,10 @@ harness → host   { v: 1, id, call, params }          host → harness   { v: 1
 - The run-event stream adds `checkpoint` (the bounded handoff) and `heartbeat` (steps, elapsed time,
   last tool, compactions, slice, call budget). Hosts must accept both; an unknown event type is still
   relayed in order (INV-RUN-3).
+- `terminalCode` gains `needs_person` and `unfinished` (ADR-0069): a reply that settled with open todo
+  items, after a `finish` declaration or after the stop gate's nudges. Both are `interrupted`, carry a
+  `checkpoint`, and are not auto-continued; a host should offer the person Continue, as it does for
+  `slice_complete`. Stop-gate nudges arrive as `extension.notice` events with `extension: 'stop-gate'`.
 - Run streams also carry `tool.refused` with the call id, name, refusal code and bounded reason.
   Run records expose nullable `terminalCode`; `terminalReason` remains descriptive text. Older
   records and events may omit the code. Trajectory search exposes both fields (pages 02 and 08).

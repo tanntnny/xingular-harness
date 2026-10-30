@@ -377,10 +377,12 @@ release.
 Terminal tool-gate and work-slice refusals are relayed as `tool.refused` events with a code and reason; the original refusal text remains the tool response. Interrupted terminal runs record stop codes for work-slice limits, user abort, stalls and terminal closure.
 
 Terminal replies carry the same work-slice guard as structured runs: 320 tool calls or 60 minutes,
-with no new-token limit by default (PROP-0044), then a refusal that asks for `checkpoint_write`. The
-extension registers the shared tool and sends it as `checkpoint` telemetry, which the controller
-records as `checkpoint` on the
-active run, so an App reading the same session sees the handoff. Terminal replies are not
+with no new-token limit by default (PROP-0044), then a refusal that asks the model to stop and report
+where it is. Terminal replies also carry the stop gate (INV-RUN-15, ADR-0069): the extension
+registers `finish`, sends a reply that ends with open todo items back up to three times (each nudge
+is `notice` telemetry, recorded as `extension.notice`), and at settle sends a harness-written
+`checkpoint` and the `needs_person` or `unfinished` code, which the controller records on the active
+run, so an App reading the same session sees the handoff. Plan replies are not gated. Terminal replies are not
 auto-continued: at the boundary the person decides, which is what the terminal's own turn model
 already does. The run record says `interrupted` with terminal reason `slice_complete`, so a host can
 continue it; a checkpoint card in the transcript is not built yet (PAR-004). Start the terminal with

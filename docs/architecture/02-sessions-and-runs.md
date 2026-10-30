@@ -319,28 +319,40 @@ is approved but remains in progress; no completed cross-surface catalog is impli
   available with `workSlice.maxNewTokens`, counted on new input, cache writes and output and never on
   the cached prefix: a few large reads pass any small cap before useful work, so the tool calls and
   the clock are the bound and the token count is only a ceiling for whoever asks for one. At the
-  limit the guard refuses the next tool call. When `checkpoint_write` is available, it requests a
-  checkpoint and leaves handoff calls callable; otherwise a plan-research child must stop with a
-  concise partial research report, and the runner derives a checkpoint from run evidence. A
-  non-handoff tool call after the refusal ends the reply. A budget-ended reply is `interrupted` with
-  terminal reason `slice_complete` (ADR-0053).
+  limit the guard refuses the next tool call and asks the model to stop and report where it is; the
+  harness then writes the checkpoint itself from the reply's files, checks and todo list (the model
+  has no checkpoint tool since ADR-0069). A non-handoff tool call after the refusal ends the reply. A
+  budget-ended reply is `interrupted` with terminal reason `slice_complete` (ADR-0053). The budget
+  covers the whole reply: Pi emits `agent_start` for every continuation (a stop-gate nudge, delivered
+  subagent results, a plan repair), so the guard starts a new slice only on a person's message.
   No call is refused for repeating: identical calls, a Bash check that keeps failing and repeated
   `edit`/`write` results on one path are allowed as often as the work needs, because a distinct read
   or another edit is not evidence of a loop. `todo_write` counts toward the tool-call budget and is
   otherwise unconstrained. Third-compaction thrash detection remains: three context compactions in
-  one reply end it with the same handoff request. Plan-research children without `checkpoint_write`
-  receive the configured bound without a new capability and do not auto-continue. A new run
+  one reply end it with the same handoff request. Plan-research children receive the configured bound
+  without a new capability and do not auto-continue. A new run
   continues it only up to the policy's slice cap, only after a slice that changed a file, passed a
   check or recorded a finished item, and never after a checkpoint that is `blocked`. A run may turn
   the guard off with `workSlice.enabled: false`, and a launch may set `XINGULAR_WORK_SLICE=off` for
   every run in that process; with it off a reply has no boundary — no checkpoint, no continuation —
-  and ends only when the model stops or a person interrupts. A reply the model ends on its own (or
-  with the guard off) settles `completed`, and no stop rule reads the run's todo list at that point:
-  the prompt asks the model to continue while an open, unblocked item remains
-  ([04 Prompt](04-prompt.md#when-a-reply-may-end)), and a continuation carries the todo it left
-  (`continuation.ts`).
-- **INV-RUN-14** A run event stream carries `checkpoint` (the handoff `checkpoint_write` records or
-  the harness derives from the run's own evidence when the model wrote none) and `heartbeat`
+  and ends only when the model stops or a person interrupts. A reply the model ends on its own is
+  subject to the stop gate (INV-RUN-15); a continuation carries the todo it left (`continuation.ts`).
+- **INV-RUN-15** A reply may not quietly end with open work (ADR-0069). In an attended top-level run
+  (not plan, command, automatic, subagent or other related runs) the stop gate reads the reply's own
+  `todo_write` list at Pi's `agent_before_settle` boundary. When an item is `pending` or `in_progress`,
+  nothing was declared with `finish`, the slice was not ended by the guard and the reply did not fail
+  or abort, the gate appends one displayed `xingular-stop-gate` message naming the open items and
+  continues the same run — at most three times per reply, and never again after a nudge that produced
+  no tool call other than `todo_write` or `finish`. Each nudge is recorded as an `extension.notice`
+  from `stop-gate`. A reply with no todo list, or with every item `completed`, ends as before. The
+  only explicit way to stop with work open is `finish` with `blocked` or `needs_decision` and a
+  reason; `finish` with `done` is refused while an item is open. A reply that settles with open items
+  is `interrupted`, never `completed`: terminal code `needs_person` after a `finish` declaration,
+  otherwise `unfinished`, each with a harness-written checkpoint (done and next from the todo list,
+  blocked from the declaration). Neither auto-continues: a person continues it, which
+  `continuationOf` allows for an interrupted run.
+- **INV-RUN-14** A run event stream carries `checkpoint` (the handoff the harness derives from the
+  run's own evidence; runs written before ADR-0069 may hold one the model wrote) and `heartbeat`
   (steps, elapsed time, last tool, compactions, slice, and the call budget). Every live reply emits a
   heartbeat every 30 seconds, terminal replies included. A heartbeat older than five minutes while
   the owner process lives marks the run `interrupted` with reason `stalled`; a run that never emitted

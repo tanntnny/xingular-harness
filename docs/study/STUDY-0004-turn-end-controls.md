@@ -1,13 +1,21 @@
 ---
 id: STUDY-0004
 title: How other harnesses stop a turn early — and what to adopt
-status: research-and-hypotheses
+status: adopted-with-changes
 created: 2026-10-30
-updated: 2026-10-30
+updated: 2026-10-31
 related:
   - STUDY-0003
 ---
 # How other harnesses control the end of a turn
+
+> **Outcome (2026-10-31):** adopted with changes in [ADR-0069](../decisions/ADR-0069-stop-gate-and-finish.md).
+> - **Gate placement.** The continuation is a stop gate at Pi's `agent_before_settle` boundary
+>   inside the same run, not a widened `continueSlice`. That covers the terminal and avoids
+>   reopening a `completed` run.
+> - **Cap.** Three nudges per reply, plus a no-progress rule.
+> - **`finish` tool.** Added as the explicit way to stop for the person.
+> - **`checkpoint_write` removed.** Run `62c7fc6c` used it as a sign-off and stopped with work open.
 
 **Recommendation:** keep the prompt rules that landed today (scope of the work, the end rule, two
 completion headings) as the cheap layer, and add **one** deterministic layer: let the existing

@@ -105,7 +105,6 @@ export interface SliceState {
   startedAt: number
   lastTool: string | null
   compactions: number
-  checkpointWritten: boolean
   /** Set when the guard ended the reply instead of the model finishing it. */
   endedBy: SliceEnd | null
   /** The limit that ended it, for the record. */
@@ -115,7 +114,7 @@ export interface SliceState {
 }
 
 export function createSliceState(_policy: SlicePolicy, slice = 1, now = Date.now()): SliceState {
-  return { slice, steps: 0, tokens: 0, startedAt: now, lastTool: null, compactions: 0, checkpointWritten: false, endedBy: null, endedByLimit: null, refusedAt: null }
+  return { slice, steps: 0, tokens: 0, startedAt: now, lastTool: null, compactions: 0, endedBy: null, endedByLimit: null, refusedAt: null }
 }
 
 /** Counters start again for each reply; a terminal session keeps one guard across replies. */
@@ -125,7 +124,6 @@ export function resetSliceState(state: SliceState, now = Date.now()): void {
   state.startedAt = now
   state.lastTool = null
   state.compactions = 0
-  state.checkpointWritten = false
   state.endedBy = null
   state.endedByLimit = null
   state.refusedAt = null
@@ -139,90 +137,81 @@ export function sliceLimitReached(policy: SlicePolicy, state: SliceState, now = 
   return null
 }
 
-/** Tools a reply may still call while it writes its handoff. A plan update waits for the next slice. */
-const HANDOFF_TOOLS = new Set(['checkpoint_write', 'session_name'])
+/** Tools a reply may still call after its slice ended. A plan update waits for the next slice. */
+const HANDOFF_TOOLS = new Set(['session_name'])
 const clip = (value: string, limit: number): string => (value.length <= limit ? value : `${value.slice(0, limit - 1)}…`)
 
-function handoffRequest(limit: string, state: SliceState, checkpointAvailable = true): string {
-  const handoff = checkpointAvailable
-    ? 'Call checkpoint_write now with what is done, the single next step, anything blocking, the files you touched and the checks that matter. Then tell the user in a few lines where you stopped.'
-    : 'Stop using tools and return a concise partial research report with findings, blockers and the next useful research step. The Harness records an evidence-derived checkpoint.'
-  return clip(`This reply reached its work-slice limit (${limit}; step ${state.steps}). ${handoff} Do not call other tools.`, 600)
+// The harness writes the handoff itself from the reply's files, checks and todo list (ADR-0069), so
+// the model is only asked to stop and say where it is.
+function handoffRequest(limit: string, state: SliceState): string {
+  return clip(
+    `This reply reached its work-slice limit (${limit}; step ${state.steps}). Stop using tools and write a short report: what is done or found, what is left, and the single next step. ` +
+    'The Harness records a checkpoint from this reply\'s evidence, and the next slice continues from it. Do not call other tools.',
+    600
+  )
 }
 
 interface ToolCall {
   toolCallId: string
   toolName: string
 }
-interface ToolResult {
-  toolName: string
-  isError?: boolean
-}
 
 /** The part of Pi's extension API this guard uses. Structural, so the module needs no Pi import. */
 interface GuardApi {
-  on(event: 'agent_start', handler: () => unknown): void
+  on(event: 'before_agent_start', handler: (event: { messageType?: string }) => unknown): void
   on(event: 'tool_call', handler: (event: ToolCall) => unknown): void
-  on(event: 'tool_result', handler: (event: ToolResult) => unknown): void
   on(event: 'message_end', handler: (event: { message: { role: string; usage?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number } } }) => unknown): void
 }
 
 export interface WorkSliceGuardOptions {
   policy: SlicePolicy
   state: SliceState
-  /** Whether checkpoint_write is active; a function supports the terminal's live plan-mode switch. */
-  checkpointAvailable?: boolean | (() => boolean)
   /** Called when a triggering call terminates the reply; the runner ends it. */
   onEnd?: (end: SliceEnd, limit: string) => void
   onRefuse?: (event: ToolCall, reason: string) => void
 }
 
 /**
- * Bounds one reply. A call past the budget is refused, with one wrap-up request when a checkpoint
- * is available, and an ended reply lets only a handoff call through. Three compactions in one reply
- * end it too. Every other call is allowed, however often it is made.
+ * Bounds one reply. A call past the budget is refused with one wrap-up request, and an ended reply
+ * lets only a handoff call through. Three compactions in one reply end it too. Every other call is
+ * allowed, however often it is made.
  */
 export function workSliceGuard(options: WorkSliceGuardOptions): (pi: GuardApi) => void {
   const { policy, state } = options
-
-  const checkpointAvailable = (): boolean => typeof options.checkpointAvailable === 'function'
-    ? options.checkpointAvailable()
-    : options.checkpointAvailable !== false
 
   const end = (kind: SliceEnd, limit: string): { block: true; terminate: true; reason: string } => {
     state.endedBy = kind
     state.endedByLimit = limit
     options.onEnd?.(kind, limit)
-    const canCheckpoint = checkpointAvailable()
     const reason = kind === 'compaction-thrash'
-      ? handoffRequest('three context compactions in one reply', state, canCheckpoint)
-      : handoffRequest(limit, state, canCheckpoint)
+      ? handoffRequest('three context compactions in one reply', state)
+      : handoffRequest(limit, state)
     return { block: true, terminate: true, reason }
   }
 
   return (pi) => {
-    pi.on('agent_start', () => resetSliceState(state))
+    // Pi emits agent_start again for every continuation (a stop-gate nudge, delivered subagent
+    // results, a plan repair), and those belong to the same reply and the same budget. Only a
+    // person's message starts a new slice.
+    pi.on('before_agent_start', (event) => {
+      if (event.messageType !== undefined && event.messageType !== 'user') return
+      resetSliceState(state)
+    })
     pi.on('message_end', (event) => {
       const usage = event.message.usage
       if (event.message.role !== 'assistant' || !usage) return
       // New tokens only: the cached prefix was sent before and is not new context or new cost.
       state.tokens += (usage.input ?? 0) + (usage.cacheWrite ?? 0) + (usage.output ?? 0)
     })
-    pi.on('tool_result', (event) => {
-      if (event.toolName === 'checkpoint_write' && !event.isError) state.checkpointWritten = true
-    })
     pi.on('tool_call', (event) => {
       const name = event.toolName
       const refuse = <T extends { reason: string }>(result: T): T => { options.onRefuse?.(event, result.reason); return result }
       state.steps += 1
       state.lastTool = name
-      const canCheckpoint = checkpointAvailable()
-      const handoff = canCheckpoint && HANDOFF_TOOLS.has(name)
-      // A handoff is callable only when checkpoint_write is active; after the slice ended it is the only one.
+      const handoff = HANDOFF_TOOLS.has(name)
+      // After the slice ended, a handoff call is the only one that runs.
       if (state.endedBy) {
-        const reason = state.checkpointWritten
-          ? 'This reply is over. Its checkpoint is recorded; nothing else runs.'
-          : 'This reply is over. The Harness will record an evidence-derived checkpoint; nothing else runs.'
+        const reason = 'This reply is over. The Harness will record an evidence-derived checkpoint; nothing else runs.'
         return handoff ? undefined : refuse({ block: true, terminate: true, reason })
       }
       if (state.compactions >= 3) {
@@ -235,12 +224,12 @@ export function workSliceGuard(options: WorkSliceGuardOptions): (pi: GuardApi) =
       }
       const limit = sliceLimitReached(policy, state)
       if (limit) {
-        // The slice ends here; the model gets one wrap-up request to write the handoff. A handoff
+        // The slice ends here; the model gets one wrap-up request to report where it is. A handoff
         // call is never refused, including when it is the very first call past the budget.
         state.endedBy = 'budget'
         state.endedByLimit = limit
         state.refusedAt ??= state.steps
-        return handoff ? undefined : refuse({ block: true, reason: handoffRequest(limit, state, canCheckpoint) })
+        return handoff ? undefined : refuse({ block: true, reason: handoffRequest(limit, state) })
       }
     })
   }

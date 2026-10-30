@@ -287,10 +287,13 @@ describe('plan-mode research subagents', () => {
     expect(await gates.get('planned')!.check('edit', {})).toContain('Plan mode is research-only')
 
     const child = await harness.subagents.spawn({ parentRunId: 'planned', brief: 'Trace the login route', agent: 'explorer' })
+    // The parent sees what the child can actually use, so a brief that needs bash is visibly mismatched.
+    expect(child.tools).toContain('read')
+    expect(child.tools).not.toContain('bash')
     const { loadRun: loadCapabilities } = await import('../capabilities/runSnapshot')
     const capabilities = loadCapabilities(harness.env.root, child.runId)!
     expect(capabilities.tools).toContain('read')
-    for (const name of ['edit', 'write', 'bash', 'ask_user', 'mcp_call_tool', 'spawn_subagent', 'checkpoint_write']) expect(capabilities.tools).not.toContain(name)
+    for (const name of ['edit', 'write', 'bash', 'ask_user', 'mcp_call_tool', 'spawn_subagent', 'checkpoint_write', 'finish']) expect(capabilities.tools).not.toContain(name)
     expect(capabilities.connectors).toEqual([])
     expect(loadRun(harness.env.root, child.runId)).toMatchObject({ relation: 'subagent', profile: 'explorer', worktreeId: null })
     expect(updates.get(child.runId)).toContain('read-only research subagent')
@@ -305,10 +308,10 @@ describe('plan-mode research subagents', () => {
     ;(extension!.factory as (pi: unknown) => void)({
       on: (name: string, handler: (event: unknown) => unknown) => handlers.set(name, handler)
     })
-    handlers.get('agent_start')!({})
+    handlers.get('before_agent_start')!({ messageType: 'user' })
     const refusal = handlers.get('tool_call')!({ toolName: 'read', input: { path: 'src/login.ts' } }) as { block: boolean; reason: string }
     expect(refusal.block).toBe(true)
-    expect(refusal.reason).toContain('partial research report')
+    expect(refusal.reason).toContain('Stop using tools and write a short report: what is done or found')
     expect(refusal.reason).not.toContain('checkpoint_write')
     finish.get(child.runId)!('Partial research findings')
     await harness.runs.wait(child.runId)

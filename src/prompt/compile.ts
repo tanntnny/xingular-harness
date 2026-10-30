@@ -18,7 +18,7 @@ import { readSkillFile, type SkillFile } from '../tools/defaultSkills'
 import * as notes from '../wiki/notes'
 import { isWorldTool, WORLD_GUIDANCE } from '../world/untrusted'
 import { TODO_GUIDANCE, TODO_WRITE, describeTodo } from '../tools/todo'
-import { CHECKPOINT_WRITE } from '../tools/checkpoint'
+import { FINISH } from '../tools/finish'
 import type { TodoItem } from '../sessions/contracts'
 import { SESSION_GUIDANCE, SESSION_NAME } from '../tools/sessionName'
 import type { SessionState } from '../sessions/sessionState'
@@ -168,9 +168,9 @@ export const REPORTING_GUIDANCE = `When you finish work, write the final reply f
 - Cover the most important information and use as much structure as the answer needs. Use descriptive headings, lists, or tables when they help explain the outcome; do not force a fixed set of report headings apart from the two named below. Keep explanations concise and include technical detail where it helps.
 - When work involves files, identify the relevant paths and briefly state what changed or mattered. Use \`path:line\` references where useful, and a table (File | Change | Why) when there are three or more changed files.
 - Include blockers, risks, or next steps only when they are concrete and relevant.
-- When work remains unfinished, state the concrete decision the person must make or the next action and its owner for each material blocker; do not merely restate the blocker or invent a human decision.
+- When the work stopped on a blocker or a decision, state the concrete decision the person must make or the next action and its owner for each one; do not merely restate the blocker or invent a human decision.
 - End the reply with \`## Beyond what you asked\` when you did anything beyond the request: name each piece and say why the work needed it.
-- End the reply with \`## What would make this complete\` when the run could be more complete: list the concrete remaining steps in order, and name the ones only the person can decide.
+- End the reply with \`## What would make this complete\` only when the work stopped short — it is blocked, it needs the person's decision, or the work-slice guard handed it back: list the concrete remaining steps in order, and name the ones only the person can do. Never stop early in order to write this section.
 - Use **Need human inspection** only when a concrete verification requires a person because you could not perform or observe it. State what remains unverified, why you could not verify it, and the specific check the person should make. Do not use this for checks you ran or generic risks.
 - Name only checks actually run and their results; never claim a check you did not run.
 - Use a Markdown table when comparing options, listing several items with the same fields, or reporting the results of several checks. Use prose or bullets otherwise.
@@ -292,13 +292,13 @@ export function toolGroups(context: CallerContext, launch: Launch, dataRoot?: st
     { group: 'World', tools: enabled.filter((name) => isWorldTool(name) && !(launch.toolGroups ?? []).some((group) => group.tools.includes(name))), order: GROUP_ORDER.World, guidance: `Web, browser and screen: ${WORLD_GUIDANCE}` },
     ...(launch.toolGroups ?? []).map((group) => ({ group: group.group, tools: group.tools, order: group.order, guidance: group.guidance }))
   ]
-  const progressTools = [TODO_WRITE, CHECKPOINT_WRITE].filter((name) => enabled.includes(name))
+  const progressTools = [TODO_WRITE, FINISH].filter((name) => enabled.includes(name))
   if (progressTools.length) {
     const todo = enabled.includes(TODO_WRITE) ? TODO_GUIDANCE : ''
-    const checkpoint = enabled.includes(CHECKPOINT_WRITE)
-      ? 'a reply has a work-slice budget; when it is reached the harness asks for a handoff, and checkpoint_write records what is done, the next step, anything blocking, the files touched and the checks that matter, so the next slice starts from it instead of re-reading everything.'
+    const finish = enabled.includes(FINISH)
+      ? 'A reply that ends while its todo list has open items is sent back to you (up to three times), so keep working; if an item truly cannot continue without the person, call finish with blocked or needs_decision and name what they must do — status done is refused while items are open. A reply also has a work-slice budget: when it is reached the harness stops it and records a checkpoint from your todo list, files and checks, and the next slice continues from there.'
       : ''
-    groups.push({ group: 'Progress', tools: progressTools, order: 87, guidance: `Progress: ${[todo, checkpoint].filter(Boolean).join(' ')}` })
+    groups.push({ group: 'Progress', tools: progressTools, order: 87, guidance: `Progress: ${[todo, finish].filter(Boolean).join(' ')}` })
   }
   if (enabled.includes(SESSION_NAME)) {
     groups.push({

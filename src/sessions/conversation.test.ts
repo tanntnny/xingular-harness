@@ -54,6 +54,55 @@ async function setup() {
 }
 
 describe('a whole reply, with a scripted model', () => {
+  // ADR-0069: the stop gate through real Pi. Pi must accept the gate's continuation, the model must
+  // see the nudge, and the run must settle honestly.
+  const status = (of: (id: string) => RunEvent[], id: string) =>
+    of(id).filter((event) => event.type === 'completed' || event.type === 'failed' || (event.type === 'status.changed' && (event.payload as { status: string }).status === 'interrupted')).at(-1)
+
+  it('sends a reply that ends with open todo items back to the model, which then finishes the work', async () => {
+    const { root, model, start, until, of } = await setup()
+    const todo = (first: string, second: string) => model.calls(['todo_write', { items: [{ text: 'Port the auth route', status: first }, { text: 'Port the courses route', status: second }] } as never])
+    model.script([todo('in_progress', 'pending'), model.says('Auth is ported; the rest can wait.'), todo('completed', 'completed'), model.says('Both routes are ported.')])
+    const id = await start()
+    await until(() => Boolean(status(of, id)))
+    expect(model.requests()).toBe(4)
+    expect(model.lastUserTexts().some((text) => text.includes('Harness stop gate (1/3)') && text.includes('- Port the courses route'))).toBe(true)
+    expect(status(of, id)?.type).toBe('completed')
+    expect(of(id).filter((event) => event.type === 'extension.notice' && (event.payload as { extension?: string }).extension === 'stop-gate')).toHaveLength(1)
+    const { loadRun } = await import('./runStore')
+    expect(loadRun(root, id)).toMatchObject({ status: 'completed', terminalReason: null })
+  })
+
+  it('hands a reply back as unfinished when the nudge produces no work', async () => {
+    const { root, model, start, until, of } = await setup()
+    model.script([
+      model.calls(['todo_write', { items: [{ text: 'Run the migration', status: 'pending' }] } as never]),
+      model.says('Stopping here.'),
+      model.says('Still stopping.')
+    ])
+    const id = await start()
+    await until(() => Boolean(status(of, id)))
+    expect(model.requests()).toBe(3)
+    const { loadRun } = await import('./runStore')
+    expect(loadRun(root, id)).toMatchObject({ status: 'interrupted', terminalReason: 'unfinished', terminalCode: 'unfinished' })
+    expect(of(id).find((event) => event.type === 'checkpoint')?.payload).toMatchObject({ next: 'Run the migration', summary: 'Still stopping.', reason: 'stuck' })
+  })
+
+  it('lets a reply stop for the person through finish, with no nudge', async () => {
+    const { root, model, start, until, of } = await setup()
+    model.script([
+      model.calls(['todo_write', { items: [{ text: 'Move the production route', status: 'pending' }] } as never]),
+      model.calls(['finish', { status: 'needs_decision', reason: 'Moving the route changes production.', needs: 'Approve the cutover.' }]),
+      model.says('Waiting for your approval to move the route.')
+    ])
+    const id = await start()
+    await until(() => Boolean(status(of, id)))
+    expect(model.requests()).toBe(3)
+    const { loadRun } = await import('./runStore')
+    expect(loadRun(root, id)).toMatchObject({ status: 'interrupted', terminalCode: 'needs_person' })
+    expect(of(id).some((event) => event.type === 'extension.notice' && (event.payload as { extension?: string }).extension === 'stop-gate')).toBe(false)
+  })
+
   it('joins async native children and persists one result receipt before the final reply', async () => {
     const { harness, root, model, start, until, settled, of } = await setup()
     const route = (context: { messages: Array<{ role: string; content: unknown }> }) => {

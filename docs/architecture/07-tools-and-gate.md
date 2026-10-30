@@ -147,8 +147,12 @@ beside the choices (INV-RC-3, INV-RC-4).
 
 - **INV-GATE-1** Every tool call of every run passes the gate. No tool source bypasses it,
   including extension-registered tools (which ask before every call) and the initial Bash command.
-- **INV-TOOL-9** `checkpoint_write` records one bounded handoff for the active run and is read-only
-  and plan-safe: no field changes files, and the record is the `checkpoint` run event (PROP-0041).
+- **INV-TOOL-9** `finish` (ADR-0069) declares how a reply with open todo items ends: `blocked` or
+  `needs_decision` with a reason of at most 500 characters and an optional `needs`; `done` is refused
+  while any item is open. It is read-only and plan-safe, changes no file, and only sets the stop
+  gate's state, from which the runner settles the reply `needs_person` and writes the checkpoint. It
+  is offered only to attended top-level runs. The model has no checkpoint tool: `checkpoint_write`
+  (PROP-0041) was removed, and a capability set pinned before the removal gets `finish` in its place.
 - **INV-TOOL-10** Bash keeps one command budget on every surface: 120 seconds when the call says
   nothing, 300 seconds as the ceiling without a `reason`, 900 seconds as the maximum, and a timeout
   returns the partial output with a narrowing instruction instead of blocking the reply.
