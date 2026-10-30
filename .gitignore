@@ -12,3 +12,7 @@ __pycache__/
 harness-demo-*/
 node-compile-cache/
 test-results/
+
+# Local scratch: release/report artifacts and native build output
+artifacts/
+native/computer/.build/
