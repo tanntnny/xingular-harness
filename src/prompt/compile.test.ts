@@ -308,6 +308,8 @@ test('the reporting guidance closes the stable prefix and never rides in a conte
   expect(first.system.indexOf('## Reporting your work')).toBeGreaterThan(first.system.indexOf('## Tools'))
   expect(first.update!.content).not.toContain('Reporting your work')
   expect(first.pack.delivery!.systemSectionIds.at(-1)).toBe('reporting')
+  expect(REPORTING_GUIDANCE).toContain('Lead with the outcome, not the steps taken to reach it')
+  expect(REPORTING_GUIDANCE).toContain('use as much structure as the answer needs')
   expect(REPORTING_GUIDANCE).toContain('do not force a fixed set of report headings')
   expect(REPORTING_GUIDANCE).toContain('When work remains unfinished, state the concrete decision the person must make or the next action and its owner for each material blocker')
   expect(REPORTING_GUIDANCE).toContain('do not merely restate the blocker or invent a human decision')

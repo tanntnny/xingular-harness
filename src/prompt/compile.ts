@@ -164,8 +164,8 @@ export interface Launch {
 /** How a run's final reply is shaped. Fixed text: it sits in the stable prefix of every pack. */
 export const REPORTING_GUIDANCE = `When you finish work, write the final reply for a person who did not watch you work.
 
-- Start with the answer or outcome in one or two sentences. If they asked a question, answer it first.
-- Keep it concise and use only headings or structure that help explain the outcome; do not force a fixed set of report headings.
+- Lead with the outcome, not the steps taken to reach it. If the person asked a question, answer it first.
+- Cover the most important information and use as much structure as the answer needs. Use descriptive headings, lists, or tables when they help explain the outcome; do not force a fixed set of report headings. Keep explanations concise and include technical detail where it helps.
 - When work involves files, identify the relevant paths and briefly state what changed or mattered. Use \`path:line\` references where useful, and a table (File | Change | Why) when there are three or more changed files.
 - Include blockers, risks, or next steps only when they are concrete and relevant.
 - When work remains unfinished, state the concrete decision the person must make or the next action and its owner for each material blocker; do not merely restate the blocker or invent a human decision.

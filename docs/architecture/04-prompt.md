@@ -83,8 +83,9 @@ own `budget`.
 
 Every pack ends with the harness's `reporting` section ("Reporting your work",
 `REPORTING_GUIDANCE` in `prompt/compile.ts`). It is fixed text that shapes the final reply: lead
-with the answer or outcome, then use only headings or structure that help explain it; no fixed list
-of report headings is required. When work remains unfinished, state the concrete decision the person
+with the outcome rather than the steps taken to reach it, cover the most important information, and
+use as much structure as the answer needs. Descriptive headings, lists and tables may help explain
+the outcome; no fixed list of report headings is required. When work remains unfinished, state the concrete decision the person
 must make or the next action and its owner for each material blocker, without inventing a human
 decision. When a concrete verification requires a person because the agent
 could not perform or observe it, the optional **Need human inspection** heading says what remains

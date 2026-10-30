@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Reword the final-reply guidance so the outcome leads and structure follows what the answer needs. The
+  reporting guidance is part of every request's stable prefix, so this changes the cached prefix.
 - Keep the provider cache working after a compaction (ADR-0067). The compaction checkpoint now arms only
   for a compaction during the running reply, is built once, and sits right after the summary instead
   of being rebuilt at the end of every request. A request after a compaction is again the previous
