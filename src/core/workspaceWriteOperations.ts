@@ -240,3 +240,39 @@ export function withWorkspaceWriteAuthorization<T>(tool: T, authorizations: Map<
     }
   } as T
 }
+
+interface PromptMetadata {
+  promptSnippet?: string
+  promptGuidelines?: string[]
+}
+
+/** The part of Pi's tool factories the workspace file tools use. Structural, so this module needs no Pi import. */
+export interface FileToolFactories<W, E> {
+  createWriteTool(cwd: string, options: { operations: typeof workspaceWriteOperations }): W
+  createWriteToolDefinition(cwd: string, options: { operations: typeof workspaceWriteOperations }): PromptMetadata
+  createEditTool(cwd: string, options: { operations: typeof workspaceEditOperations }): E
+  createEditToolDefinition(cwd: string, options: { operations: typeof workspaceEditOperations }): PromptMetadata
+}
+
+/**
+ * Pi's `createWriteTool` and `createEditTool` drop the definition's prompt line and guidelines, and Pi
+ * lists only tools with a prompt line in the system prompt. Without them the model is told it has
+ * only `read` and `bash`, and edits files through shell scripts. Pi's `createBashTool` restores them
+ * the same way.
+ */
+function withPromptMetadata<T>(tool: T, definition: PromptMetadata): T {
+  return Object.assign(tool as object, {
+    promptSnippet: definition.promptSnippet,
+    promptGuidelines: definition.promptGuidelines
+  }) as T
+}
+
+/** Pi's native `write` and `edit`, routed through the workspace operations and per-call authorization. */
+export function createWorkspaceFileTools<W, E>(pi: FileToolFactories<W, E>, cwd: string, authorizations: Map<string, WorkspaceWriteAuthorization>): { write: W; edit: E } {
+  const writeOptions = { operations: workspaceWriteOperations }
+  const editOptions = { operations: workspaceEditOperations }
+  return {
+    write: withWorkspaceWriteAuthorization(withPromptMetadata(pi.createWriteTool(cwd, writeOptions), pi.createWriteToolDefinition(cwd, writeOptions)), authorizations),
+    edit: withWorkspaceWriteAuthorization(withPromptMetadata(pi.createEditTool(cwd, editOptions), pi.createEditToolDefinition(cwd, editOptions)), authorizations)
+  }
+}

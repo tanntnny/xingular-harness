@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **The model is told it has `edit` and `write`.** Pi's `createEditTool` and `createWriteTool` drop
+  the definition's prompt line and guidelines, and Pi lists only tools with a prompt line, so every
+  terminal and headless run's system prompt named only `read` and `bash`. Models edited files
+  through shell scripts instead: one 2-hour terminal run made 156 script edits (14 failed) and no
+  `edit` call. `createWorkspaceFileTools` now restores the prompt line and guidelines, as Pi's own
+  `createBashTool` does, for both the terminal and the runner. The stable prefix changes once.
+
 - **A reply can no longer quietly stop with work open (ADR-0069).**
   - **Stop gate.** In attended top-level runs, terminal included, a reply that ends while its todo
     list has open items is sent back to the model, naming the items, up to three times per reply,

@@ -4,7 +4,7 @@
 // so everything it knows about the harness comes through the session socket.
 import { readFileSync } from 'node:fs'
 
-import { createBashTool, createEditTool, createPowerShellTool, createWriteTool, type AgentSession, type ExtensionAPI, type ExtensionContext } from '@earendil-works/pi-coding-agent'
+import { createBashTool, createEditTool, createEditToolDefinition, createPowerShellTool, createWriteTool, createWriteToolDefinition, type AgentSession, type ExtensionAPI, type ExtensionContext } from '@earendil-works/pi-coding-agent'
 import { Type } from 'typebox'
 
 import { bodyOf } from '../core/frontmatter'
@@ -33,7 +33,7 @@ import { skillInvocations } from './tui/skillInvocation'
 import { inspectWorkspaceWrite } from '../sessions/workspaceBoundary'
 import { createWorkspaceShellTool } from '../core/workspaceBashTool'
 import { createWorkspaceBashOperations, runWithWorkspaceWriteScope } from '../core/workspaceSandbox'
-import { withWorkspaceWriteAuthorization, workspaceEditOperations, workspaceWriteOperations, type WorkspaceWriteAuthorization } from '../core/workspaceWriteOperations'
+import { createWorkspaceFileTools, type WorkspaceWriteAuthorization } from '../core/workspaceWriteOperations'
 import { BUDGET_GUARD, OUTPUT_TRIM, budgetGuard, outputTrim } from '../plugins/firstParty'
 
 /** How long reply text gathers before it is sent on to a paired phone. */
@@ -172,8 +172,9 @@ export default async function (pi: ExtensionAPI, planRun?: TerminalPlanRunState,
     workspaceWriteScope: () => planRun?.active ? 'read-only' : undefined
   })
   pi.registerTool(createWorkspaceShellTool({ createBashTool, createPowerShellTool }, process.cwd(), workspaceBash))
-  pi.registerTool(withWorkspaceWriteAuthorization(createWriteTool(process.cwd(), { operations: workspaceWriteOperations }), writeAuthorizations))
-  pi.registerTool(withWorkspaceWriteAuthorization(createEditTool(process.cwd(), { operations: workspaceEditOperations }), writeAuthorizations))
+  const nativeFileTools = createWorkspaceFileTools({ createWriteTool, createWriteToolDefinition, createEditTool, createEditToolDefinition }, process.cwd(), writeAuthorizations)
+  pi.registerTool(nativeFileTools.write)
+  pi.registerTool(nativeFileTools.edit)
 
   // The current name and this run's todo ride with each request; they never change the stable prefix.
   pi.on('context', (event) => {

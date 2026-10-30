@@ -2,11 +2,11 @@ import { accessSync, chmodSync, constants, existsSync, linkSync, mkdirSync, mkdt
 import { spawnSync } from 'node:child_process'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { createEditTool, createWriteTool } from '@earendil-works/pi-coding-agent'
+import { createEditTool, createEditToolDefinition, createWriteTool, createWriteToolDefinition } from '@earendil-works/pi-coding-agent'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { resolveWritePath, resolveWorkspaceRoot } from './workspace'
-import { atomicWriteLaunch, withWorkspaceWriteAuthorization, workspaceEditOperations, workspaceWriteOperations, type WorkspaceWriteAuthorization } from './workspaceWriteOperations'
+import { atomicWriteLaunch, createWorkspaceFileTools, withWorkspaceWriteAuthorization, workspaceEditOperations, workspaceWriteOperations, type WorkspaceWriteAuthorization } from './workspaceWriteOperations'
 
 const fixtures: string[] = []
 const sandboxExecutables = process.platform === 'darwin'
@@ -162,5 +162,19 @@ describe('atomic write helper on Windows', () => {
     } finally {
       rmSync(base, { recursive: true, force: true })
     }
+  })
+})
+
+describe('workspace file tools', () => {
+  it('keep the prompt line and guidelines Pi needs to list them, and still require authorization', async () => {
+    const pi = { createWriteTool, createWriteToolDefinition, createEditTool, createEditToolDefinition }
+    const { write, edit } = createWorkspaceFileTools(pi, process.cwd(), new Map())
+    for (const [tool, definition] of [[write, createWriteToolDefinition(process.cwd())], [edit, createEditToolDefinition(process.cwd())]] as const) {
+      const meta = tool as unknown as { promptSnippet?: string; promptGuidelines?: string[] }
+      expect(meta.promptSnippet).toBeTruthy()
+      expect(meta.promptSnippet).toBe(definition.promptSnippet)
+      expect(meta.promptGuidelines).toEqual(definition.promptGuidelines)
+    }
+    await expect(Promise.resolve().then(() => write.execute('unauthorized', { path: 'x.txt', content: 'x' }))).rejects.toThrow('no current workspace authorization')
   })
 })

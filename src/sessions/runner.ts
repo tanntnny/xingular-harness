@@ -11,7 +11,7 @@ import { HarnessError } from '../core/errors'
 import { createWorkspaceShellTool } from '../core/workspaceBashTool'
 import { DEFAULT_COMMAND_TIMEOUT_SECONDS, withCommandBudget } from '../core/commandBudget'
 import { createWorkspaceBashOperations } from '../core/workspaceSandbox'
-import { withWorkspaceWriteAuthorization, workspaceEditOperations, workspaceWriteOperations, type WorkspaceWriteAuthorization } from '../core/workspaceWriteOperations'
+import { createWorkspaceFileTools, type WorkspaceWriteAuthorization } from '../core/workspaceWriteOperations'
 import { loadPi } from '../pi/runtime'
 import type { InlineExtension } from '../plugins/firstParty'
 import type { Loading, Registered } from '../plugins/plugins'
@@ -854,8 +854,7 @@ export const piSessionFactory: SessionFactory = async ({ params, allow, gate, to
   const gatedExtension = (api: ExtensionAPI) => {
     const writeAuthorizations = new Map<string, WorkspaceWriteAuthorization>()
     const bash = createWorkspaceShellTool(pi, params.cwd, workspaceBash)
-    const write = withWorkspaceWriteAuthorization(pi.createWriteTool(params.cwd, { operations: workspaceWriteOperations }), writeAuthorizations)
-    const edit = withWorkspaceWriteAuthorization(pi.createEditTool(params.cwd, { operations: workspaceEditOperations }), writeAuthorizations)
+    const { write, edit } = createWorkspaceFileTools(pi, params.cwd, writeAuthorizations)
     api.registerTool({ ...bash, defaultActive: false })
     api.registerTool({ ...write, defaultActive: false })
     api.registerTool({ ...edit, defaultActive: false })

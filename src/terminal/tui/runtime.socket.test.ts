@@ -101,6 +101,24 @@ describe('a native SDK runtime on the actual Harness terminal socket', () => {
     expect(await runtime.permissions()).toEqual({ full: false, globalTools: [] })
   })
 
+  it('lists the workspace edit and write tools in the prompt and sends them to the model', async () => {
+    const { runtime } = await setup()
+    const ai = await import('@earendil-works/pi-ai')
+    const faux = ai.fauxProvider()
+    runtime.services.modelRuntime.registerNativeProvider(faux.provider)
+    await runtime.session.setModel(faux.getModel())
+    let sent: string[] = []
+    faux.setResponses([(context) => {
+      sent = ai.getCurrentTools(context.messages.filter(message => message.role === 'system')).map(tool => tool.name)
+      return ai.fauxAssistantMessage('Done')
+    }])
+    await runtime.submit('Rename a variable')
+    const prompt = runtime.session.systemPrompt
+    expect(prompt).toMatch(/^- edit: /m)
+    expect(prompt).toMatch(/^- write: /m)
+    expect(sent).toEqual(expect.arrayContaining(['read', 'bash', 'edit', 'write']))
+  })
+
   it('hides question tools in normal mode and activates them only during plan requests', async () => {
     const { runtime } = await setup()
     const session = runtime.session
