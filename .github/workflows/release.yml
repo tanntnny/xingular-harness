@@ -108,7 +108,7 @@ jobs:
       - name: Publish the tested tarball with provenance
         run: |
           version=$(node -p "require('./package.json').version")
-          if [[ "$version" == *-unstable.* ]]; then npm_tag=unstable; else npm_tag=latest; fi
+          if [[ "$version" == *-unstable || "$version" == *-unstable.* ]]; then npm_tag=unstable; else npm_tag=latest; fi
           npm publish "./outputs/release/xingular-harness-${version}.tgz" --ignore-scripts --provenance --access public --tag "$npm_tag"
       - name: Verify published package
         run: node scripts/release-verify.mjs outputs/release/candidate.json
@@ -118,5 +118,5 @@ jobs:
         run: |
           version=$(node -p "require('./package.json').version")
           release_options=()
-          if [[ "$version" == *-unstable.* ]]; then release_options+=(--prerelease); fi
+          if [[ "$version" == *-unstable || "$version" == *-unstable.* ]]; then release_options+=(--prerelease); fi
           gh release create "$GITHUB_REF_NAME" "outputs/release/xingular-harness-${version}.tgz" outputs/release/SHA256SUMS --verify-tag --title "Xingular Harness ${version}" --notes-file "docs/releases/${version}.md" "${release_options[@]}"

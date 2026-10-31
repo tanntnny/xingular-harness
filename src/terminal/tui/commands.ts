@@ -41,6 +41,8 @@ export interface TerminalCommandHost {
   todo(): Promise<readonly TodoEntry[]>
   showTodo(items: readonly TodoEntry[]): void
   plan(brief: string): void
+  /** Runs `/goal` and returns the text to show (ADR-0072). */
+  goal(argument: string): Promise<string>
   /** Asks a side question in its own tool-free session; empty text dismisses the one showing. */
   btw(question: string): Promise<void>
   shutdown(): void
@@ -262,6 +264,7 @@ export function createTerminalCommands(host: TerminalCommandHost) {
           host.plan(argument)
           break
         }
+        case 'goal': host.ui.notify(await host.goal(argument), 'info'); break
         case 'quit': host.shutdown(); break
         case 'btw': await host.btw(argument); break
         case 'stop': {

@@ -239,11 +239,11 @@ below the composer shows `<repo>:<branch>`, account, model, effort and token tot
 the input token count it shows cache hit rate as `R<percentage>%`: cache reads divided by input
 tokens over the last 10 model responses in the current context (`CACHE_HIT_WINDOW`), so a collapse
 shows within a few requests instead of being averaged away by a healthy start. Responses without
-prompt tokens, such as aborted ones, are skipped. Below 70 percent the rate gets a `⚠` after it, in the
-warning yellow; below 40 percent, in the error red. A single response only writes the cache, so the
-rate is judged once the window holds two, and a window with no cache reads or writes is not judged,
-since its provider may not report them. Each drop to a worse level posts one transcript notice,
-`Cache hit rate is N% over the last K requests, below T%.`, and a recovery posts nothing. The footer shows status messages without a shortcut-hint row. Press `?` with an empty
+prompt tokens, such as aborted ones, are skipped. Below 70 percent the rate and its `⚠` are coloured
+warning yellow; below 40 percent, they are coloured error red. Cache hit warnings appear in the status
+bar only; they do not add a transcript notice. A single response only writes the cache, so the rate is
+judged once the window holds two, and a window with no cache reads or writes is not judged, since its
+provider may not report them. The footer shows status messages without a shortcut-hint row. Press `?` with an empty
 composer to open the shortcut reference. Transcript entries include
 messages, thinking, tools, notices and extension ANSI components. Image blocks returned by tools
 appear as separate image-result entries immediately after their tool call, within the scrollable
@@ -308,8 +308,9 @@ a todo block: a status mark, `Todo · n of m done`, then one line per item with 
 colour), `●` (in progress, warning yellow, bold) or `○` (pending, dim). Each row reserves a one-cell
 status column and one-cell gap; item text and wrapped lines share the same starting column. A call
 whose arguments are not a todo list, or that failed, stays an ordinary tool row. The prompt's
-Progress group asks the model to keep the list current and write a final update before replying;
-unfinished work remains unfinished rather than being marked complete.
+Progress group says the list shows progress and is not the scope of the work, asks the model to keep
+it current, and says a reply that ends with open items is sent back; unfinished work remains
+unfinished rather than being marked complete.
 
 `/todo` (alias `/checklist`) appends a snapshot of the current list: the same header and rows, with
 no status mark on the header, because it is not a tool call. It reads the latest non-side-question
@@ -464,6 +465,15 @@ crossing the barrier. `Alt+Up` restores queued text to the draft; queued images 
 a warning for deferred images. Pi's queue projection can briefly include an item already taken
 for delivery; identical queued text can also make its displayed removal ambiguous. Interrupting a
 reply does not automatically clear native queues, and deferred work may run after it settles.
+
+## `/goal` (ADR-0072)
+
+`/goal <objective>` starts a long run on an objective; see page 11 for the rules. Bare `/goal` shows
+`Goal`, `Status`, `Objective`, `Rounds`, `Time used`, the last check and the commands that apply.
+The status bar adds one group while a goal exists: `Pursuing goal (2m, round 3/30)`, `Goal paused
+(/goal resume)`, `Goal stalled (/goal resume)`, `Goal hit usage limits (/goal resume)`, `Goal unmet
+(30/30 rounds, 8h 0m)` or `Goal achieved (1h 12m)`. Replacing an unfinished goal asks first. Esc or
+Ctrl-C on a running goal pauses it; `/goal resume` continues.
 
 ## Plan mode and thinking keys
 

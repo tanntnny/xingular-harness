@@ -1,12 +1,15 @@
 ---
 id: ADR-0068
 title: Scope of the work and two required completion headings
-status: accepted
+status: superseded
 created: 2026-10-30
-updated: 2026-10-30
+updated: 2026-11-01
+superseded_by: ADR-0073
 supersedes: partial — ADR-0008
 ---
 # ADR-0068 — Scope of the work and two required completion headings
+
+> **Superseded by [ADR-0073](ADR-0073-large-reporting-prompt.md):** the two required headings and the fixed-label rule are replaced by content blocks and flexible headings. The scope rule in the `role` paragraph stands.
 
 > **Amended by [ADR-0069](ADR-0069-stop-gate-and-finish.md):** `## What would make this complete` applies only when the work stopped short (blocked, needing the person, or handed back by the guard), and the deferred runner feature is now the stop gate.
 

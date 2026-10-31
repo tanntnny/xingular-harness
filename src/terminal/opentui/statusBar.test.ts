@@ -47,7 +47,7 @@ describe('the composer status bar', () => {
     expect(statusBarText({ ...state, remoteControl: null }).split(' | ')).toHaveLength(3)
   })
 
-  it('marks only a flagged cache hit rate, with its level, for colour', () => {
+  it('marks a flagged cache hit rate, with its level, for colour', () => {
     expect(statusBarPieces({ ...state, cache: cache(1300, 1200) }).some(piece => piece.cacheHit)).toBe(false)
     expect(statusBarPieces(state).find(piece => piece.cacheHit)).toEqual({ text: 'R50% ⚠', cacheHit: 'warning' })
     expect(statusBarPieces({ ...state, cache: cache(1300, 100) }).find(piece => piece.cacheHit))

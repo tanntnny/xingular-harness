@@ -444,6 +444,9 @@ describe('a pi terminal session', () => {
     expect(await tell('policy', { tool: 'read', args: { path: 'a' } })).toMatchObject({ allowed: true })
     expect(await tell('policy', { tool: 'session_name', args: { name: 'Inspect browser tools' } })).toMatchObject({ allowed: true })
     expect(await tell('policy', { tool: 'todo_write', args: { items: [] } })).toMatchObject({ allowed: true })
+    // A goal's two tools are state tools like the todo list: no approval on every call (ADR-0072).
+    expect(await tell('policy', { tool: 'update_goal', args: { status: 'complete' } })).toMatchObject({ allowed: true })
+    expect(await tell('policy', { tool: 'get_goal', args: {} })).toMatchObject({ allowed: true })
     expect(await tell('policy', { tool: 'bash', args: { command: 'rm -rf x' } })).toMatchObject({ allowed: true })
     const outside = join(root, '..', 'outside-workspace.txt')
     expect(await tell('policy', { tool: 'write', args: { path: outside } })).toMatchObject({ allowed: false, requiresApproval: true, rememberable: false, standing: 'switch' })

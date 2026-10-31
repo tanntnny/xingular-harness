@@ -18,7 +18,7 @@ while (Date.now() < deadline) {
     // dist-tags come from the packument, which is the slowest to catch up; the version's own document
     // is read separately so a stale packument cannot hide the integrity and provenance it lacks.
     const metadata = await read(`https://registry.npmjs.org/@xingular%2fharness?ts=${Date.now()}`)
-    const npmTag = candidate.version.includes('-unstable.') ? 'unstable' : 'latest'
+    const npmTag = candidate.version.includes('-unstable') ? 'unstable' : 'latest'
     assert.equal(candidate.npmTag, npmTag)
     assert.equal(metadata['dist-tags']?.[npmTag], candidate.version)
     const published = await read(`https://registry.npmjs.org/@xingular%2fharness/${candidate.version}?ts=${Date.now()}`)

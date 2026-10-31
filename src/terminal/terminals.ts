@@ -50,6 +50,7 @@ import { findRun, listRuns, loadRun, readEvents, recordedSubagents, saveRun, upd
 import { combineWorkspaceScope, inspectRunWorkspaceWrite } from '../sessions/workspaceBoundary'
 import type { ToolSpec } from '../tools/types'
 import { TODO_WRITE } from '../tools/todo'
+import { GOAL_TOOLS } from '../sessions/goal'
 import { DEFAULT_TOOL_NAMES } from '../tools/definitions'
 import { harnessTools } from '../tools/harnessTools'
 import { HARNESS_PLUGINS } from '../plugins/builtin'
@@ -967,7 +968,7 @@ export class Terminals {
       }
     }
     if (inspection.outside) return { allowed: false, requiresApproval: true, rememberable: false, standing: 'switch', reason: inspection.reason, workspaceRoot }
-    if (name === SESSION_NAME || name === TODO_WRITE || name === SPAWN_SUBAGENT || name === WAIT_SUBAGENTS || READ_ONLY_TOOLS.has(name) || this.worldReadOnly.has(name) || this.options.apps.toolNames.includes(name as never) || ['bash', 'edit', 'write'].includes(name)) {
+    if (name === SESSION_NAME || name === TODO_WRITE || (GOAL_TOOLS as readonly string[]).includes(name) || name === SPAWN_SUBAGENT || name === WAIT_SUBAGENTS || READ_ONLY_TOOLS.has(name) || this.worldReadOnly.has(name) || this.options.apps.toolNames.includes(name as never) || ['bash', 'edit', 'write'].includes(name)) {
       return { allowed: true, workspaceRoot }
     }
     return { allowed: false, requiresApproval: true, rememberable: true, reason: 'This native action requires approval.', workspaceRoot }

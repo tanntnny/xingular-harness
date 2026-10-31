@@ -31,6 +31,8 @@ import { TODO_WRITE } from '../tools/todo'
 import { checkpointOf } from './checkpoint'
 import { createStopGateState, sessionCheckModel, stopGate, stopGateNotice, STOP_GATE_EXTENSION } from './stopGate'
 import { launchSwitchOff } from './completionCheck'
+import { GOAL_TOOLS, GoalController, GoalError, continuationPrompt, goalTools, provenanceText, type GoalLimits, type GoalState } from './goal'
+import { GOAL_EXTENSION, goalLoop, goalNotice } from './goalLoop'
 import { SESSION_NAME, deriveSessionName, sessionNameTool } from '../tools/sessionName'
 import { DEFAULT_TOOL_NAMES } from '../tools/definitions'
 import { GET_CAPABILITIES, getCapabilitiesTool } from '../tools/getCapabilities'
@@ -120,6 +122,13 @@ export interface SessionRunInput {
    * `<proposed_plan>` block. Other calls are refused at the gate; the system prompt stays stable.
    */
   plan?: boolean
+  /**
+   * A goal (ADR-0072): the run keeps working on this objective, continuing in place after each
+   * reply, until the model's completion claim is checked and holds, a brake stops it, or its
+   * rounds or hours are used. Only a person's own top-level run may carry one. The objective is the
+   * request; `text` is ignored.
+   */
+  goal?: { objective: string } & Partial<GoalLimits>
   /**
    * Continue a run that stopped before it finished: the earlier run's id. The new run reopens its
    * native history and pins its account, variant version and capability set, and the model is told
@@ -508,10 +517,14 @@ export class Sessions {
       && !input.automatic
       && (input.run.trigger === undefined || input.run.trigger === null || input.run.trigger === 'user')
     const harnessToolsEnabled = input.harnessTools !== false || pinnedAskUser
+    // A goal (ADR-0072) belongs to a person's own top-level run, and to its continuations across slices.
+    const goalWanted = Boolean(input.goal) && harnessToolsEnabled && !input.plan && !input.command && !input.automatic && !input.run.relation && (input.depth ?? 0) === 0
+    if (input.goal && !goalWanted) throw invalid('A goal is available only for a person\'s own top-level run with the harness tools, not a plan, command, unattended or child run.')
     const canAskUser = pinnedAskUser || (interactivePlan && harnessToolsEnabled)
     const requestedTools = [...new Set([
       ...input.tools.allow.filter((name) => name !== SPAWN_SUBAGENT && name !== WAIT_SUBAGENTS && (name !== ASK_USER || canAskUser)),
       ...(harnessToolsEnabled ? [...(canAskUser ? [ASK_USER] : []), TODO_WRITE, SESSION_NAME, GET_CAPABILITIES, ...DEFAULT_TOOL_NAMES] : []),
+      ...(goalWanted ? GOAL_TOOLS : []),
       ...(broker?.toolNames ?? []),
       ...(canSpawn ? [SPAWN_SUBAGENT, WAIT_SUBAGENTS] : [])
     ])]
@@ -553,7 +566,7 @@ export class Sessions {
       workingDirectory: input.cwd,
       workspaceRoot,
       worktreeId: input.run.worktreeId ?? null,
-      goal: input.run.goal ?? takeChars(input.text, 4000),
+      goal: input.run.goal ?? takeChars(input.goal?.objective ?? input.text, 4000),
       attachmentCount: input.run.attachmentCount ?? 0,
       startedAt: now(),
       endedAt: null,
@@ -660,6 +673,25 @@ export class Sessions {
     // The completion check judges the person's request, not "Continue from where you stopped.".
     const originalRequest = input.text.trim() === CONTINUE_TEXT ? requestOfChain(root, previousRun?.id ?? null) : null
     const stopGateState = gateEnabled ? createStopGateState(continuation?.todo) : null
+    // The goal: a continuation slice picks up the previous run's goal where it stopped.
+    let goalController: GoalController | null = null
+    if (goalWanted && input.goal) {
+      goalController = new GoalController({ onChange: (state) => updateRun(root, runId, (record) => { record.goalMode = state }) })
+      const inherited = previousRun?.goalMode
+      try {
+        if (inherited && inherited.status === 'active') {
+          goalController.restore(inherited)
+          updateRun(root, runId, (record) => { record.goalMode = inherited })
+        }
+        else goalController.set(input.goal.objective, { rounds: input.goal.rounds, hours: input.goal.hours })
+      } catch (error) {
+        if (error instanceof GoalError) throw invalid(error.message)
+        throw error
+      }
+    }
+    const goalState: GoalState | null = goalController?.get() ?? null
+    // The goal's first message: who set it, then the continuation prompt, as Codex starts a goal.
+    const goalStart = goalState ? `${provenanceText('set', goalState)}\n\n${continuationPrompt(goalState)}` : null
     const run = this.options.runs.start(input.run.sessionId, runId)
     if (run.finished) return { runId, nativeSessionId: null }
     if (variant?.untrustedPlugins.length) {
@@ -696,7 +728,8 @@ export class Sessions {
           subagents: this.options.subagents,
           sessionName: naming,
           ...(broker ? { connectionTools: () => broker.tools(session, { readOnly: typeof input.connections === 'object' && input.connections.readOnly === true }) } : {})
-        })
+        }),
+        ...(goalController && allow.includes(GOAL_TOOLS[0]) ? goalTools(() => goalController) : [])
       ]
       if (input.providers !== false) {
         const named = new Set(tools.map((tool) => tool.name))
@@ -724,6 +757,8 @@ export class Sessions {
         }
         return { ...baseGate, checkDetailed, check: async (name: string, args: unknown) => (await checkDetailed(name, args))?.reason ?? null }
       })()
+      const goalHandle: NonNullable<TurnParams['goal']> | undefined = goalController ? { controller: goalController } : undefined
+      const goalParams: { goal?: NonNullable<TurnParams['goal']> } = { goal: goalHandle }
       const params: TurnParams = {
         runId,
         ...(input.initialBashCommand !== undefined && input.initialBashCommand !== null ? { initialBashCommand: input.initialBashCommand, initialBashAvailable: capabilities.tools.includes('bash') } : {}),
@@ -739,7 +774,7 @@ export class Sessions {
         historyFile,
         model: input.model ?? null,
         effort: input.effort ?? null,
-        text: input.text,
+        text: goalStart ?? input.text,
         images: input.images,
         requiresImageInput: input.requiresImageInput,
         preamble: input.preamble ?? null,
@@ -760,8 +795,15 @@ export class Sessions {
             initialTodo: continuation?.todo,
             request: () => originalRequest,
             sliceEnded: () => sliceEnabled && sliceState.endedBy !== null,
-            check: launchSwitchOff('XINGULAR_COMPLETION_CHECK') ? null : sessionCheckModel,
             onEvent: (event) => run.emit('extension.notice', { kind: 'notify', level: 'info', extension: STOP_GATE_EXTENSION, text: stopGateNotice(event) })
+          }) }] : []),
+          // After the todo gate: a goal continues a reply the gate let end (ADR-0072).
+          ...(goalController ? [{ name: GOAL_EXTENSION, factory: goalLoop({
+            controller: goalController,
+            check: launchSwitchOff('XINGULAR_COMPLETION_CHECK') ? null : sessionCheckModel,
+            sliceEnded: () => sliceEnabled && sliceState.endedBy !== null,
+            recordUsage: (message) => goalParams.goal?.recordUsage?.(message),
+            onEvent: (event) => run.emit('extension.notice', { kind: 'notify', level: 'info', extension: GOAL_EXTENSION, text: goalNotice(event) })
           }) }] : [])
         ],
         ...(plugins && loadPlugins ? { plugins: { loading: loadPlugins, loaded: (extensions) => plugins.loaded(extensions) } } : {}),
@@ -769,6 +811,7 @@ export class Sessions {
         system,
         ...(sliceEnabled ? { slice: { state: sliceState, maxToolCalls: slicePolicy.maxToolCalls } } : {}),
         ...(stopGateState ? { stopGate: stopGateState } : {}),
+        ...(goalController ? { goal: goalHandle } : {}),
         // A command sends no request of its own, so the context update waits for the next turn.
         update: input.command ? null : update,
         ...(input.command ? { command: input.command } : {})

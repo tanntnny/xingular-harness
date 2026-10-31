@@ -3,9 +3,12 @@
 // against what the reply actually did. The doer never certifies its own early stop: the check says
 // `done`, `continue` (the reply is sent back with the reason) or `needs_person`. The request is the
 // goal; there is no command and no condition to write. Any failure leaves the reply as it was.
-import type { TodoItem } from './contracts'
-
-export type CheckVerdictKind = 'done' | 'continue' | 'needs_person'
+// The goal-claim check (ADR-0072; it began as the completion check of ADR-0071): when the model
+// of a /goal calls update_goal(complete), the same model, at low effort and with a fresh context,
+// judges the claim against the goal's objective and what the transcript shows. The doer never
+// certifies its own completion unchecked: the check says `done` (the goal is complete) or
+// `continue` (it stays active with the reason). Any failure accepts the claim, as before.
+export type CheckVerdictKind = 'done' | 'continue'
 
 export interface CheckVerdict {
   verdict: CheckVerdictKind
@@ -14,31 +17,23 @@ export interface CheckVerdict {
   next: string
 }
 
-/** What the check sends; kept small so a check costs a fraction of a reply. */
-export const MAX_CHECK_TRANSCRIPT = 16_000
+/** What the check sends; kept small so a check costs a fraction of a round. */
+export const MAX_CHECK_TRANSCRIPT = 24_000
 const MAX_TOOL_RESULT = 600
 const MAX_TOOL_ARGS = 300
 const MAX_TEXT = 2_000
 export const CHECK_TIMEOUT_MS = 60_000
 
 /** The fixed instructions of the check. Answering is all it does: it has no tools. */
-export const CHECK_SYSTEM_PROMPT = `You review whether an AI coding agent may end its reply now. You do not do the work and you have no tools. You read the person's request, the agent's todo list, and a transcript of what the agent did in this reply, and you answer with one JSON object and nothing else:
+export const CHECK_SYSTEM_PROMPT = `You verify whether an AI coding agent has achieved a goal a person gave it. You do not do the work and you have no tools. You read the goal objective and a transcript of what the agent did and said, and you answer with one JSON object and nothing else:
 
-{"verdict":"done"|"continue"|"needs_person","reason":"one or two sentences","next":"the next concrete step, for continue"}
+{"verdict":"done"|"continue","reason":"one or two sentences","next":"the next concrete step, for continue"}
 
-The agent works in the person's working folder. Inside it, without asking, the agent may read and change files, run commands and tests, install dependencies, create branches, worktrees and files, choose the order of steps, choose between reasonable implementations, and retry a failed check another way. A document the request points to (a handoff, a plan, a spec) is part of the request: its steps are the work.
+Treat completion as unproven. Derive the concrete requirements from the objective and from any file, plan or spec it points to that the transcript shows. For every explicit requirement, numbered item, named artifact, command, test, gate and deliverable, look in the transcript for evidence that it was achieved and checked: command output, test results, file contents the agent read or wrote. Evidence that is weak, indirect or missing counts as not achieved. The agent saying the goal is complete is not evidence. Match the scope of the check to the scope of the requirement: a narrow check does not support a broad claim.
 
-Answer "continue" when any part of the request remains that the agent can still do by itself inside those bounds. In particular:
-- The agent asked the person something the request or the files already answer, or asked permission for something inside its bounds ("should I start with step 1?", "create the worktree?", "install dependencies?").
-- The agent marked todo items completed, but its own text or the transcript shows that work is not done or not checked.
-- The agent stopped after a failure it could work around or investigate itself.
-- The agent finished one part of a multi-part request and reported the rest as remaining.
+Answer "done" only when every requirement has evidence in the transcript. Quote the key evidence in "reason". Answer "continue" when any requirement is unmet, unchecked or unclear; name the unmet requirements in "reason" and the next step in "next". If the transcript does not contain clear evidence that the objective is met, answer "continue" with the reason "insufficient evidence in transcript".
 
-Answer "needs_person" only when the remaining work truly requires the person: a deploy or production change, a secret or credential the agent does not have, writing to remote data, spending money, access the agent lacks, an environment problem only the person can fix, or a product choice the request leaves open with no reasonable default. Name exactly what the person must do.
-
-Answer "done" when the request is fulfilled, when the request was a question and the reply answers it, or when everything the agent could do is done and nothing in the transcript contradicts that.
-
-Judge only from the request, the todo list and the transcript. Keep "reason" and "next" short and specific.`
+Judge only from the objective and the transcript. Keep "reason" and "next" short and specific.`
 
 const clip = (text: string, limit: number): string => (text.length <= limit ? text : `${text.slice(0, limit - 1)}…`)
 
@@ -53,7 +48,12 @@ const textOf = (content: unknown): string => {
 
 /** One message as the check reads it: visible text, tool calls and clipped tool results. Thinking is left out. */
 function renderMessage(message: LlmMessage): string {
-  if (message.role === 'user') return `[User or harness]: ${clip(textOf(message.content), MAX_TEXT)}`
+  if (message.role === 'user') {
+    const text = textOf(message.content)
+    // The goal's own continuation prompts repeat the same long audit text; the check needs only the objective.
+    if (text.startsWith('Continue working toward the active thread goal.')) return ''
+    return `[User or harness]: ${clip(text, MAX_TEXT)}`
+  }
   if (message.role === 'toolResult') return `[Tool result${message.toolName ? ` ${message.toolName}` : ''}${message.isError ? ', error' : ''}]: ${clip(textOf(message.content), MAX_TOOL_RESULT)}`
   if (message.role === 'assistant') {
     const parts = Array.isArray(message.content) ? message.content as Part[] : []
@@ -100,12 +100,10 @@ export function replyTranscript(messages: readonly unknown[], request: string, l
 }
 
 /** The check's user message. */
-export function checkPrompt(request: string, todo: readonly TodoItem[], transcript: string): string {
-  const list = todo.length ? todo.map((item) => `- [${item.status}] ${item.text}`).join('\n') : '(the agent wrote no todo list)'
+export function checkPrompt(objective: string, transcript: string): string {
   return [
-    `## The person's request\n${clip(request.trim() || '(not recorded)', 4_000)}`,
-    `## The agent's todo list\n${list}`,
-    `## What the agent did in this reply\n${transcript || '(nothing recorded)'}`,
+    `## The goal's objective\n${clip(objective.trim() || '(not recorded)', 4_000)}`,
+    `## What the agent did\n${transcript || '(nothing recorded)'}`,
     '## Your answer\nOne JSON object: verdict, reason, next.'
   ].join('\n\n')
 }
@@ -119,7 +117,7 @@ export function parseVerdict(text: string): CheckVerdict | null {
       try {
         const value = JSON.parse(text.slice(start, end + 1)) as Record<string, unknown>
         const verdict = value.verdict
-        if (verdict !== 'done' && verdict !== 'continue' && verdict !== 'needs_person') continue
+        if (verdict !== 'done' && verdict !== 'continue') continue
         return {
           verdict,
           reason: clip(typeof value.reason === 'string' ? value.reason.trim() : '', 500),
@@ -145,11 +143,11 @@ export type CheckModel = (system: string, user: string, signal: AbortSignal) => 
 
 /**
  * Runs one check. Never throws: a timeout, an error or an answer without a verdict returns
- * `{ verdict: null }`, and the reply ends as it would have without the check.
+ * `{ verdict: null }`, and the claim is accepted as it stands.
  */
 export async function runCompletionCheck(
   ask: CheckModel,
-  input: { request: string; todo: readonly TodoItem[]; messages: readonly unknown[] },
+  input: { objective: string; messages: readonly unknown[] },
   options: { signal?: AbortSignal; timeoutMs?: number } = {}
 ): Promise<{ verdict: CheckVerdict | null; answer: CheckAnswer | null; error?: string }> {
   const controller = new AbortController()
@@ -157,7 +155,7 @@ export async function runCompletionCheck(
   options.signal?.addEventListener('abort', abort, { once: true })
   const timer = setTimeout(abort, options.timeoutMs ?? CHECK_TIMEOUT_MS)
   try {
-    const user = checkPrompt(input.request, input.todo, replyTranscript(input.messages, input.request))
+    const user = checkPrompt(input.objective, replyTranscript(input.messages, ''))
     const answer = await ask(CHECK_SYSTEM_PROMPT, user, controller.signal)
     return { verdict: parseVerdict(answer.text), answer }
   } catch (error) {
@@ -173,7 +171,7 @@ export function answerText(message: unknown): string {
   return textOf((message as { content?: unknown } | null)?.content)
 }
 
-/** `XINGULAR_STOP_GATE=off` / `XINGULAR_COMPLETION_CHECK=off` at launch switch a layer off, for experiments. */
+/** `XINGULAR_STOP_GATE=off` / `XINGULAR_COMPLETION_CHECK=off` at launch switch a layer off, for experiments. The second one accepts every goal claim unchecked. */
 export function launchSwitchOff(name: 'XINGULAR_STOP_GATE' | 'XINGULAR_COMPLETION_CHECK'): boolean {
   const value = process.env[name]?.trim().toLowerCase()
   return value === 'off' || value === '0' || value === 'false'

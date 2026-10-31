@@ -76,72 +76,93 @@ guidance for the effective tools. Terminal preparation defaults to standard sect
 attributed add-on and task context, not a duplicate standard role or connection policy (PROP-0040).
 
 Budgets (characters): variant sections 30,000 each (already capped at save, so never cut here);
-references 12,000; Wiki pointer 2,500; tools 8,000; reporting 2,400 (ADR-0068); application sections
-their own `budget`.
+references 12,000; Wiki pointer 2,500; tools 8,000; reporting 18,000 (ADR-0073); the
+standard session's sections: role 1,400, autonomy 2,600, permission 1,800, steering 2,000, writing
+1,900 (ADR-0072); application sections their own `budget`.
 
 ## Reporting
 
 Every pack ends with the harness's `reporting` section ("Reporting your work",
-`REPORTING_GUIDANCE` in `prompt/compile.ts`). It is fixed text that shapes the final reply: lead
-with the outcome rather than the steps taken to reach it, cover the most important information, and
-use as much structure as the answer needs. Descriptive headings, lists and tables may help explain
-the outcome; no fixed list of report headings is required. When work remains unfinished, state the concrete decision the person
-must make or the next action and its owner for each material blocker, without inventing a human
-decision. When a concrete verification requires a person because the agent
-could not perform or observe it, the optional **Need human inspection** heading says what remains
-unverified, why, and the specific check the person should make. Report only checks actually run,
-with their results. Markdown tables are used where they help compare options or present repeated
-fields or check results; any format the person, application or current mode asks for takes
-precedence. The section names no application, is never dynamic, and is never cut. Two headings are
-required when they apply ([ADR-0068](../decisions/ADR-0068-scope-and-completion-report.md)):
-`## Beyond what you asked` when the run did anything beyond the request, naming each piece and why
-the work needed it, and `## What would make this complete` when the run could be more complete,
-listing the concrete remaining steps in order and naming the ones only the person can decide. Every
-other heading stays optional; the guidance still forbids a fixed set. See
-[PROP-0001](proposals/PROP-0001-reporting-section.md),
-[PROP-0004](proposals/PROP-0004-flexible-reporting-guidance.md), and
-[ADR-0008](../decisions/ADR-0008-flexible-reporting-guidance.md).
+`REPORTING_GUIDANCE` in `prompt/reporting.ts`, imported by `prompt/compile.ts`). It is fixed text
+that shapes the final reply: lead with the outcome rather than the steps taken to reach it, and
+cover only what the person needs to act. The section defines content blocks, not a fixed heading
+list ([ADR-0008](../decisions/ADR-0008-flexible-reporting-guidance.md),
+[ADR-0073](../decisions/ADR-0073-large-reporting-prompt.md)): a change carries four required blocks
+— outcome, what changed, how to test, and what to do next — while a question stays one to three
+sentences and research carries only the blocks with content. How to test gives numbered steps with
+exact commands or URLs, the expected result, what the agent already ran, and what the person must
+run; what to do next names the person's action or says "Nothing needed". Optional blocks cover work
+beyond the request (with why), departures from a plan (what and why), work that needs a person's
+check (what is unverified, why, and the exact check), and open questions. Headings are the model's
+choice — "How to test", "Try it" and "Verify" name the same block — and a heading must name its
+content. The section ships five worked examples and an anti-pattern table, uses tables for files,
+checks and comparisons, and caps a change at about 20–60 lines. A person, application or mode format
+takes precedence. The section names no application, is never dynamic, and is never cut; its budget is
+18,000 characters (ADR-0073).
 
 ## When a reply may end
 
 A reply ends when the request is done, when the work-slice guard ends it (INV-RUN-13), when a person
 interrupts, or when the work cannot continue without the person. An open todo item, a passing check,
-a partial result or a long task is not such a reason. The rule is enforced, not only stated
-(ADR-0069, ADR-0071): the stop gate (INV-RUN-15) sends back a reply that ends while its todo list has
-open items, and a completion check — the same model, a fresh context — sends back one whose request
-is not done while the rest is work the agent can do itself. Only the check can decide that the
-person is needed; the agent has no tool to declare it. A reply that settles with work left is
-`interrupted` (`needs_person` or `unfinished`), never `completed`.
+a partial result or a long task is not such a reason. An ordinary reply is held to this by two
+things (ADR-0069, ADR-0072): the words below, and the todo gate (INV-RUN-15), which sends back a
+reply that ends while its todo list has open items. **No model judges an ordinary reply**; a goal's
+completion claim is the one thing a model checks (INV-RUN-16). A reply that settles with work left is
+`interrupted` (`unfinished`, or `needs_person` for a blocked goal), never `completed`.
 
-The words still matter, because they decide what the model does before the gate has to act, and
-none of them may read as permission to stop with work left:
+The words decide what the model does before the gate has to act, and none of them may read as
+permission to stop with work left. A person's own session (`launch.standard`, `prompt/standard.ts`)
+reads five stable sections adapted from OpenAI Codex's gpt-6.1-sol instructions (Apache-2.0, see
+`NOTICE.md`), the same for every model so the terminal and a host read the same text (INV-PAR-1):
 
-- `role` (`prompt/standard.ts`, `ROLE`) says which decisions are the agent's own (which step first;
-  branches, worktrees and files in the working folder; dependencies; reasonable implementation
-  choices; another way to retry a check), that a document the request points to is the request, that
-  a question the request or files already answer is not a question for the person, and the only
-  reasons to stop (a deploy, a secret, remote data, money, missing access, a product choice the
-  request leaves open).
-- `TODO_GUIDANCE` (`tools/todo.ts`) asks for a list that is true at all times; an open step is work
-  to do in this reply, not something to report. It no longer asks for a "final update before your
-  final reply", which framed an incomplete list as a way to end.
-- `reporting` opens with "Reporting is for work that is finished or genuinely blocked". Its
-  `## What would make this complete` heading applies only when the work stopped short — blocked,
-  needing the person, or handed back by the guard — and says never to stop early to write it.
-- In a person's own session the `Progress` tool group says that a reply with open items, or one a
-  completion check finds unfinished, is sent back. There is no tool to stop "on purpose": ADR-0069
-  removed `checkpoint_write` after a run used it as a sign-off, and ADR-0071 removed `finish` after a
-  live run used `needs_decision` to ask something the request already answered.
+- `role` — the assistant's job, and the extra work it does without asking (the obvious adjacent
+  step, what the work exposes, the check it needs) inside the working folder and away from what a
+  person must decide (a deploy, a secret, remote data, money). Extra work and departures from the
+  plan are allowed on those terms and reported at the end.
+- `autonomy` — bias to action; persist until the intended goal is complete; "can you...", "help
+  me..." are instructions; no partial or "helpful enough" solution; an open todo item, a passing
+  check, a partial result or a long task is not a reason to end the turn; the todo list shows
+  progress and the request is the scope; which decisions are the agent's own; a document the request
+  points to is the request; a question the request or files already answer is not a question for the
+  person; the only reasons to stop, one of them a fix to a test or error that does not come from
+  this session's work (and then say exactly what is needed).
+- `permission` — authorisation persists; finish the authorised work first so that approval is the
+  last step; no permission for reversible, read-only or already authorised work; a test or error
+  that does not come from this session's work is reported, not fixed, unless the person asks (a
+  failure is this session's work when the agent's changes caused it), and is kept off the todo
+  list; no messages to other people unless asked; when the agent must ask, it says why and where
+  the requirement comes from.
+- `steering` — a new message steers the active task; a correction means "fix it"; compaction does
+  not end the task, and work across compactions is one chain.
+- `writing` — plain words, the outcome first, evidence and limits, routine verification summarised,
+  no AI-slop phrases, no "X, not Y" contrast, no invented labels, no needless apology.
+
+Other fixed text that shapes the end of a reply:
+
+- `TODO_GUIDANCE` (`tools/todo.ts`): the list is progress, not scope; the request, and any document
+  it points to, is the scope; add steps as the work shows them; list a handoff's steps instead of one
+  "remaining work" item; before ending, compare the request, not the list, with what is done and
+  checked. An open step is work to do in this reply, not something to report.
+- `reporting` (`REPORTING_GUIDANCE`): opens with "Reporting is for work that is finished or genuinely
+  blocked". When work is not finished, the first line says so, gives the specific reason and names
+  the next step. The final reply is self-contained, says what could not be done or verified, never
+  closes with an "If you want..." offer, and stays near 60 lines. Its `## What would make this
+  complete` heading applies only when the work stopped short and says never to stop early to write
+  it.
+- `ask_user` (`tools/askUser.ts`): for a decision the request and files do not answer, never for
+  permission to do work inside the request; no answer means continue with best judgment (Codex's
+  Default-mode rule).
+- In a person's own session the `Progress` tool group says that a reply with open items is sent back.
+  There is no tool to stop "on purpose": ADR-0069 removed `checkpoint_write` and ADR-0071 removed
+  `finish`. The only tool that ends work is `update_goal` in a goal the person started (INV-TOOL-9).
 
 All of these are fixed text in the stable prefix, so changing them changes the cached prefix once.
 A live terminal session keeps the pack, and the extension code, it started with; a harness update
 reaches it only when the session restarts.
 
-The `role` paragraph also sets how far the work reaches: the job the request implies, not only its
-literal words — the obvious adjacent step, what the work itself exposes, the check it needs — inside
-the working folder and away from what a person must decide (a deploy, a secret, remote data, money),
-without asking first inside those bounds. That is a scope rule, not a second stop rule: the same
-paragraph names the only reasons to stop.
+A goal's text (`sessions/goalPrompts.ts`, adapted from Codex's `ext/goal/templates`) is not in the
+prefix: the continuation, round-cap and edit prompts ride as hidden user messages, with the
+objective escaped and wrapped as data (INV-PRM-2).
 
 ## Delivery
 

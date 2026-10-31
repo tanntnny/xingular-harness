@@ -13,6 +13,8 @@ export interface StatusBarState {
   cache: CacheUsage
   /** `/remote-control`: on and waiting for a phone, or a phone connected. */
   remoteControl?: 'waiting' | 'connected' | null
+  /** `/goal` (ADR-0072): the footer text of the session's goal. */
+  goal?: string | null
 }
 
 /** Cache figures over a run of model requests; input includes cache reads. */
@@ -52,7 +54,7 @@ export function recentCacheUsage(messages: readonly unknown[], limit = CACHE_HIT
   return totals
 }
 
-/** A cache hit rate under these percentages is flagged in the status bar and reported by a notice. */
+/** A cache hit rate under these percentages is flagged in the status bar. */
 export const CACHE_HIT_WARNING_PERCENT = 70
 export const CACHE_HIT_CRITICAL_PERCENT = 40
 const CACHE_HIT_GLYPH = '⚠'
@@ -102,7 +104,8 @@ export function statusBarPieces(state: StatusBarState): StatusBarPiece[] {
     [{ text: `${project}:${branch}` }],
     [{ text: `${singleLine(state.account ?? '') || 'account unknown'} ${model} ${singleLine(state.thinking) || 'off'}` }],
     [{ text: `↑${formatTokenCount(state.inputTokens)} ` }, cacheRate, { text: ` ↓${formatTokenCount(state.outputTokens)}` }],
-    state.remoteControl === 'connected' ? [{ text: 'rc ●' }] : state.remoteControl === 'waiting' ? [{ text: 'rc' }] : []
+    state.remoteControl === 'connected' ? [{ text: 'rc ●' }] : state.remoteControl === 'waiting' ? [{ text: 'rc' }] : [],
+    state.goal ? [{ text: singleLine(state.goal) }] : []
   ]
   return groups
     .filter(group => group.length)

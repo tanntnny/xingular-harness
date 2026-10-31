@@ -9,7 +9,8 @@ export const TODO_WRITE = 'todo_write'
 /** The trigger the prompt and the tool description share, so progress guidance cannot drift. */
 export const TODO_GUIDANCE =
   'If the work has several distinct steps or will take more than one tool call, call todo_write before your first other tool call with the steps you know so far, and keep the list current as steps start and finish. ' +
-  'Keep the list true at all times: mark a step completed only once it is done and checked, and add steps you discover. An open step is work to do in this reply, not something to report; never mark unfinished work completed. ' +
+  'The list shows the person your progress; it is not the scope of the work. The request, and any document it points to, is the scope: add steps as the work shows them, list the steps of a handoff or plan instead of folding them into one "remaining work" item, and never stop because the list is short or done. ' +
+  'Keep the list true at all times: mark a step completed only once it is done and checked, and never mark unfinished work completed. An open step is work to do in this reply, not something to report. Before you end the turn, compare the request, not the list, with what is done and checked, and do whatever is still yours to do. ' +
   'The person follows your work from it, and a subagent’s todo list shows as its progress in the person’s list of subagents.'
 
 /** The event a run writes; `checklist.updated` is the pre-rename name, still read for old runs. */

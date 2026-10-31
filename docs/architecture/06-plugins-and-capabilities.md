@@ -53,7 +53,22 @@ callable result for one run.
   route to another owner's template or guess a default (ADR-0061).
   A package without a `package.json` name is named, described and versioned by the first of
   `plugin.json`, `.claude-plugin/plugin.json`, `.codex-plugin/plugin.json`, so an agent plugin
-  written for other harnesses installs as it is.
+  written for other harnesses installs as it is. The first of those manifests that declares
+  `skills` (a path or a list of paths) also brings those skill folders as package skill
+  contributions, so a plugin laid out for another harness contributes the skills it declares. A
+  declared path must stay inside the package, and a symlinked skill folder is skipped. Pi's own
+  `skills/` folder and `package.json` manifest take precedence, and a package whose settings entry
+  names skill patterns is left to that filter.
+- **Skill installation routes.** A skill reaches a run as text from the working folder's `.pi/skills`
+  or `.agents/skills` (walking up to the repository root), the OS user's `~/.agents/skills`, the
+  state's `accounts/_shared/pi/skills`, a package's `skills` or a foreign manifest's declared paths,
+  or the pinned variant's `skills`. A model may write the first two; `~/.agents` is outside the
+  workspace, so a write there needs the person's approval. Variant, library, Hub and package
+  installs change committed state and are person acts (`/skills`, `/components`, `/hub`,
+  `/plugins`). A variant holds `SKILL.md` and flat `scripts/` files only. `plugins.install` takes a
+  package address: a GitHub or GitLab `tree`/`blob` page address is refused with the repository
+  address and these routes. The install guidance lives in the release-owned `plugin-authoring`
+  skill, not the always-on prompt ([STUDY-0005](../study/STUDY-0005-skill-installation-guidance.md)).
 - **Package subagent profiles.** An installed package's agents folder (`agents/` unless
   `harness.agents` names another) brings each Markdown file whose frontmatter has a `name` and a
   `description` as an `agent` contribution (at most 50). It is text: it needs no trust and follows

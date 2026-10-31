@@ -2,7 +2,7 @@
 
 1. Review and commit the completed Harness changes on the active release branch. Review App
    compatibility changes separately. Preserve old tags and exclude outputs, external references,
-   and caches. Stable versions use `X.Y.Z`; unstable previews use `X.Y.Z-unstable.N` and publish
+   and caches. Stable versions use `X.Y.Z`; unstable previews use `X.Y.Z-unstable` or `X.Y.Z-unstable.N` and publish
    to npm's `unstable` dist-tag. Use a new, unused version for every publication.
 2. Run `npm run ci` and the required App checks. Require green CI on Ubuntu and macOS; install Bun
    1.4.2 and use Node 22.19.0. Do not waive failing checks.

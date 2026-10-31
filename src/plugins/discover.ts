@@ -2,7 +2,7 @@
 // rules. Resolving reads folders and manifests; it never runs an extension.
 import { existsSync, lstatSync, readdirSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join, sep } from 'node:path'
+import { basename, join, sep } from 'node:path'
 
 import { log } from '../core/bus'
 import * as frontmatter from '../core/frontmatter'
@@ -84,6 +84,44 @@ export function packageProfiles(root: string, folder: string): string[] {
 
 const inside = (path: string, parent: string): boolean => path === parent || path.startsWith(parent.endsWith(sep) ? parent : `${parent}${sep}`)
 
+/** At most this many skills are read from one package's foreign manifest. */
+const MAX_MANIFEST_SKILLS = 100
+
+/**
+ * The skills a package's foreign manifest declares: a folder with a `SKILL.md`, a folder of skill
+ * folders, or a `SKILL.md` file. Paths are already relative and inside the package.
+ */
+function declaredSkillFiles(root: string, declared: readonly string[]): string[] {
+  const found = new Set<string>()
+  const visit = (path: string, depth: number): void => {
+    if (found.size >= MAX_MANIFEST_SKILLS) return
+    let stat
+    try {
+      stat = lstatSync(path)
+    } catch {
+      return
+    }
+    if (stat.isSymbolicLink()) return
+    if (stat.isFile()) {
+      if (basename(path) === 'SKILL.md') found.add(path)
+      return
+    }
+    if (!stat.isDirectory() || depth > 2) return
+    const own = join(path, 'SKILL.md')
+    try {
+      if (lstatSync(own).isFile()) {
+        found.add(own)
+        return
+      }
+    } catch {
+      // A folder without its own SKILL.md lists the skills inside it.
+    }
+    for (const name of readdirSync(path).sort()) visit(join(path, name), depth + 1)
+  }
+  for (const path of declared) visit(join(root, path), 0)
+  return [...found]
+}
+
 interface Metadata {
   source: string
   scope: string
@@ -161,8 +199,21 @@ export const piResolver: Resolver = async ({ cwd, agentDir, install, packages })
   // A package may name a hooks file for the harness. Only a package a person installed counts:
   // a working folder's package cannot put code into the harness's own process.
   const roots = new Map<string, string>()
-  for (const configured of manager().listConfiguredPackages()) if (configured.scope === 'user' && configured.installedPath) roots.set(configured.installedPath, configured.source)
-  for (const folder of packages ?? []) roots.set(folder, folder)
+  // A foreign manifest's skills are text, so a project's package may bring them too.
+  const skillRoots = new Map<string, { source: string; project: boolean }>()
+  const filtered = new Set<string>()
+  for (const entry of [...(settings.getGlobalSettings().packages ?? []), ...(settings.getProjectSettings().packages ?? [])]) {
+    if (entry && typeof entry === 'object' && Array.isArray(entry.skills)) filtered.add(entry.source)
+  }
+  for (const configured of manager().listConfiguredPackages()) {
+    if (!configured.installedPath) continue
+    if (configured.scope === 'user') roots.set(configured.installedPath, configured.source)
+    skillRoots.set(configured.installedPath, { source: configured.source, project: configured.scope === 'project' })
+  }
+  for (const folder of packages ?? []) {
+    roots.set(folder, folder)
+    skillRoots.set(folder, { source: folder, project: false })
+  }
   for (const [root, source] of roots) {
     const manifest = packageManifest(root)
     for (const path of packageProfiles(root, manifest.agents)) found.push({ kind: 'agent', path, origin: 'package', project: false, packageRoot: root, source, enabled: true })
@@ -171,6 +222,21 @@ export const piResolver: Resolver = async ({ cwd, agentDir, install, packages })
     found.push({ kind: 'hook', path: join(root, hooks), origin: 'package', project: false, packageRoot: root, source, enabled: true })
     // Pi takes a folder with none of its own resources to be an extension itself. A package that
     // only brings hooks is not one, and must not be handed to Pi as code to load.
+    const fallback = found.findIndex((item) => item.kind === 'extension' && item.path === root)
+    if (fallback !== -1) found.splice(fallback, 1)
+  }
+  // Skills a foreign manifest declares load with the package, under its own switch. A package
+  // whose settings entry names skill patterns has expressed a filter, so nothing is added there.
+  for (const [root, meta] of skillRoots) {
+    if (filtered.has(meta.source)) continue
+    let added = false
+    for (const path of declaredSkillFiles(root, packageManifest(root).skills)) {
+      if (found.some((item) => item.kind === 'skill' && item.path === path)) continue
+      found.push({ kind: 'skill', path, origin: 'package', project: meta.project, packageRoot: root, source: meta.source, enabled: true })
+      added = true
+    }
+    if (!added) continue
+    // The package has resources of its own, so it is not itself an extension.
     const fallback = found.findIndex((item) => item.kind === 'extension' && item.path === root)
     if (fallback !== -1) found.splice(fallback, 1)
   }

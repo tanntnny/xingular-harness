@@ -22,11 +22,11 @@ import type { TodoItem } from '../sessions/contracts'
 import { SESSION_GUIDANCE, SESSION_NAME } from '../tools/sessionName'
 import type { SessionState } from '../sessions/sessionState'
 import { ANNOTATIONS_GUIDANCE, STANDARD_CONNECTIONS, standardSections, type StandardSession } from './standard'
+import { REPORTING_BUDGET, REPORTING_GUIDANCE } from './reporting'
 
 const IDENTITY_BUDGET = 1000
 const WIKI_BUDGET = 2500
 const TOOLS_BUDGET = 8000
-const REPORTING_BUDGET = 2400
 const SESSION_STATE_BUDGET = 1_000
 export const REQUIRED_SKILLS_BUDGET = 12_000
 const REQUIRED_SKILLS_POINTER = 'Some required skill text was omitted to fit. Load the rest with skill_load.'
@@ -160,25 +160,11 @@ export interface Launch {
   profile?: string
 }
 
-/** What a person's own session is told about how the end of a reply is checked (ADR-0071). */
-export const STOP_GATE_GUIDANCE = 'A reply that ends while its todo list has open items, or that a completion check finds unfinished, is sent back to you, so keep working until the request is done. A reply also has a work-slice budget: when it is reached the harness records a checkpoint from your todo list, files and checks, and the work continues from there.'
+/** What a person's own session is told about how the end of a reply is checked (ADR-0071, ADR-0072). */
+export const STOP_GATE_GUIDANCE = 'A reply that ends while its todo list has open items is sent back to you, so keep working until the request is done. A reply also has a work-slice budget: when it is reached the harness records a checkpoint from your todo list, files and checks, and the work continues from there.'
 
 /** How a run's final reply is shaped. Fixed text: it sits in the stable prefix of every pack. */
-export const REPORTING_GUIDANCE = `When you finish work, write the final reply for a person who did not watch you work. Reporting is for work that is finished or genuinely blocked: do not end a turn to report work you can still do.
-
-- Lead with the outcome, not the steps taken to reach it. If the person asked a question, answer it first.
-- Cover the most important information and use as much structure as the answer needs. Use descriptive headings, lists, or tables when they help explain the outcome; do not force a fixed set of report headings apart from the two named below. Keep explanations concise and include technical detail where it helps.
-- When work involves files, identify the relevant paths and briefly state what changed or mattered. Use \`path:line\` references where useful, and a table (File | Change | Why) when there are three or more changed files.
-- Include blockers, risks, or next steps only when they are concrete and relevant.
-- When the work stopped for the person, state the concrete thing they must do or decide for each item, and its owner; do not merely restate the blocker or invent a human decision.
-- End the reply with \`## Beyond what you asked\` when you did anything beyond the request: name each piece and say why the work needed it.
-- End the reply with \`## What would make this complete\` only when the work stopped short — it needs something only the person can do, or the work-slice guard handed it back: list the concrete remaining steps in order, and name the ones only the person can do. Never stop early in order to write this section.
-- Use **Need human inspection** only when a concrete verification requires a person because you could not perform or observe it. State what remains unverified, why you could not verify it, and the specific check the person should make. Do not use this for checks you ran or generic risks.
-- Name only checks actually run and their results; never claim a check you did not run.
-- Use a Markdown table when comparing options, listing several items with the same fields, or reporting the results of several checks. Use prose or bullets otherwise.
-- A one-line question gets a one-line answer.
-- If the person, the application, or the current mode asks for a different format, follow that.
-`
+export { REPORTING_GUIDANCE }
 
 export const HISTORY_GROUP = ['history_search', 'history_read', 'trajectory_search', 'trajectory_read']
 export const WIKI_GROUP = ['wiki_search', 'wiki_read', 'wiki_list', 'wiki_write']

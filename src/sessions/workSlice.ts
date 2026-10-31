@@ -283,6 +283,8 @@ export interface SliceContinuationOptions {
   todo?: () => readonly { status: string }[]
   /** The next open step, for the continue message. */
   next?: () => string
+  /** True while a /goal is active: a goal's slices go on even when every todo item is done (ADR-0072). */
+  goalActive?: () => boolean
   /** Called before the next slice starts, with the slice that ended. */
   onContinue?: (ended: { slice: number; steps: number; limit: string | null }) => void
 }
@@ -313,7 +315,7 @@ export function sliceContinuation(options: SliceContinuationOptions): (pi: Conti
       if (options.failed?.() || options.blocked?.() || !state.progressed) return
       if (state.slice >= policy.maxSlices) return
       const todo = options.todo?.() ?? []
-      if (todo.length && todo.every((item) => item.status === 'completed')) return
+      if (!options.goalActive?.() && todo.length && todo.every((item) => item.status === 'completed')) return
       const ended = { slice: state.slice, steps: state.steps, limit: state.endedByLimit }
       options.onContinue?.(ended)
       beginNextSlice(state)

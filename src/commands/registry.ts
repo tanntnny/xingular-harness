@@ -28,6 +28,7 @@ export interface CoreCommand {
 export const CORE_COMMANDS = [
   { name: 'help', description: 'List the commands', group: 'Core', kind: 'local' },
   { name: 'plan', args: '[brief]', description: 'Plan one request, read-only: /plan <brief>', group: 'Run', kind: 'session', methods: ['sessions.run'] },
+  { name: 'goal', args: '[<objective>|edit|pause|resume|clear]', description: 'Set or view a goal for a long-running task: /goal <objective>', group: 'Run', kind: 'session', methods: ['sessions.run'] },
   { name: 'btw', aliases: ['side'], args: '[question]', description: 'Ask a side question without interrupting: /btw <question>', group: 'Run', kind: 'session', methods: ['sideQuestions.start', 'sideQuestions.cancel'] },
   { name: 'new', description: 'Start a new session', group: 'Session', kind: 'session' },
   { name: 'stop', description: 'Stop the current reply', group: 'Run', kind: 'session', methods: ['runs.interrupt'] },

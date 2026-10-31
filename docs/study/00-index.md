@@ -26,6 +26,13 @@ written and the claim moves to checked behavior. Cite material as
 - [How other harnesses control the end of a turn](STUDY-0004-turn-end-controls.md) — stop hooks,
   completion tools, follow-up loops and lint-driven re-prompts across ten harnesses, with sources;
   why a self-ended reply settles `completed` here, and the one deterministic layer to add.
+- [How peers shape the final report](STUDY-0006-reporting-prompts.md) — the final-answer rules of
+  Claude Code, Codex and Kimi; what this harness's 3,400-character reporting section lacked; and the
+  large content-block prompt in [ADR-0073](../decisions/ADR-0073-large-reporting-prompt.md).
+- [Does the harness tell an agent how to install a skill](STUDY-0005-skill-installation-guidance.md)
+  — the global and project routes this harness already loads, checked with its own resolver; why a
+  session model is told none of them; and how Codex, Gemini, Claude Code, Kimi and others put that
+  knowledge in a bundled skill instead of the prompt.
 
 ## Sources
 

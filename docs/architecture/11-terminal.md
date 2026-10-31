@@ -378,13 +378,11 @@ Terminal tool-gate and work-slice refusals are relayed as `tool.refused` events 
 
 Terminal replies carry the same work-slice guard as structured runs: 320 tool calls or 60 minutes,
 with no new-token limit by default (PROP-0044), then a refusal that asks the model to stop and report
-where it is. Terminal replies also carry the stop gate (INV-RUN-15, ADR-0069, ADR-0071): the
-extension sends a reply that ends with open todo items back, asks the completion check through the
-session's own model registry (`ctx.modelRegistry`, low effort) when a reply that did work ends with
-its list closed, and sends it back on `continue` — up to three nudges in all, each `notice` telemetry
-recorded as `extension.notice`, the check's request added to the reply's usage — and at settle sends a harness-written
-`checkpoint` and the `needs_person` or `unfinished` code, which the controller records on the active
-run, so an App reading the same session sees the handoff. Plan replies are not gated. A reply that
+where it is. Terminal replies also carry the todo gate (INV-RUN-15, ADR-0069, ADR-0072): the
+extension sends a reply that ends with open todo items back, up to three nudges, each `notice`
+telemetry recorded as `extension.notice`, and at settle sends a harness-written `checkpoint` and the
+`needs_person` or `unfinished` code, which the controller records on the active run, so an App
+reading the same session sees the handoff. No model judges an ordinary reply. Plan replies are not gated. A reply that
 reaches its budget after doing work continues in place as its next slice (ADR-0070): a
 `xingular-slice-continue` message in the same run, a checkpoint and a notice per boundary, up to
 `maxSlices` (8). A fruitless, blocked, failed, aborted or plan slice, or one whose todo items are all
@@ -393,6 +391,24 @@ so the person or a host can continue it. A checkpoint card in the transcript is 
 (PAR-004). Start the terminal with `XINGULAR_WORK_SLICE=off` to launch a reply with no boundary at
 all, or with key=value pairs such as `maxToolCalls=15,maxSlices=3` for a smaller policy; neither is
 persisted, so the next launch without it restores the defaults.
+
+## `/goal` (ADR-0072, INV-RUN-16)
+
+`/goal <objective>` sets the session's goal and starts work at once; `--rounds N` and `--hours H`
+before the objective set this goal's caps (30 rounds, 8 hours by default). Bare `/goal` shows the
+status (status, objective, rounds, time used, last check, and the commands that apply). `/goal edit`
+asks for a new objective (the same goal, its usage kept), `pause` stops a running reply and keeps the
+goal, `resume` continues it, `clear` removes it. A subcommand matches only as the whole argument, so
+"/goal pause now" is an objective. Setting a goal while an unfinished one exists asks first. Esc or
+Ctrl-C on a running goal pauses it, as in Codex. The status bar shows `Pursuing goal (2m, round
+3/30)`, `Goal paused (/goal resume)`, `Goal stalled (/goal resume)`, `Goal hit usage limits (/goal
+resume)`, `Goal unmet (...)` or `Goal achieved (...)`.
+
+The goal lives in the Pi session as a `xingular-goal-state` entry, so a reopened conversation shows
+it, as `paused`: nothing resumes by itself. The model gets `get_goal` and `update_goal` only while a
+goal exists (INV-TOOL-9). The goal loop is a second extension after the todo gate and before slice
+continuation; a goal's slices continue even when every todo item is done. `/goal` is a `session`
+command that uses `sessions.run` with `goal` (page 10); in plan mode the loop stays silent.
 
 ## Liveness and a reply that stops working (INV-RUN-14, ADR-0054)
 

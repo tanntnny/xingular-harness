@@ -9,6 +9,8 @@ related:
 ---
 # How other harnesses control the end of a turn
 
+> **Update (2026-11-01, [ADR-0072](../decisions/ADR-0072-codex-prompts-and-goal.md)):** OpenAI Codex is open source. It has no completion check on ordinary turns and keeps its model-called `update_goal` behind an opt-in `/goal`. The harness followed: ordinary replies rely on Codex's prompt wording and the todo gate, and the judge now checks a `/goal` completion claim only.
+
 > **Update (2026-10-31, [ADR-0071](../decisions/ADR-0071-completion-check.md)):** the model-judged evaluator rejected above was adopted after all, as an automatic completion check on the run's own model, because a live A/B showed a closed todo list hiding unfinished work and `finish(needs_decision)` used as an early exit; `finish` is removed.
 
 > **Outcome (2026-10-31):** adopted with changes in [ADR-0069](../decisions/ADR-0069-stop-gate-and-finish.md).

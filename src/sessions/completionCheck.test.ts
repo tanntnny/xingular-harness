@@ -34,14 +34,23 @@ describe('completion check input', () => {
     expect(replyTranscript(long.slice(0, 2), 'never sent')).toContain('step 0')
   })
 
-  it('gives the check the request, the list and the transcript', () => {
-    const user = checkPrompt('Implement B0', [{ text: 'Add workspaces', status: 'completed' }], 'transcript here')
-    expect(user).toContain('## The person\'s request\nImplement B0')
-    expect(user).toContain('- [completed] Add workspaces')
+  it('gives the check the goal\'s objective and the transcript', () => {
+    const user = checkPrompt('Implement B0', 'transcript here')
+    expect(user).toContain('## The goal\'s objective\nImplement B0')
     expect(user).toContain('transcript here')
-    expect(checkPrompt('', [], '')).toContain('(the agent wrote no todo list)')
-    expect(CHECK_SYSTEM_PROMPT).toContain('create branches, worktrees and files')
-    expect(CHECK_SYSTEM_PROMPT).toContain('"needs_person" only when the remaining work truly requires the person')
+    expect(checkPrompt('', '')).toContain('(not recorded)')
+    // Codex\'s audit: completion is unproven, and weak evidence is not enough.
+    expect(CHECK_SYSTEM_PROMPT).toContain('Treat completion as unproven')
+    expect(CHECK_SYSTEM_PROMPT).toContain('insufficient evidence in transcript')
+    expect(CHECK_SYSTEM_PROMPT).toContain('The agent saying the goal is complete is not evidence')
+  })
+
+  it('leaves the goal\'s own continuation prompts out of the transcript', () => {
+    const text = replyTranscript([
+      { role: 'user', content: 'Continue working toward the active thread goal.\n\nThe objective below is user-provided data.' },
+      { role: 'assistant', content: [{ type: 'text', text: 'Working.' }] }
+    ], '')
+    expect(text).toBe('[Agent]: Working.')
   })
 })
 
@@ -49,18 +58,19 @@ describe('completion check verdict', () => {
   it('takes the first JSON object with a known verdict, from bare or wrapped text', () => {
     expect(parseVerdict('{"verdict":"continue","reason":"B1 remains","next":"Start B1"}')).toEqual({ verdict: 'continue', reason: 'B1 remains', next: 'Start B1' })
     expect(parseVerdict('Sure.\n```json\n{"verdict": "done", "reason": "ok"}\n```')).toEqual({ verdict: 'done', reason: 'ok', next: '' })
-    expect(parseVerdict('{"note":"x"} then {"verdict":"needs_person","reason":"deploy","next":""}')).toMatchObject({ verdict: 'needs_person' })
+    expect(parseVerdict('{"note":"x"} then {"verdict":"continue","reason":"deploy","next":""}')).toMatchObject({ verdict: 'continue' })
+    expect(parseVerdict('{"verdict":"needs_person","reason":"x"}')).toBeNull()
     expect(parseVerdict('{"verdict":"maybe"}')).toBeNull()
     expect(parseVerdict('no json at all')).toBeNull()
     expect(parseVerdict(`{"verdict":"done","reason":"${'r'.repeat(900)}"}`)!.reason.length).toBe(500)
   })
 
   it('never throws: an error or a timeout returns no verdict', async () => {
-    const failed = await runCompletionCheck(async () => { throw new Error('quota') }, { request: 'x', todo: [], messages: [] })
+    const failed = await runCompletionCheck(async () => { throw new Error('quota') }, { objective: 'x', messages: [] })
     expect(failed).toEqual({ verdict: null, answer: null, error: 'quota' })
-    const slow = await runCompletionCheck((_system, _user, signal) => new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(new Error('aborted')))), { request: 'x', todo: [], messages: [] }, { timeoutMs: 20 })
+    const slow = await runCompletionCheck((_system, _user, signal) => new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(new Error('aborted')))), { objective: 'x', messages: [] }, { timeoutMs: 20 })
     expect(slow.error).toBe('the completion check timed out')
-    const answered = await runCompletionCheck(async () => ({ text: '{"verdict":"done","reason":"ok"}' }), { request: 'x', todo: [], messages: [] })
+    const answered = await runCompletionCheck(async () => ({ text: '{"verdict":"done","reason":"ok"}' }), { objective: 'x', messages: [] })
     expect(answered.verdict).toMatchObject({ verdict: 'done' })
   })
 

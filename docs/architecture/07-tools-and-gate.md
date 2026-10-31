@@ -147,10 +147,13 @@ beside the choices (INV-RC-3, INV-RC-4).
 
 - **INV-GATE-1** Every tool call of every run passes the gate. No tool source bypasses it,
   including extension-registered tools (which ask before every call) and the initial Bash command.
-- **INV-TOOL-9** The model has no tool that ends or hands off its own work (ADR-0071): neither
-  `checkpoint_write` (PROP-0041, removed by ADR-0069) nor `finish` (ADR-0069, removed by ADR-0071)
-  exists. When a reply stops, the harness decides how it settled (INV-RUN-15) and writes the
-  checkpoint from the run's evidence.
+- **INV-TOOL-9** The model has no tool that ends or hands off its own work (ADR-0071, ADR-0072):
+  neither `checkpoint_write` (PROP-0041, removed by ADR-0069) nor `finish` (ADR-0069, removed by
+  ADR-0071) exists. The one exception is `update_goal` in a goal the person started: it is offered
+  only while a goal exists, its `complete` is only a claim that the harness checks (INV-RUN-16), and
+  its `paused` needs the person's word. The model cannot create, resume or limit a goal. When a
+  reply stops, the harness decides how it settled (INV-RUN-15) and writes the checkpoint from the
+  run's evidence.
 - **INV-TOOL-10** Bash keeps one command budget on every surface: 120 seconds when the call says
   nothing, 300 seconds as the ceiling without a `reason`, 900 seconds as the maximum, and a timeout
   returns the partial output with a narrowing instruction instead of blocking the reply.

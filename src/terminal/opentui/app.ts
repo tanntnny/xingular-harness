@@ -15,6 +15,8 @@ import { controlCall } from '../control'
 import { REMOTE_CONTROL_ENV } from '../client'
 import { CHROME_ROWS, centerDialogChromeRows, selectionText } from '../tui/chrome'
 import { createTerminalCommands } from '../tui/commands'
+import { GOAL_CUSTOM_TYPE, runGoalCommand } from '../tui/goalCommand'
+import { goalFooter } from '../../sessions/goal'
 import { BROWSER_COMMANDS } from '../browser'
 import type { TerminalCommandHelpGroup } from '../commandHelp'
 import { parsePlanOutcome } from '../../sessions/planMode'
@@ -45,7 +47,7 @@ import { PlanChoice, type PlanChoiceView } from './planChoice'
 import { QuestionDockState, type QuestionDockAnswers, type QuestionDockQuestion, type QuestionDockView } from './questionDockState'
 import { questionAnswerProblem } from '../../sessions/contracts'
 import { linkTarget, openLink as openWithDefaultHandler, type LinkTarget } from '../../core/links'
-import { CACHE_HIT_CRITICAL_PERCENT, CACHE_HIT_WARNING_PERCENT, cacheHitLevel, cacheHitPercent, recentCacheUsage, type CacheHitLevel, type CacheUsage } from './statusBar'
+import { recentCacheUsage, type CacheUsage } from './statusBar'
 import { subagentRoster, type SubagentRosterView } from './subagentsWidget'
 import type { PendingMessage } from './pendingMessages'
 import { skillTokenAt } from '../tui/skillInvocation'
@@ -70,13 +72,11 @@ const STATISTICS_INTERVAL_MS = 250
 interface SessionStatistics {
   at: number
   snapshot: ReturnType<TerminalRuntime['snapshot']> | undefined
-  sessionId?: string
   inputTokens: number
   outputTokens: number
   /** The most recent requests, which the cache hit rate is judged on. */
   cache: CacheUsage
 }
-const CACHE_HIT_RANK: Record<CacheHitLevel, number> = { ok: 0, warning: 1, critical: 2 }
 type Mounted = Component & { dispose?(): void }
 type EditorFactory = Parameters<ExtensionUIContext['setEditorComponent']>[0]
 type HeaderFactory = Parameters<ExtensionUIContext['setHeader']>[0]
@@ -139,6 +139,8 @@ export interface OpenTuiView {
   home: boolean
   /** `/remote-control` state for the status bar. */
   remoteControl?: 'waiting' | 'connected' | null
+  /** `/goal` footer text (ADR-0072). */
+  goal?: string | null
   sessionName?: string
   cwd: string
   branch: string | null
@@ -396,9 +398,6 @@ export class OpenTuiApplication {
   /** Set while handling a key or action of a person's, so what it changes publishes at once. */
   private interactive = false
   private statistics?: SessionStatistics
-  /** The cache level last reported for a session; a notice is posted only when it drops to a worse one. */
-  private cacheHit: { sessionId?: string; level: CacheHitLevel } = { level: 'ok' }
-
   /**
    * Schedules one view publication. A burst of changes, such as the events of a streamed reply,
    * becomes a single update at most once per frame instead of one per event.
@@ -548,6 +547,9 @@ export class OpenTuiApplication {
         }
       })
       if (this.stopped) return
+      // The footer shows the goal's status, so a change to the goal repaints it.
+      const stopGoalFooter = this.runtime.goal?.subscribe(() => this.change())
+      if (stopGoalFooter) this.cleanup.push(stopGoalFooter)
       this.sideQuestion = new SideQuestion({
         context: () => ({
           instructions: this.runtime!.session.systemPrompt,
@@ -584,6 +586,16 @@ export class OpenTuiApplication {
         shutdown: () => { void this.shutdown() },
         setEditorText: text => this.setDraftExternal(text),
         plan: brief => this.enqueuePlan(brief),
+        goal: argument => runGoalCommand(argument, {
+          controller: this.runtime!.goal,
+          idle: () => this.runtime!.session.isIdle,
+          start: content => this.runtime!.session.sendCustomMessage({ customType: GOAL_CUSTOM_TYPE, content, display: false }, { triggerTurn: true }),
+          steer: content => this.runtime!.session.sendCustomMessage({ customType: GOAL_CUSTOM_TYPE, content, display: false }, { deliverAs: 'steer' }),
+          note: content => this.runtime!.session.sendCustomMessage({ customType: GOAL_CUSTOM_TYPE, content, display: false }),
+          interrupt: () => this.runtime!.interrupt(),
+          confirm: (title, message) => this.ui!.confirm(title, message),
+          input: (title, value) => this.ui!.input(title, value)
+        }),
         btw: question => this.sideQuestion!.ask(question),
         copyText: copyToClipboard,
         control: (method, params) => controlCall(method, params ?? {}),
@@ -856,8 +868,6 @@ export class OpenTuiApplication {
       this.transcript.appendBashOutput(event.id, event.delta)
     }
     if (event.type === 'turn_start') this.requestStartedAt = performance.now()
-    // turn_end follows the persistence of the reply, so the session's totals already include it.
-    if (event.type === 'turn_end') this.reportCacheHitLevel()
     if (event.type === 'message_end' && event.message.role === 'assistant') {
       const outputTokens = event.message.usage?.output
       const requestStartedAt = this.requestStartedAt
@@ -2077,34 +2087,17 @@ export class OpenTuiApplication {
     const now = performance.now()
     if (this.startedAt !== null && this.statistics && now - this.statistics.at < STATISTICS_INTERVAL_MS) return this.statistics
     const snapshot = this.runtime?.snapshot()
-    let sessionId: string | undefined
     let inputTokens = 0
     let outputTokens = 0
     let cache: CacheUsage = { inputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, requests: 0 }
     try {
       const stats = this.session.getSessionStats()
       const usage = stats.tokens
-      sessionId = stats.sessionId
       inputTokens = (usage.input ?? 0) + (usage.cacheRead ?? 0)
       outputTokens = usage.output ?? 0
       cache = recentCacheUsage(this.session.messages)
     } catch { /* A session being replaced has no statistics for a frame. */ }
-    return this.statistics = { at: now, snapshot, sessionId, inputTokens, outputTokens, cache }
-  }
-
-  /**
-   * Posts a notice when the recent cache hit rate has dropped to a worse level since the last turn.
-   * Recovering is silent, so a rate that falls again is reported again.
-   */
-  private reportCacheHitLevel(): void {
-    const { sessionId, cache } = this.sessionStatistics()
-    const level = cacheHitLevel(cache)
-    const previous = this.cacheHit.sessionId === sessionId ? this.cacheHit.level : 'ok'
-    this.cacheHit = { sessionId, level }
-    if (level === 'ok' || CACHE_HIT_RANK[level] <= CACHE_HIT_RANK[previous]) return
-    const percent = cacheHitPercent(cache.cacheReadTokens, cache.inputTokens)
-    const threshold = level === 'critical' ? CACHE_HIT_CRITICAL_PERCENT : CACHE_HIT_WARNING_PERCENT
-    this.notify(`Cache hit rate is ${percent}% over the last ${cache.requests} requests, below ${threshold}%.`, level === 'critical' ? 'error' : 'warning')
+    return this.statistics = { at: now, snapshot, inputTokens, outputTokens, cache }
   }
 
   view(): OpenTuiView {
@@ -2120,6 +2113,7 @@ export class OpenTuiApplication {
     const sideQuestionDock = this.componentLines(this.sideQuestionDock, width)
     return {
       remoteControl: this.remoteState,
+      goal: goalFooter(this.runtime?.goal?.get() ?? null),
       // Single-line notices can accompany the welcome; multiline output such as /help takes over the transcript.
       home: !transcript.hasMultilineNotice && transcript.items.every(item => item.kind === 'notice'),
       sessionName: snapshot?.name,

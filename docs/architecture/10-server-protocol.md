@@ -79,12 +79,19 @@ harness → host   { v: 1, id, call, params }          host → harness   { v: 1
 - The run-event stream adds `checkpoint` (the bounded handoff) and `heartbeat` (steps, elapsed time,
   last tool, compactions, slice, call budget). Hosts must accept both; an unknown event type is still
   relayed in order (INV-RUN-3).
-- `terminalCode` gains `needs_person` and `unfinished` (ADR-0069, ADR-0071): a reply that settled with
-  work left — `needs_person` when the completion check said the person is needed, `unfinished` when
-  todo items stayed open or a check's `continue` was not acted on. Both are `interrupted`, carry a
-  `checkpoint`, and are not auto-continued; a host should offer the person Continue, as it does for
-  `slice_complete`. Stop-gate nudges and completion-check verdicts arrive as `extension.notice` events
-  with `extension: 'stop-gate'`; a check's model request is one more `usage.updated` request.
+- `terminalCode` gains `needs_person` and `unfinished` (ADR-0069, ADR-0072): a reply that settled with
+  work left — `needs_person` when the run's goal ended `blocked`, `unfinished` when todo items stayed
+  open or a goal was paused, stalled or limited. Both are `interrupted`, carry a `checkpoint`, and
+  are not auto-continued; a host should offer the person Continue, as it does for `slice_complete`.
+  Stop-gate nudges arrive as `extension.notice` events with `extension: 'stop-gate'`.
+- `sessions.run` accepts `goal { objective, rounds?, hours? }` (ADR-0072, INV-RUN-16) for a person's
+  own top-level run; it is refused with `invalid_request` for a plan, command, unattended or child
+  run, or an empty or over-long (4,000 character) objective. The objective is the request, and the
+  run continues in place while the goal is active. Goal rounds, claim checks and stops arrive as
+  `extension.notice` events with `extension: 'goal'`; a claim check's model request is one more
+  `usage.updated` request. Run records carry `goalMode` (`goalId`, `objective`, `status`, `limits`,
+  `rounds`, `timeUsedSeconds`, `claimed`, `lastReason`) while a goal exists; `goal` stays the
+  request text. A goal active at a work-slice boundary is carried into the continuation run.
 - Run streams also carry `tool.refused` with the call id, name, refusal code and bounded reason.
   Run records expose nullable `terminalCode`; `terminalReason` remains descriptive text. Older
   records and events may omit the code. Trajectory search exposes both fields (pages 02 and 08).

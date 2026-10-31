@@ -1,10 +1,11 @@
 ---
 id: ADR-0071
 title: A completion check decides whether a reply may end; finish is removed
-status: accepted
+status: accepted (partly superseded by ADR-0072)
 created: 2026-10-31
-updated: 2026-10-31
+updated: 2026-11-01
 supersedes: partial — ADR-0069 (the `finish` tool and the `needs_person` it declared)
+superseded-by: partial — ADR-0072 (the check no longer runs on every reply; it checks a /goal claim only; there is now a /goal command)
 related:
   - ADR-0069
   - ADR-0070

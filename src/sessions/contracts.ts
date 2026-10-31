@@ -505,6 +505,33 @@ export type RunEvent = z.infer<typeof runEventSchema>
  * the harness stores and returns them, and reads only `mode` (`chat` is an agent's own
  * conversation, `code` is a session in a project).
  */
+/** A run's /goal as the run record keeps it (ADR-0072). */
+export interface GoalModeRecord {
+  goalId: string
+  objective: string
+  status: 'active' | 'paused' | 'blocked' | 'usage_limited' | 'budget_limited' | 'complete'
+  limits: { rounds: number; hours: number }
+  rounds: number
+  timeUsedSeconds: number
+  createdAt: number
+  updatedAt: number
+  claimed: boolean
+  lastReason: string
+}
+
+export const goalModeSchema = z.object({
+  goalId: z.string(),
+  objective: z.string(),
+  status: z.enum(['active', 'paused', 'blocked', 'usage_limited', 'budget_limited', 'complete']),
+  limits: z.object({ rounds: z.number().int().positive(), hours: z.number().positive() }),
+  rounds: z.number().int().nonnegative(),
+  timeUsedSeconds: z.number().nonnegative(),
+  createdAt: z.number(),
+  updatedAt: z.number(),
+  claimed: z.boolean(),
+  lastReason: z.string()
+})
+
 export interface RunRecord {
   resumedFromRunId: string | null
   /** Opaque run lineage supplied by the embedding application. */
@@ -527,6 +554,8 @@ export interface RunRecord {
   workspaceRoot?: string | null
   worktreeId: string | null
   goal: string | null
+  /** The run's /goal (ADR-0072): its objective, status, rounds and time. Absent for a run without one. */
+  goalMode?: GoalModeRecord | null
   attachmentCount: number
   startedAt: string
   endedAt: string | null
@@ -582,6 +611,7 @@ export const runRecordSchema = z.object({
   workspaceRoot: text.optional(),
   worktreeId: text,
   goal: text,
+  goalMode: goalModeSchema.nullish().transform((value) => value ?? null).optional(),
   attachmentCount: z.number().int().nonnegative().default(0),
   startedAt: z.string(),
   endedAt: text,

@@ -37,6 +37,7 @@ function ordered(record: RunRecord): RunRecord {
     ...(record.workspaceRoot !== undefined ? { workspaceRoot: record.workspaceRoot } : {}),
     worktreeId: record.worktreeId,
     goal: record.goal,
+    ...(record.goalMode ? { goalMode: record.goalMode } : {}),
     attachmentCount: record.attachmentCount,
     startedAt: record.startedAt,
     endedAt: record.endedAt,

@@ -8,6 +8,7 @@ import { closeSync, existsSync, openSync, readSync, realpathSync } from 'node:fs
 import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 
 import terminalExtension, { type TerminalPlanRunState } from '../piExtension'
+import { GoalController } from '../../sessions/goal'
 import { terminalCredentialStore } from '../credentialStore'
 import { normalModeTools, normalToolsForBranch, planModeTools, PLAN_TOOLS_ENTRY, QUESTION_TOOL_NAMES } from './planMode'
 import { claimTerminalControl, controlCall } from '../control'
@@ -136,6 +137,8 @@ export interface TerminalRuntime {
   installationDeviceId(): Promise<string>
   reload(): Promise<void>
   interrupt(): Promise<void>
+  /** This session's /goal (ADR-0072). */
+  readonly goal: GoalController
   dispose(): Promise<void>
 }
 
@@ -247,6 +250,7 @@ export async function createTerminalRuntime(args: string[], host: TerminalRuntim
     return sessionUiContext(host.ui, () => !disposed && generation === uiGeneration)
   }
   const planRun: TerminalPlanRunState = { active: false, allowedTools: new Set() }
+  const goal = new GoalController()
   let currentMode: ComposerMode = 'normal'
   let pendingApply = false
   const choiceStore: ChoiceStore = {
@@ -308,7 +312,7 @@ export async function createTerminalRuntime(args: string[], host: TerminalRuntim
       additionalSkillPaths: prepared.skills, additionalPromptTemplatePaths: prepared.prompts,
       additionalThemePaths: prepared.themes,
       extensionFactories: [
-        { name: 'harness-terminal-bridge', factory: pi => terminalExtension(pi, planRun, () => native.session), hidden: true },
+        { name: 'harness-terminal-bridge', factory: pi => terminalExtension(pi, planRun, () => native.session, goal), hidden: true },
         // A model picked in the terminal reaches Pi as this event. A restore is not a pick.
         { name: 'harness-mode-choices', factory: pi => { pi.on('model_select', event => { if (event.source !== 'restore') void modeChoices.record(recordingMode(), { model: `${event.model.provider}/${event.model.id}` }) }) }, hidden: true },
         // The bridge registers parent capabilities when delegation is available. Runs without
@@ -522,7 +526,10 @@ export async function createTerminalRuntime(args: string[], host: TerminalRuntim
       } })
       host.changed()
     }),
+    goal,
     async interrupt() {
+      // The person stopping a running goal pauses it, as in Codex; /goal resume continues.
+      if (goal.active() && !native.session.isIdle) goal.pause()
       // Bash executions use their own abort controllers, outside Pi's agent tool loop.
       native.session.abortBash()
       // Socket-backed questions and approvals must settle before Pi can finish aborting tools.

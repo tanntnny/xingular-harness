@@ -22,6 +22,8 @@ export interface PackageManifest {
   hooks: string | null
   /** The folder of subagent profiles, inside the package. `agents` unless the manifest names another. */
   agents: string
+  /** Skill folders a foreign manifest declares, relative to the package root. */
+  skills: string[]
   /** Data-only remote connector forms. Invalid templates are ignored; none can carry credentials. */
   connectorTemplates: ConnectorTemplate[]
 }
@@ -31,6 +33,7 @@ interface Raw {
   description?: unknown
   version?: unknown
   harness?: unknown
+  skills?: unknown
 }
 
 const connectorTemplateSchema = z.object({
@@ -61,7 +64,7 @@ const connectorTemplateSchema = z.object({
 function inside(path: unknown): string | null {
   if (typeof path !== 'string' || !path.trim()) return null
   try {
-    return safeRelative(path.replace(/^\.\//, ''))
+    return safeRelative(path.replace(/^\.\//, '').replace(/\/+$/, ''))
   } catch {
     return null
   }
@@ -80,6 +83,24 @@ function pluginJson(packageRoot: string): Raw {
   return {}
 }
 
+/**
+ * The skill folders a foreign plugin manifest declares. Pi reads only a package's own `skills`
+ * folder and its `package.json` manifest, so a Claude- or Codex-layout package otherwise installs
+ * and contributes nothing.
+ */
+function declaredSkills(packageRoot: string): string[] {
+  for (const file of PLUGIN_MANIFESTS) {
+    const found = readJsonOr<Raw>(join(packageRoot, file), {})
+    const listed = typeof found.skills === 'string' ? [found.skills] : Array.isArray(found.skills) ? found.skills : []
+    const skills = listed.flatMap((entry) => {
+      const path = inside(entry)
+      return path ? [path] : []
+    })
+    if (skills.length) return skills
+  }
+  return []
+}
+
 export function packageManifest(packageRoot: string): PackageManifest {
   const manifest = readJsonOr<Raw>(join(packageRoot, 'package.json'), {})
   // Only a package without a name of its own is described by its plugin.json.
@@ -95,6 +116,7 @@ export function packageManifest(packageRoot: string): PackageManifest {
     defaultPrompt: typeof own.defaultPrompt === 'string' && /^[a-z][a-z0-9-]*$/.test(own.defaultPrompt) ? own.defaultPrompt : null,
     hooks: inside(own.hooks),
     agents: inside(own.agents) ?? 'agents',
+    skills: declaredSkills(packageRoot),
     connectorTemplates: (Array.isArray(own.connectors) ? own.connectors : []).flatMap((value) => {
       const parsed = connectorTemplateSchema.safeParse(value)
       return parsed.success ? [parsed.data] : []

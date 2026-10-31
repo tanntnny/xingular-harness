@@ -11,6 +11,12 @@ it('advertises and loads the shipped skill without a variant', () => {
   expect(loadSkill(null, 'plugin-authoring')).toContain('pi.registerCommand')
 })
 
+it('tells the model where a skill is installed and what it must not copy', () => {
+  const body = readSkillFile(null, 'plugin-authoring')!.body
+  for (const route of ['.agents/skills', '.pi/skills', '~/.agents/skills', '_shared/pi/skills', '.claude/skills']) expect(body).toContain(route)
+  expect(body).toContain('plugin_propose')
+})
+
 it('preserves a pinned variant skill with the same name', () => {
   const dir = mkdtempSync(join(tmpdir(), 'default-skill-'))
   const folder = join(dir, 'skills', 'plugin-authoring')

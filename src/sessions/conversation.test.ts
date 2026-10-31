@@ -89,64 +89,94 @@ describe('a whole reply, with a scripted model', () => {
     expect(of(id).find((event) => event.type === 'checkpoint')?.payload).toMatchObject({ next: 'Run the migration', summary: 'Still stopping.', reason: 'stuck' })
   })
 
-  // ADR-0071: the completion check through real Pi. One scripted model answers both the agent and the
-  // check; a check request is told apart by its system prompt.
+  // ADR-0072: a /goal through real Pi. One scripted model answers both the agent and the claim check;
+  // a check request is told apart by its user message.
   const routed = (model: Awaited<ReturnType<typeof fauxModel>>, agent: unknown[], check: string[]) => {
     const isCheck = (context: { messages?: { role: string; content: unknown }[] }) => {
       const last = context.messages?.at(-1)
       const text = typeof last?.content === 'string' ? last.content : JSON.stringify(last?.content ?? '')
-      return last?.role === 'user' && text.includes("## The person's request")
+      return last?.role === 'user' && text.includes("## The goal's objective")
     }
     const step = (context: { messages?: { role: string; content: unknown }[] }) => isCheck(context)
       ? model.says(check.shift() ?? '{"verdict":"done","reason":"ok"}')
       : agent.shift() ?? model.says('Done.')
     model.script(Array(agent.length + check.length + 2).fill(step))
   }
+  const complete = (model: Awaited<ReturnType<typeof fauxModel>>) => model.calls(['update_goal', { status: 'complete' } as never])
+  const notices = (of: (id: string) => RunEvent[], id: string) => of(id).filter((event) => event.type === 'extension.notice').map((event) => (event.payload as { text: string }).text)
 
-  it('sends back a reply whose closed todo list hides unfinished work, and ends it once the check says done', async () => {
+  it('continues a goal in place after each reply, checks the model\'s completion claim, and completes it', async () => {
     vi.stubEnv('XINGULAR_COMPLETION_CHECK', 'on')
     const { root, model, start, until, of } = await setup()
     routed(model, [
       model.calls(['read', { path: 'src' }]),
-      model.calls(['todo_write', { items: [{ text: 'Implement B0', status: 'completed' }] } as never]),
-      model.says('B0 is done. Should I start B1 next?'),
+      model.says('Part one is done.'),
       model.calls(['read', { path: 'src' }]),
-      model.says('B1 is done too.')
-    ], [
-      '{"verdict":"continue","reason":"The handoff asks for B0 and B1; the order is already decided.","next":"Start B1."}',
-      '{"verdict":"done","reason":"B0 and B1 are done.","next":""}'
+      complete(model),
+      model.says('Both parts are done and checked.')
+    ], ['{"verdict":"done","reason":"Both parts have test output in the transcript.","next":""}'])
+    const id = await start({ goal: { objective: 'Finish parts one and two of the handoff.' }, launch: { standard: { cwd: root } } })
+    await until(() => Boolean(status(of, id)))
+    expect(model.requests()).toBe(6)
+    // The continuation is the Codex audit prompt, in a user-role message that names the objective as data.
+    const texts = model.lastUserTexts()
+    expect(texts.some((text) => text.includes('Continue working toward the active thread goal.') && text.includes('<objective>\nFinish parts one and two of the handoff.\n</objective>'))).toBe(true)
+    expect(notices(of, id)).toEqual([
+      'Goal round 1 of 30 starts.',
+      'Goal claim check: the objective is met — Both parts have test output in the transcript.',
+      'Goal complete: Both parts have test output in the transcript.'
     ])
-    const id = await start({ text: 'Implement B0 and B1 of the handoff.', launch: { standard: { cwd: root } } })
-    await until(() => Boolean(status(of, id)))
-    expect(model.requests()).toBe(7)
-    const notices = of(id).filter((event) => event.type === 'extension.notice').map((event) => (event.payload as { text: string }).text)
-    expect(notices).toEqual(['Completion check 1: continue — The handoff asks for B0 and B1; the order is already decided.', 'Completion check 2: done — B0 and B1 are done.'])
     const { loadRun } = await import('./runStore')
-    expect(loadRun(root, id)).toMatchObject({ status: 'completed', terminalReason: null })
-    // The check's two requests are counted with the run's own.
-    expect((of(id).filter((event) => event.type === 'usage.updated').at(-1)?.payload as { requests: number }).requests).toBe(7)
+    expect(loadRun(root, id)).toMatchObject({ status: 'completed', terminalReason: null, goalMode: { status: 'complete', rounds: 1, objective: 'Finish parts one and two of the handoff.' } })
+    // The check's request is counted with the run's own.
+    expect((of(id).filter((event) => event.type === 'usage.updated').at(-1)?.payload as { requests: number }).requests).toBe(6)
   })
 
-  it('lets the check, not the doer, stop a reply for the person', async () => {
+  it('sends a completion claim back when the check finds the objective unmet', async () => {
     vi.stubEnv('XINGULAR_COMPLETION_CHECK', 'on')
     const { root, model, start, until, of } = await setup()
-    routed(model, [model.calls(['read', { path: 'src' }]), model.says('The cutover is ready; it moves the production route.')], ['{"verdict":"needs_person","reason":"Moving the production route needs the person\'s approval.","next":""}'])
-    const id = await start({ text: 'Prepare and run the API cutover.' })
+    routed(model, [
+      complete(model),
+      model.says('Done.'),
+      complete(model),
+      model.says('Now the migration really ran.')
+    ], [
+      '{"verdict":"continue","reason":"No migration output in the transcript.","next":"Run the migration and show its output."}',
+      '{"verdict":"done","reason":"The migration output shows success.","next":""}'
+    ])
+    const id = await start({ goal: { objective: 'Run the migration.' }, launch: { standard: { cwd: root } } })
     await until(() => Boolean(status(of, id)))
+    expect(model.requests()).toBe(6)
+    expect(model.lastUserTexts().some((text) => text.includes('The completion claim was checked and the objective is not met yet.') && text.includes('Next: Run the migration and show its output.'))).toBe(true)
     const { loadRun } = await import('./runStore')
-    expect(loadRun(root, id)).toMatchObject({ status: 'interrupted', terminalCode: 'needs_person' })
-    expect(of(id).find((event) => event.type === 'checkpoint')?.payload).toMatchObject({ blocked: 'Moving the production route needs the person\'s approval.', reason: 'requested' })
+    expect(loadRun(root, id)).toMatchObject({ status: 'completed', goalMode: { status: 'complete', rounds: 1 } })
   })
 
-  it('never checks a reply that did no work', async () => {
+  it('wraps a goal up at its round cap and leaves the run unfinished', async () => {
+    const { root, model, start, until, of } = await setup()
+    model.script([model.says('Step one.'), model.says('Step two.'), model.says('Wrapping up: step three remains.')])
+    const id = await start({ goal: { objective: 'Do everything.', rounds: 1 }, launch: { standard: { cwd: root } } })
+    await until(() => Boolean(status(of, id)))
+    expect(model.requests()).toBe(3)
+    expect(model.lastUserTexts().some((text) => text.includes('The active thread goal has reached its round or time limit.'))).toBe(true)
+    const { loadRun } = await import('./runStore')
+    expect(loadRun(root, id)).toMatchObject({ status: 'interrupted', terminalCode: 'unfinished', goalMode: { status: 'budget_limited', rounds: 1 } })
+  })
+
+  it('never asks a model whether an ordinary reply is done, even one that did work (ADR-0072)', async () => {
     vi.stubEnv('XINGULAR_COMPLETION_CHECK', 'on')
     const { root, model, start, until, of } = await setup()
-    model.script([model.says('B0 covers the workspace and CI.')])
-    const id = await start({ text: 'What does B0 cover?' })
+    model.script([model.calls(['read', { path: 'src' }]), model.says('B0 is done; B1 and B2 remain.')])
+    const id = await start({ text: 'Implement B0, B1 and B2 of the handoff.', launch: { standard: { cwd: root } } })
     await until(() => Boolean(status(of, id)))
-    expect(model.requests()).toBe(1)
+    expect(model.requests()).toBe(2)
     const { loadRun } = await import('./runStore')
     expect(loadRun(root, id)).toMatchObject({ status: 'completed' })
+  })
+
+  it('refuses a goal on a plan run', async () => {
+    const { start } = await setup()
+    await expect(start({ goal: { objective: 'x' }, plan: true })).rejects.toThrow(/goal is available only/i)
   })
 
   it('joins async native children and persists one result receipt before the final reply', async () => {

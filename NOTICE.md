@@ -58,3 +58,29 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
+
+## OpenAI Codex
+
+The standard session prompt (`src/prompt/standard.ts`: autonomy and persistence, when to ask the
+person, steering and compaction, writing style), the final-reply rules in `REPORTING_GUIDANCE`
+(`src/prompt/compile.ts`), the `/goal` prompts and tool descriptions (`src/sessions/goalPrompts.ts`,
+`src/sessions/goal.ts`), the goal brakes and status text, and the `/goal` command
+(`src/terminal/tui/goalCommand.ts`) adapt text and design from OpenAI Codex, mainly:
+
+- `codex-rs/models-manager/models.json` (`instructions_template` of `gpt-6.1-sol` and `gpt-6-luna`);
+- `codex-rs/ext/goal/templates/goals/{continuation,budget_limit,objective_updated}.md`;
+- `codex-rs/ext/goal/src/{spec,tool,accounting,runtime,api}.rs`;
+- `codex-rs/tui/src/{goal_display,slash_dispatch,goal_menu}.rs`;
+- `codex-rs/collaboration-mode-templates/templates/default.md` (the `ask_user` rule).
+
+Upstream: https://github.com/openai/codex (OpenAI Codex, Copyright 2025 OpenAI)
+
+Licensed under the Apache License, Version 2.0 (the "License"); you may not use these files except
+in compliance with the License. You may obtain a copy of the License at
+https://www.apache.org/licenses/LICENSE-2.0. Unless required by applicable law or agreed to in
+writing, software distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. Changes from upstream: ported from
+Rust to TypeScript for Pi; text about Codex's own channels and tools (commentary channel,
+`apply_patch`, `functions.exec`, apps, plugins, visualizations) left out; the goal's token budget
+became rounds and hours; `update_plan` became `todo_write`; completing a goal is a claim that the
+harness checks; the model cannot create a goal.

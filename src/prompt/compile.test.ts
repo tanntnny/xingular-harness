@@ -308,28 +308,29 @@ test('the reporting guidance closes the stable prefix and never rides in a conte
   expect(first.system.indexOf('## Reporting your work')).toBeGreaterThan(first.system.indexOf('## Tools'))
   expect(first.update!.content).not.toContain('Reporting your work')
   expect(first.pack.delivery!.systemSectionIds.at(-1)).toBe('reporting')
-  expect(REPORTING_GUIDANCE).toContain('Lead with the outcome, not the steps taken to reach it')
-  expect(REPORTING_GUIDANCE).toContain('Reporting is for work that is finished or genuinely blocked: do not end a turn to report work you can still do')
-  expect(REPORTING_GUIDANCE).toContain('use as much structure as the answer needs')
-  expect(REPORTING_GUIDANCE).toContain('do not force a fixed set of report headings apart from the two named below')
-  expect(REPORTING_GUIDANCE).toContain('`## Beyond what you asked`')
-  expect(REPORTING_GUIDANCE).toContain('`## What would make this complete`')
-  expect(REPORTING_GUIDANCE).toContain('say why the work needed it')
-  expect(REPORTING_GUIDANCE).toContain('name the ones only the person can do')
-  // The completion heading is for work that stopped short, never a reason to stop (ADR-0069).
-  expect(REPORTING_GUIDANCE).toContain('only when the work stopped short')
-  expect(REPORTING_GUIDANCE).toContain('Never stop early in order to write this section')
-  expect(REPORTING_GUIDANCE).not.toContain('when the run could be more complete')
-  expect(REPORTING_GUIDANCE).toContain('When the work stopped for the person, state the concrete thing they must do or decide for each item, and its owner')
-  expect(REPORTING_GUIDANCE).toContain('do not merely restate the blocker or invent a human decision')
-  expect(REPORTING_GUIDANCE).toContain('**Need human inspection** only when a concrete verification requires a person')
-  expect(REPORTING_GUIDANCE).not.toContain('Worth a look')
-  expect(REPORTING_GUIDANCE).not.toContain('Check by hand')
+  // One large, stable text with required content blocks and five examples (ADR-0073).
+  expect(REPORTING_GUIDANCE.length).toBeGreaterThan(14_000)
+  expect(REPORTING_GUIDANCE.length).toBeLessThan(17_000)
+  expect(REPORTING_GUIDANCE.match(/#### Example/g)).toHaveLength(5)
+  expect(REPORTING_GUIDANCE).toContain('State the outcome, not the activity')
+  expect(REPORTING_GUIDANCE).toContain('### What to leave out')
+  expect(REPORTING_GUIDANCE).toContain('#### How to test')
+  expect(REPORTING_GUIDANCE).toContain('#### What to do next')
+  expect(REPORTING_GUIDANCE).toContain('#### Beyond the request')
+  expect(REPORTING_GUIDANCE).toContain('#### Departures from the plan')
+  expect(REPORTING_GUIDANCE).toContain('#### Unverified or needs a person')
+  expect(REPORTING_GUIDANCE).toContain('### Headings are yours')
+  expect(REPORTING_GUIDANCE).toContain('No fixed heading list is required')
+  expect(REPORTING_GUIDANCE).toContain('### Before you send')
+  // The old fixed headings are gone; headings are now examples, not requirements.
+  expect(REPORTING_GUIDANCE).not.toContain('## Beyond what you asked')
+  expect(REPORTING_GUIDANCE).not.toContain('## What would make this complete')
+  // The section fits its budget and is byte-identical on a second launch.
   const section = first.pack.sections.find((entry) => entry.id === 'reporting')!
   expect(section.cut).toBe(false)
+  expect(section.body).toBe(REPORTING_GUIDANCE.trim())
   expect(sessionLaunch(env, agent(), hosted(), null).system).toBe(first.system)
 })
-
 
 test('a person\'s own session is told when a reply may end', () => {
   const env = setup()
@@ -341,16 +342,59 @@ test('a person\'s own session is told when a reply may end', () => {
   expect(rendered).toContain('A document the request points to (a handoff, a plan, a spec) is the request: work its steps in order.')
   expect(rendered).toContain('A question the request or the files already answer is not a question for the person.')
   expect(rendered).toContain('Stop with work still open only for what the person alone can do')
-  expect(rendered).toContain('A reply that ends while its todo list has open items, or that a completion check finds unfinished, is sent back to you')
+  expect(rendered).toContain('A reply that ends while its todo list has open items is sent back to you')
+  expect(rendered).not.toContain('completion check')
   expect(rendered).not.toContain('call finish')
   expect(rendered).toContain('otherwise the reply ends only when the work-slice guard hands it back or the person interrupts')
   expect(rendered).toContain('Do the job the request implies, not only its literal words')
   expect(rendered).toContain('fix what your own work exposes')
   expect(rendered).toContain('inside those bounds you do not ask first')
+  expect(rendered).toContain('any departure from the plan or request, is allowed on those terms, and you report it at the end')
   expect(rendered).toContain('An open step is work to do in this reply, not something to report')
   // Nothing in the prompt invites writing a final summary of unfinished work before stopping.
   expect(rendered).not.toContain('Before your final reply')
   expect(pack.sections.find(entry => entry.id === 'role')!.cut).toBe(false)
+  expect(rendered).toContain('The todo list shows progress; the request is the scope, and finishing the list does not finish the request.')
+  expect(rendered).toContain('it is not the scope of the work')
+  expect(rendered).toContain('compare the request, not the list, with what is done and checked')
+})
+
+test('a person\'s own session carries the Codex-derived autonomy, permission, steering and writing sections, uncut', () => {
+  const env = setup()
+  const pack = compile(env, agent(), { standard: { cwd: '/src/site' }, tools: ['read', 'todo_write', 'spawn_subagent'] })
+  const rendered = render(env, pack)
+  for (const id of ['role', 'autonomy', 'permission', 'steering', 'writing']) {
+    expect(pack.sections.find((entry) => entry.id === id)?.cut, id).toBe(false)
+  }
+  // Autonomy and persistence
+  expect(rendered).toContain('persist until the intended goal is complete')
+  expect(rendered).toContain('treat it as an instruction to do the work')
+  expect(rendered).toContain('Do not settle for a partial or "helpful enough" solution')
+  // Permission: approval is the last step, and a pause is explained.
+  expect(rendered).toContain('do all the work first so that approval is the last step')
+  expect(rendered).toContain('say why you need it and where the requirement comes from')
+  // A test or error from before the session is reported, not fixed, and is a reason to stop.
+  expect(rendered).toContain('Unlike other fixes, a test or error that does not come from this session\'s work needs the person\'s say-so.')
+  expect(rendered).toContain('keep it off your todo list, finish the rest of the request, and let the person decide')
+  expect(rendered).toContain('or a fix to a test or error that does not come from this session\'s work')
+  // Steering and compaction
+  expect(rendered).toContain('treat it as steering the active task rather than replacing it')
+  expect(rendered).toContain('Compaction does not end the task.')
+  expect(rendered).toContain('assume they want it fixed, not acknowledged or explained')
+  // Writing style
+  expect(rendered).toContain('Avoid AI-slop words and phrases')
+  // Reporting: outcome first, required blocks for a change, no closing offer (ADR-0073).
+  expect(rendered).toContain('State the outcome, not the activity')
+  expect(rendered).toContain('#### How to test')
+  expect(rendered).toContain('#### What to do next')
+  expect(rendered).toContain('Only suggest a follow-up that builds on the request; otherwise stop')
+  // Nothing tied to Codex's own channels or tools came along.
+  for (const text of [rendered]) {
+    expect(text).not.toContain('commentary')
+    expect(text).not.toContain('functions.exec')
+    expect(text).not.toContain('apply_patch')
+    expect(text).not.toContain('Do not add or run tests unless')
+  }
 })
 
 test('only a person\'s own session is told that its replies are checked', () => {

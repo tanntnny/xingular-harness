@@ -68,6 +68,7 @@ function setup(extensionCommands: TestExtensionCommand[] = [{
     refresh: vi.fn(), changed: vi.fn(), showHelp: vi.fn(), todo: vi.fn(async () => []), showTodo: vi.fn(), shutdown: vi.fn(), setEditorText: vi.fn(), copyText: vi.fn(async () => {}),
     subagents: () => [],
     plan: vi.fn(),
+    goal: vi.fn(async () => 'No goal is currently set.'),
     btw: vi.fn(async () => {}),
     control: vi.fn(async (method: string) => ({
       'accounts.list': { accounts: [], pools: [], defaults: {} }, 'plugins.session': { projectId: null }, 'plugins.list': [],

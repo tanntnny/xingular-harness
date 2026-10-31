@@ -73,3 +73,9 @@ SDK microagents respectively.
 | K1 | Emit a **skill catalog delta** (name + capped description) in the hidden `xingular-context` message instead of relying on static tree text alone, when trees change mid-run | dsh durable-catalog + our context-update channel | `src/prompt/compile.ts` context update contents | T2 |
 | K2 | Adopt harness²'s three validation rules into `validate()` (trigger-line presence for skills; script existence paths already enforced, re-verify) | harness² | tree validation + tests | T1 verify-first |
 | K3 | **Enforce skill trigger lines mechanically** (autotrigger already carries triggers; keep prose+code in sync) | both | `src/tree/tree.ts` validation | T1 verify-first |
+
+## Related
+
+Installation — where a skill is placed, globally or per project, and what the model is told about
+it — is a separate question from loading. See
+[STUDY-0005](../STUDY-0005-skill-installation-guidance.md).

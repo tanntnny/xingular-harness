@@ -2,7 +2,7 @@ import type { ExtensionAPI, ExtensionContext, ExtensionToolContext } from '@eare
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const transport = vi.hoisted(() => ({
   socket: vi.fn(async (_connection: unknown, call: string, _params?: Record<string, unknown>): Promise<Record<string, unknown>> => call === 'control.claim' ? { key: 'lexical-key' } : { tools: [] }),
@@ -17,8 +17,10 @@ vi.mock('./client', () => ({
 import terminalExtension, { type TerminalPlanRunState } from './piExtension'
 import { resolveWritePath } from '../core/workspace'
 import { PLAN_INSTRUCTIONS } from '../sessions/planMode'
+import { GoalController } from '../sessions/goal'
 
 function extension() {
+  let active = ['read', 'session_name', 'todo_write']
   const handlers = new Map<string, (...args: unknown[]) => unknown>()
   const commands = new Map<string, unknown>()
   const api = {
@@ -36,12 +38,17 @@ function extension() {
     registerCommand: (name: string, command: unknown) => commands.set(name, command),
     registerTool: vi.fn(),
     appendEntry: vi.fn(),
+    getActiveTools: () => active,
+    setActiveTools: vi.fn((names: string[]) => { active = names }),
     getThinkingLevel: () => 'medium'
   } as unknown as ExtensionAPI
   const ctx = { cwd: process.cwd(), sessionManager: { getSessionFile: () => '/history/session.jsonl', getBranch: () => [] }, ui: { getEditorText: () => '' }, abort: vi.fn() } as unknown as ExtensionContext
   return { api, ctx, handlers, commands }
 }
 
+beforeEach(() => {
+  transport.telemetry.mockClear()
+})
 afterEach(() => vi.useRealTimers())
 
 describe('terminal bridge lifecycle', () => {
@@ -89,39 +96,91 @@ describe('terminal bridge lifecycle', () => {
     expect(transport.telemetry).toHaveBeenLastCalledWith('settled', expect.objectContaining({ reason: 'unfinished', code: 'unfinished', aborted: false }))
   })
 
-  it('asks the completion check when a terminal reply that did work ends, and settles it as the check says (ADR-0071)', async () => {
+  it('never asks a model whether an ordinary terminal reply is done, even one that did work (ADR-0072)', async () => {
     vi.stubEnv('XINGULAR_COMPLETION_CHECK', 'on')
     try {
       const { api, ctx, handlers } = extension()
       await terminalExtension(api)
-      const verdicts = [
-        '{"verdict":"continue","reason":"The handoff answers the worktree question.","next":"Create the worktree and start B0."}',
-        '{"verdict":"needs_person","reason":"Moving the production route needs approval.","next":""}'
-      ]
-      const streamSimple = vi.fn(() => ({ result: async () => ({ content: [{ type: 'text', text: verdicts.shift() }], stopReason: 'stop', model: 'gpt-6-luna', provider: 'openai-codex', usage: { input: 30, output: 10, cost: { total: 0.001 } } }) }))
+      const streamSimple = vi.fn()
       const checkCtx = { ...ctx, model: { id: 'gpt-6-luna', provider: 'openai-codex', reasoning: true }, modelRegistry: { streamSimple } } as never
-      const boundary = { outcome: 'completed', continue: false, entries: [], context: { canContinue: true, llmMessages: [{ role: 'user', content: 'Work for the handoff' }] } }
+      const boundary = { outcome: 'completed', continue: false, entries: [], context: { canContinue: true, llmMessages: [] } }
       await handlers.get('before_agent_start')!({ messageType: 'user', prompt: 'Work for the handoff', systemPromptOptions: { sections: {} } }, checkCtx)
       await handlers.get('tool_call')!({ toolName: 'bash', toolCallId: 'b1', input: { command: 'git status' } }, checkCtx)
-      const nudged = await handlers.get('agent_before_settle')!(boundary, checkCtx) as { continue: boolean; entries: { customType: string; content: string }[] }
-      expect(nudged).toMatchObject({ continue: true, entries: [{ customType: 'xingular-completion-check' }] })
-      expect(nudged.entries[0].content).toContain('Next: Create the worktree and start B0.')
-      expect(streamSimple).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ systemPrompt: expect.stringContaining('You review whether an AI coding agent may end its reply') }), expect.objectContaining({ reasoning: 'low' }))
-      // The check's request is counted with the reply's usage.
-      expect(transport.telemetry).toHaveBeenCalledWith('usage', expect.objectContaining({ requests: 1, request: expect.objectContaining({ index: 1, inputTokens: 30 }) }))
-      expect(transport.telemetry).toHaveBeenCalledWith('notice', expect.objectContaining({ text: 'Completion check 1: continue — The handoff answers the worktree question.' }))
-      await handlers.get('tool_call')!({ toolName: 'bash', toolCallId: 'b2', input: { command: 'git worktree add ../b' } }, checkCtx)
       expect(await handlers.get('agent_before_settle')!(boundary, checkCtx)).toBeUndefined()
-      await handlers.get('agent_settled')!({ aborted: false }, checkCtx)
-      expect(transport.telemetry).toHaveBeenCalledWith('checkpoint', expect.objectContaining({ blocked: 'Moving the production route needs approval.', reason: 'requested' }))
-      expect(transport.telemetry).toHaveBeenLastCalledWith('settled', expect.objectContaining({ reason: 'needs_person', code: 'needs_person' }))
-      // The next reply starts clean.
-      await handlers.get('before_agent_start')!({ messageType: 'user', prompt: 'Thanks', systemPromptOptions: { sections: {} } }, checkCtx)
-      await handlers.get('agent_settled')!({ aborted: false }, checkCtx)
-      expect(transport.telemetry).toHaveBeenLastCalledWith('settled', { error: undefined, aborted: false })
+      expect(streamSimple).not.toHaveBeenCalled()
+      // No goal, so no goal tools.
+      expect(vi.mocked(api.registerTool).mock.calls.some(([tool]) => tool.name === 'update_goal')).toBe(false)
     } finally {
       vi.unstubAllEnvs()
     }
+  })
+
+  it('continues a terminal goal in place, checks the model\'s completion claim, and ends the goal (ADR-0072)', async () => {
+    vi.stubEnv('XINGULAR_COMPLETION_CHECK', 'on')
+    try {
+      const { api, ctx, handlers } = extension()
+      const goal = new GoalController()
+      await terminalExtension(api, undefined, undefined, goal)
+      const tools = vi.mocked(api.registerTool).mock.calls.map(([tool]) => tool)
+      expect(tools.map((tool) => tool.name)).toEqual(expect.arrayContaining(['get_goal', 'update_goal']))
+      goal.set('Finish the handoff', { rounds: 5 })
+      // The goal is saved on the branch, and the model is offered its tools.
+      expect(api.appendEntry).toHaveBeenLastCalledWith('xingular-goal-state', expect.objectContaining({ goal: expect.objectContaining({ status: 'active' }) }))
+      expect(api.setActiveTools).toHaveBeenLastCalledWith(expect.arrayContaining(['get_goal', 'update_goal']))
+
+      const verdicts = ['{"verdict":"done","reason":"The handoff steps all have test output.","next":""}']
+      const streamSimple = vi.fn(() => ({ result: async () => ({ content: [{ type: 'text', text: verdicts.shift() }], stopReason: 'stop', model: 'gpt-6-luna', provider: 'openai-codex', usage: { input: 30, output: 10, cost: { total: 0.001 } } }) }))
+      const goalCtx = { ...ctx, model: { id: 'gpt-6-luna', provider: 'openai-codex', reasoning: true }, modelRegistry: { streamSimple } } as never
+      const boundary = { outcome: 'completed', continue: false, entries: [], context: { canContinue: true, pendingMessages: [], llmMessages: [{ role: 'user', content: 'Continue working toward the active thread goal.' }, { role: 'assistant', content: [{ type: 'text', text: 'B0 and B1 done.' }] }] } }
+      await handlers.get('before_agent_start')!({ messageType: 'custom', message: {}, systemPromptOptions: { sections: {} } }, goalCtx)
+      await handlers.get('agent_start')!({}, goalCtx)
+      await handlers.get('tool_call')!({ toolName: 'bash', toolCallId: 'b1', input: { command: 'npm test' } }, goalCtx)
+      const continued = await handlers.get('agent_before_settle')!(boundary, goalCtx) as { continue: boolean; entries: { customType: string; content: string; display: boolean }[] }
+      expect(continued).toMatchObject({ continue: true, entries: [{ customType: 'xingular-goal', display: false }] })
+      expect(continued.entries[0].content).toContain('Continue working toward the active thread goal.')
+      expect(continued.entries[0].content).toContain('Rounds used: 1 of 5')
+      expect(transport.telemetry).toHaveBeenCalledWith('notice', expect.objectContaining({ extension: 'goal', text: 'Goal round 1 of 5 starts.' }))
+      expect(streamSimple).not.toHaveBeenCalled()
+
+      // The model claims completion through its tool; the check judges the claim.
+      await handlers.get('agent_start')!({}, goalCtx)
+      await handlers.get('tool_call')!({ toolName: 'update_goal', toolCallId: 'u1', input: { status: 'complete' } }, goalCtx)
+      const update = vi.mocked(api.registerTool).mock.calls.map(([tool]) => tool).find((tool) => tool.name === 'update_goal')!
+      await update.execute('u1', { status: 'complete' }, undefined as never, undefined as never, goalCtx as never)
+      expect(await handlers.get('agent_before_settle')!(boundary, goalCtx)).toBeUndefined()
+      expect(streamSimple).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ systemPrompt: expect.stringContaining('You verify whether an AI coding agent has achieved a goal') }), expect.objectContaining({ reasoning: 'low' }))
+      expect(goal.get()).toMatchObject({ status: 'complete', rounds: 1 })
+      // The check's request is counted with the reply's usage.
+      expect(transport.telemetry).toHaveBeenCalledWith('usage', expect.objectContaining({ requests: 1, request: expect.objectContaining({ index: 1, inputTokens: 30 }) }))
+      expect(api.setActiveTools).toHaveBeenLastCalledWith(expect.not.arrayContaining(['update_goal']))
+      await handlers.get('agent_settled')!({ aborted: false }, goalCtx)
+      expect(transport.telemetry).toHaveBeenLastCalledWith('settled', expect.not.objectContaining({ code: expect.anything() }))
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
+
+  it('settles a blocked terminal goal as needing the person, and restores a saved goal paused (ADR-0072)', async () => {
+    const { api, ctx, handlers } = extension()
+    const goal = new GoalController()
+    await terminalExtension(api, undefined, undefined, goal)
+    goal.set('Deploy the site')
+    goal.update('blocked')
+    goal.limit('blocked', 'The deploy token is missing.')
+    await handlers.get('before_agent_start')!({ messageType: 'user', prompt: 'x', systemPromptOptions: { sections: {} } }, ctx)
+    await handlers.get('agent_settled')!({ aborted: false }, ctx)
+    expect(transport.telemetry).toHaveBeenCalledWith('checkpoint', expect.objectContaining({ blocked: 'The deploy token is missing.', reason: 'requested' }))
+    expect(transport.telemetry).toHaveBeenLastCalledWith('settled', expect.objectContaining({ reason: 'needs_person', code: 'needs_person' }))
+
+    // A reopened conversation shows its goal and waits for the person: nothing resumes by itself.
+    const saved = { goalId: 'g1', objective: 'Port the API', status: 'active', limits: { rounds: 30, hours: 8 }, rounds: 4, timeUsedSeconds: 90, createdAt: 1, updatedAt: 2, claimed: false, lastReason: '' }
+    const reopened = new GoalController()
+    const second = extension()
+    await terminalExtension(second.api, undefined, undefined, reopened)
+    const restoring = { ...second.ctx, sessionManager: { getSessionFile: () => '/history/session.jsonl', getBranch: () => [{ type: 'custom', customType: 'xingular-goal-state', data: { goal: saved } }] } } as never
+    await second.handlers.get('session_start')!({}, restoring)
+    expect(reopened.get()).toMatchObject({ objective: 'Port the API', status: 'paused', rounds: 4 })
+    await second.handlers.get('session_shutdown')!({ type: 'session_shutdown', reason: 'quit' }, restoring)
   })
 
   it('registers one question tool with fixed-column sketch guidance, and no terminal-only alias', async () => {

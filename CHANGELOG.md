@@ -2,7 +2,43 @@
 
 ## Unreleased
 
-- **A completion check replaces `finish` (ADR-0071).**
+- **A large, content-block reporting prompt (ADR-0073).**
+  - The `reporting` section in `src/prompt/reporting.ts` is about 15.8k characters: outcome first,
+    required what-changed / how-to-test / what-to-do-next blocks for a change, optional beyond,
+    departures, unverified and open-question blocks, five worked examples and an anti-pattern table.
+  - Headings are the model's choice; the three fixed headings from ADR-0068 are gone.
+  - `REPORTING_BUDGET` rises to 18,000, and the section is never cut.
+  - The peer study is `docs/study/STUDY-0006-reporting-prompts.md`.
+- **Skill installation guidance and package skill layouts.**
+  - The release-owned `plugin-authoring` skill now says where a skill is installed (a project's
+    `.pi/skills` and `.agents/skills`, the user's `~/.agents/skills`, the shared state folder), to
+    copy a whole skill folder, and that `.claude/skills` is never read. It also says which installs
+    only a person commits, and that `plugin_propose` is not an install route.
+  - `plugins.install` refuses a GitHub or GitLab `tree`/`blob` page address with the repository
+    address and the skill routes, instead of a raw git error.
+  - A package's foreign plugin manifest (`plugin.json`, `.claude-plugin/plugin.json`,
+    `.codex-plugin/plugin.json`) may declare `skills`; those folders load as package skills, under
+    the package's switch and filter.
+
+- **Codex's prompts and `/goal`; the completion check moves behind `/goal` (ADR-0072).**
+  - **Ordinary replies.** No model-judged check runs on them. The todo gate stays and says the list
+    is progress, not the limit of the work; `TODO_GUIDANCE` now says the request is the scope.
+  - **Prompt.** A person's own session reads Codex's autonomy and persistence, when-to-ask,
+    steering and compaction, and writing-style rules as separate sections, and a longer reporting
+    section: unfinished work says so on the first line, with the reason and the next step.
+    `ask_user` is never used to ask permission, and no answer means continue.
+  - **Failures from outside the session.** A test or error that does not come from the session's
+    work is reported with its command and output, not fixed, unless the person asks. It stays off
+    the todo list, and it is a reason to stop that the autonomy rules name.
+  - **`/goal <objective>`.** A long run the person starts. Codex's `get_goal` and `update_goal`,
+    continuation, round-cap and edit prompts, `blocked` after the same blocker on three turns, and
+    brakes for idle, failing and erroring rounds. `/goal edit|pause|resume|clear`, a footer label,
+    Esc pauses. Caps: 30 rounds or 8 hours (`--rounds`, `--hours`).
+  - **A completion claim is checked** once by the same model at low effort with a fresh context.
+    `sessions.run` takes `goal`; `run.json` records `goalMode`.
+  - **Fixed.** The check sends a session id, so opencode-go no longer answers 400 `MissingSessionID`.
+  - Adapted from OpenAI Codex (Apache-2.0); see `NOTICE.md`.
+- **A completion check replaces `finish` (ADR-0071; the every-reply check is superseded by ADR-0072).**
   - **The check.** When a reply that did work ends with its todo list closed or absent, the run's
     own model, at low effort and with a fresh context, judges the person's request against what the
     reply did: `done`, `continue` (the reply is sent back with the reason and next step), or
@@ -91,11 +127,11 @@
   request plus new items, so Codex WebSocket continuation and prefix caching apply. Before, every later
   turn of a compacted session resent its whole context: one measured session fell from 94–99% to
   18–24% cache hits after its first compaction.
-- Flag a low prompt-cache hit rate in the terminal's composer status bar. `R<percentage>%` now covers the
-  last 10 model responses instead of the whole session (`recentCacheUsage`, `CACHE_HIT_WINDOW`), and
-  gets a yellow `⚠` below 70 percent and a red one below 40 percent. Each drop to a worse level posts
-  one transcript notice. A window of one response, or one with no cache reads or writes, is not judged
-  (`cacheHitLevel`, `CACHE_HIT_WARNING_PERCENT`, `CACHE_HIT_CRITICAL_PERCENT`).
+- Flag a low prompt-cache hit rate in the terminal's composer status bar. `R<percentage>%` covers the last
+  10 model responses instead of the whole session (`recentCacheUsage`, `CACHE_HIT_WINDOW`), and the rate
+  gets a yellow `⚠` below 70 percent and a red one below 40 percent. The warning stays in the status bar;
+  no cache-hit notice is added to the transcript. A window of one response, or one with no cache reads or
+  writes, is not judged (`cacheHitLevel`, `CACHE_HIT_WARNING_PERCENT`, `CACHE_HIT_CRITICAL_PERCENT`).
 
 - Refine a variant from the terminal and keep checkpoints of it (PROP-0052, ADR-0065, ADR-0066).
   `/refine [what to look at]` replays the latest request typed in this chat from a snapshot of the

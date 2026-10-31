@@ -16,10 +16,32 @@ import * as attachments from './attachments'
 import { withoutInstallScripts } from './discover'
 import type { Plugin } from './types'
 
+/**
+ * A code-hosting page for a folder or file inside a repository. Pi installs a repository, so a
+ * pasted `tree` or `blob` address must not reach the package manager as one.
+ */
+function repositoryPage(source: string): string | null {
+  let url: URL
+  try {
+    url = new URL(source)
+  } catch {
+    return null
+  }
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') return null
+  const host = url.hostname.replace(/^www\./, '')
+  const parts = url.pathname.split('/').filter(Boolean)
+  const repository = (): string => `${url.protocol}//${host}/${parts[0]}/${parts[1]}`
+  if (host === 'github.com' && parts.length >= 4 && (parts[2] === 'tree' || parts[2] === 'blob')) return repository()
+  if (host === 'gitlab.com' && parts.length >= 5 && parts[2] === '-' && (parts[3] === 'tree' || parts[3] === 'blob')) return repository()
+  return null
+}
+
 /** A folder on this machine, or a package as Pi's settings name it. A bare name is an npm package. */
 export function normalizeSource(input: string): string {
   const source = input.trim()
   if (!source) throw invalid('Name a package: a folder, an npm name, or a git address.')
+  const page = repositoryPage(source)
+  if (page) throw invalid(`That address is a page inside a repository, not a package. Install ${page} as a package, or copy its skill folder into <project>/.agents/skills/ for one project or ~/.agents/skills/ for every project.`)
   if (source.startsWith('~/')) return join(process.env.HOME || homedir(), source.slice(2))
   if (isAbsolute(source)) return resolve(source)
   if (source.startsWith('./') || source.startsWith('../')) throw invalid('Give the whole path of the folder.')
