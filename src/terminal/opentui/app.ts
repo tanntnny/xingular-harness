@@ -27,6 +27,7 @@ import { createTerminalRuntime, type TerminalDecision, type TerminalImage, type 
 import { SideQuestion, sideQuestionSnapshot } from '../tui/sideQuestion'
 import type { SideQuestionContext, SideQuestionRead } from '../../sessions/sideQuestions'
 import { createHarnessLightTheme, createHarnessTheme } from '../tui/theme'
+import { toolDisplayName } from '../toolName'
 import { createTerminalUi, type TerminalUi } from '../tui/ui'
 import { centeredDialogHost, dialogFits } from '../tui/dialogGeometry'
 import { MouseReportTail } from '../tui/mouseReport'
@@ -1227,7 +1228,7 @@ export class OpenTuiApplication {
 
   private async chooseApproval(request: TerminalDecision, signal: AbortSignal): Promise<{ decision: 'approved' | 'denied'; alwaysAllow: boolean }> {
     if (signal.aborted) return { decision: 'denied', alwaysAllow: false }
-    const tool = request.target ?? 'action'
+    const tool = toolDisplayName(request.target ?? '') || 'action'
     const choices = [
       { value: 'once', label: 'Allow once' },
       ...(request.rememberable ? [{ value: 'global', label: `Always allow ${tool} everywhere` }] : []),

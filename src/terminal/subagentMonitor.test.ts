@@ -25,7 +25,7 @@ describe('SubagentMonitor', () => {
     }))
 
     expect(monitor.snapshot('parent')).toEqual([expect.objectContaining({
-      id: 'child', goal: 'Task child', status: 'running', activity: 'read'
+      id: 'child', goal: 'Task child', status: 'running', activity: 'Read'
     })])
     const output = JSON.stringify(monitor.snapshot('parent'))
     expect(output).not.toContain('PRIVATE_SUMMARY')
@@ -79,10 +79,10 @@ describe('SubagentMonitor', () => {
     const child = run('child', 'parent', '2026-10-23T00:00:00.000Z')
     monitor.observe('parent', child, event('tool.started', 1, { toolCallId: 'call-1', name: 'read', summary: 'PRIVATE_SUMMARY' }))
     monitor.observe('parent', child, event('tool.completed', 2, { toolCallId: 'call-1', output: 'PRIVATE_OUTPUT' }))
-    expect(monitor.snapshot('parent')[0]?.activity).toBe('read')
+    expect(monitor.snapshot('parent')[0]?.activity).toBe('Read')
 
     monitor.observe('parent', child, event('status.changed', 3, { status: 'running' }))
-    expect(monitor.snapshot('parent')[0]?.activity).toBe('read')
+    expect(monitor.snapshot('parent')[0]?.activity).toBe('Read')
     expect(JSON.stringify(monitor.snapshot('parent'))).not.toContain('PRIVATE')
   })
 

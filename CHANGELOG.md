@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Every tool-like name in CamelCase.**
+  - `toolDisplayName` moves to `src/terminal/toolName.ts` and splits on any separator, so
+    `todo_write`, `computer-screenshot`, `computer.screenshot` and `customTool` all read in
+    CamelCase and the letters a name already has are kept.
+  - The todo card reads `Todo` instead of `todo`; a custom message carries its type through the same
+    helper (`note` reads `Note`); a running child's activity reads `Read` rather than `read`; and
+    the approval prompt, the phone page's transcript and its approval card use the same names.
+  - The `/todo` empty-state notice names `TodoWrite` rather than `todo_write`.
 - **Codex's final-answer guidance, adopted verbatim (ADR-0076).**
   - The `reporting` section drops the four content questions, the by-hand check, the next-step
     block, the evidence table, the anti-pattern table and one example. It now carries Codex's

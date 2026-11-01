@@ -131,8 +131,14 @@ describe('the phone page', () => {
     await vi.waitFor(() => expect(text('log')).toContain('<img src=x'))
     expect(phone.document.getElementById('log')!.querySelector('img')).toBeNull()
 
+    // A tool reads as its name, not as the raw id the run recorded.
+    fake.emit(event('tool.started', { toolCallId: 't1', name: 'todo_write', summary: '3 items' }))
+    await vi.waitFor(() => expect(text('log')).toContain('▸ TodoWrite  3 items'))
+    fake.emit(event('tool.completed', { toolCallId: 't1', name: 'todo_write', ok: true }))
+    await vi.waitFor(() => expect(text('log')).toContain('✓ TodoWrite  3 items'))
+
     fake.pend([{ type: 'approval', requestId: 'a9', runId: 'run-1', target: 'bash', action: '{"command":"npm test"}', rememberable: false }])
-    await vi.waitFor(() => expect(text('cards')).toContain('Approve bash?'))
+    await vi.waitFor(() => expect(text('cards')).toContain('Approve Bash?'))
     expect(text('cards')).toContain('{"command":"npm test"}')
     const allow = [...phone.document.querySelectorAll('#cards button')].find((button) => button.textContent === 'Allow once') as unknown as { click(): void }
     allow.click()

@@ -2,13 +2,10 @@ import { sessionEntryToContextMessages, type AgentSession, type SessionEntry } f
 
 import { parseProposedPlan } from '../tui/planMode'
 import type { TerminalCommandHelpGroup } from '../commandHelp'
+import { toolDisplayName } from '../toolName'
 import { ansiLabel, ansiPlain } from './ansi'
 
 export type ToolStatus = 'running' | 'ok' | 'error' | 'pending'
-
-export function toolDisplayName(name: string): string {
-  return name.replace(/(^|_)([a-z])/g, (_, _separator: string, letter: string) => letter.toUpperCase())
-}
 
 export interface UserItem {
   kind: 'user'
@@ -610,7 +607,8 @@ export class TranscriptModel {
       if (message.display === false) return items
       const text = contentText(message.content)
       if (!text.trim()) return items
-      items.push({ kind: 'custom', id: `m${index}`, label: stringField(message, 'customType') ?? 'Extension', text })
+      const customType = stringField(message, 'customType') ?? ''
+      items.push({ kind: 'custom', id: `m${index}`, label: toolDisplayName(customType) || 'Extension', text })
       return items
     }
     if (role === 'compactionSummary') {

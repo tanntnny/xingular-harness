@@ -16,7 +16,8 @@ import { QuestionDock } from './questionDock'
 import type { QuestionDockView } from './questionDockState'
 import { type AnsiLine, type AnsiStyle } from './ansi'
 import { addHeadingOneSpacing, markdownSyntaxStyles } from './markdown'
-import { toolDisplayName, type TodoEntry, type CommandHelpItem, type CompactionItem, type ToolItem, type TranscriptItem } from './model'
+import { type TodoEntry, type CommandHelpItem, type CompactionItem, type ToolItem, type TranscriptItem } from './model'
+import { toolDisplayName } from '../toolName'
 import { commandHelpColumnWidth } from './commandHelpLayout'
 import { terminalSelectionText } from './terminalSelection'
 import { paletteCommandColumnWidth, paletteTextLines } from './palette'
@@ -285,7 +286,7 @@ function TranscriptItemView(props: { item: TranscriptItem; expanded: boolean; sy
           <Show when={item.origin === 'tool' && item.status}>
             <Span fg={toolColor(t, item.status!)}>{toolStatusIcon(item.status!)}</Span>
           </Show>
-          <Span fg={t.text} attributes={TextAttributes.BOLD}> todo</Span>
+          <Span fg={t.text} attributes={TextAttributes.BOLD}> Todo</Span>
           <Span fg={t.muted}> · {todoProgress(done(), item.items.length)}</Span>
         </text>
         <box flexDirection='column' paddingLeft={2} flexShrink={0}>

@@ -255,7 +255,11 @@ thinking, tools, image results, notices, summaries, custom messages, user messag
 Bash entries. User, plan and Bash bubbles also have one blank row of internal padding above and below
 their content; other entries have no internal vertical padding. Bubble padding is additional to the
 inter-entry gap. A plan card carries its title as an underlined header in the plan blue, then one
-blank row before the plan body. Internal lines within an entry stay together. The transcript stays
+blank row before the plan body. A tool, a custom message type and a running child's activity are
+labelled with their name in CamelCase—`todo_write` reads `TodoWrite`, `computer-screenshot` reads
+`ComputerScreenshot`, and `xingular-slice-continue` reads `XingularSliceContinue`—while the todo
+card reads `Todo` and an approval prompt names its tool the same way. Internal lines within an entry
+stay together. The transcript stays
 pinned to the latest message until you scroll away. While scrolled away, a `↓ Jump to latest` badge overlays the
 transcript's lower-right corner; clicking it returns to the newest message and hides the badge.
 `Ctrl+End` remains an alternate way to jump to the end. A primary click in the transcript or empty

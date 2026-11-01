@@ -1,22 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import { SessionManager, type AgentSession } from '@earendil-works/pi-coding-agent'
 
-import { toolDisplayName, TranscriptModel } from './model'
+import { TranscriptModel } from './model'
 
 function session(messages: unknown[], state: Record<string, unknown> = {}): AgentSession {
   return { messages, state } as unknown as AgentSession
 }
-
-describe('toolDisplayName', () => {
-  it('renders tool names in CamelCase', () => {
-    expect(toolDisplayName('computer_screenshot')).toBe('ComputerScreenshot')
-    expect(toolDisplayName('mcp_list_tools')).toBe('McpListTools')
-    expect(toolDisplayName('read')).toBe('Read')
-    expect(toolDisplayName('bash')).toBe('Bash')
-    expect(toolDisplayName('write')).toBe('Write')
-    expect(toolDisplayName('customTool')).toBe('CustomTool')
-  })
-})
 
 describe('TranscriptModel', () => {
   it('projects messages, thinking, tools and results in order', () => {
@@ -51,7 +40,7 @@ describe('TranscriptModel', () => {
       name: 'read', summary: 'src/a.ts', status: 'ok', output: 'file text', durationMs: 12
     })
     expect(view.items[4]).toMatchObject({ command: 'ls', output: 'a.txt', exitCode: 0 })
-    expect(view.items[5]).toMatchObject({ label: 'note', text: 'a note' })
+    expect(view.items[5]).toMatchObject({ label: 'Note', text: 'a note' })
     expect(view.items[6]).toMatchObject({ kind: 'compaction', summary: 'short version', tokensBefore: 12_345 })
     expect(view.items[7]).toMatchObject({ kind: 'summary', label: 'Branch summary', text: 'branch version' })
   })

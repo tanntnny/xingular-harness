@@ -357,8 +357,8 @@ describe('a native SDK runtime on the actual Harness terminal socket', () => {
     expect(children.map(item => item.id)).toEqual([parentId, 'observed-child', 'observed-nested'])
     expect(children[0]).toEqual(expect.objectContaining({ relation: 'main', profile: { name: 'main', color: 'main' }, goal: 'Observe child work', model: 'test/model-1', effort: 'high' }))
     expect(children).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: 'observed-child', goal: 'Inspect auth flow', activity: 'read' }),
-      expect.objectContaining({ id: 'observed-nested', goal: 'Check token handling', activity: 'grep' })
+      expect.objectContaining({ id: 'observed-child', goal: 'Inspect auth flow', activity: 'Read' }),
+      expect.objectContaining({ id: 'observed-nested', goal: 'Check token handling', activity: 'Grep' })
     ]))
     const activity = JSON.stringify(children)
     expect(activity).not.toContain('src/auth.ts')

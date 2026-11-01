@@ -369,7 +369,7 @@ export function createTerminalCommands(host: TerminalCommandHost) {
         case 'trajectory': await openPage('trajectory', { runId: argument }); break
         case 'todo': {
           const items = await host.todo()
-          if (!items.length) notify('No todo list in this reply yet. The agent writes one with todo_write for multi-step work.')
+          if (!items.length) notify('No todo list in this reply yet. The agent writes one with TodoWrite for multi-step work.')
           else host.showTodo(items)
           break
         }

@@ -1,5 +1,6 @@
 import { usagePayloadSchema, type RunEvent, type RunStatus, type UsagePayload } from '../sessions/contracts'
 import type { Effort } from '../sessions/runner'
+import { toolDisplayName } from './toolName'
 
 /** The agent profile a child started from, as the roster shows it (PROP-0029). */
 export interface TerminalSubagentProfile {
@@ -146,7 +147,7 @@ export class SubagentMonitor {
       // A seeded row keeps what it already folded.
     } else if (event.type === 'tool.started') {
       const toolCallId = stringOf(payload.toolCallId)
-      const name = stringOf(payload.name) ?? 'Tool'
+      const name = toolDisplayName(stringOf(payload.name) ?? '') || 'Tool'
       if (toolCallId) row.tools.set(toolCallId, { sequence: event.sequence, text: name })
     } else if (event.type === 'tool.completed') {
       const toolCallId = stringOf(payload.toolCallId)

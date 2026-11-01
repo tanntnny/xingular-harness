@@ -217,6 +217,10 @@ export const PAGE_JS = String.raw`
   var byMessage = {}
   var byTool = {}
   function nearBottom() { return log.scrollHeight - log.scrollTop - log.clientHeight < 120 }
+  // A tool id as a person reads it: todo_write becomes TodoWrite, the way the terminal shows it.
+  function toolName(value) {
+    return String(value == null ? '' : value).split(/[^A-Za-z0-9]+/).filter(function (part) { return part }).map(function (part) { return part.charAt(0).toUpperCase() + part.slice(1) }).join('')
+  }
   function add(node) { var stick = nearBottom(); log.appendChild(node); if (stick) log.scrollTop = log.scrollHeight }
   function message(role, id, text, append) {
     var node = id && byMessage[id]
@@ -235,7 +239,7 @@ export const PAGE_JS = String.raw`
     if (!node) {
       node = document.createElement('div'); node.className = 'tool'
       byTool[event.id] = node
-      node.textContent = '▸ ' + event.name + (event.summary ? '  ' + event.summary : '')
+      node.textContent = '▸ ' + (toolName(event.name) || 'Tool') + (event.summary ? '  ' + event.summary : '')
       add(node)
     }
     if (event.phase === 'end') {
@@ -282,7 +286,7 @@ export const PAGE_JS = String.raw`
   function heading(text) { var h = document.createElement('h2'); h.textContent = text; return h }
   function approvalCard(request) {
     var card = document.createElement('div'); card.className = 'card'
-    card.appendChild(heading('Approve ' + (request.target || 'this action') + '?'))
+    card.appendChild(heading('Approve ' + (toolName(request.target) || 'this action') + '?'))
     // The complete request, never shortened: a person decides on what they can read in full.
     var pre = document.createElement('pre'); pre.textContent = request.action; card.appendChild(pre)
     var row = document.createElement('div'); row.className = 'row'
