@@ -29,6 +29,10 @@ written and the claim moves to checked behavior. Cite material as
 - [How peers shape the final report](STUDY-0006-reporting-prompts.md) — the final-answer rules of
   Claude Code, Codex and Kimi; what this harness's 3,400-character reporting section lacked; and the
   large content-block prompt in [ADR-0073](../decisions/ADR-0073-large-reporting-prompt.md).
+- [Claude Code's prompt against this harness's, in 20 areas](STUDY-0007-claude-code-prompt.md) — the
+  leaked v2.1.88 prompt measured against the pack a real session was given: 12.9k characters against
+  23.4k, the 9.2k reporting section with no Claude Code counterpart, and the rules Claude Code has
+  that the harness does not (parallel calls, read-before-edit, minimal diffs).
 - [Does the harness tell an agent how to install a skill](STUDY-0005-skill-installation-guidance.md)
   — the global and project routes this harness already loads, checked with its own resolver; why a
   session model is told none of them; and how Codex, Gemini, Claude Code, Kimi and others put that
@@ -48,7 +52,7 @@ Clones live in `external/` (this repo). Field notes in `sources/`.
 | openhands | [All-Hands-AI/OpenHands](https://github.com/All-Hands-AI/OpenHands) (UI) + [OpenHands/software-agent-sdk](https://github.com/OpenHands/software-agent-sdk) (agent server runtime) | [openhands.md](sources/openhands.md) | inventory |
 | kimi-cli | [MoonshotAI/Kimi-CLI](https://github.com/MoonshotAI/Kimi-CLI) | [kimi-cli.md](sources/kimi-cli.md) | inventory |
 | smolagents | [huggingface/smolagents](https://github.com/huggingface/smolagents) — CodeAct | [smolagents.md](sources/smolagents.md) | inventory |
-| claude-code | [Anthropic Claude Code](https://www.anthropic.com/claude-code) — not open source; audit npm bundle, published prompts, observed behavior | [claude-code.md](sources/claude-code.md) | no clone |
+| claude-code | [Anthropic Claude Code](https://www.anthropic.com/claude-code) — not open source; the leaked v2.1.88 source map gives a full read | [claude-code.md](sources/claude-code.md) | v2.1.88 source in `external/claude-code-src`, prompt audited |
 
 ## Arms
 

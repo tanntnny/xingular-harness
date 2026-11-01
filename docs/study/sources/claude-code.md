@@ -1,44 +1,52 @@
-# Source: Claude Code (Anthropic) — no local code
+# Source: Claude Code (Anthropic) — v2.1.88 source, leaked
 
-- Origin: [Anthropic Claude Code](https://www.anthropic.com/claude-code). Not open
-  source: no clone. Material to audit: the npm package (`@anthropic-ai/claude-code`,
-  bundled JS — inspect for system prompt and tool descriptions), Anthropic's
-  engineering blog posts on Claude Code (agent loop, harness internals, sub-agent
-  guidance, compaction), the skills spec (agent skills API), and observed CLI
-  behavior (`/hooks`, `Permission` modes, CLAUDE.md hierarchy, memory
-  instructions).
-- Why studied: the de-facto reference for UX-shaped harness conventions — CLAUDE.md
-  hierarchy, skills, subagents as first-class configs, hook events, plan mode,
-  permission modes. Every other harness in this study copies it knowingly or not.
+- Origin: [Anthropic Claude Code](https://www.anthropic.com/claude-code). Not open source. On
+  2026-03-31 the npm package `@anthropic-ai/claude-code` 2.1.88 shipped `cli.js.map`, whose
+  `sourcesContent` is the complete TypeScript source; the package was pulled within hours and the
+  source was widely mirrored. Anthropic's own toolchain is the suspected cause (a Bun issue about
+  source maps served in production builds, [oven-sh/bun#28001](https://github.com/oven-sh/bun/issues/28001)).
+- Local code: `external/claude-code-src` (clean `src/` tree, 1,884 `.ts`/`.tsx` files) and
+  `external/claude-code-sourcemap` (the original npm tarball, unpacked `package/`
+  with `cli.js` + the 57 MB map, and `restored-src/src`, 512,664 lines). Both are gitignored.
+- Licence: the leaked code carries no grant ("SEE LICENSE IN README.md"). Read it for study; do not
+  vendor or reuse it.
+- Why studied: the de-facto reference for UX-shaped harness conventions — CLAUDE.md hierarchy,
+  skills, subagents as first-class configs, hook events, plan mode, permission modes. Every other
+  harness in this study copies it knowingly or not.
 
-## Map to arms (from public, verifiable material — no code claims)
+## What the source now answers
 
-- Arm 01 (prompt): CLAUDE.md hierarchy (enterprise/user/project/local), `@file`
-  imports, `#` quick-memory, output styles forcing; the leak-history repo
-  (community) documents the shipped system prompt — cite carefully, it changes.
-- Arm 02 (tools): bundled tools w/ rich descriptions ("use when…" instructions
-  live in tool descriptions, not the prompt); MCP support.
-- Arm 03 (subagents): `.claude/agents/*.md` subagent files w/ own name/description/
-  toolset/model; auto-delegation by description matching.
-- Arm 04 (skills): SKILL.md progressive disclosure (name+description only loaded;
-  body read on demand), script support.
-- Arm 05 (context): compaction thresholds, `--continue/--resume`, context restore
-  via note files.
-- Arm 06 (memory): `CLAUDE.local.md`, `#` memory notes, user memory file.
-- Arm 07 (governance): permission modes (default/acceptEdits/plan/
-  bypassPermissions), allow/deny rules patterns, hooks (PreToolUse/PostToolUse)
-  as policy handlers, sandboxed bash per platform.
-- Arm 08 (execution): bash w/ working-dir constraints; desktop app tooling.
+- Prompt assembly: `src/constants/prompts.ts` — `getSystemPrompt` returns an array of strings with
+  `SYSTEM_PROMPT_DYNAMIC_BOUNDARY` (`:114`) splitting globally cacheable text from per-session text;
+  a section registry (`constants/systemPromptSections.ts`) holds cached and `DANGEROUS_uncached`
+  entries. Measured in [STUDY-0007](../STUDY-0007-claude-code-prompt.md).
+- Subagent prompt: the parent prompt plus `enhanceSystemPromptWithEnvDetails` (`prompts.ts:760`),
+  and per-agent text in `src/tools/AgentTool/built-in/*`.
+- Memory: `src/memdir/` — `MEMORY.md` entrypoint capped at 200 lines / 25 KB (`memdir.ts:35`),
+  typed-memory sections, and a KAIROS daily-log mode.
+- Compaction: `src/services/compact/` — auto-compact with a 3-failure cap (`autoCompact.ts:70`),
+  function-result clearing, cached micro-compact.
+- Tools: one `prompt.ts` per tool under `src/tools/*/`, which is where most tool instruction lives
+  rather than in the system prompt.
 
-## Open questions for the audit (each needs its citation landing)
+## Map to arms
 
-1. SKILL.md spec: exact progressive-disclosure contract; compare against this
-   harness's skill loader c7/c8 + trust requirements.
-2. Hooks: which events exist, do they mutate tool input (``PreToolUse`` update
-   semantics) — contrast with the here-rule "a hook is told, never asked".
-3. Subagent file spec: fields, tool inheritance, model pinning; our extension
-   point answer.
-4. Plan mode mechanics (bilateral approval) — how does its gate differ from our
-   refinement probes (answer-free, no world effect).
-5. Verbatim from a recent npm bundle: capture current system prompt + tool
-   descriptions and date-stamp them.
+- Arm 01 (prompt): static/dynamic split for the cache, per-section registry, `# Environment`,
+  output styles, language section.
+- Arm 02 (tools): rich per-tool `prompt.ts` files ("use when…" lives there, not in the prompt).
+- Arm 03 (subagents): built-in explore/plan/verification agents, `subagent_type`, fork mode.
+- Arm 04 (skills): `/<skill-name>` shorthand, Skill tool, experimental discover-skills.
+- Arm 05 (context): compaction thresholds, `--continue/--resume`, tool-result clearing.
+- Arm 06 (memory): CLAUDE.md hierarchy plus auto-memory with line and byte caps.
+- Arm 07 (governance): permission modes, allow/deny rules, hooks (PreToolUse/PostToolUse),
+  `# Executing actions with care` (`prompts.ts:256`), native client attestation (`constants/system.ts`).
+- Arm 08 (execution): bash with working-dir constraints, scratchpad directory, worktree sessions.
+
+## Open questions
+
+1. Hooks: which events exist, and do they mutate tool input (`PreToolUse` update semantics) —
+   contrast with the here-rule "a hook is told, never asked".
+2. Plan mode mechanics (bilateral approval) — how its gate differs from our refinement probes
+   (answer-free, no world effect).
+3. Undercover mode and anti-distillation (`utils/undercover.ts`, `services/api/claude.ts`) — what a
+   product prompt is allowed to hide, and what this harness's `INV-BND-2` says instead.
