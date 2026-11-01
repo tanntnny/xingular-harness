@@ -18,10 +18,12 @@ import type { Loading, Registered } from '../plugins/plugins'
 import { CONTEXT_MESSAGE_TYPE, CONTEXT_SNAPSHOT_KEY, type ContextUpdate } from '../prompt/compile'
 import type { ToolSpec } from '../tools/types'
 import { PLAN_REPAIR_CUSTOM_TYPE, PLAN_REPAIR_INSTRUCTIONS, finalizePlanOutcome } from './planMode'
-import { MAX_CHECKPOINT_CHECKS, MAX_CHECKPOINT_FILES, MAX_CHECKPOINT_SUMMARY, type Checkpoint, type CheckpointCheck } from './contracts'
+import { MAX_CHECKPOINT_CHECKS, MAX_CHECKPOINT_FILES, MAX_CHECKPOINT_SUMMARY, type Checkpoint, type CheckpointCheck, type TodoItem } from './contracts'
 import { derivedReason, type SliceState } from './workSlice'
 import type { GoalController, GoalState } from './goal'
-import { createStopGateState, handoffFields, stopCheckpointReason, stopOutcome, stopSummary, type StopGateState } from './stopGate'
+import { goalStopOutcome, handoffFields, stopCheckpointReason, stopSummary } from './goalStop'
+import { TODO_WRITE } from '../tools/todo'
+import { validatedTodo } from './compactionCheckpoint'
 import { toolAttachmentRefsSchema, type UsageRequest } from './contracts'
 import { completedReasoningSummary, REASONING_SUMMARY_APIS, requestDetailedReasoningSummary } from './reasoningSummaries'
 import { extensionUi, type ExtensionHost } from './extensionUi'
@@ -99,8 +101,6 @@ export interface TurnParams {
   command?: SessionCommand
   /** The work slice this reply is bounded by (PROP-0041); the guard updates it as the reply runs. */
   slice?: { state: SliceState; maxToolCalls: number }
-  /** The stop gate's view of this reply (ADR-0069): its todo list. */
-  stopGate?: StopGateState
   /** The run's /goal (ADR-0072); the runner counts a claim check's model request with the run's usage. */
   goal?: { controller: GoalController; recordUsage?: (message: unknown) => void }
 }
@@ -320,6 +320,8 @@ interface SliceLedger {
   files: Map<string, string>
   checks: CheckpointCheck[]
   lastText: string
+  /** The last todo list the reply wrote, for a done/next handoff. */
+  todo: TodoItem[]
 }
 
 const lastLine = (text: string): string => {
@@ -332,10 +334,10 @@ const lastLine = (text: string): string => {
  * Files and checks come from the reply's tool calls, done and next from its todo list, and blocked
  * from a goal that ended blocked (ADR-0069, ADR-0072).
  */
-function derivedCheckpoint(ledger: SliceLedger, slice: number, reason: Checkpoint['reason'], fallback: string, gate?: StopGateState, goal?: GoalState | null): Checkpoint {
+function derivedCheckpoint(ledger: SliceLedger, slice: number, reason: Checkpoint['reason'], fallback: string, goal?: GoalState | null): Checkpoint {
   return {
     summary: ledger.lastText.trim().slice(0, MAX_CHECKPOINT_SUMMARY) || fallback,
-    ...handoffFields(gate, goal),
+    ...handoffFields(ledger.todo, goal),
     files: [...ledger.files].slice(-MAX_CHECKPOINT_FILES).map(([path, why]) => ({ path: path.slice(0, 300), why: why.slice(0, 200) })),
     checks: ledger.checks.slice(-MAX_CHECKPOINT_CHECKS),
     decisions: [],
@@ -361,7 +363,7 @@ export async function runTurn(run: ActiveRun, session: PiSessionLike, params: Tu
   let costReported = false
   const toolStartedAt = new Map<string, number>()
   const slice = params.slice?.state ?? null
-  const ledger: SliceLedger = { files: new Map(), checks: [], lastText: '' }
+  const ledger: SliceLedger = { files: new Map(), checks: [], lastText: '', todo: [] }
   const bashCommands = new Map<string, string>()
   const heartbeat = slice
     ? setInterval(() => {
@@ -572,6 +574,10 @@ export async function runTurn(run: ActiveRun, session: PiSessionLike, params: Tu
           const command = tool.args && typeof tool.args === 'object' ? (tool.args as { command?: unknown }).command : null
           if (typeof command === 'string') bashCommands.set(tool.toolCallId, command)
         }
+        if (tool.toolName === TODO_WRITE) {
+          const items = validatedTodo(tool.args && typeof tool.args === 'object' ? (tool.args as { items?: unknown }).items : undefined)
+          if (items) ledger.todo = items
+        }
         break
       }
       case 'tool_execution_end': {
@@ -758,16 +764,16 @@ export async function runTurn(run: ActiveRun, session: PiSessionLike, params: Tu
     }
     if (slice?.endedBy && !aborted && !lastError) {
       // The model stopped because its slice was over. The harness keeps the state for the next slice.
-      run.emit('checkpoint', derivedCheckpoint(ledger, slice.slice, derivedReason(slice.endedBy), `The reply stopped after ${slice.steps} steps at its work-slice boundary.`, params.stopGate, params.goal?.controller.get()))
+      run.emit('checkpoint', derivedCheckpoint(ledger, slice.slice, derivedReason(slice.endedBy), `The reply stopped after ${slice.steps} steps at its work-slice boundary.`, params.goal?.controller.get()))
       run.finish('interrupted', undefined, 'slice_complete', slice.endedBy === 'budget' ? 'slice_budget' : 'compaction_thrash')
       return
     }
-    // A reply that ended with work left is not complete (ADR-0069, ADR-0072): open todo items, or a
-    // goal that was blocked, paused or ran into a limit. Either way the person can continue it.
+    // An ordinary reply settles as it ends (ADR-0075). Only a goal that was blocked, paused or ran
+    // into a limit stops it for the person, and then the checkpoint carries what is left.
     const goalState = params.goal?.controller.get() ?? null
-    const stop = (params.stopGate || goalState) && !aborted && !lastError ? stopOutcome(params.stopGate ?? createStopGateState(), goalState) : null
+    const stop = goalState && !aborted && !lastError ? goalStopOutcome(ledger.todo, goalState) : null
     if (stop) {
-      run.emit('checkpoint', derivedCheckpoint(ledger, slice?.slice ?? 1, stopCheckpointReason(stop), stopSummary(stop), params.stopGate, goalState))
+      run.emit('checkpoint', derivedCheckpoint(ledger, slice?.slice ?? 1, stopCheckpointReason(stop), stopSummary(stop), goalState))
       run.finish('interrupted', undefined, stop.code, stop.code)
       return
     }

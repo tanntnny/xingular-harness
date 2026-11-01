@@ -15,7 +15,8 @@ import * as notes from '../wiki/notes'
 import { SESSION_GUIDANCE } from '../tools/sessionName'
 import { TODO_GUIDANCE } from '../tools/todo'
 import { PLAN_INSTRUCTIONS, planSection } from '../sessions/planMode'
-import { compile, fit, load, render, renderCompactionCheckpoint, REPORTING_GUIDANCE, STOP_GATE_GUIDANCE, sessionFile, sessionLaunch, SECTION_ORDER, type ContextUpdate, type HostSection, type Launch } from './compile'
+import { compile, fit, load, render, renderCompactionCheckpoint, REPORTING_GUIDANCE, WORK_SLICE_GUIDANCE, sessionFile, sessionLaunch, SECTION_ORDER, type ContextUpdate, type HostSection, type Launch } from './compile'
+import { REPORTING_BUDGET } from './reporting'
 
 const roots: string[] = []
 afterEach(() => roots.splice(0).forEach(closeIndex))
@@ -137,8 +138,9 @@ test('the stable Harness identity uses the configured product name', () => {
   expect(identitySection).toMatchObject({
     id: 'harness-identity',
     title: 'Harness identity',
-    body: 'You are an AI agent running in Xingular Agent.'
+    body: 'You are an AI agent running in Xingular Agent. You and the user share one workspace, and your job is to collaborate with them until their intended goal is completely handled.'
   })
+  expect(compile(env, agent(), hosted({ model: 'openai/gpt-6' })).sections[0]!.body).toContain('based on openai/gpt-6')
 
   const customEnv = createEnv(env.root, { productName: 'Example Harness' })
   expect(render(customEnv, compile(customEnv, agent(), hosted()))).toContain('You are an AI agent running in Example Harness.')
@@ -308,23 +310,27 @@ test('the reporting guidance closes the stable prefix and never rides in a conte
   expect(first.system.indexOf('## Reporting your work')).toBeGreaterThan(first.system.indexOf('## Tools'))
   expect(first.update!.content).not.toContain('Reporting your work')
   expect(first.pack.delivery!.systemSectionIds.at(-1)).toBe('reporting')
-  // One large, stable text with required content blocks and five examples (ADR-0073).
-  expect(REPORTING_GUIDANCE.length).toBeGreaterThan(14_000)
-  expect(REPORTING_GUIDANCE.length).toBeLessThan(17_000)
-  expect(REPORTING_GUIDANCE.match(/#### Example/g)).toHaveLength(5)
-  expect(REPORTING_GUIDANCE).toContain('State the outcome, not the activity')
-  expect(REPORTING_GUIDANCE).toContain('### What to leave out')
-  expect(REPORTING_GUIDANCE).toContain('#### How to test')
-  expect(REPORTING_GUIDANCE).toContain('#### What to do next')
-  expect(REPORTING_GUIDANCE).toContain('#### Beyond the request')
-  expect(REPORTING_GUIDANCE).toContain('#### Departures from the plan')
-  expect(REPORTING_GUIDANCE).toContain('#### Unverified or needs a person')
-  expect(REPORTING_GUIDANCE).toContain('### Headings are yours')
-  expect(REPORTING_GUIDANCE).toContain('No fixed heading list is required')
-  expect(REPORTING_GUIDANCE).toContain('### Before you send')
-  // The old fixed headings are gone; headings are now examples, not requirements.
-  expect(REPORTING_GUIDANCE).not.toContain('## Beyond what you asked')
-  expect(REPORTING_GUIDANCE).not.toContain('## What would make this complete')
+  // Codex's final-answer guidance, adopted by ADR-0076: self-contained, outcome first, evidence and
+  // limits, with tables and headings left to the content.
+  expect(REPORTING_GUIDANCE.length).toBeGreaterThan(3_000)
+  expect(REPORTING_GUIDANCE.length).toBeLessThan(5_000)
+  expect(REPORTING_BUDGET).toBe(12_000)
+  expect(REPORTING_GUIDANCE.match(/#### Example/g)).toHaveLength(2)
+  expect(REPORTING_GUIDANCE).toContain('The final answer must always be fully self-contained')
+  expect(REPORTING_GUIDANCE).toContain('focus on the most important information')
+  expect(REPORTING_GUIDANCE).toContain('explain what changed, why, how it was tested, and any material risks or limitations')
+  expect(REPORTING_GUIDANCE).toContain('Include the evidence needed to understand the conclusion and its practical limits')
+  expect(REPORTING_GUIDANCE).toContain('Summarize routine verification instead of listing every check')
+  expect(REPORTING_GUIDANCE).toContain('Use tables for mappings or comparisons')
+  expect(REPORTING_GUIDANCE).toContain('Scale detail to complexity')
+  expect(REPORTING_GUIDANCE).toContain('Write in connected prose')
+  expect(REPORTING_GUIDANCE).toContain('There is no required heading and no preferred set')
+  expect(REPORTING_GUIDANCE).toContain('gh auth login')
+  // The old content blocks and the filler ending are gone; headings and length follow the content.
+  expect(REPORTING_GUIDANCE).not.toContain('What only a person can check')
+  expect(REPORTING_GUIDANCE).not.toContain('What the person does next')
+  expect(REPORTING_GUIDANCE).not.toContain('Nothing needed')
+  expect(REPORTING_GUIDANCE).not.toContain('#### How to test')
   // The section fits its budget and is byte-identical on a second launch.
   const section = first.pack.sections.find((entry) => entry.id === 'reporting')!
   expect(section.cut).toBe(false)
@@ -342,7 +348,8 @@ test('a person\'s own session is told when a reply may end', () => {
   expect(rendered).toContain('A document the request points to (a handoff, a plan, a spec) is the request: work its steps in order.')
   expect(rendered).toContain('A question the request or the files already answer is not a question for the person.')
   expect(rendered).toContain('Stop with work still open only for what the person alone can do')
-  expect(rendered).toContain('A reply that ends while its todo list has open items is sent back to you')
+  expect(rendered).toContain(WORK_SLICE_GUIDANCE)
+  expect(rendered).not.toContain('sent back to you')
   expect(rendered).not.toContain('completion check')
   expect(rendered).not.toContain('call finish')
   expect(rendered).toContain('otherwise the reply ends only when the work-slice guard hands it back or the person interrupts')
@@ -350,7 +357,8 @@ test('a person\'s own session is told when a reply may end', () => {
   expect(rendered).toContain('fix what your own work exposes')
   expect(rendered).toContain('inside those bounds you do not ask first')
   expect(rendered).toContain('any departure from the plan or request, is allowed on those terms, and you report it at the end')
-  expect(rendered).toContain('An open step is work to do in this reply, not something to report')
+  expect(rendered).toContain('if a step stays open, say why in the reply')
+  expect(rendered).not.toContain('An open step is work to do in this reply')
   // Nothing in the prompt invites writing a final summary of unfinished work before stopping.
   expect(rendered).not.toContain('Before your final reply')
   expect(pack.sections.find(entry => entry.id === 'role')!.cut).toBe(false)
@@ -359,17 +367,21 @@ test('a person\'s own session is told when a reply may end', () => {
   expect(rendered).toContain('compare the request, not the list, with what is done and checked')
 })
 
-test('a person\'s own session carries the Codex-derived autonomy, permission, steering and writing sections, uncut', () => {
+test('a person\'s own session carries the Codex-derived personality, autonomy, permission, steering and writing sections, uncut', () => {
   const env = setup()
   const pack = compile(env, agent(), { standard: { cwd: '/src/site' }, tools: ['read', 'todo_write', 'spawn_subagent'] })
   const rendered = render(env, pack)
-  for (const id of ['role', 'autonomy', 'permission', 'steering', 'writing']) {
+  for (const id of ['role', 'autonomy', 'personality', 'permission', 'steering', 'writing']) {
     expect(pack.sections.find((entry) => entry.id === id)?.cut, id).toBe(false)
   }
   // Autonomy and persistence
   expect(rendered).toContain('persist until the intended goal is complete')
   expect(rendered).toContain('treat it as an instruction to do the work')
   expect(rendered).toContain('Do not settle for a partial or "helpful enough" solution')
+  expect(rendered).toContain('If the user\'s intent or task scope is unclear, progress towards the user\'s goal')
+  // Personality
+  expect(rendered).toContain('curious, thoughtful collaborator and a lucid communicator')
+  expect(rendered).toContain('You disagree when you have reason; reconsider when the evidence warrants it')
   // Permission: approval is the last step, and a pause is explained.
   expect(rendered).toContain('do all the work first so that approval is the last step')
   expect(rendered).toContain('say why you need it and where the requirement comes from')
@@ -377,20 +389,19 @@ test('a person\'s own session carries the Codex-derived autonomy, permission, st
   expect(rendered).toContain('Unlike other fixes, a test or error that does not come from this session\'s work needs the person\'s say-so.')
   expect(rendered).toContain('keep it off your todo list, finish the rest of the request, and let the person decide')
   expect(rendered).toContain('or a fix to a test or error that does not come from this session\'s work')
+  expect(rendered).toContain('give the exact command or screen they must use, not a description of it')
   // Steering and compaction
   expect(rendered).toContain('treat it as steering the active task rather than replacing it')
   expect(rendered).toContain('Compaction does not end the task.')
   expect(rendered).toContain('assume they want it fixed, not acknowledged or explained')
   // Writing style
   expect(rendered).toContain('Avoid AI-slop words and phrases')
-  // Reporting: outcome first, required blocks for a change, no closing offer (ADR-0073).
-  expect(rendered).toContain('State the outcome, not the activity')
-  expect(rendered).toContain('#### How to test')
-  expect(rendered).toContain('#### What to do next')
-  expect(rendered).toContain('Only suggest a follow-up that builds on the request; otherwise stop')
+  // Reporting: Codex's final-answer guidance (ADR-0076), not the four content blocks.
+  expect(rendered).toContain('The final answer must always be fully self-contained')
+  expect(rendered).toContain('explain what changed, why, how it was tested, and any material risks or limitations')
+  expect(rendered).toContain('Every claim carries the evidence that supports it')
   // Nothing tied to Codex's own channels or tools came along.
   for (const text of [rendered]) {
-    expect(text).not.toContain('commentary')
     expect(text).not.toContain('functions.exec')
     expect(text).not.toContain('apply_patch')
     expect(text).not.toContain('Do not add or run tests unless')
@@ -403,7 +414,8 @@ test('only a person\'s own session is told that its replies are checked', () => 
   expect(hostedPack.toolGroups).toContainEqual({ group: 'Progress', tools: ['todo_write'] })
   expect(render(env, hostedPack)).not.toContain('completion check')
   const own = compile(env, agent(), { standard: { cwd: '/src/site' }, tools: ['read', 'todo_write', 'spawn_subagent'] })
-  expect(render(env, own)).toContain(STOP_GATE_GUIDANCE)
+  expect(render(env, own)).toContain(WORK_SLICE_GUIDANCE)
+  expect(render(env, own)).not.toContain('todo gate')
   expect(render(env, own)).not.toContain('checkpoint_write')
   // The longer role, with the subagent paragraph, still fits uncut.
   expect(own.sections.find(entry => entry.id === 'role')!.cut).toBe(false)

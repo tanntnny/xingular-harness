@@ -13,6 +13,9 @@ related:
 ---
 # ADR-0072 — Codex's prompts and `/goal`; the completion check moves behind `/goal`
 
+> **Amended by [ADR-0075](ADR-0075-no-todo-gate.md):** the todo gate is removed, so ordinary replies
+> rely on the prompt alone. The goal loop and its completion claim check stay.
+
 ## Context
 
 ADR-0071 asked a model to judge, at the end of **every** reply that did work, whether the request was

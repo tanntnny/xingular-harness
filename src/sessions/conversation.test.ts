@@ -55,38 +55,25 @@ async function setup() {
 }
 
 describe('a whole reply, with a scripted model', () => {
-  // ADR-0069: the stop gate through real Pi. Pi must accept the gate's continuation, the model must
-  // see the nudge, and the run must settle honestly.
+  // ADR-0075: a reply the model ends settles as it ends, even with open todo items. No layer sends
+  // it back and no checkpoint is written for it.
   const status = (of: (id: string) => RunEvent[], id: string) =>
     of(id).filter((event) => event.type === 'completed' || event.type === 'failed' || (event.type === 'status.changed' && (event.payload as { status: string }).status === 'interrupted')).at(-1)
 
-  it('sends a reply that ends with open todo items back to the model, which then finishes the work', async () => {
-    const { root, model, start, until, of } = await setup()
-    const todo = (first: string, second: string) => model.calls(['todo_write', { items: [{ text: 'Port the auth route', status: first }, { text: 'Port the courses route', status: second }] } as never])
-    model.script([todo('in_progress', 'pending'), model.says('Auth is ported; the rest can wait.'), todo('completed', 'completed'), model.says('Both routes are ported.')])
-    const id = await start()
-    await until(() => Boolean(status(of, id)))
-    expect(model.requests()).toBe(4)
-    expect(model.lastUserTexts().some((text) => text.includes('Harness stop gate (1/3)') && text.includes('- Port the courses route'))).toBe(true)
-    expect(status(of, id)?.type).toBe('completed')
-    expect(of(id).filter((event) => event.type === 'extension.notice' && (event.payload as { extension?: string }).extension === 'stop-gate')).toHaveLength(1)
-    const { loadRun } = await import('./runStore')
-    expect(loadRun(root, id)).toMatchObject({ status: 'completed', terminalReason: null })
-  })
-
-  it('hands a reply back as unfinished when the nudge produces no work', async () => {
+  it('lets a reply that ends with open todo items settle completed, with no nudge', async () => {
     const { root, model, start, until, of } = await setup()
     model.script([
-      model.calls(['todo_write', { items: [{ text: 'Run the migration', status: 'pending' }] } as never]),
-      model.says('Stopping here.'),
-      model.says('Still stopping.')
+      model.calls(['todo_write', { items: [{ text: 'Port the auth route', status: 'in_progress' }, { text: 'Port the courses route', status: 'pending' }] } as never]),
+      model.says('Auth is ported; the rest can wait.')
     ])
     const id = await start()
     await until(() => Boolean(status(of, id)))
-    expect(model.requests()).toBe(3)
+    expect(model.requests()).toBe(2)
+    expect(model.lastUserTexts().some((text) => text.includes('Harness stop gate'))).toBe(false)
+    expect(status(of, id)?.type).toBe('completed')
+    expect(of(id).some((event) => event.type === 'checkpoint')).toBe(false)
     const { loadRun } = await import('./runStore')
-    expect(loadRun(root, id)).toMatchObject({ status: 'interrupted', terminalReason: 'unfinished', terminalCode: 'unfinished' })
-    expect(of(id).find((event) => event.type === 'checkpoint')?.payload).toMatchObject({ next: 'Run the migration', summary: 'Still stopping.', reason: 'stuck' })
+    expect(loadRun(root, id)).toMatchObject({ status: 'completed', terminalReason: null })
   })
 
   // ADR-0072: a /goal through real Pi. One scripted model answers both the agent and the claim check;

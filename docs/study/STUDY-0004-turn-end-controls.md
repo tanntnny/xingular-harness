@@ -9,6 +9,13 @@ related:
 ---
 # How other harnesses control the end of a turn
 
+> **Update (2026-11-01, [ADR-0075](../decisions/ADR-0075-no-todo-gate.md)):** the todo gate is
+> removed. A peer check found that omp ships the same three-reminder gate on by default
+> (`todo.remindersMax` 3), while Claude Code only reminds the model to use TodoWrite
+> (`ccVersion` 2.1.139), Codex's `update_plan` is opt-in (0.152) and Kimi CLI has no nudge. A reply
+> the model ends now settles `completed`; the goal loop and the work-slice guard keep their stop
+> codes and checkpoints.
+
 > **Update (2026-11-01, [ADR-0072](../decisions/ADR-0072-codex-prompts-and-goal.md)):** OpenAI Codex is open source. It has no completion check on ordinary turns and keeps its model-called `update_goal` behind an opt-in `/goal`. The harness followed: ordinary replies rely on Codex's prompt wording and the todo gate, and the judge now checks a `/goal` completion claim only.
 
 > **Update (2026-10-31, [ADR-0071](../decisions/ADR-0071-completion-check.md)):** the model-judged evaluator rejected above was adopted after all, as an automatic completion check on the run's own model, because a live A/B showed a closed todo list hiding unfinished work and `finish(needs_decision)` used as an early exit; `finish` is removed.

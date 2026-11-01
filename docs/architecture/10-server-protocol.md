@@ -79,11 +79,12 @@ harness → host   { v: 1, id, call, params }          host → harness   { v: 1
 - The run-event stream adds `checkpoint` (the bounded handoff) and `heartbeat` (steps, elapsed time,
   last tool, compactions, slice, call budget). Hosts must accept both; an unknown event type is still
   relayed in order (INV-RUN-3).
-- `terminalCode` gains `needs_person` and `unfinished` (ADR-0069, ADR-0072): a reply that settled with
-  work left — `needs_person` when the run's goal ended `blocked`, `unfinished` when todo items stayed
-  open or a goal was paused, stalled or limited. Both are `interrupted`, carry a `checkpoint`, and
-  are not auto-continued; a host should offer the person Continue, as it does for `slice_complete`.
-  Stop-gate nudges arrive as `extension.notice` events with `extension: 'stop-gate'`.
+- `terminalCode` gains `needs_person` and `unfinished` (ADR-0072, ADR-0075): a goal that settled with
+  work left — `needs_person` when it ended `blocked`, `unfinished` when it was paused, stalled or
+  limited. Both are `interrupted`, carry a `checkpoint`, and are not auto-continued; a host should
+  offer the person Continue, as it does for `slice_complete`. An ordinary reply with open todo items
+  settles `completed`. Extension notices arrive as `extension.notice` events (for example
+  `work-slice` and `goal`).
 - `sessions.run` accepts `goal { objective, rounds?, hours? }` (ADR-0072, INV-RUN-16) for a person's
   own top-level run; it is refused with `invalid_request` for a plan, command, unattended or child
   run, or an empty or over-long (4,000 character) objective. The objective is the request, and the

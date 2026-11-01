@@ -81,7 +81,5 @@ describe('completion check verdict', () => {
     expect(launchSwitchOff('XINGULAR_COMPLETION_CHECK')).toBe(false)
     vi.stubEnv('XINGULAR_COMPLETION_CHECK', 'off')
     expect(launchSwitchOff('XINGULAR_COMPLETION_CHECK')).toBe(true)
-    vi.stubEnv('XINGULAR_STOP_GATE', '0')
-    expect(launchSwitchOff('XINGULAR_STOP_GATE')).toBe(true)
   })
 })

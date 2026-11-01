@@ -5,11 +5,11 @@ status: accepted
 created: 2026-10-21
 updated: 2026-10-21
 supersedes: ADR-0007
-amended_by: ADR-0073
+amended_by: ADR-0073, ADR-0074
 ---
 # ADR-0008 — Flexible reporting guidance with optional human inspection
 
-> **Amended by [ADR-0073](ADR-0073-large-reporting-prompt.md):** flexible headings stand; the `reporting` section now names required content blocks and ships worked examples, and the later fixed headings (ADR-0068) are gone.
+> **Amended by [ADR-0073](ADR-0073-large-reporting-prompt.md):** flexible headings stand; the `reporting` section now names required content blocks and ships worked examples, and the later fixed headings (ADR-0068) are gone. **Amended again by [ADR-0074](ADR-0074-report-content-not-report-blocks.md):** the required blocks are gone too, and human inspection is once more the only optional by-hand block.
 
 ## Context and decision
 

@@ -152,8 +152,8 @@ beside the choices (INV-RC-3, INV-RC-4).
   ADR-0071) exists. The one exception is `update_goal` in a goal the person started: it is offered
   only while a goal exists, its `complete` is only a claim that the harness checks (INV-RUN-16), and
   its `paused` needs the person's word. The model cannot create, resume or limit a goal. When a
-  reply stops, the harness decides how it settled (INV-RUN-15) and writes the checkpoint from the
-  run's evidence.
+  reply stops, it settles as it ends unless a person interrupted it, the slice guard ended it, or a
+  goal stopped it (INV-RUN-15); a slice or goal stop writes the checkpoint from the run's evidence.
 - **INV-TOOL-10** Bash keeps one command budget on every surface: 120 seconds when the call says
   nothing, 300 seconds as the ceiling without a `reason`, 900 seconds as the maximum, and a timeout
   returns the partial output with a narrowing instruction instead of blocking the reply.

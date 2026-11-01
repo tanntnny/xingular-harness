@@ -11,6 +11,9 @@ related:
 ---
 # ADR-0070 — A terminal reply continues across work slices in place
 
+> **Amended by [ADR-0075](ADR-0075-no-todo-gate.md):** the stop gate is removed; the slice guard
+> still resumes a reply at its slice boundary.
+
 ## Context
 
 A headless run that stops at its work-slice budget already continues on its own (`continueSlice`,
@@ -43,4 +46,4 @@ next slice continues from it", which was false in the terminal.
 - A long terminal task runs up to eight slices without a person, and Esc still stops it at once.
 - A continued terminal reply is one run record with several checkpoints, where a headless one is a
   chain of runs; `sliceOf` keeps counting the headless chain.
-- The stop gate stays silent at a slice boundary and resumes in the next slice.
+- A reply at its slice boundary continues in the next slice; there is no todo gate (ADR-0075).

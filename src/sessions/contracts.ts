@@ -412,9 +412,9 @@ export const runStopCodeSchema = z.enum([
   'slice_budget',
   /** Three compactions in one reply ended it. */
   'compaction_thrash',
-  /** The completion check found that the work left needs the person (ADR-0071). */
+  /** A goal stopped for the person (ADR-0072). */
   'needs_person',
-  /** The reply ended with work left after the stop gate's nudges ran out or produced no work (ADR-0069, ADR-0071). */
+  /** A goal stopped on a limit, a pause or a stall with work left (ADR-0072, ADR-0075). */
   'unfinished',
   /** The model request failed (auth, quota, rate limit, network, unsupported model). */
   'provider_error',

@@ -1,13 +1,9 @@
-// The completion check (ADR-0071): when a reply that did work ends with its todo list closed or
-// absent, the same model, at low effort and with a fresh context, judges the person's request
-// against what the reply actually did. The doer never certifies its own early stop: the check says
-// `done`, `continue` (the reply is sent back with the reason) or `needs_person`. The request is the
-// goal; there is no command and no condition to write. Any failure leaves the reply as it was.
 // The goal-claim check (ADR-0072; it began as the completion check of ADR-0071): when the model
 // of a /goal calls update_goal(complete), the same model, at low effort and with a fresh context,
 // judges the claim against the goal's objective and what the transcript shows. The doer never
 // certifies its own completion unchecked: the check says `done` (the goal is complete) or
 // `continue` (it stays active with the reason). Any failure accepts the claim, as before.
+// An ordinary reply has no check: it settles as it ends (ADR-0075).
 export type CheckVerdictKind = 'done' | 'continue'
 
 export interface CheckVerdict {
@@ -171,8 +167,29 @@ export function answerText(message: unknown): string {
   return textOf((message as { content?: unknown } | null)?.content)
 }
 
-/** `XINGULAR_STOP_GATE=off` / `XINGULAR_COMPLETION_CHECK=off` at launch switch a layer off, for experiments. The second one accepts every goal claim unchecked. */
-export function launchSwitchOff(name: 'XINGULAR_STOP_GATE' | 'XINGULAR_COMPLETION_CHECK'): boolean {
+/** The model a goal-claim check asks: the session's own model, at low effort, through Pi's registry. */
+export function sessionCheckModel(ctx: unknown): CheckModel | null {
+  const session = (ctx ?? {}) as {
+    model?: { reasoning?: boolean }
+    modelRegistry?: { streamSimple: (model: never, context: never, options?: never) => { result(): Promise<unknown> } }
+    sessionManager?: { getSessionId?: () => string }
+  }
+  const model = session.model
+  const registry = session.modelRegistry
+  if (!model || !registry) return null
+  // Some providers (opencode-go) reject a request without a session id.
+  const sessionId = session.sessionManager?.getSessionId?.()
+  return async (system, user, signal) => {
+    const context = { systemPrompt: system, messages: [{ role: 'user', content: user, timestamp: Date.now() }] }
+    const message = await registry.streamSimple(model as never, context as never, { ...(model.reasoning ? { reasoning: 'low' } : {}), ...(sessionId ? { sessionId } : {}), maxTokens: 4_000, signal } as never).result()
+    const failed = (message as { stopReason?: string; errorMessage?: string }).stopReason
+    if (failed === 'error' || failed === 'aborted') throw new Error((message as { errorMessage?: string }).errorMessage || `the check request ended: ${failed}`)
+    return { text: answerText(message), message }
+  }
+}
+
+/** `XINGULAR_COMPLETION_CHECK=off` at launch accepts every goal claim unchecked, for experiments. */
+export function launchSwitchOff(name: 'XINGULAR_COMPLETION_CHECK'): boolean {
   const value = process.env[name]?.trim().toLowerCase()
   return value === 'off' || value === '0' || value === 'false'
 }

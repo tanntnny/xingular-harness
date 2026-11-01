@@ -357,16 +357,16 @@ describe('a pi terminal session', () => {
     expect(loadRun(root, runId)).toMatchObject({ status: 'interrupted', terminalReason: 'slice_complete', terminalCode: 'compaction_thrash' })
   })
 
-  it('records a terminal reply that ended with open work, its checkpoint and the gate notice (ADR-0069)', async () => {
+  it('records a terminal notice, its checkpoint and an interrupted settlement', async () => {
     const { tell, root, events } = await setup()
     await tell('ready', {})
     await tell('begin', { text: 'Complete the handoff' })
     const first = events[0].runId
-    await tell('notice', { kind: 'notify', level: 'info', extension: 'stop-gate', text: 'Stop gate 1: the reply ended with 2 open todo items; continuing.' })
-    await tell('checkpoint', { summary: 'The reply ended with 1 open todo item.', done: [], next: 'Port the courses module', files: [], checks: [], decisions: [], slice: 1, reason: 'stuck' })
+    await tell('notice', { kind: 'notify', level: 'info', extension: 'work-slice', text: 'Work slice 1 reached its limit; continuing with slice 2 of up to 8.' })
+    await tell('checkpoint', { summary: 'Work slice 1 reached its limit.', done: [], next: 'Port the courses module', files: [], checks: [], decisions: [], slice: 1, reason: 'budget' })
     await tell('settled', { reason: 'unfinished', code: 'unfinished' })
     expect(loadRun(root, first)).toMatchObject({ status: 'interrupted', terminalReason: 'unfinished', terminalCode: 'unfinished' })
-    expect(readEvents(root, first)).toContainEqual(expect.objectContaining({ type: 'extension.notice', payload: expect.objectContaining({ extension: 'stop-gate' }) }))
+    expect(readEvents(root, first)).toContainEqual(expect.objectContaining({ type: 'extension.notice', payload: expect.objectContaining({ extension: 'work-slice' }) }))
     expect(readEvents(root, first)).toContainEqual(expect.objectContaining({ type: 'checkpoint', payload: expect.objectContaining({ next: 'Port the courses module' }) }))
     await tell('begin', { text: 'Cut over' })
     const second = events.filter((event) => event.runId !== first)[0].runId

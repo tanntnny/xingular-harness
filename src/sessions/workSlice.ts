@@ -217,7 +217,7 @@ export function workSliceGuard(options: WorkSliceGuardOptions): (pi: GuardApi) =
   }
 
   return (pi) => {
-    // Pi emits agent_start again for every continuation (a stop-gate nudge, delivered subagent
+    // Pi emits agent_start again for every continuation (a slice continuation, delivered subagent
     // results, a plan repair), and those belong to the same reply and the same budget. Only a
     // person's message starts a new slice.
     pi.on('before_agent_start', (event) => {

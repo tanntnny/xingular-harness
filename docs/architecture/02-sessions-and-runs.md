@@ -330,7 +330,7 @@ is approved but remains in progress; no completed cross-surface catalog is impli
   budget-ended reply is `interrupted` with terminal reason `slice_complete` (ADR-0053), unless it
   continues: a headless run as a new run (`continueSlice`), a terminal reply in place as its next
   slice (ADR-0070), both up to `maxSlices` and never after a fruitless or blocked slice. The budget
-  covers the whole reply: Pi emits `agent_start` for every continuation (a stop-gate nudge, delivered
+  covers the whole reply: Pi emits `agent_start` for every continuation (a slice continuation, delivered
   subagent results, a plan repair), so the guard starts a new slice only on a person's message.
   No call is refused for repeating: identical calls, a Bash check that keeps failing and repeated
   `edit`/`write` results on one path are allowed as often as the work needs, because a distinct read
@@ -342,20 +342,18 @@ is approved but remains in progress; no completed cross-surface catalog is impli
   check or recorded a finished item, and never after a checkpoint that is `blocked`. A run may turn
   the guard off with `workSlice.enabled: false`, and a launch may set `XINGULAR_WORK_SLICE=off` for
   every run in that process; with it off a reply has no boundary — no checkpoint, no continuation —
-  and ends only when the model stops or a person interrupts. A reply the model ends on its own is
-  subject to the todo gate (INV-RUN-15) and, in a goal, the goal loop (INV-RUN-16); a continuation carries the todo it left (`continuation.ts`).
-- **INV-RUN-15** A reply may not quietly end while its own todo list has open items (ADR-0069,
-  ADR-0072). In an attended top-level run (not plan, command, automatic, subagent or other related
-  runs) the **todo gate** acts at Pi's `agent_before_settle` boundary, unless the reply failed,
-  aborted or was ended by the slice guard: an item still `pending` or `in_progress` sends the reply
-  back with a displayed `xingular-stop-gate` message naming the open items and saying that the list
-  shows progress, not the limit of the work. No model is asked. A cap of three nudges per reply
-  applies, and no nudge follows one that produced no tool call other than `todo_write` or
-  `session_name`. Each nudge is an `extension.notice` from `stop-gate`. A reply settles `completed`
-  when no item is open; otherwise it is `interrupted` with terminal code `unfinished` and a
-  harness-written checkpoint, and a person continues it. **No model judges an ordinary reply**
-  (ADR-0072 removed ADR-0071's every-reply completion check); completion pressure there is the prompt
-  (`04-prompt.md`). `XINGULAR_STOP_GATE=off` at launch switches the gate off.
+  and ends only when the model stops or a person interrupts. A reply the model ends on its own
+  settles as it ends (INV-RUN-15); in a goal, the goal loop (INV-RUN-16) continues it. A
+  continuation carries the todo it left (`continuation.ts`).
+- **INV-RUN-15** A reply the model ends settles as it ends (ADR-0075): the harness never sends it
+  back and never overwrites its status from the todo list. The todo list is progress, not a gate.
+  Only three things settle a reply otherwise: a person's interrupt (`interrupted`), the work-slice
+  guard (INV-RUN-13), and a goal's stop (INV-RUN-16) — a goal that ends blocked settles
+  `needs_person`, and one that ends on a limit, a pause or a stall settles `unfinished`, each with a
+  harness-written checkpoint. **No model judges an ordinary reply** (ADR-0072 removed ADR-0071's
+  every-reply completion check); only a goal's completion claim is checked (INV-RUN-16). Carrying
+  the request to completion is the prompt's job (`04-prompt.md`). There is no stop gate, no nudge
+  and no `XINGULAR_STOP_GATE` switch.
 - **INV-RUN-16** A goal is the person's opt-in long run (ADR-0072). Only a person's own top-level run
   carries one (`sessions.run` `goal`, or `/goal` in the terminal); never a plan, command, unattended
   or child run. While its status is `active`, a reply that would end continues in place (the goal

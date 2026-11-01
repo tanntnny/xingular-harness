@@ -2,13 +2,53 @@
 
 ## Unreleased
 
-- **A large, content-block reporting prompt (ADR-0073).**
+- **Codex's final-answer guidance, adopted verbatim (ADR-0076).**
+  - The `reporting` section drops the four content questions, the by-hand check, the next-step
+    block, the evidence table, the anti-pattern table and one example. It now carries Codex's
+    final-answer and technical-communication text: self-contained, outcome first, what changed and
+    why, how it was tested, risks and limits, evidence summarized, tables for comparisons, length
+    by complexity, prose before lists. It is 3.7k characters (about 0.8k tokens), down from 9.2k.
+  - Identity names the model (`Launch.model`, when the host knows it) and adds Codex's
+    "collaborate until the intended goal is completely handled" sentence. A model switch after the
+    pack is compiled leaves the line naming the starting model.
+  - A new `personality` standard section carries Codex's personality paragraph; the unclear-scope
+    rule becomes Codex's wording with `ask_user` for the follow-up question.
+  - Codex's work rules join the tool guidance: `rg` first, no decorative command separators, shell
+    quoting, no reused `$HOME`, no long blocking sleeps, tests only where meaningful and broadening
+    them only when justified. Codex's skill and plugin principles join the Wiki guidance.
+- **No todo gate; a reply ends when the model ends it (ADR-0075).**
+  - The `stop-gate` extension, its three-nudge cap and its displayed `xingular-stop-gate` messages
+    are removed. A reply the model ends settles `completed`; a stale todo item no longer marks it
+    interrupted, and no checkpoint is written for it.
+  - `STOP_GATE_GUIDANCE` becomes `WORK_SLICE_GUIDANCE`; `TODO_GUIDANCE` is relaxed and no longer
+    says a reply is sent back. `XINGULAR_STOP_GATE` is retired and ignored if set.
+  - A goal's stop (blocked, paused, at a limit) and the work-slice guard keep their codes and
+    checkpoints. The goal loop is the only layer that continues a reply.
+  - A login that blocks the work now names the exact command in the reply: reporting guidance,
+    autonomy, `ask_user` and the todo guidance carry the rule, with a publish-blocked example.
+- **A large, content-block reporting prompt (ADR-0073); superseded by ADR-0074.**
   - The `reporting` section in `src/prompt/reporting.ts` is about 15.8k characters: outcome first,
     required what-changed / how-to-test / what-to-do-next blocks for a change, optional beyond,
     departures, unverified and open-question blocks, five worked examples and an anti-pattern table.
   - Headings are the model's choice; the three fixed headings from ADR-0068 are gone.
   - `REPORTING_BUDGET` rises to 18,000, and the section is never cut.
   - The peer study is `docs/study/STUDY-0006-reporting-prompts.md`.
+- **Report content, not report blocks (ADR-0074).**
+  - The `reporting` section is about 8.9k characters (about 2.1k tokens, down from 3.7k), and
+    `REPORTING_BUDGET` falls to 12,000. The section is still last in the stable prefix and never cut.
+  - The four required blocks are gone. A reply answers what happened, what changed or was decided,
+    what only a person can check and what they do next, in any words and any order.
+  - Checks the agent already ran are one line of evidence each — command and result — and are never
+    steps for the person. A by-hand check covers only what the agent could not do: a screen, a
+    sign-in, a document's tone, a diff or PR, a publish, a deploy; it is left out when nothing needs
+    a person, with no "nothing to check" line.
+  - "Nothing needed" and "Nothing needed next" are banned. A finished reply with nothing left ends
+    on its last real point.
+  - Headings are free: no required name and no preferred set. Cross-domain examples and a
+    shape-by-work table replace the four-heading vocabulary.
+  - Three worked examples replace the five; the observed failure — a person's "how to test" filled
+    with commands the agent ran — is an anti-pattern row.
+  - The stable prefix changes, so existing sessions miss the provider cache once after the upgrade.
 - **Skill installation guidance and package skill layouts.**
   - The release-owned `plugin-authoring` skill now says where a skill is installed (a project's
     `.pi/skills` and `.agents/skills`, the user's `~/.agents/skills`, the shared state folder), to

@@ -1,15 +1,21 @@
 ---
 id: ADR-0069
 title: A stop gate and a finish tool; the model's checkpoint tool is removed
-status: accepted
+status: superseded
 created: 2026-10-31
-updated: 2026-10-31
+updated: 2026-11-01
+superseded_by: ADR-0075
 supersedes: partial — PROP-0041 (the model-written checkpoint), ADR-0068 (when the completion heading applies), ADR-0063 (scope of the unfinished-work guidance)
 related:
   - STUDY-0004
   - ADR-0068
 ---
 # ADR-0069 — A stop gate and a finish tool; the model's checkpoint tool is removed
+
+> **Superseded by [ADR-0075](ADR-0075-no-todo-gate.md):** the stop gate and the `unfinished` status
+> that open todo items produced are removed. A reply the model ends settles `completed`; the goal
+> loop and the work-slice guard keep their statuses. The `finish` tool was already removed by
+> ADR-0071.
 
 > **Amended by [ADR-0071](ADR-0071-completion-check.md):** `finish` is removed; a completion check (the run's own model, fresh context) now decides `continue` / `needs_person` / `done` when a reply that did work ends with its list closed.
 

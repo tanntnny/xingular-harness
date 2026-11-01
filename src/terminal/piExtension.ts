@@ -15,11 +15,11 @@ import { SPAWN_SUBAGENT, SUBAGENT_OWNER, SUBAGENT_RECEIPT, SUBAGENT_RESULTS, sub
 import { PLAN_RESEARCH_TOOLS } from '../agents/planResearch'
 import { askUserTool } from '../tools/askUser'
 import { TODO_WRITE, todoTool } from '../tools/todo'
-import { createStopGateState, handoffFields, sessionCheckModel, stopCheckpointReason, stopGate, stopGateNotice, stopOutcome, stopSummary, STOP_GATE_EXTENSION } from '../sessions/stopGate'
-import { launchSwitchOff } from '../sessions/completionCheck'
+import { goalStopOutcome, handoffFields, stopCheckpointReason, stopSummary } from '../sessions/goalStop'
+import { launchSwitchOff, sessionCheckModel } from '../sessions/completionCheck'
 import { GOAL_STATE_ENTRY, GOAL_TOOLS, goalTools, type GoalController, type GoalState } from '../sessions/goal'
 import { GOAL_EXTENSION, goalLoop, goalNotice } from '../sessions/goalLoop'
-import { createSliceState, DEFAULT_SLICE_POLICY, parseWorkSlice, sliceContinuation, workSliceGuard, type SlicePolicy } from '../sessions/workSlice'
+import { createSliceState, DEFAULT_SLICE_POLICY, parseWorkSlice, sliceContinuation, workSliceGuard, WORK_SLICE_EXTENSION, type SlicePolicy } from '../sessions/workSlice'
 import { DEFAULT_COMMAND_TIMEOUT_SECONDS, withCommandBudget } from '../core/commandBudget'
 import { SESSION_NAME, deriveSessionName, sessionNameTool } from '../tools/sessionName'
 import { CAPABILITY_DISCOVERY, describeCapabilities } from '../tools/getCapabilities'
@@ -205,8 +205,6 @@ export default async function (pi: ExtensionAPI, planRun?: TerminalPlanRunState,
   }
   const sliceState = createSliceState(slicePolicy)
   // `XINGULAR_WORK_SLICE=off` at launch leaves terminal replies unbounded, as before PROP-0041.
-  // One stop-gate state per terminal session; each reply resets it.
-  const gateState = createStopGateState()
   // A goal-claim check's model request counts with the reply's usage, like any other request.
   const recordCheckUsage = (raw: unknown): void => {
     const message = raw as { usage?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; reasoning?: number; cost?: { total?: number } }; model?: string; provider?: string; responseId?: string; stopReason?: string; durationMs?: number }
@@ -472,20 +470,10 @@ export default async function (pi: ExtensionAPI, planRun?: TerminalPlanRunState,
       continue: true
     }
   })
-  // The stop gate (ADR-0069), after subagent delivery and plan repair so it sees their
-  // continuations: a terminal reply that ends with open todo items is sent back up to its cap.
-  // Plan replies are not gated.
-  if (!launchSwitchOff('XINGULAR_STOP_GATE')) stopGate({
-    state: gateState,
-    active: () => !planRun?.active,
-    sliceEnded: () => sliceState.endedBy !== null,
-    failed: () => Boolean(failure),
-    onEvent: (event) => {
-      void terminalCall('notice', { kind: 'notify', level: 'info', extension: STOP_GATE_EXTENSION, text: stopGateNotice(event) }).catch(() => undefined)
-    }
-  })(pi)
-  // A /goal (ADR-0072): while one is active, a reply that would end continues in place. After the
-  // stop gate, so open todo items are nudged first; its claim check is the only completion check.
+  // The stop gate is gone (ADR-0075): a reply the model ends settles as it ends, and the todo list
+  // is progress, not a gate. A /goal (ADR-0072) is the only layer that continues a reply: while one
+  // is active, a reply that would end continues in place; its claim check is the only completion
+  // check.
   if (goal) {
     for (const spec of goalTools(() => goal)) pi.registerTool({
       name: spec.name,
@@ -533,8 +521,8 @@ export default async function (pi: ExtensionAPI, planRun?: TerminalPlanRunState,
       }
     })(pi)
   }
-  // After the stop gate, which stays silent at a slice boundary: a reply that did work and reached
-  // its budget continues as the next slice of the same run (ADR-0070).
+  // A reply that did work and reached its budget continues as the next slice of the same run
+  // (ADR-0070).
   if (slicePolicy.enabled) sliceContinuation({
     policy: slicePolicy,
     state: sliceState,
@@ -542,11 +530,11 @@ export default async function (pi: ExtensionAPI, planRun?: TerminalPlanRunState,
     failed: () => Boolean(failure),
     blocked: () => goal?.get()?.status === 'blocked',
     goalActive: () => goal?.active() === true,
-    todo: () => gateState.todo,
-    next: () => handoffFields(gateState, goal?.get() ?? null).next,
+    todo: () => lastTodo,
+    next: () => handoffFields(lastTodo, goal?.get() ?? null).next,
     onContinue: (ended) => {
-      void terminalCall('checkpoint', { summary: `Work slice ${ended.slice} reached its limit after ${ended.steps} steps; the reply continues.`, ...handoffFields(gateState, goal?.get() ?? null), files: [], checks: [], decisions: [], slice: ended.slice, reason: 'budget' }).catch(() => undefined)
-      void terminalCall('notice', { kind: 'notify', level: 'info', extension: STOP_GATE_EXTENSION, text: `Work slice ${ended.slice} reached ${ended.limit ?? 'its limit'}; continuing with slice ${ended.slice + 1} of up to ${slicePolicy.maxSlices}.` }).catch(() => undefined)
+      void terminalCall('checkpoint', { summary: `Work slice ${ended.slice} reached its limit after ${ended.steps} steps; the reply continues.`, ...handoffFields(lastTodo, goal?.get() ?? null), files: [], checks: [], decisions: [], slice: ended.slice, reason: 'budget' }).catch(() => undefined)
+      void terminalCall('notice', { kind: 'notify', level: 'info', extension: WORK_SLICE_EXTENSION, text: `Work slice ${ended.slice} reached ${ended.limit ?? 'its limit'}; continuing with slice ${ended.slice + 1} of up to ${slicePolicy.maxSlices}.` }).catch(() => undefined)
     }
   })(pi)
   // Reply text as it streams, batched, for a paired phone (remote control). The completed message
@@ -725,15 +713,15 @@ export default async function (pi: ExtensionAPI, planRun?: TerminalPlanRunState,
     subagentParent = false
     // A reply that stopped at its work-slice boundary is not a completed task: the record says so,
     // so a host can offer the continuation instead of treating it as done (PROP-0041).
-    // A reply that ended with open todo items is not completed either (ADR-0069): it stopped for the
-    // person, or the stop gate's nudges ran out. The harness writes its checkpoint from the todo list.
+    // An ordinary reply settles as it ends (ADR-0075); only a goal that was blocked, paused or hit
+    // a limit stops it for the person, and the checkpoint carries what is left.
     const aborted = event.aborted || messageAborted
-    const stop = !sliceState.endedBy && !failure && !aborted && !planRun?.active ? stopOutcome(gateState, goal?.get() ?? null) : null
+    const stop = !sliceState.endedBy && !failure && !aborted && !planRun?.active ? goalStopOutcome(lastTodo, goal?.get() ?? null) : null
     if (stop) {
-      await terminalCall('checkpoint', { summary: stopSummary(stop), ...handoffFields(gateState, goal?.get() ?? null), files: [], checks: [], decisions: [], slice: sliceState.slice, reason: stopCheckpointReason(stop) }).catch(() => undefined)
+      await terminalCall('checkpoint', { summary: stopSummary(stop), ...handoffFields(lastTodo, goal?.get() ?? null), files: [], checks: [], decisions: [], slice: sliceState.slice, reason: stopCheckpointReason(stop) }).catch(() => undefined)
     } else if (sliceState.endedBy && !failure && !aborted) {
       // The guard ended the reply and promised the model the harness would keep its state.
-      await terminalCall('checkpoint', { summary: `The reply stopped after ${sliceState.steps} steps at its work-slice boundary.`, ...handoffFields(gateState, goal?.get() ?? null), files: [], checks: [], decisions: [], slice: sliceState.slice, reason: sliceState.endedBy }).catch(() => undefined)
+      await terminalCall('checkpoint', { summary: `The reply stopped after ${sliceState.steps} steps at its work-slice boundary.`, ...handoffFields(lastTodo, goal?.get() ?? null), files: [], checks: [], decisions: [], slice: sliceState.slice, reason: sliceState.endedBy }).catch(() => undefined)
     }
     const reason = sliceState.endedBy ? 'slice_complete' : stop?.code
     const code = sliceState.endedBy === 'compaction-thrash' ? 'compaction_thrash' : sliceState.endedBy === 'budget' ? 'slice_budget' : stop?.code

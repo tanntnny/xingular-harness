@@ -29,8 +29,7 @@ import { ASK_USER } from '../tools/askUser'
 import { defaultSkillPaths } from '../tools/defaultSkills'
 import { TODO_WRITE } from '../tools/todo'
 import { checkpointOf } from './checkpoint'
-import { createStopGateState, sessionCheckModel, stopGate, stopGateNotice, STOP_GATE_EXTENSION } from './stopGate'
-import { launchSwitchOff } from './completionCheck'
+import { launchSwitchOff, sessionCheckModel } from './completionCheck'
 import { GOAL_TOOLS, GoalController, GoalError, continuationPrompt, goalTools, provenanceText, type GoalLimits, type GoalState } from './goal'
 import { GOAL_EXTENSION, goalLoop, goalNotice } from './goalLoop'
 import { SESSION_NAME, deriveSessionName, sessionNameTool } from '../tools/sessionName'
@@ -166,19 +165,6 @@ function checkCommand(command: SessionCommand, historyFile: string | null, input
 }
 
 const CONTINUE_TEXT = 'Continue from where you stopped.'
-
-/** The person's request behind a chain of continuations: the first goal that is not the continue text. */
-function requestOfChain(root: string, runId: string | null): string | null {
-  const seen = new Set<string>()
-  for (let current = runId; current && !seen.has(current); ) {
-    seen.add(current)
-    let record: ReturnType<typeof loadRun>
-    try { record = loadRun(root, current) } catch { return null }
-    if (record.goal && record.goal.trim() !== CONTINUE_TEXT) return record.goal
-    current = record.resumedFromRunId ?? null
-  }
-  return null
-}
 
 /** Fills a continuing run's input from the run it continues, refusing anything that would differ. */
 function continueInput(root: string, input: SessionRunInput): Continuation {
@@ -649,6 +635,7 @@ export class Sessions {
       const own = [plan, resumed, profiles].filter((section): section is NonNullable<typeof section> => section !== null)
       const effectiveLaunch = {
         ...launch,
+        model: input.model ?? launch.model ?? null,
         ...(sessionState ? { sessionState } : {}),
         sections: own.length ? [...(launch.sections ?? []).filter((section) => !own.some((entry) => entry.id === section.id)), ...own] : launch.sections,
         tools: capabilities.tools,
@@ -667,12 +654,9 @@ export class Sessions {
     const planResearchChild = input.plan === true && input.run.relation === 'subagent'
     const sliceEnabled = slicePolicy.enabled && (harnessStateTools || planResearchChild)
     const sliceState = createSliceState(slicePolicy, sliceOf(root, runId))
-    // The stop gate (ADR-0069) keeps an attended top-level reply working while its todo list has open
-    // items. Never for plan, command, automatic, subagent or other related runs.
-    const gateEnabled = harnessStateTools && !input.plan && !input.command && !input.automatic && !input.run.relation && !launchSwitchOff('XINGULAR_STOP_GATE')
-    // The completion check judges the person's request, not "Continue from where you stopped.".
-    const originalRequest = input.text.trim() === CONTINUE_TEXT ? requestOfChain(root, previousRun?.id ?? null) : null
-    const stopGateState = gateEnabled ? createStopGateState(continuation?.todo) : null
+    // The stop gate stays gone (ADR-0075): a reply the model ends settles as it ends, and the todo
+    // list is progress, not a gate. The goal loop below is the only layer that continues a reply.
+    // The completion check judges the goal's claim, not "Continue from where you stopped."
     // The goal: a continuation slice picks up the previous run's goal where it stopped.
     let goalController: GoalController | null = null
     if (goalWanted && input.goal) {
@@ -789,15 +773,7 @@ export class Sessions {
           { name: 'image-pruning', factory: imagePruning() },
           { name: COMPACTION_CHECKPOINT_EXTENSION, factory: compactionCheckpoint({ initialTodo: continuation?.todo, planInstructions: checkpointPlanInstructions }) },
           ...(sliceEnabled ? [{ name: WORK_SLICE_EXTENSION, factory: workSliceGuard({ policy: slicePolicy, state: sliceState, onRefuse: (event, reason) => { if (typeof event.toolCallId === 'string') run.emit('tool.refused', { toolCallId: event.toolCallId, name: event.toolName, code: 'work_slice', reason: reason.slice(0, 2000) }) } }) }] : []),
-          // Last, so delivered subagent results and plan repair continue first and the gate sees them.
-          ...(stopGateState ? [{ name: STOP_GATE_EXTENSION, factory: stopGate({
-            state: stopGateState,
-            initialTodo: continuation?.todo,
-            request: () => originalRequest,
-            sliceEnded: () => sliceEnabled && sliceState.endedBy !== null,
-            onEvent: (event) => run.emit('extension.notice', { kind: 'notify', level: 'info', extension: STOP_GATE_EXTENSION, text: stopGateNotice(event) })
-          }) }] : []),
-          // After the todo gate: a goal continues a reply the gate let end (ADR-0072).
+          // A goal continues a reply the model ended (ADR-0072).
           ...(goalController ? [{ name: GOAL_EXTENSION, factory: goalLoop({
             controller: goalController,
             check: launchSwitchOff('XINGULAR_COMPLETION_CHECK') ? null : sessionCheckModel,
@@ -810,7 +786,6 @@ export class Sessions {
         activatedPlugins: (ids) => updateRun(root, runId, (record) => { record.activatedPlugins = ids }),
         system,
         ...(sliceEnabled ? { slice: { state: sliceState, maxToolCalls: slicePolicy.maxToolCalls } } : {}),
-        ...(stopGateState ? { stopGate: stopGateState } : {}),
         ...(goalController ? { goal: goalHandle } : {}),
         // A command sends no request of its own, so the context update waits for the next turn.
         update: input.command ? null : update,

@@ -86,7 +86,7 @@ describe('work slice policy', () => {
   })
 
   it('keeps one budget across the continuations of a reply', () => {
-    // Pi emits agent_start for every continuation (a stop-gate nudge, delivered subagent results, a
+    // Pi emits agent_start for every continuation (a slice continuation, delivered subagent results, a
     // plan repair); those are the same reply, so only a person's message starts a new slice.
     const state = createSliceState(policy())
     const guard = guardHarness(policy(), state)

@@ -378,11 +378,11 @@ Terminal tool-gate and work-slice refusals are relayed as `tool.refused` events 
 
 Terminal replies carry the same work-slice guard as structured runs: 320 tool calls or 60 minutes,
 with no new-token limit by default (PROP-0044), then a refusal that asks the model to stop and report
-where it is. Terminal replies also carry the todo gate (INV-RUN-15, ADR-0069, ADR-0072): the
-extension sends a reply that ends with open todo items back, up to three nudges, each `notice`
-telemetry recorded as `extension.notice`, and at settle sends a harness-written `checkpoint` and the
-`needs_person` or `unfinished` code, which the controller records on the active run, so an App
-reading the same session sees the handoff. No model judges an ordinary reply. Plan replies are not gated. A reply that
+where it is. An ordinary terminal reply settles as it ends (INV-RUN-15, ADR-0075): the terminal
+never sends it back and never marks it unfinished from the todo list. A `/goal` is the only layer
+that continues a reply; a goal that stops blocked, paused or at a limit sends a harness-written
+`checkpoint` and the `needs_person` or `unfinished` code, which the controller records on the active
+run, so an App reading the same session sees the handoff. No model judges an ordinary reply. A reply that
 reaches its budget after doing work continues in place as its next slice (ADR-0070): a
 `xingular-slice-continue` message in the same run, a checkpoint and a notice per boundary, up to
 `maxSlices` (8). A fruitless, blocked, failed, aborted or plan slice, or one whose todo items are all
@@ -406,8 +406,8 @@ resume)`, `Goal unmet (...)` or `Goal achieved (...)`.
 
 The goal lives in the Pi session as a `xingular-goal-state` entry, so a reopened conversation shows
 it, as `paused`: nothing resumes by itself. The model gets `get_goal` and `update_goal` only while a
-goal exists (INV-TOOL-9). The goal loop is a second extension after the todo gate and before slice
-continuation; a goal's slices continue even when every todo item is done. `/goal` is a `session`
+goal exists (INV-TOOL-9). The goal loop runs before slice continuation; a goal's slices continue even
+when every todo item is done. `/goal` is a `session`
 command that uses `sessions.run` with `goal` (page 10); in plan mode the loop stays silent.
 
 ## Liveness and a reply that stops working (INV-RUN-14, ADR-0054)

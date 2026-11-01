@@ -1276,7 +1276,7 @@ export class Terminals {
       const launchSections = profiles ? [...(input.launch?.sections ?? []).filter((section) => section.id !== profiles.id), profiles] : input.launch?.sections
       // A terminal is a person's own session: the same standard sections a host's session has.
       const standard = input.launch?.standard === null ? null : input.launch?.standard ?? { cwd: input.cwd }
-      const pack = compile(env, caller, { ...input.launch, standard, sections: launchSections, tools: launchTools }, variant && profiles ? { ...variant, sections: variant.sections.filter((section) => section.id !== profiles.id) } : variant)
+      const pack = compile(env, caller, { ...input.launch, model: input.model ?? input.launch?.model ?? null, standard, sections: launchSections, tools: launchTools }, variant && profiles ? { ...variant, sections: variant.sections.filter((section) => section.id !== profiles.id) } : variant)
       record(root, pack)
       mkdirSync(this.historyDir(input), { recursive: true })
       saveForSession(input.sessionFolder, pack)

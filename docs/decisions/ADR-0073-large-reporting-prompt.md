@@ -1,9 +1,10 @@
 ---
 id: ADR-0073
 title: A large, content-block reporting prompt
-status: accepted
+status: superseded
 created: 2026-11-01
 updated: 2026-11-01
+superseded_by: ADR-0074
 supersedes: partial — ADR-0068 (its required headings and fixed-label rule)
 amends: ADR-0008 (flexible headings stand; required content blocks are added)
 related:
@@ -13,6 +14,10 @@ related:
   - STUDY-0006
 ---
 # ADR-0073 — A large, content-block reporting prompt
+
+> **Superseded by [ADR-0074](ADR-0074-report-content-not-report-blocks.md):** the four required
+> blocks, the "Nothing needed" ending, the five examples and the 18,000-character budget are
+> replaced by content questions, an evidence line, an optional by-hand block and free headings.
 
 ## Context
 

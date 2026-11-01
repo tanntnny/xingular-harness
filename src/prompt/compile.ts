@@ -158,10 +158,12 @@ export interface Launch {
   standard?: StandardSession | null
   /** Recorded with the pack: the application's name for who it is for. Defaults to `agent` or `session`. */
   profile?: string
+  /** The model the session runs, named in the identity line when the host knows it. */
+  model?: string | null
 }
 
-/** What a person's own session is told about how the end of a reply is checked (ADR-0071, ADR-0072). */
-export const STOP_GATE_GUIDANCE = 'A reply that ends while its todo list has open items is sent back to you, so keep working until the request is done. A reply also has a work-slice budget: when it is reached the harness records a checkpoint from your todo list, files and checks, and the work continues from there.'
+/** What a person's own session is told about the work-slice budget (PROP-0041, ADR-0075). */
+export const WORK_SLICE_GUIDANCE = 'A reply also has a work-slice budget: when it is reached the harness records a checkpoint from your todo list, files and checks, and the work continues from there.'
 
 /** How a run's final reply is shaped. Fixed text: it sits in the stable prefix of every pack. */
 export { REPORTING_GUIDANCE }
@@ -261,7 +263,8 @@ export function toolGroups(context: CallerContext, launch: Launch, dataRoot?: st
   const readGuidance = `Read-only file tools accept absolute paths and paths beginning with ~ anywhere this process has operating-system read access. The working folder is a default location, not a read boundary.${dataRoot ? ` The Harness data root is ${dataRoot}.` : ''}`
   const writeGuidance = 'Keep native file writes and Bash filesystem effects inside the active project workspace, where they run without asking. An outside file target is allowed too: call the tool and the Harness pauses that one call until the person clicks Allow or Deny, so nothing outside changes first. Remembered tool grants do not answer an outside target; only the explicit Full Permission switch answers it for the run. Bash, including an initial ! command, may read as before but writes are sandboxed to the workspace unless that switch is on. Keep task outputs in the project, following an existing artifacts/ or outputs/ convention when present.'
   // One wording for every front end: the terminal and a host give the same tools the same words (INV-PAR-1).
-  const nativeGuidance = `Files and shell: ${readGuidance} ${writeGuidance} Edits and commands still pass through the Harness gate.`
+  const workRules = 'Work rules: search with rg before slower tools. Do not chain commands with separators for decoration. Treat shell text as code: quote it properly, never interpolate unescaped values, and never risk exposing secrets in output. Do not reuse $HOME or other common variable names for task values. Avoid blocking sleeps that keep you from reporting back. Do not write tests for reversible, low-impact changes or that mirror the implementation; if you verify with tests, make them meaningful and necessary. Run the tests appropriate to the change; once they pass, broaden or repeat testing only when new changes, failures or unresolved concerns justify it.'
+  const nativeGuidance = `Files and shell: ${readGuidance} ${writeGuidance} Edits and commands still pass through the Harness gate. ${workRules}`
   const groups: OrderedGroup[] = [
     {
       group: 'History',
@@ -273,7 +276,7 @@ export function toolGroups(context: CallerContext, launch: Launch, dataRoot?: st
       group: 'Wiki',
       tools: [...wikiTools, 'skill_load'],
       order: GROUP_ORDER.Wiki,
-      guidance: `Wiki: wiki_search, wiki_read and wiki_list read project notes${wikiTools.includes('wiki_write') ? '; wiki_write saves one' : ''}. skill_load loads one of your skills by name.`
+      guidance: `Wiki: wiki_search, wiki_read and wiki_list read project notes${wikiTools.includes('wiki_write') ? '; wiki_write saves one' : ''}. skill_load loads one of your skills by name. Skills: a skill is a set of instructions provided through a SKILL.md. The user's instructions take precedence over a skill. The first time you apply a skill, say so in your reply. If the user names a skill ($SkillName or plain text), add it to your plan; if it is missing and needed, stop and tell them why. Read it with skill_load before applying it. Plugins are bundles of skills, tools and apps: use their underlying capabilities, and if a named plugin has nothing relevant, say so briefly and continue with the best fallback.`
     },
     { group: 'Native', tools: native, order: GROUP_ORDER.Native, guidance: nativeGuidance },
     // Web, browser and computer tools: the harness's own, and their results are untrusted (world/untrusted.ts).
@@ -282,9 +285,10 @@ export function toolGroups(context: CallerContext, launch: Launch, dataRoot?: st
   ]
   const progressTools = [TODO_WRITE].filter((name) => enabled.includes(name))
   if (progressTools.length) {
-    // A person's own session is the one the stop gate and the completion check cover (ADR-0071).
-    const gate = launch.standard ? STOP_GATE_GUIDANCE : ''
-    groups.push({ group: 'Progress', tools: progressTools, order: 87, guidance: `Progress: ${[TODO_GUIDANCE, gate].filter(Boolean).join(' ')}` })
+    // A person's own session carries the work-slice budget in the prompt (PROP-0041); there is no
+    // todo gate (ADR-0075).
+    const slice = launch.standard ? WORK_SLICE_GUIDANCE : ''
+    groups.push({ group: 'Progress', tools: progressTools, order: 87, guidance: `Progress: ${[TODO_GUIDANCE, slice].filter(Boolean).join(' ')}` })
   }
   if (enabled.includes(SESSION_NAME)) {
     groups.push({
@@ -446,7 +450,7 @@ export function compile(env: HarnessEnv, context: CallerContext, launch: Launch 
   const built: { order: number; index: number; section: Section | null }[] = [
     {
       order: SECTION_ORDER.harnessIdentity,
-      section: section('harness-identity', 'Harness identity', `You are an AI agent running in ${env.productName}.`, IDENTITY_BUDGET, '', [])
+      section: section('harness-identity', 'Harness identity', `You are an AI agent running in ${env.productName}${launch.model ? `, based on ${launch.model}` : ''}. You and the user share one workspace, and your job is to collaborate with them until their intended goal is completely handled.`, IDENTITY_BUDGET, '', [])
     },
     ...(variant?.sections ?? []).map((entry) => ({ order: entry.order, section: section(entry.id, entry.title, entry.body, VARIANT_BUDGET, '', variantSource) })),
     { order: SECTION_ORDER.sessionState, section: sessionStateSection(launch.sessionState, launch.tools ?? []) },

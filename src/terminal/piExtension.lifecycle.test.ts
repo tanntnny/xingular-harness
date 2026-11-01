@@ -75,25 +75,25 @@ describe('terminal bridge lifecycle', () => {
     expect(await handlers.get('agent_before_settle')!({ ...boundary, continue: true }, ctx)).toBeUndefined()
   })
 
-  it('sends back a terminal reply that ends with open todo items, then settles it unfinished (ADR-0069)', async () => {
+  it('settles a terminal reply with open todo items as completed (ADR-0075)', async () => {
     const { api, ctx, handlers } = extension()
     await terminalExtension(api)
     const tools = vi.mocked(api.registerTool).mock.calls.map(([tool]) => tool)
     expect(tools.some(tool => tool.name === 'checkpoint_write')).toBe(false)
     expect(tools.some(tool => tool.name === 'finish')).toBe(false)
-    const boundary = { outcome: 'completed', continue: false, entries: [], context: { canContinue: true } }
+    const todo = tools.find(tool => tool.name === 'todo_write')!
+    const execute = todo.execute as unknown as (id: string, input: unknown, ctx: unknown) => Promise<unknown>
     await handlers.get('before_agent_start')!({ messageType: 'user', prompt: 'Complete the handoff', systemPromptOptions: { sections: {} } }, ctx)
-    await handlers.get('tool_result')!({ toolName: 'todo_write', toolCallId: 't1', isError: false, input: { items: [{ text: 'Port the auth module', status: 'in_progress' }, { text: 'Port the courses module', status: 'pending' }] }, content: [] }, ctx)
+    await execute('t1', { items: [{ text: 'Port the auth module', status: 'in_progress' }, { text: 'Port the courses module', status: 'pending' }] }, {})
     await handlers.get('tool_call')!({ toolName: 'edit', toolCallId: 'e1', input: { path: 'api/src/auth.ts' } }, ctx)
-    const nudged = await handlers.get('agent_before_settle')!(boundary, ctx) as { continue: boolean; entries: { customType: string; content: string }[] }
-    expect(nudged).toMatchObject({ continue: true, entries: [{ customType: 'xingular-stop-gate' }] })
-    expect(nudged.entries[0].content).toContain('- Port the courses module')
-    expect(transport.telemetry).toHaveBeenCalledWith('notice', expect.objectContaining({ extension: 'stop-gate' }))
-    // The model ended again with no work in between: handed back, not nudged again.
-    expect(await handlers.get('agent_before_settle')!(boundary, ctx)).toBeUndefined()
+    // Nothing sends a settled reply back, and the todo list is not read at the boundary.
+    expect(await handlers.get('agent_before_settle')!({ outcome: 'completed', continue: false, entries: [], context: { canContinue: true } }, ctx)).toBeUndefined()
     await handlers.get('agent_settled')!({ aborted: false }, ctx)
-    expect(transport.telemetry).toHaveBeenCalledWith('checkpoint', expect.objectContaining({ next: 'Port the auth module', reason: 'stuck', slice: 1 }))
-    expect(transport.telemetry).toHaveBeenLastCalledWith('settled', expect.objectContaining({ reason: 'unfinished', code: 'unfinished', aborted: false }))
+    const calls = transport.telemetry.mock.calls as unknown as [string, Record<string, unknown>][]
+    const settled = calls.filter(([event]) => event === 'settled').at(-1)
+    expect(settled?.[1]).toMatchObject({ aborted: false })
+    expect(settled?.[1]).not.toHaveProperty('reason')
+    expect(calls.some(([event]) => event === 'checkpoint')).toBe(false)
   })
 
   it('never asks a model whether an ordinary terminal reply is done, even one that did work (ADR-0072)', async () => {

@@ -165,3 +165,9 @@ test('ask_user treats 25 words as guidance for questions and choice descriptions
 test('describeAnswer includes choice-specific notes', () => {
   expect(describeAnswer({ selected: ['A'], notes: { A: 'Keep this requirement.' } })).toBe('The user chose: A. Their note for A: Keep this requirement.')
 })
+
+test('ask_user refuses to be the way a login or a secret is requested', () => {
+  const tool = askUserTool({ requestAnswers: async () => [] } as unknown as ActiveRun)
+  expect(tool.description).toContain('Never use it to ask for a login, a secret or a credential')
+  expect(tool.description).toContain('give the exact command in the reply instead')
+})

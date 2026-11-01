@@ -61,9 +61,9 @@ SOFTWARE.
 
 ## OpenAI Codex
 
-The standard session prompt (`src/prompt/standard.ts`: autonomy and persistence, when to ask the
-person, steering and compaction, writing style), the final-reply rules in `REPORTING_GUIDANCE`
-(`src/prompt/compile.ts`), the `/goal` prompts and tool descriptions (`src/sessions/goalPrompts.ts`,
+The standard session prompt (`src/prompt/standard.ts`: autonomy and persistence, personality, when
+to ask the person, steering and compaction, writing style), the final-reply and technical
+communication rules in `REPORTING_GUIDANCE` (`src/prompt/reporting.ts`), the `/goal` prompts and tool descriptions (`src/sessions/goalPrompts.ts`,
 `src/sessions/goal.ts`), the goal brakes and status text, and the `/goal` command
 (`src/terminal/tui/goalCommand.ts`) adapt text and design from OpenAI Codex, mainly:
 
@@ -80,7 +80,9 @@ in compliance with the License. You may obtain a copy of the License at
 https://www.apache.org/licenses/LICENSE-2.0. Unless required by applicable law or agreed to in
 writing, software distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
 WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. Changes from upstream: ported from
-Rust to TypeScript for Pi; text about Codex's own channels and tools (commentary channel,
-`apply_patch`, `functions.exec`, apps, plugins, visualizations) left out; the goal's token budget
-became rounds and hours; `update_plan` became `todo_write`; completing a goal is a claim that the
-harness checks; the model cannot create a goal.
+Rust to TypeScript for Pi; text about Codex's own delivery mechanics (`apply_patch`,
+`functions.exec`, the apps tool format, plugin naming, visualizations) left out; the final-answer,
+technical-communication, personality and skill rules are kept, including the final-answer sentence
+that refers to commentary updates; the goal's token budget became rounds and hours; `update_plan`
+became `todo_write`; completing a goal is a claim that the harness checks; the model cannot create a
+goal.

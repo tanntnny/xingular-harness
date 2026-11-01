@@ -68,51 +68,55 @@ or permission. Structured sessions deliver it through `sessionLaunch`; the termi
 text with `requiredSkillsText` from Pi's loaded skills and appends it as a hidden request-time custom
 message. The section belongs to the request, so an identical one is delivered again.
 
-The fixed `harness-identity` section says `You are an AI agent running in <productName>.` and uses
-`env.productName` (default `Xingular Agent`). `Launch.standard: { cwd, project?: { name } | null }` requests shared role and working-folder
+The fixed `harness-identity` section says `You are an AI agent running in <productName>[, based on
+<model>]. You and the user share one workspace, and your job is to collaborate with them until their
+intended goal is completely handled.` It uses `env.productName` (default `Xingular Agent`) and
+`Launch.model` when the host knows the model. `Launch.standard: { cwd, project?: { name } | null }` requests shared role, personality and working-folder
 sections from `prompt/standard.ts`; the compiler supplies common connections, file and annotation
 guidance for the effective tools. Terminal preparation defaults to standard sections (explicit
 `standard: null` opts out); the host interactive path requests the same sections. Hosts may add
 attributed add-on and task context, not a duplicate standard role or connection policy (PROP-0040).
 
 Budgets (characters): variant sections 30,000 each (already capped at save, so never cut here);
-references 12,000; Wiki pointer 2,500; tools 8,000; reporting 18,000 (ADR-0073); the
-standard session's sections: role 1,400, autonomy 2,600, permission 1,800, steering 2,000, writing
-1,900 (ADR-0072); application sections their own `budget`.
+references 12,000; Wiki pointer 2,500; tools 8,000; reporting 12,000 (ADR-0076); the
+standard session's sections: role 1,400, autonomy 2,600, personality 1,200, permission 1,800,
+steering 2,000, writing 1,900 (ADR-0072); application sections their own `budget`.
 
 ## Reporting
 
 Every pack ends with the harness's `reporting` section ("Reporting your work",
 `REPORTING_GUIDANCE` in `prompt/reporting.ts`, imported by `prompt/compile.ts`). It is fixed text
-that shapes the final reply: lead with the outcome rather than the steps taken to reach it, and
-cover only what the person needs to act. The section defines content blocks, not a fixed heading
-list ([ADR-0008](../decisions/ADR-0008-flexible-reporting-guidance.md),
-[ADR-0073](../decisions/ADR-0073-large-reporting-prompt.md)): a change carries four required blocks
-— outcome, what changed, how to test, and what to do next — while a question stays one to three
-sentences and research carries only the blocks with content. How to test gives numbered steps with
-exact commands or URLs, the expected result, what the agent already ran, and what the person must
-run; what to do next names the person's action or says "Nothing needed". Optional blocks cover work
-beyond the request (with why), departures from a plan (what and why), work that needs a person's
-check (what is unverified, why, and the exact check), and open questions. Headings are the model's
-choice — "How to test", "Try it" and "Verify" name the same block — and a heading must name its
-content. The section ships five worked examples and an anti-pattern table, uses tables for files,
-checks and comparisons, and caps a change at about 20–60 lines. A person, application or mode format
-takes precedence. The section names no application, is never dynamic, and is never cut; its budget is
-18,000 characters (ADR-0073).
+that shapes the final reply. ADR-0076 adopts Codex's final-answer guidance (`gpt-6.1-sol`): the
+final answer is fully self-contained and focuses on the most important information, leads with the
+outcome, and explains what changed, why, how it was tested, and the material risks and limits, with
+the evidence needed to assess the conclusion and its practical limits. Routine verification is
+summarized instead of listed check by check; reasoning and evidence are ordered for assessment, not
+chronologically; and progress updates say what was learned, what remains uncertain and what the next
+step will resolve. Tables are used for mappings and comparisons. Headings are the model's: there is
+no required heading and no preferred set, and a shape-by-work table shows what different kinds of
+work need. Length follows complexity: a simple change is one or two sentences plus the validation, a
+larger one carries the reasoning, evidence and risks. Prose comes first; lists only when the
+information is genuinely parallel, sequential or easier to compare. The section ships two examples
+(a screen change and a blocked publish), the shape-by-work table and a four-line pre-send list; the
+exact command for a blocked login is in `autonomy`. A person, application or mode format takes
+precedence. The section names no application, is never dynamic, and is never cut; its budget is
+12,000 characters (ADR-0076), and the text it carries is about 3.7k characters, about 0.8k tokens
+measured with o200k.
 
 ## When a reply may end
 
 A reply ends when the request is done, when the work-slice guard ends it (INV-RUN-13), when a person
 interrupts, or when the work cannot continue without the person. An open todo item, a passing check,
-a partial result or a long task is not such a reason. An ordinary reply is held to this by two
-things (ADR-0069, ADR-0072): the words below, and the todo gate (INV-RUN-15), which sends back a
-reply that ends while its todo list has open items. **No model judges an ordinary reply**; a goal's
-completion claim is the one thing a model checks (INV-RUN-16). A reply that settles with work left is
-`interrupted` (`unfinished`, or `needs_person` for a blocked goal), never `completed`.
+a partial result or a long task is not such a reason: the words below ask the model to carry the
+request to completion, and they are the only layer (ADR-0075). The harness does not send a reply
+back and does not mark it unfinished from the todo list; a reply the model ends settles `completed`.
+**No model judges an ordinary reply**; a goal's completion claim is the one thing a model checks
+(INV-RUN-16). A goal that ends blocked settles `needs_person`; a goal that ends on a limit, a pause
+or a stall settles `unfinished`.
 
-The words decide what the model does before the gate has to act, and none of them may read as
-permission to stop with work left. A person's own session (`launch.standard`, `prompt/standard.ts`)
-reads five stable sections adapted from OpenAI Codex's gpt-6.1-sol instructions (Apache-2.0, see
+The words are what asks the model to carry on, and none of them may read as permission to stop with
+work left. A person's own session (`launch.standard`, `prompt/standard.ts`)
+reads six stable sections adapted from OpenAI Codex's gpt-6.1-sol instructions (Apache-2.0, see
 `NOTICE.md`), the same for every model so the terminal and a host read the same text (INV-PAR-1):
 
 - `role` — the assistant's job, and the extra work it does without asking (the obvious adjacent
@@ -126,6 +130,8 @@ reads five stable sections adapted from OpenAI Codex's gpt-6.1-sol instructions 
   points to is the request; a question the request or files already answer is not a question for the
   person; the only reasons to stop, one of them a fix to a test or error that does not come from
   this session's work (and then say exactly what is needed).
+- `personality` — curious, thoughtful and candid; keeps its own judgment, disagrees when it has
+  reason and reconsiders when the evidence warrants it, without flattery or forced enthusiasm.
 - `permission` — authorisation persists; finish the authorised work first so that approval is the
   last step; no permission for reversible, read-only or already authorised work; a test or error
   that does not come from this session's work is reported, not fixed, unless the person asks (a
@@ -143,12 +149,12 @@ Other fixed text that shapes the end of a reply:
   it points to, is the scope; add steps as the work shows them; list a handoff's steps instead of one
   "remaining work" item; before ending, compare the request, not the list, with what is done and
   checked. An open step is work to do in this reply, not something to report.
-- `reporting` (`REPORTING_GUIDANCE`): opens with "Reporting is for work that is finished or genuinely
-  blocked". When work is not finished, the first line says so, gives the specific reason and names
-  the next step. The final reply is self-contained, says what could not be done or verified, never
-  closes with an "If you want..." offer, and stays near 60 lines. Its `## What would make this
-  complete` heading applies only when the work stopped short and says never to stop early to write
-  it.
+- `reporting` (`REPORTING_GUIDANCE`): the final answer is fully self-contained and focuses on the
+  most important information; it leads with the outcome and explains what changed, why, how it was
+  tested, and the risks and limits, with the evidence needed to assess the conclusion. Verification
+  is summarized, not listed check by check. Headings and length follow the content; a simple change
+  is one or two sentences plus the validation. A login the work needs is named with its exact
+  command.
 - `ask_user` (`tools/askUser.ts`): for a decision the request and files do not answer, never for
   permission to do work inside the request; no answer means continue with best judgment (Codex's
   Default-mode rule).
