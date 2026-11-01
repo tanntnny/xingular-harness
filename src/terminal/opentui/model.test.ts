@@ -1,11 +1,22 @@
 import { describe, expect, it } from 'vitest'
 import { SessionManager, type AgentSession } from '@earendil-works/pi-coding-agent'
 
-import { TranscriptModel } from './model'
+import { toolDisplayName, TranscriptModel } from './model'
 
 function session(messages: unknown[], state: Record<string, unknown> = {}): AgentSession {
   return { messages, state } as unknown as AgentSession
 }
+
+describe('toolDisplayName', () => {
+  it('renders tool names in CamelCase', () => {
+    expect(toolDisplayName('computer_screenshot')).toBe('ComputerScreenshot')
+    expect(toolDisplayName('mcp_list_tools')).toBe('McpListTools')
+    expect(toolDisplayName('read')).toBe('Read')
+    expect(toolDisplayName('bash')).toBe('Bash')
+    expect(toolDisplayName('write')).toBe('Write')
+    expect(toolDisplayName('customTool')).toBe('CustomTool')
+  })
+})
 
 describe('TranscriptModel', () => {
   it('projects messages, thinking, tools and results in order', () => {

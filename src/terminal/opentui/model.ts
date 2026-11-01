@@ -6,6 +6,10 @@ import { ansiLabel, ansiPlain } from './ansi'
 
 export type ToolStatus = 'running' | 'ok' | 'error' | 'pending'
 
+export function toolDisplayName(name: string): string {
+  return name.replace(/(^|_)([a-z])/g, (_, _separator: string, letter: string) => letter.toUpperCase())
+}
+
 export interface UserItem {
   kind: 'user'
   id: string
