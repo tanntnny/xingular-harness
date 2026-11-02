@@ -167,14 +167,14 @@ describe('a native SDK runtime on the actual Harness terminal socket', () => {
     expect(session.getActiveToolNames()).not.toContain('ask_user')
   })
 
-  it('repairs an unstructured clarification within the same terminal run', async () => {
+  it('repairs an incomplete plan block and continues planning after ask_user within the same terminal run', async () => {
     const { harness, runtime } = await setup()
     const ai = await import('@earendil-works/pi-ai')
     const faux = ai.fauxProvider()
     runtime.services.modelRuntime.registerNativeProvider(faux.provider)
     await runtime.session.setModel(faux.getModel())
     faux.setResponses([
-      ai.fauxAssistantMessage('Which option?'),
+      ai.fauxAssistantMessage('<proposed_plan>Which option?'),
       ai.fauxAssistantMessage([ai.fauxToolCall('ask_user', { questions: [{ summary: 'Choice', question: 'Which option?', options: [{ label: 'A', description: 'Choose A', recommended: true }] }] })], { stopReason: 'toolUse' }),
       ai.fauxAssistantMessage('<proposed_plan># Choose A\nUse A.</proposed_plan>')
     ])

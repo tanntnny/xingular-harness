@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Xingular Agent</title>
+    <link rel="stylesheet" href="popup.css">
+  </head>
+  <body>
+    <main>
+      <h1>Brave browser access</h1>
+      <p id="status" role="status">Checking connection…</p>
+      <section id="pairing" hidden>
+        <label for="pairing-code">Pairing code</label>
+        <input id="pairing-code" autocomplete="off" spellcheck="false" placeholder="38671:ABCDEF012345">
+        <button id="connect" type="button">Connect to Harness</button>
+      </section>
+      <section id="site-access">
+        <h2 id="site-name">Current site</h2>
+        <p id="site-detail">Only the site you allow is exposed to Xingular Agent.</p>
+        <button id="allow" type="button">Allow this site</button>
+        <button id="remove" type="button" class="secondary" hidden>Remove site access</button>
+      </section>
+      <p class="note">Access covers ordinary tabs on this site. Incognito tabs are excluded. The extension does not read history or cookies.</p>
+      <p id="error" role="alert" hidden></p>
+    </main>
+    <script src="site-access.js"></script>
+    <script src="popup.js"></script>
+  </body>
+</html>

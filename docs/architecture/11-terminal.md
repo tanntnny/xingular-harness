@@ -62,20 +62,25 @@ Screen: transcript above the composer, centred dialogs, full-screen resource bro
   is no terminal-only question alias (PROP-0040).
 - The approved plan outcome contract on page 02 applies equally to the terminal and server:
   only `plan_ready` offers a plan card and Implement; `blocked` reports unavailable required input
-  without Implement; `invalid` gets at most one shared bounded repair and, if still invalid, a
-  warning and the retained original text. New final replies do not ask free-text questions or use
+  without Implement; `no_plan` is an ordinary reply that offers nothing at all; `invalid` gets at
+  most one shared bounded repair and, if still invalid, a warning and the retained original text.
+  New final replies do not ask free-text questions or use
   `<plan_clarification>`: clarification uses `ask_user`, which blocks the active run. Repair at
   Pi's settlement boundary is in the same run and may call `ask_user`. Existing `<proposed_plan>`
-  cards and old transcripts, including clarification blocks, remain intact; see ADR-0058.
+  cards and old transcripts, including clarification blocks, remain intact; see ADR-0077.
 - A plan request keeps `bash` in its active set; each call runs in the sandbox's read-only scope
   (PROP-0043). A user `!` command submitted during a plan request waits as a separate turn; it
   cannot run inside the plan's read-only request.
 - The terminal message-delivery contract is Enter to send or queue a follow-up, and
   Cmd/Ctrl/Alt+Enter to steer an active reply. Pending steering, follow-up and deferred plan/Bash
-  inputs are projected above the working line from Pi's queues and the deferred barrier. Pi's
-  projection may briefly include an item already taken for delivery. A queued plan or Bash command
-  runs separately after the active reply, and later inputs cannot bypass it through Pi's native
-  queues. Modified shortcuts require terminal support.
+  inputs are projected above the working line from Pi's queues and the deferred barrier. Native
+  Follow-up and Steer rows are clickable and open `/follow-up`, which edits, sends the next eligible
+  item, or removes a selected message while preserving attached images. A successful reply keeps
+  Pi's configured queue behavior. At an explicit user-stop boundary, the terminal sends one
+  unconsumed steer before any follow-up and returns the remainder to Pi; retrying requests,
+  provider failures and non-user interruptions do not dispatch the queue. A queued plan or Bash
+  command runs separately after the active reply, and later inputs cannot bypass it through Pi's
+  native queues. Modified shortcuts require terminal support.
 - Current standalone source defaults: `~/.xingular-harness/{data,state}`; `npm run dev` uses
   `~/.xingular-harness-dev/{data,state}`. The standalone development launch uses a file SecretStore
   under its resolved state directory or the `--account-state` one, even when its profile names a
@@ -261,9 +266,14 @@ the focused list or action list. Account actions retain their Session, Account, 
 groups; pool actions remain grouped under Manage and Remove. See the
 [terminal guide](../terminal-tui.md#blocks-and-pages) for layout and interaction.
 
-`/settings` is a full-screen page with category tabs, search, settings list and the device-local
-Browser tab for `allowPrivate`. Enabling private address access requires confirmation and allows both
-agent browsing and annotation capture to reach localhost and private networks. It is off by default.
+`/settings` is a full-screen page with category tabs, search, settings list and a device-local Browser
+tab. It selects the isolated browser or Brave profile; selecting Brave requires explicit confirmation.
+The tab also shows bridge status, pairing instructions and `allowPrivate`. Brave pairing is explicit,
+site access is granted separately in the extension popup, and the in-page badge provides Pause and
+Stop. Brave exposes normal tabs only, never Incognito; the extension does not request history or
+cookie permissions or export cookies. A disconnect refuses calls without switching backends.
+Enabling private address access requires confirmation and allows both agent browsing and annotation
+capture to reach localhost and private networks. It is off by default.
 
 ## Worktrees command (PROP-0016)
 
@@ -305,16 +315,17 @@ pan the sketch horizontally or vertically.
 When a question sets `uiSketch: true`, one shared border-only monospace preview below the choices
 shows the hovered or focused choice's ASCII wireframe, with no visible caption or extra left rule.
 Sketch source supports up to 80 columns by 24 lines (page 02) and remains literal ASCII in
-persistence. The terminal uses a bounded structural display projection: recognized ASCII table-border
-rows—including a title between horizontal runs—and enclosed vertical table edges become connected
-box-drawing glyphs, while internal framed tables retain their original widths and positions. For a
-high-confidence frame with matched `+` corners, missing or slightly displaced side edges may be
-filled or moved only through whitespace to the established boundary columns; interior text is never
-moved or overwritten, and conflicting or ambiguous rows remain literal. Bare standalone hyphen
-divider rows expand to `max(panel viewport width, original sketch widest line)` and join the outer
-single-line preview frame with `├` and `┤`. This is not a global `+|-` substitution: prose, content
-operators, ordinary pipes and unrecognized rows remain literal. Source sketches and all persisted
-whitespace remain unchanged; only the display projection adjusts recognized boundary cells.
+persistence. The terminal projects every valid sketch onto a fixed 80-column content canvas, padding
+short rows and extending standalone hyphen dividers to that width. The outer preview frame stays
+bounded to the available dock width and the canvas remains horizontally pannable when it does not
+fit. Within the canvas, recognized ASCII table-border rows—including a title between horizontal
+runs—and enclosed vertical table edges become connected box-drawing glyphs, while internal framed
+tables retain their original widths and positions. For a high-confidence frame with matched `+`
+corners, missing or slightly displaced side edges may be filled or moved only through whitespace to
+the established boundary columns; interior text is never moved or overwritten, and conflicting or
+ambiguous rows remain literal. This is not a global `+|-` substitution: prose, content operators,
+ordinary pipes and unrecognized rows remain literal. Source sketches and all persisted whitespace
+remain unchanged; padding, projected glyphs and expanded dividers exist only in the display.
 
 There is no wrapping, reflow, truncation or markup interpretation. A bounded two-axis viewport makes
 all overflow reachable by panning. Moving focus changes the preview without changing the staged
@@ -322,7 +333,8 @@ answer. Projected glyphs and expanded dividers never enter persisted events or a
 contract is unchanged. See [PROP-0025](proposals/PROP-0025-contextual-question-wireframes.md),
 [ADR-0026](../decisions/ADR-0026-contextual-question-wireframes.md) and the approved display amendment
 [PROP-0026](proposals/PROP-0026-connected-sketch-display.md) /
-[ADR-0027](../decisions/ADR-0027-connected-sketch-display.md), and
+[ADR-0027](../decisions/ADR-0027-connected-sketch-display.md), amended for the fixed canvas by
+[ADR-0080](../decisions/ADR-0080-fixed-width-question-sketch-canvas.md), and
 [PROP-0028](proposals/PROP-0028-normalize-question-wireframes.md) /
 [ADR-0029](../decisions/ADR-0029-normalized-question-wireframe-borders.md). Isolated production
 PTY verification is retained in `docs/evidence/terminal-wireframe-normalization/`; it establishes
@@ -376,21 +388,21 @@ release.
 
 Terminal tool-gate and work-slice refusals are relayed as `tool.refused` events with a code and reason; the original refusal text remains the tool response. Interrupted terminal runs record stop codes for work-slice limits, user abort, stalls and terminal closure.
 
-Terminal replies carry the same work-slice guard as structured runs: 320 tool calls or 60 minutes,
-with no new-token limit by default (PROP-0044), then a refusal that asks the model to stop and report
-where it is. An ordinary terminal reply settles as it ends (INV-RUN-15, ADR-0075): the terminal
+Terminal replies carry the same work-slice guard as structured runs, with no budget by default
+(ADR-0081): no tool-call, time or token limit. When a limit is set (below), the guard refuses the
+next call and asks the model to stop and report where it is. An ordinary terminal reply settles as it ends (INV-RUN-15, ADR-0075): the terminal
 never sends it back and never marks it unfinished from the todo list. A `/goal` is the only layer
 that continues a reply; a goal that stops blocked, paused or at a limit sends a harness-written
 `checkpoint` and the `needs_person` or `unfinished` code, which the controller records on the active
 run, so an App reading the same session sees the handoff. No model judges an ordinary reply. A reply that
-reaches its budget after doing work continues in place as its next slice (ADR-0070): a
+reaches a budget someone set, after doing work, continues in place as its next slice (ADR-0070): a
 `xingular-slice-continue` message in the same run, a checkpoint and a notice per boundary, up to
-`maxSlices` (8). A fruitless, blocked, failed, aborted or plan slice, or one whose todo items are all
+`maxSlices` (8 by default). A fruitless, blocked, failed, aborted or plan slice, or one whose todo items are all
 done, is not continued; the reply then settles `interrupted` with terminal reason `slice_complete`
 so the person or a host can continue it. A checkpoint card in the transcript is not built yet
-(PAR-004). Start the terminal with `XINGULAR_WORK_SLICE=off` to launch a reply with no boundary at
-all, or with key=value pairs such as `maxToolCalls=15,maxSlices=3` for a smaller policy; neither is
-persisted, so the next launch without it restores the defaults.
+(PAR-004). Start the terminal with key=value pairs such as `XINGULAR_WORK_SLICE=maxToolCalls=15,maxSlices=3`
+to give replies a budget; `off` also disables the compaction guard. Neither is persisted, so the
+next launch without it restores the default of no budget.
 
 ## `/goal` (ADR-0072, INV-RUN-16)
 

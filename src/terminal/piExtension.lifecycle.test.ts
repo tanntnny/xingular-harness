@@ -52,7 +52,7 @@ beforeEach(() => {
 afterEach(() => vi.useRealTimers())
 
 describe('terminal bridge lifecycle', () => {
-  it('repairs an invalid plan once at the settlement boundary and skips valid or interrupted outcomes', async () => {
+  it('repairs an incomplete plan block once at the settlement boundary and skips valid, no-plan or interrupted outcomes', async () => {
     const state: TerminalPlanRunState = { active: true, allowedTools: new Set() }
     const { api, ctx, handlers } = extension()
     await terminalExtension(api, state)
@@ -60,7 +60,10 @@ describe('terminal bridge lifecycle', () => {
     const message = (text: string) => handlers.get('message_end')!({ message: { role: 'assistant', content: [{ type: 'text', text }], stopReason: 'stop' } })
     const boundary = { outcome: 'completed', continue: false, entries: [], context: { canContinue: true } }
     await start()
-    await message('What should change?')
+    await message('Nothing to plan: the cache already stores the selection.')
+    expect(await handlers.get('agent_before_settle')!(boundary, ctx)).toBeUndefined()
+    await start()
+    await message('<proposed_plan>What should change?')
     expect(await handlers.get('agent_before_settle')!(boundary, ctx)).toMatchObject({ continue: true, entries: [{ customType: 'xingular-plan-repair' }] })
     expect(await handlers.get('agent_before_settle')!(boundary, ctx)).toBeUndefined()
     await start()

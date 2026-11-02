@@ -5,11 +5,11 @@
 import { createHash, randomUUID } from 'node:crypto'
 
 import { HarnessError } from '../core/errors'
-import { runStatusSchema, type RunEvent, type RunRecord, type RunStopCode } from '../sessions/contracts'
+import { isActiveStatus, runStatusSchema, type RunEvent, type RunRecord, type RunStopCode } from '../sessions/contracts'
 import { briefTitle } from '../sessions/subagents'
 import type { ActiveRun, ApprovalDecision, InterruptStop, QuestionAnswer, QuestionInput } from '../sessions/registry'
 import { MAIN_PROFILE, SubagentMonitor, type TerminalSubagentActivity, type TerminalSubagentProfile, type TerminalSubagentRun } from './subagentMonitor'
-import { replyStalled } from './stallWatch'
+import { childStalled, replyStalled, waitingOnChildren, type ChildProgress } from './stallWatch'
 
 /** Stop codes the native extension may report for a reply it settled itself. */
 const SETTLED_CODES = new Set<unknown>(['slice_budget', 'compaction_thrash', 'needs_person', 'unfinished'])
@@ -113,7 +113,9 @@ export class TerminalController {
   private readonly commands: Command[] = []
   /** When the reply last produced something other than a heartbeat; silence is what a stall is. */
   private progressAt = 0
-  private readonly runningTools = new Map<string, number>()
+  private readonly runningTools = new Map<string, { name: string; at: number }>()
+  /** Each live subagent's own clock: its last real event and the tools it is inside. */
+  private readonly children = new Map<string, { progressAt: number; tools: Map<string, number>; stopRequestedAt: number | null }>()
   private stallRequested: string | null = null
   private stallTimer: ReturnType<typeof setInterval> | null = null
 
@@ -198,6 +200,7 @@ export class TerminalController {
   private watchProgress(): void {
     this.progressAt = Date.now()
     this.runningTools.clear()
+    this.children.clear()
     this.stallRequested = null
     if (this.stallTimer) clearInterval(this.stallTimer)
     this.stallTimer = setInterval(() => this.checkStall(), STALL_CHECK_MS)
@@ -209,17 +212,31 @@ export class TerminalController {
     this.stallTimer = null
     this.stallRequested = null
     this.runningTools.clear()
+    this.children.clear()
   }
 
   /**
    * Ends a reply its native turn can no longer finish: the process is alive and keeps reporting, but
    * the reply produced nothing for the whole window (a model request that never came back). A person
    * may already be answering an approval, and a tool may still be working, so neither is cut short.
+   * A reply that is only waiting for subagents is judged by them: a quiet child is ended on its own
+   * clock, which returns the wait and lets the reply carry on without anyone stepping in.
    */
   private checkStall(): void {
     const run = this.activeRun
-    if (!run || this.stallRequested || this.pending.size) return
-    if (!replyStalled({ now: Date.now(), progressAt: this.progressAt, runningTools: [...this.runningTools.values()] })) return
+    if (!run || this.pending.size) return
+    const now = Date.now()
+    const children: ChildProgress[] = [...this.children.values()].map((child) => ({ progressAt: child.progressAt, runningTools: [...child.tools.values()], stopRequestedAt: child.stopRequestedAt }))
+    for (const [id, child] of this.children) {
+      if (!childStalled(now, { progressAt: child.progressAt, runningTools: [...child.tools.values()], stopRequestedAt: child.stopRequestedAt })) continue
+      child.stopRequestedAt = now
+      this.hooks.telemetry('stall')
+      void this.hooks.interrupt?.(id, { reason: 'stalled', code: 'stalled' }).catch(() => {})
+    }
+    if (this.stallRequested) return
+    const tools = [...this.runningTools.values()]
+    if (waitingOnChildren(now, tools.map((tool) => tool.name), children)) return
+    if (!replyStalled({ now, progressAt: this.progressAt, runningTools: tools.map((tool) => tool.at) })) return
     this.stallRequested = run.runId
     this.hooks.telemetry('stall')
     this.commands.push({ type: 'interrupt' })
@@ -301,6 +318,23 @@ export class TerminalController {
   ): void {
     if (this.disposed || this.activeRun?.runId !== parentRunId || run.relation !== 'subagent') return
     this.subagents.observe(parentRunId, monitorRun(run, 'subagent', profile, runtime), event)
+    this.trackChild(run, event)
+  }
+
+  /** Folds a child's event into its own stall clock; a heartbeat only proves the process lives. */
+  private trackChild(run: RunRecord, event: RunEvent): void {
+    const status = (event.payload as { status?: unknown }).status
+    const settled = event.type === 'completed' || event.type === 'failed' || (event.type === 'status.changed' && typeof status === 'string' && !isActiveStatus(status))
+    if (settled || !isActiveStatus(run.status)) {
+      this.children.delete(run.id)
+      return
+    }
+    const child = this.children.get(run.id) ?? { progressAt: Date.now(), tools: new Map<string, number>(), stopRequestedAt: null }
+    if (event.type !== 'heartbeat') child.progressAt = Date.now()
+    const toolCallId = String((event.payload as { toolCallId?: unknown }).toolCallId ?? '')
+    if (event.type === 'tool.started' && toolCallId) child.tools.set(toolCallId, Date.now())
+    else if (event.type === 'tool.completed') child.tools.delete(toolCallId)
+    this.children.set(run.id, child)
   }
 
   /** An event of the tracked parent run itself, shown as the `main` row; it outlives settlement. */
@@ -536,7 +570,7 @@ export class TerminalController {
     else if (event === 'delta') run.emit('message.delta', { messageId: String(data.id ?? ''), text: String(data.text ?? '') })
     else if (event === 'message') run.emit('message.completed', { messageId: data.id ?? randomUUID(), role: data.role ?? 'assistant', text: String(data.text) })
     else if (event === 'tool') {
-      if (data.phase === 'start') this.runningTools.set(String(data.id), Date.now())
+      if (data.phase === 'start') this.runningTools.set(String(data.id), { name: String(data.name ?? ''), at: Date.now() })
       else this.runningTools.delete(String(data.id))
       run.emit(data.phase === 'start' ? 'tool.started' : 'tool.completed', {
         toolCallId: String(data.id),

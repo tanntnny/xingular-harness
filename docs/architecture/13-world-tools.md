@@ -2,21 +2,28 @@
 
 The Foundation owns the generic isolated browser engine, per-session contexts and profiles,
 network policy, and lifecycle. Built-in World plugins contribute the user-facing web search/page
-tools, browser tools and annotations through the existing tool-provider surface. Every tool passes
-the same capability and policy gate. Web requests use the public-address guard; browser requests
-use the device-local private-address setting. Read page content is untrusted. Sending, purchasing,
-deleting, changing accounts and granting access require explicit human approval. Sensitive fields
-are not filled by the agent.
+tools, browser tools and annotations through the existing tool-provider surface. The same
+backend-neutral browser tools can also target an explicitly paired Brave extension, which controls
+normal tabs on origins separately permitted by the person; Incognito is excluded, and the
+extension never requests history or cookie permissions or exports cookies (page content can still
+reflect the person's active sign-in). Every tool passes the same capability and policy gate. Web requests use the
+public-address guard; isolated-browser requests use the device-local private-address setting. Read
+page content is untrusted. Sending, purchasing, deleting, changing accounts and granting access
+require explicit human approval. Sensitive fields are not filled by the agent. A disconnected or
+paused Brave bridge refuses calls and never switches to another backend.
 
 The App owns its shared WebKit browser UI, private/shared tab policy, selected-file uploads,
 windows and the native computer bridge. These application objects do not enter the Harness.
 Other hosts may add backend capabilities and diagnostics through ToolProvider or WorldPart.
 
-Browser configuration is device-local. User-configured CDP attachment is explicit; diagnostics
-never attach to it. Doctor browser probes instead use disposable headless profiles and an offline
-synthetic page. Their input runs only after live-check confirmation, and their resources are
-released on completion, timeout or cancellation. Computer interaction needs a host-provided
-isolated surface; without one it is blocked.
+Browser configuration is device-local. The selected backend is either the isolated engine or
+Brave. The extension bridge listens only on loopback, pairs with a short-lived code, and persists
+its bearer token and extension origin in owner-only state. Pairing validates the extension origin; subsequent calls require the bearer token and reject a mismatched Origin when present because service-worker fetches may omit that header. The extension uses the browser debugger
+API. Chrome host grants can cover every port on a host, so the extension separately records each exact allowed origin (scheme, host and port) and checks it before exposing a tab; the loopback bridge permission alone never enables site access. It does not request history or cookie access or export cookies.
+User-configured CDP attachment is explicit; diagnostics never attach to it. Doctor browser probes
+instead use disposable headless profiles and an offline synthetic page. Their input runs only after
+live-check confirmation, and their resources are released on completion, timeout or cancellation.
+Computer interaction needs a host-provided isolated surface; without one it is blocked.
 
 ## Approved-window screenshot contract
 
@@ -50,28 +57,34 @@ verified authorization boundary before they can be exposed; an implementation th
 window confinement must refuse rather than post global input.
 
 
-## Shared browser contract and native WebKit limits (PROP-0040)
+## Shared browser contract and host backend limits (PROP-0040, ADR-0082)
 
 `browser/contracts.ts` owns the backend-neutral names and input schemas for `browser_*` tools;
 providers adapt those definitions rather than inventing host-specific selectors. The isolated Harness
-backend supports accessibility snapshots and snapshot-scoped refs. A native WebKit host backend
-supports navigation, tab management, visible-text reads, page screenshots and page-level scrolling
-without a ref. It does not support accessibility snapshots, snapshot refs or ref-based
-click/type/select/scroll/screenshot, browser waits or keyboard presses. Native page screenshot
-implementation and authorization checks are present, but live host capture acceptance remains open.
+backend and the connected Brave adapter support accessibility snapshots and snapshot-scoped refs.
+The Brave adapter relays calls through the paired extension, enforces the extension's exact-origin allow list and
+network policy, and invalidates refs when the page or debugger attachment changes. A native WebKit
+host backend supports navigation, tab management, visible-text reads, page screenshots and
+page-level scrolling without a ref. It does not support accessibility snapshots, snapshot refs or
+ref-based click/type/select/scroll/screenshot, browser waits or keyboard presses. Native page
+screenshot implementation and authorization checks are present, but live host capture acceptance
+remains open.
 
 For an unsupported operation the native provider returns an explicit `browser_unsupported` refusal
 with “Nothing was done”; it never treats a snapshot ref as a selector and never silently switches to
-the isolated browser. The isolated Harness browser is an independent backend, not an automatic
-fallback for the native provider. A host plugin's `surfaces` description labels that fallback and its
-limits; it does not assert full browser parity.
+another backend. The isolated Harness browser and Brave extension are separate device-selected
+backends, not fallbacks for a host's native provider. The App's `browser_upload` remains its own
+WebKit-only operation and is absent from the shared Brave tool set. A host plugin's `surfaces`
+description labels its fallback and limits; it does not assert full browser parity.
 
 Plugin ownership and the Foundation boundary are recorded in PROP-0012, ADR-0014 and PROP-0020.
 World providers are assembled through `BuiltinPluginRegistry`; no eighth extension point is added.
 
-An embedding host may set `browser: false` to disable the generic backend and its plugin
-descriptor before supplying its own browser tool provider. The App uses this option for its
-shared-tab browser, so matching tool names never silently select the wrong backend.
+An embedding host may set `browser: false` to disable the generic browser provider and its plugin
+descriptor, then supply its own provider. `HarnessOptions.browserExtension` keeps the Harness-owned
+Brave bridge available alongside that host provider. The App uses both options: its WebKit provider
+remains separate, and Brave mode supplies `browserToolsForSession` from the Harness. Provider calls
+are pinned to the selected backend and never fall through to another browser.
 
 ## Page notes (PROP-0017)
 

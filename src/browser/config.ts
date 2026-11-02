@@ -5,7 +5,11 @@ import { join } from 'node:path'
 
 import { readJsonOr, writeJson } from '../core/fs'
 
+export type BrowserBackendSelection = 'isolated' | 'brave'
+
 export interface BrowserConfig {
+  /** The isolated harness profile or the connected Brave profile. */
+  backend: BrowserBackendSelection
   /** Show the browser window instead of running it headless. */
   headed: boolean
   /** Attach to a browser a person already runs (its DevTools address) instead of launching one. */
@@ -18,13 +22,14 @@ export interface BrowserConfig {
   allowedDomains: string[]
 }
 
-export const DEFAULT_BROWSER_CONFIG: BrowserConfig = { headed: false, cdpUrl: null, executablePath: null, allowPrivate: false, allowedDomains: [] }
+export const DEFAULT_BROWSER_CONFIG: BrowserConfig = { backend: 'isolated', headed: false, cdpUrl: null, executablePath: null, allowPrivate: false, allowedDomains: [] }
 
 export const configPath = (stateDir: string): string => join(stateDir, 'browser.json')
 
 export function readBrowserConfig(stateDir: string): BrowserConfig {
   const saved = readJsonOr<Partial<BrowserConfig>>(configPath(stateDir), {})
   return {
+    backend: saved.backend === 'brave' ? 'brave' : 'isolated',
     headed: saved.headed === true,
     cdpUrl: typeof saved.cdpUrl === 'string' && /^(?:https?|wss?):\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?::\d+)?(?:\/|$)/.test(saved.cdpUrl) ? saved.cdpUrl : null,
     executablePath: typeof saved.executablePath === 'string' && saved.executablePath.trim() ? saved.executablePath : null,

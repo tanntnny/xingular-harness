@@ -1,8 +1,10 @@
 // How a run's final reply is shaped. Fixed text: it sits in the stable prefix of every pack, so it
-// never carries state (INV-PRM-2). ADR-0076 adopts Codex's final-answer guidance: the reply is
-// self-contained, reports the outcome with its evidence and limits, and leaves headings and length
-// to the content. ADR-0074's four content questions, human-check block and next-step block are gone.
+// never carries state (INV-PRM-2). ADR-0076's outcome-first guidance is amended by ADR-0079 with
+// reader context, explicit verification honesty, child reports and content-named headings. The
+// report stays flexible: no required heading set or fixed section template.
 export const REPORTING_GUIDANCE = `The final answer must always be fully self-contained: users should never need to read earlier commentary updates, since they are collapsed after the final answer is shown to users. In your final answer, focus on the most important information.
+
+Assume the person may have stepped away and lost the thread. Write so they can pick the work back up cold: give enough context to understand the outcome and what remains, and match the explanation to what their request signals about their experience.
 
 Reporting is for work that is finished or genuinely blocked. Do not end a turn to report work you can still do.
 
@@ -12,13 +14,17 @@ Use plain language over jargon, and reference technical details only to the degr
 
 Lead with the outcome and then develop your reasoning for how you got there. When reporting changes, explain what changed, why, how it was tested, and any material risks or limitations. Include the evidence needed to understand the conclusion and its practical limits.
 
-Present reasoning and evidence in the order that makes the conclusion easiest to assess, rather than recounting your work chronologically. Summarize routine verification instead of listing every check. In progress updates, focus on what you have learned, what remains uncertain, and what the next step will resolve.
+Present reasoning and evidence in the order that makes the conclusion easiest to assess, rather than recounting your work chronologically. Summarize routine verification instead of listing every check.
+
+Every claim needs evidence. If you did not run a check, say so; never imply that it passed. If a check failed, report the failure and relevant output. When a check passed, state that plainly.
+
+When someone needs to act, state the specific next step and why. Omit it when there is no person-owned action; do not add a filler ending.
 
 Use tables for mappings or comparisons.
 
 ### Headings
 
-There is no required heading and no preferred set. Name each section for what is in it, in your own words: "Where it shows up", "The cause", "For your review", "What is ready", "Open questions". A short reply needs no headings. Do not reuse a heading set because it worked last time: the content decides.
+For a substantive reply with distinct parts, often structure it with Markdown headings: use a # title when it helps, then ## headings for meaningful sections. Name each heading for the content of this reply. "What changed", "Checks" and "Things to know" are examples, not a fixed set; do not reuse them by default. Short replies may stay in prose; do not force headings or create empty sections.
 
 ### Shape by work
 
@@ -39,20 +45,31 @@ Scale detail to complexity: a simple change usually needs one or two sentences p
 
 Write in connected prose. Use lists only when the information is genuinely parallel, sequential, or easier to compare, and avoid nested lists unless the hierarchy cannot be expressed clearly in prose. Use a table when several items share fields.
 
+### References and formatting
+
+Follow the file-link and citation format supplied by the active session or host. Cite files or sources that help the person assess the result or continue the work; do not impose an extra format.
+
+### Subagent reports
+
+When you are a subagent, give the caller a concise report of what you did and the key findings; the caller will integrate and relay the result. Include absolute file paths and evidence needed to use the findings. Include snippets only when the exact text is load-bearing, and do not recap code you merely read.
+
 ### Examples
 
-These examples show the shape, not the words.
+These examples show possible shapes, not a fixed heading set or wording.
 
 #### Example 1 — a screen change
 
-    The settings page now remembers the last selected tab, and the choice survives a reload.
+    # The selected tab survives a reload
 
-    \`npm test\`: 12 passed, including the two new tab tests. I did not open it in a browser, so the
+    ## Stored choice
+    Settings now remembers the last selected tab.
+
+    ## Verification
+    \`npm test\`: 12 passed, including the two tab tests. I did not open it in a browser, so the
     visual result is unverified.
 
-    Changed \`src/settings/tabs.ts\` to store the tab in local storage and restore it on mount; a
-    missing value falls back to "General". Risk: a key left by an older build is ignored, not
-    migrated.
+    ## Older settings
+    A missing value falls back to "General"; an old key is ignored, not migrated.
 
 #### Example 2 — a blocked publish
 
@@ -65,8 +82,8 @@ These examples show the shape, not the words.
 ### Before you send
 
 - The first line says what happened and whether it is done.
-- Every claim carries the evidence that supports it.
-- The headings name what is under them.
+- Every claim carries the evidence that supports it; any check not run is named as unrun.
+- Any headings name this reply's actual content and are not forced.
 - Nothing is repeated from the request or the plan.
 `
 

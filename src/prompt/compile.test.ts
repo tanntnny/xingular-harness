@@ -15,7 +15,7 @@ import * as notes from '../wiki/notes'
 import { SESSION_GUIDANCE } from '../tools/sessionName'
 import { TODO_GUIDANCE } from '../tools/todo'
 import { PLAN_INSTRUCTIONS, planSection } from '../sessions/planMode'
-import { compile, fit, load, render, renderCompactionCheckpoint, REPORTING_GUIDANCE, WORK_SLICE_GUIDANCE, sessionFile, sessionLaunch, SECTION_ORDER, type ContextUpdate, type HostSection, type Launch } from './compile'
+import { compile, fit, load, render, renderCompactionCheckpoint, REPORTING_GUIDANCE, sessionFile, sessionLaunch, SECTION_ORDER, type ContextUpdate, type HostSection, type Launch } from './compile'
 import { REPORTING_BUDGET } from './reporting'
 
 const roots: string[] = []
@@ -310,8 +310,8 @@ test('the reporting guidance closes the stable prefix and never rides in a conte
   expect(first.system.indexOf('## Reporting your work')).toBeGreaterThan(first.system.indexOf('## Tools'))
   expect(first.update!.content).not.toContain('Reporting your work')
   expect(first.pack.delivery!.systemSectionIds.at(-1)).toBe('reporting')
-  // Codex's final-answer guidance, adopted by ADR-0076: self-contained, outcome first, evidence and
-  // limits, with tables and headings left to the content.
+  // ADR-0079 strengthens ADR-0076's phase-led reporting: reader context, honest checks, flexible
+  // content-named headings and concise subagent reports.
   expect(REPORTING_GUIDANCE.length).toBeGreaterThan(3_000)
   expect(REPORTING_GUIDANCE.length).toBeLessThan(5_000)
   expect(REPORTING_BUDGET).toBe(12_000)
@@ -324,7 +324,19 @@ test('the reporting guidance closes the stable prefix and never rides in a conte
   expect(REPORTING_GUIDANCE).toContain('Use tables for mappings or comparisons')
   expect(REPORTING_GUIDANCE).toContain('Scale detail to complexity')
   expect(REPORTING_GUIDANCE).toContain('Write in connected prose')
-  expect(REPORTING_GUIDANCE).toContain('There is no required heading and no preferred set')
+  expect(REPORTING_GUIDANCE).toContain('Assume the person may have stepped away and lost the thread')
+  expect(REPORTING_GUIDANCE).toContain('Write so they can pick the work back up cold')
+  expect(REPORTING_GUIDANCE).toContain('If you did not run a check, say so; never imply that it passed')
+  expect(REPORTING_GUIDANCE).toContain('When a check passed, state that plainly')
+  expect(REPORTING_GUIDANCE).toContain('When someone needs to act, state the specific next step and why')
+  expect(REPORTING_GUIDANCE).toContain('For a substantive reply with distinct parts, often structure it with Markdown headings')
+  expect(REPORTING_GUIDANCE).toContain('not a fixed set; do not reuse them by default')
+  expect(REPORTING_GUIDANCE).toContain('Follow the file-link and citation format supplied by the active session or host')
+  expect(REPORTING_GUIDANCE).toContain('# The selected tab survives a reload')
+  expect(REPORTING_GUIDANCE).toContain('## Stored choice')
+  expect(REPORTING_GUIDANCE).toContain('When you are a subagent, give the caller a concise report')
+  expect(REPORTING_GUIDANCE).toContain('Include snippets only when the exact text is load-bearing')
+  expect(REPORTING_GUIDANCE).not.toContain('In progress updates')
   expect(REPORTING_GUIDANCE).toContain('gh auth login')
   // The old content blocks and the filler ending are gone; headings and length follow the content.
   expect(REPORTING_GUIDANCE).not.toContain('What only a person can check')
@@ -348,11 +360,11 @@ test('a person\'s own session is told when a reply may end', () => {
   expect(rendered).toContain('A document the request points to (a handoff, a plan, a spec) is the request: work its steps in order.')
   expect(rendered).toContain('A question the request or the files already answer is not a question for the person.')
   expect(rendered).toContain('Stop with work still open only for what the person alone can do')
-  expect(rendered).toContain(WORK_SLICE_GUIDANCE)
+  expect(rendered).not.toContain('work-slice')
   expect(rendered).not.toContain('sent back to you')
   expect(rendered).not.toContain('completion check')
   expect(rendered).not.toContain('call finish')
-  expect(rendered).toContain('otherwise the reply ends only when the work-slice guard hands it back or the person interrupts')
+  expect(rendered).toContain('otherwise keep working until the request is done or the person interrupts')
   expect(rendered).toContain('Do the job the request implies, not only its literal words')
   expect(rendered).toContain('fix what your own work exposes')
   expect(rendered).toContain('inside those bounds you do not ask first')
@@ -394,9 +406,10 @@ test('a person\'s own session carries the Codex-derived personality, autonomy, p
   expect(rendered).toContain('treat it as steering the active task rather than replacing it')
   expect(rendered).toContain('Compaction does not end the task.')
   expect(rendered).toContain('assume they want it fixed, not acknowledged or explained')
-  // Writing style
+  // Writing style keeps in-flight updates; they are no longer duplicated in the report section.
   expect(rendered).toContain('Avoid AI-slop words and phrases')
-  // Reporting: Codex's final-answer guidance (ADR-0076), not the four content blocks.
+  expect(rendered).toContain('In progress updates, say what you learned, what is still uncertain, and what the next step will resolve.')
+  // Reporting: ADR-0076's flexible final-answer guidance, amended by ADR-0079.
   expect(rendered).toContain('The final answer must always be fully self-contained')
   expect(rendered).toContain('explain what changed, why, how it was tested, and any material risks or limitations')
   expect(rendered).toContain('Every claim carries the evidence that supports it')
@@ -414,7 +427,7 @@ test('only a person\'s own session is told that its replies are checked', () => 
   expect(hostedPack.toolGroups).toContainEqual({ group: 'Progress', tools: ['todo_write'] })
   expect(render(env, hostedPack)).not.toContain('completion check')
   const own = compile(env, agent(), { standard: { cwd: '/src/site' }, tools: ['read', 'todo_write', 'spawn_subagent'] })
-  expect(render(env, own)).toContain(WORK_SLICE_GUIDANCE)
+  expect(render(env, own)).not.toContain('work-slice')
   expect(render(env, own)).not.toContain('todo gate')
   expect(render(env, own)).not.toContain('checkpoint_write')
   // The longer role, with the subagent paragraph, still fits uncut.

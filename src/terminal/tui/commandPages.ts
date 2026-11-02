@@ -16,15 +16,18 @@ import { AgentsPage } from './pages/agentsPage'
 import { UsagePage } from './pages/usagePage'
 import { ContextPage, type ContextTab } from './pages/contextPage'
 import { RemoteControlPage } from './pages/remoteControlPage'
+import { FollowUpQueuePage } from './pages/followUpQueuePage'
 import { createSettingsModel } from './settingsModel'
 
-export type CommandPageId = 'doctor' | 'accounts' | 'permissions' | 'plugins' | 'hub' | 'components' | 'settings' | 'trajectory' | 'log' | 'harness' | 'skills' | 'connections' | 'tools' | 'worktree' | 'notes' | 'annotate' | 'subagents' | 'agents' | 'usage' | 'context' | 'remote-control'
+export type CommandPageId = 'doctor' | 'accounts' | 'permissions' | 'plugins' | 'hub' | 'components' | 'settings' | 'trajectory' | 'log' | 'harness' | 'skills' | 'connections' | 'tools' | 'worktree' | 'notes' | 'annotate' | 'subagents' | 'agents' | 'usage' | 'context' | 'remote-control' | 'follow-up'
 
 /** Construct one independent full-screen page for a slash command. */
 export function createCommandPage(host: TerminalCommandHost, id: CommandPageId, options: { runId?: string; url?: string; annotate?: AnnotateStart; usageTab?: 'analysis' | 'limit' | 'accounts'; usagePeriod?: 'today' | '7d' | '30d' | 'all'; contextTab?: ContextTab; close?(): void; navigate?(id: CommandPageId, runId?: string): void } = {}): TerminalPage {
   const theme = () => host.ui.theme
   const notify = (message: string, type?: string) => host.ui.notify(message, type === 'error' || type === 'warning' ? type : 'info')
   switch (id) {
+    case 'follow-up':
+      return new FollowUpQueuePage({ editor: host.followUpQueue(), theme, changed: host.changed, close: options.close ?? (() => {}) })
     case 'remote-control':
       return new RemoteControlPage({ theme, call: host.control, changed: host.changed, copy: host.copyText, notify })
     case 'context':

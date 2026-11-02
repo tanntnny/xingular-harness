@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { questionDockAnswerWidth, questionDockBodyHeight, questionDockColumns, questionDockPreviewRevealDelta, sketchBorder, sketchViewportHeight } from './questionDockLayout'
+import { questionDockAnswerWidth, questionDockBodyHeight, questionDockColumns, questionDockPreviewRevealDelta, questionDockSketchFrameWidth, sketchBorder, sketchViewportHeight } from './questionDockLayout'
 
 describe('question dock geometry', () => {
   it.each([0, 1, 2, 3, 8, 32, 40, 60, 80, 120])('fits strictly aligned cells in %i columns', width => {
@@ -24,6 +24,13 @@ describe('question dock geometry', () => {
     expect(new Set(starts).size).toBe(1)
     expect(questionDockColumns(116).label).toBeGreaterThan(questionDockColumns(36).label)
     expect(questionDockColumns(36)).toEqual({ marker: 2, label: 10, gap: 2, description: 22 })
+  })
+
+  it('keeps the fixed 80-column canvas inside a viewport-sized preview frame', () => {
+    expect(questionDockSketchFrameWidth(0, 80)).toBe(3)
+    expect(questionDockSketchFrameWidth(38, 80)).toBe(40)
+    expect(questionDockSketchFrameWidth(78, 80)).toBe(80)
+    expect(questionDockSketchFrameWidth(120, 80)).toBe(82)
   })
 
   it('reserves the answer input width before the action button', () => {

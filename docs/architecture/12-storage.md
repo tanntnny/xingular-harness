@@ -46,7 +46,8 @@ index.
   worktrees.json       managed worktree registry   (02, PROP-0016)
   worktrees/<repo>/<name>/   managed worktree checkouts; worktrees/logs/ setup output   (PROP-0016)
   worktree-setup-trust.json  trusted setup-script hashes, owner-only   (PROP-0016)
-  browser/             isolated browser settings and profiles   (13)
+  browser.json        device-local BrowserConfig: backend, CDP, private-address policy and domains   (13)
+  browser/             isolated profiles, downloads, and owner-only extension-bridge.json pairing state   (13, ADR-0082)
   notes-bridge.json    the page bridge's port and token, kept so an app's script tag stays valid   (13, PROP-0018)
   harness.log          standalone terminal diagnostics
 ```

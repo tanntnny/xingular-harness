@@ -59,6 +59,7 @@ A session that cannot open ends its run as `failed` and returns `nativeSessionId
   `account.status`, `status.changed`, `failed`, `completed`. Each has a payload schema in
   `runEventPayloadSchemas`.
 - **Stop codes.** `terminalCode` is nullable for legacy records and identifies a recorded outcome independently of `terminalReason`. Structured sessions record `completed`, `user_abort`, `slice_budget`, `compaction_thrash`, `provider_error`, or `failed`; recovery can record `harness_restart`, `stalled` or `owner_gone`. Other shared codes include `terminal_attention`, `terminal_closed` and `parent_stopped`. Interrupted `status.changed` events may carry the code; failure codes map to a stop code. Legacy events without a code remain unknown.
+- **Queued-message dispatch.** Both front ends retain Pi's normal delivery behavior after success. Only an explicit user stop may release messages still queued when a reply is interrupted: send the oldest unconsumed steer first, then the oldest follow-up. Retry events are not settlement boundaries; provider failure, a retry that ultimately fails, and non-user interruption leave queued messages parked. A settled interruption alone is not proof of user intent.
 - **Compaction evidence.** Structured compaction starts include the latest known context tokens and window when available; ends include Pi’s `tokensBefore` when supplied. Tokens after compaction remain unknown unless reported.
 - **Workspace root** (`RunRecord.workspaceRoot`) is the canonical root whose filesystem effects
   native writes and default-scope Bash may modify: the nearest Git repository or worktree above its
@@ -81,10 +82,12 @@ A session that cannot open ends its run as `failed` and returns `nativeSessionId
   per line (1,943 bytes maximum), with at least one visible character. Tabs, CR, other controls,
   escape sequences and non-ASCII text are rejected. Whitespace, including interior blank lines and
   trailing spaces, is preserved literally in the persisted request event. Tool guidance requests
-  contextual UI wireframes with actual panel/table structure and neighboring elements, consistent
-  across alternatives; generation quality is guidance, not a schema guarantee. Old events remain
-  valid without a data rewrite; readers with the old bounds must update before accepting larger
-  sketches. `question.answered` and `QuestionAnswer` are unchanged.
+  detailed contextual UI wireframes on a fixed 80-column canvas, with actual panel/table structure
+  and neighboring elements consistent across alternatives. The terminal pads shorter rows to this
+  canvas for display; the schema still permits sketches shorter than 80 columns, so generation
+  quality remains guidance rather than a validation guarantee. Old events remain valid without a data
+  rewrite; readers with the old bounds must update before accepting larger sketches.
+  `question.answered` and `QuestionAnswer` are unchanged.
 - **Todo list** (PROP-0006, renamed by PROP-0045): `todo.updated` carries the whole list the model
   last wrote with `todo_write`, `{ items: { text, status: pending | in_progress | completed }[] }`, at
   most 50 items. The latest event replaces every earlier one; `todoOf(events)` reads it. The
@@ -146,7 +149,9 @@ A session that cannot open ends its run as `failed` and returns `nativeSessionId
   marked `readOnly`, or be explicitly classified by `planModeSafe`. Model-issued `bash` is allowed
   and runs in the sandbox's read-only scope: no writes except a discarded temp folder, no network,
   nothing that widens the scope; the gate refuses `outside` requests and `PLAN_BASH_DENIED` commands
-  (PROP-0043). The dynamic plan instruction
+  (PROP-0043). The dynamic plan instruction asks the model to check whether the requested work
+  already exists before designing it, to name the evidence and stop when it does, and says that a
+  person's instruction not to plan outranks the mode's output shape. It also
   requires an opening `Goal` or `Summary`, evidence-grounded findings when useful, and task-scaled
   steps and verification. A small fix stays concise without omitting its
   outcome or check; cross-cutting work uses ordered steps. It encourages questions about material
@@ -155,23 +160,29 @@ A session that cannot open ends its run as `failed` and returns `nativeSessionId
   `uiSketch` questions with meaningful alternatives; routine, specified, delegated or nonvisual
   decisions do not require sketches. Both the dynamic section and compaction checkpoint have room
   for the complete bounded plan instruction.
-  **Outcome contract (ADR-0058, superseding the clarification portion of ADR-0057).** Classify a
-  new final reply as exactly one of `plan_ready`, `blocked`, or `invalid`. `plan_ready` uses the
-  existing complete `<proposed_plan>` block and is the only outcome that offers a plan card and
+  **Outcome contract (ADR-0077, superseding the repair criterion of ADR-0055, ADR-0057 and
+  ADR-0058).** Classify a
+  new final reply as exactly one of `plan_ready`, `blocked`, `no_plan`, or `invalid`. `plan_ready`
+  uses one complete `<proposed_plan>` block and is the only outcome that offers a plan card and
   Implement. When a required user decision cannot be obtained because `ask_user` is unavailable,
-  `blocked` uses a nonempty `<plan_blocked>` block to report the blocker without asking a free-text
-  question or inventing the decision; it
-  is not a plan and never offers Implement. New final replies must not use `<plan_clarification>`
-  or free-text questions as a clarification channel. Missing, incomplete, conflicting or otherwise
-  malformed outcomes are `invalid`, not a guessed plan. When clarification is needed and `ask_user`
+  `blocked` uses one complete nonempty `<plan_blocked>` block to report the blocker without asking
+  a free-text question or inventing the decision; it
+  is not a plan and never offers Implement. `no_plan` is an ordinary reply with no outcome block: it
+  says there is nothing to design, because the work already exists, the person declined to plan, or
+  no decision is needed. It is a valid conclusion, not a formatting failure, and it offers no card,
+  notice or warning and no second request. New final replies must not use `<plan_clarification>`
+  or free-text questions as a clarification channel. A block the model started and left unbalanced,
+  empty, duplicated or in conflict is `invalid`, not a guessed plan; tags inside fenced or inline
+  code are text, not outcomes. When clarification is needed and `ask_user`
   is available, it blocks the active run for the answer, then that same run continues research and
   planning.
 
   Server and terminal use the same outcome classification and one bounded, hidden repair turn
-  in the same eligible attended top-level plan run, only for `invalid`. The repair requests a valid
-  outcome without inventing decisions or changing the substance; it may call `ask_user` when
-  available, blocking the active run for the answer, and may return either valid outcome.
-  It is not a new user request, does not bypass the plan gate, and is never attempted for a
+  in the same eligible attended top-level plan run, only for `invalid`. The repair asks for the
+  declared block to be finished or for the statement that there is nothing to plan; it does not
+  invent decisions or change the substance, and it may call `ask_user` when
+  available, blocking the active run for the answer. It is not a new user request, does not bypass
+  the plan gate, and is never attempted for a
   plan-research child, command, probe, improver, reflection, other unattended run, interruption,
   error or work-slice termination. A second invalid result ends repair: retain the original reply,
   complete the run with a warning and no Implement choice. Preserve the existing plan tag, card,
@@ -319,11 +330,12 @@ is approved but remains in progress; no completed cross-surface catalog is impli
   surface's visible transcript and selected references. It excludes hidden reasoning and attachment
   bytes, never reads the main native history, and never changes or steers the parent. Its own run
   record and events use the normal store contract (PROP-0019).
-- **INV-RUN-13** A reply is a bounded work slice (PROP-0041). The foundation defaults are 320 tool
-  calls and 60 minutes, whichever comes first, with no new-token limit (PROP-0044). A token cap is
-  available with `workSlice.maxNewTokens`, counted on new input, cache writes and output and never on
-  the cached prefix: a few large reads pass any small cap before useful work, so the tool calls and
-  the clock are the bound and the token count is only a ceiling for whoever asks for one. At the
+- **INV-RUN-13** A reply may be a bounded work slice (PROP-0041), but the foundation has no budget
+  (ADR-0081): the defaults are no tool-call limit, no time limit and no new-token limit (earlier
+  defaults: 320 calls and 60 minutes, PROP-0044). A caller that asks for one sets `workSlice` on a
+  run or `XINGULAR_WORK_SLICE` at launch; a token cap is counted on new input, cache writes and
+  output and never on the cached prefix. Everything below describes a reply that was given a limit,
+  and the three-compaction guard, which is not a budget, stays on. At the
   limit the guard refuses the next tool call and asks the model to stop and report where it is; the
   harness then writes the checkpoint itself from the reply's files, checks and todo list (the model
   has no checkpoint tool since ADR-0069). A non-handoff tool call after the refusal ends the reply. A
@@ -371,14 +383,20 @@ is approved but remains in progress; no completed cross-surface catalog is impli
   record keeps the goal as `goalMode`. `XINGULAR_COMPLETION_CHECK=off` accepts every claim unchecked.
 - **INV-RUN-14** A run event stream carries `checkpoint` (the handoff the harness derives from the
   run's own evidence; runs written before ADR-0069 may hold one the model wrote) and `heartbeat`
-  (steps, elapsed time, last tool, compactions, slice, and the call budget). Every live reply emits a
+  (steps, elapsed time, last tool, compactions, slice, the call budget, and the names and oldest age of
+  the tools running at that moment). Every live reply emits a
   heartbeat every 30 seconds, terminal replies included. A heartbeat older than five minutes while
   the owner process lives marks the run `interrupted` with reason `stalled`; a run that never emitted
   one keeps the 30-minute silence rule. A reply whose heartbeat keeps arriving but which produces no
   other event for fifteen minutes is a wedged turn, not a busy one: the terminal ends it through the
   native abort and records `interrupted` with reason `stalled`, and grants a reply whose oldest
-  running tool has run for thirty minutes the same ending. An unanswered approval or question is
-  never cut short. The watchdog never restarts work (ADR-0054).
+  running tool has run for thirty minutes the same ending. A reply whose only running tools are
+  `wait_subagents` or `spawn_subagent` is judged by its children instead: each child has its own
+  clock (its last event other than a heartbeat; its running tools), and a child quiet for the same
+  windows is interrupted with reason `stalled`, so the wait returns and the parent carries on by
+  itself. The parent's own rule resumes if no child answers to its watch, or one ignored the stop for
+  five minutes (ADR-0078). An unanswered approval or question is never cut short. The watchdog never
+  restarts work (ADR-0054).
 - **INV-RUN-12** A post-compaction checkpoint is a bounded context projection of the active request,
   the validated todo list and applicable plan instructions as of a compaction that happened during
   that run. It is compiled by `prompt/compile.ts` once per compaction and placed, unchanged, directly

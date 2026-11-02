@@ -302,6 +302,10 @@ describe('OpenTuiApplication', () => {
     expect(app.view().items.at(-1)).toMatchObject({
       kind: 'notice', level: 'warning', text: 'Retry 1/3 in 1.5s: rate limited'
     })
+    // The row says the reply is reconnecting, not busy, until the request runs again.
+    expect(app.view().working.label).toBe('Reconnecting 1/3 · retry in 2s · rate limited')
+    internals.accept({ type: 'auto_retry_end', success: true, attempt: 1 } as AgentSessionEvent)
+    expect(app.view().working.label).toBe(workingLabel)
 
     const runElapsed = app.view().working.elapsedMs
     internals.accept({ type: 'compaction_start', reason: 'threshold' } as AgentSessionEvent)
@@ -1027,6 +1031,112 @@ describe('OpenTuiApplication', () => {
     } finally { await app.shutdown() }
   })
 
+  it('dispatches an unconsumed steer before queued follow-ups after an explicit stop', async () => {
+    const app = new OpenTuiApplication([])
+    const steering = ['change direction']
+    const followUp = ['later']
+    const calls: Array<[string, boolean | undefined]> = []
+    const session = {
+      isIdle: false,
+      isStreaming: true,
+      messages: [],
+      getSessionStats: () => ({ tokens: {} }),
+      getSteeringMessages: () => steering,
+      getFollowUpMessages: () => followUp,
+      clearQueue: () => {
+        const pending = { steering: steering.slice(), followUp: followUp.slice() }
+        steering.length = 0
+        followUp.length = 0
+        return pending
+      }
+    }
+    const internals = app as unknown as {
+      runtime: TerminalRuntime
+      explicitStopRequested: boolean
+      accept(event: AgentSessionEvent): void
+    }
+    internals.runtime = {
+      session,
+      snapshot: () => undefined,
+      submit: vi.fn(async (text: string, asFollowUp?: boolean) => {
+        calls.push([text, asFollowUp])
+        if (session.isIdle) {
+          session.isIdle = false
+          session.isStreaming = true
+          internals.accept({ type: 'agent_start' } as AgentSessionEvent)
+        } else {
+          (asFollowUp ? followUp : steering).push(text)
+          internals.accept({ type: 'queue_update' } as AgentSessionEvent)
+        }
+      }),
+      dispose: async () => {}
+    } as unknown as TerminalRuntime
+    internals.explicitStopRequested = true
+    session.isIdle = true
+    session.isStreaming = false
+
+    internals.accept({ type: 'agent_settled', aborted: true } as AgentSessionEvent)
+    await vi.waitFor(() => expect(calls).toEqual([['change direction', false], ['later', true]]))
+    await app.shutdown()
+  })
+
+  it('keeps queued messages parked after provider errors and non-user interruptions', async () => {
+    const app = new OpenTuiApplication([])
+    const steering = ['change direction']
+    const submit = vi.fn(async () => {})
+    const session = {
+      isIdle: true,
+      messages: [{ role: 'assistant', stopReason: 'error' }],
+      getSessionStats: () => ({ tokens: {} }),
+      getSteeringMessages: () => steering,
+      getFollowUpMessages: () => [],
+      clearQueue: vi.fn(() => ({ steering: [], followUp: [] }))
+    }
+    const internals = app as unknown as { runtime: TerminalRuntime; accept(event: AgentSessionEvent): void }
+    internals.runtime = { session, snapshot: () => undefined, submit, dispose: async () => {} } as unknown as TerminalRuntime
+
+    internals.accept({ type: 'agent_settled', aborted: false } as AgentSessionEvent)
+    internals.accept({ type: 'agent_settled', aborted: true } as AgentSessionEvent)
+    await Promise.resolve()
+    expect(submit).not.toHaveBeenCalled()
+    expect(session.clearQueue).not.toHaveBeenCalled()
+    expect(app.view().pendingMessages).toEqual([{ kind: 'steering', text: 'change direction' }])
+    await app.shutdown()
+  })
+
+  it('preserves queued image attachments when editing and restoring a message', async () => {
+    const app = new OpenTuiApplication([])
+    const steering = ['with image']
+    const image = { type: 'image' as const, data: 'encoded', mimeType: 'image/png' }
+    const submit = vi.fn(async () => {
+      steering.push('edited message')
+    })
+    const session = {
+      isIdle: false,
+      isStreaming: true,
+      getSessionStats: () => ({ tokens: {} }),
+      getSteeringMessages: () => steering,
+      getFollowUpMessages: () => [],
+      clearQueue: () => { steering.length = 0; return { steering: [], followUp: [] } }
+    }
+    const internals = app as unknown as {
+      runtime: TerminalRuntime
+      ui: { editor(title: string, text: string): Promise<string | undefined> }
+      steeringMetadata: Array<{ id: string; kind: 'steering'; text: string; images?: typeof image[] }>
+      openFollowUpQueueEditor(): { entries(): readonly { id: string; hasImages: boolean }[]; edit(id: string): Promise<void>; close(): void }
+    }
+    internals.runtime = { session, snapshot: () => undefined, submit, dispose: async () => {} } as unknown as TerminalRuntime
+    internals.ui = { editor: async () => 'edited message' }
+    internals.steeringMetadata = [{ id: 'queued-image', kind: 'steering', text: 'with image', images: [image] }]
+
+    const editor = internals.openFollowUpQueueEditor()
+    expect(editor.entries()).toEqual([{ id: 'queued-image', kind: 'steering', text: 'with image', hasImages: true }])
+    await editor.edit('queued-image')
+    editor.close()
+    await vi.waitFor(() => expect(submit).toHaveBeenCalledWith('edited message', false, [image]))
+    await app.shutdown()
+  })
+
   it('attaches pasted images and large pastes as labels and sends them with the prompt', async () => {
     const app = new OpenTuiApplication([])
     const directory = await mkdtemp(join(tmpdir(), 'harness-attach-'))
@@ -1264,6 +1374,27 @@ describe('OpenTuiApplication', () => {
     await app.shutdown()
   })
 
+  it('gives every palette item a stable id so the view store never merges one command into another', async () => {
+    const app = new OpenTuiApplication([])
+    const internals = app as unknown as {
+      commands: { completions(): { name: string; aliases?: string[]; description?: string }[] }
+      syncDraft(text: string): void
+    }
+    internals.commands = { completions: () => [
+      { name: 'session', aliases: ['resume'] },
+      { name: 'history', aliases: ['tree'] },
+      { name: 'remote-control', aliases: ['rc'] }
+    ] }
+    internals.syncDraft = () => {}
+
+    app.setDraft('/')
+    const ids = app.view().palette?.items.map(item => item.id)
+    expect(ids).toEqual(['/session', '/history', '/remote-control'])
+    expect(new Set(ids).size).toBe(3)
+
+    await app.shutdown()
+  })
+
   it('shows aliases once in the palette and selects the canonical command name', async () => {
     const app = new OpenTuiApplication([])
     const internals = app as unknown as {
@@ -1345,7 +1476,7 @@ describe('OpenTuiApplication', () => {
     internals.syncDraft = () => {}
     internals.submit = vi.fn()
     app.setDraft('$rev')
-    expect(app.view().palette?.items).toEqual([{ name: 'review', description: 'Inspect changes', prefix: '$' }])
+    expect(app.view().palette?.items).toEqual([{ id: '$review', name: 'review', description: 'Inspect changes', prefix: '$' }])
     expect(app.activatePaletteItem(0)).toBe(true)
     expect(app.view().draft).toBe('$review ')
     expect(app.view().draftCursorOffset).toBe('$review '.length)
@@ -1366,7 +1497,7 @@ describe('OpenTuiApplication', () => {
     internals.submit = vi.fn()
     try {
       app.setDraft('review $rev and more', 11)
-      expect(app.view().palette?.items).toEqual([{ name: 'review', description: 'Inspect changes', prefix: '$' }])
+      expect(app.view().palette?.items).toEqual([{ id: '$review', name: 'review', description: 'Inspect changes', prefix: '$' }])
       expect(app.activatePaletteItem(0)).toBe(true)
       expect(app.view().draft).toBe('review $review and more')
       expect(app.view().draftCursorOffset).toBe('review $review'.length)
@@ -1483,13 +1614,34 @@ describe('OpenTuiApplication', () => {
     await app.shutdown()
   })
 
-  it('warns instead of offering a plan when the plan run returned no block', async () => {
+  it('offers nothing when a plan run concludes there is nothing to plan', async () => {
     const app = new OpenTuiApplication([])
     const internals = app as unknown as { offerPlan(): void; runtime?: TerminalRuntime }
     internals.runtime = {
       session: {
         messages: [{ role: 'assistant', stopReason: 'stop' }],
-        getLastAssistantText: () => 'The plan was not wrapped.',
+        getLastAssistantText: () => 'Nothing to plan: src/chat/tabs.ts:41 already stores the selection.',
+        state: {},
+        extensionRunner: { getShortcuts: () => new Map() }
+      },
+      snapshot: () => undefined,
+      dispose: async () => {}
+    } as unknown as TerminalRuntime
+
+    const before = app.view().items.length
+    internals.offerPlan()
+    expect(app.view().items).toHaveLength(before)
+    expect(app.view().planChoice).toBeNull()
+    await app.shutdown()
+  })
+
+  it('warns instead of offering a plan when the plan run left its block incomplete', async () => {
+    const app = new OpenTuiApplication([])
+    const internals = app as unknown as { offerPlan(): void; runtime?: TerminalRuntime }
+    internals.runtime = {
+      session: {
+        messages: [{ role: 'assistant', stopReason: 'stop' }],
+        getLastAssistantText: () => '<proposed_plan># Fix it\n\n1. Patch it.',
         state: {},
         extensionRunner: { getShortcuts: () => new Map() }
       },
@@ -1499,7 +1651,7 @@ describe('OpenTuiApplication', () => {
 
     internals.offerPlan()
 
-    expect(app.view().items.at(-1)).toMatchObject({ kind: 'notice', text: 'The plan reply did not include a valid plan or blocked outcome.', level: 'warning' })
+    expect(app.view().items.at(-1)).toMatchObject({ kind: 'notice', text: 'The plan reply left its plan block incomplete, so no plan was offered.', level: 'warning' })
     expect(app.view().planChoice).toBeNull()
     await app.shutdown()
   })

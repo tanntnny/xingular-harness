@@ -31,18 +31,19 @@ export interface SlicePolicy {
   continue: boolean
 }
 
-/** The foundation defaults: enough for one meaningful step of work, short enough to report. */
+/**
+ * The foundation defaults: no budget (ADR-0081). A reply is not cut at a number of tool calls, a
+ * length of time or a number of tokens, and nothing is continued as a "next slice"; it ends when the
+ * work is done, a person's decision is needed, or the person interrupts. The limits stay available
+ * to a caller that asks for one (`workSlice`, `XINGULAR_WORK_SLICE`), and the three-compaction guard
+ * is not a budget and stays on.
+ */
 export const DEFAULT_SLICE_POLICY: SlicePolicy = {
   enabled: true,
-  // A chapter of a task, not an interruption every few edits: roughly 80 minutes of ordinary work
-  // (about 15 s a call), with 60 minutes of wall clock as the ceiling, whichever comes first. A task
-  // still gets eight slices before it returns to the person.
-  maxToolCalls: 320,
-  maxMinutes: 60,
-  // No token cap: the tool calls and the clock are the bound. Counting new input, cache writes and
-  // output made a few large reads end a reply before useful work (see the "Confirm plan model
-  // support" thread), so a cap is available to whoever asks for one and off unless they do.
+  maxToolCalls: 0,
+  maxMinutes: 0,
   maxNewTokens: 0,
+  // Inert while no limit ends a slice; a caller that sets one gets the same continuation as before.
   maxSlices: 8,
   continue: true
 }
@@ -352,4 +353,11 @@ export function sliceOf(root: string, runId: string, limit = 100): number {
 /** The reason a checkpoint the harness derives (no model handoff) records. */
 export function derivedReason(end: SliceEnd | null): Checkpoint['reason'] {
   return end ?? 'requested'
+}
+
+/** What a heartbeat reports about the tools in flight: their names once each, and the oldest one's age. */
+export function activeToolBeat(tools: ReadonlyMap<string, { name: string; at: number }>, now = Date.now()): { activeTools: string[]; oldestToolMs: number } | Record<string, never> {
+  if (!tools.size) return {}
+  const names = [...new Set([...tools.values()].map((tool) => tool.name))].slice(0, 16)
+  return { activeTools: names, oldestToolMs: Math.max(0, now - Math.min(...[...tools.values()].map((tool) => tool.at))) }
 }

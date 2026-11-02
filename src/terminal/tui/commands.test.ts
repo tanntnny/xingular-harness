@@ -63,7 +63,7 @@ function setup(extensionCommands: TestExtensionCommand[] = [{
   }
   const trajectoryRun = { id: 'run-1', mode: 'code', goal: 'Review the change', startedAt: '2026-10-18T00:00:00.000Z', endedAt: '2026-10-18T00:00:01.000Z', status: 'completed' }
   const host: TerminalCommandHost = {
-    session: () => session, runtime: () => runtime as unknown as ReturnType<TerminalCommandHost['runtime']>, ui,
+    session: () => session, followUpQueue: vi.fn(() => ({ entries: () => [], edit: vi.fn(async () => {}), sendNext: vi.fn(async () => {}), remove: vi.fn(), close: vi.fn() })), runtime: () => runtime as unknown as ReturnType<TerminalCommandHost['runtime']>, ui,
     cwd: () => '/isolated/project', branch: () => 'main', sessionDirectory: () => '/isolated/account/history',
     refresh: vi.fn(), changed: vi.fn(), showHelp: vi.fn(), todo: vi.fn(async () => []), showTodo: vi.fn(), shutdown: vi.fn(), setEditorText: vi.fn(), copyText: vi.fn(async () => {}),
     subagents: () => [],
@@ -101,6 +101,14 @@ describe('owned terminal commands', () => {
     expect(await commands.execute('/xdiag:sweep 7')).toBe(false)
     expect(await commands.execute('/diagnose run-1')).toBe(true)
     expect(ui.notify).toHaveBeenCalledWith(expect.stringContaining('Unknown command'), 'error')
+  })
+
+  it('opens the follow-up queue page from its core command', async () => {
+    const { commands, host, ui } = setup()
+    expect(commands.completions().map(command => command.name)).toContain('follow-up')
+    expect(await commands.execute('/follow-up')).toBe(true)
+    expect(ui.custom).toHaveBeenCalledOnce()
+    expect(host.followUpQueue).toHaveBeenCalledOnce()
   })
 
   it('shows the current todo, accepts the legacy alias, and explains an empty list', async () => {

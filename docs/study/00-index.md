@@ -33,6 +33,18 @@ written and the claim moves to checked behavior. Cite material as
   leaked v2.1.88 prompt measured against the pack a real session was given: 12.9k characters against
   23.4k, the 9.2k reporting section with no Claude Code counterpart, and the rules Claude Code has
   that the harness does not (parallel calls, read-before-edit, minimal diffs).
+- [How Codex and Claude Code use the person's browser](STUDY-0008-browser-control.md) — Claude Code drives
+the person's own Chrome as a built-in MCP server with refs, console, network and JavaScript; Codex has
+no browser in the CLI and reaches the person's browser only through Computer Use and its extension,
+keeping a separate-profile built-in browser of its own; this harness now offers isolated Chromium,
+App WebKit, and an explicitly paired Brave extension through shared browser tools. The Brave bridge
+is implemented with live disposable-profile acceptance still pending; see [ADR-0082](../decisions/ADR-0082-connected-brave-browser.md).
+- [Claude Code's report structure against this harness's, phase by phase](STUDY-0009-claude-code-reporting.md)
+  — the leaked v2.1.88 external and internal prompts plus the published Concise style against the
+  original 3,696-character reporting section: audience, pre-tool text, in-flight updates, first
+  sentence, change content, evidence, next steps, headers, tables, length, references and examples.
+  Neither Claude Code build requires headers; ADR-0079 records the Harness's choice to encourage
+  content-named `#` / `##` headings in substantial reports.
 - [Does the harness tell an agent how to install a skill](STUDY-0005-skill-installation-guidance.md)
   — the global and project routes this harness already loads, checked with its own resolver; why a
   session model is told none of them; and how Codex, Gemini, Claude Code, Kimi and others put that

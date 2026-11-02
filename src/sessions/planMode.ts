@@ -67,19 +67,23 @@ export const PLAN_BLOCKED_OPEN_TAG = '<plan_blocked>'
 export const PLAN_BLOCKED_CLOSE_TAG = '</plan_blocked>'
 const LEGACY_CLARIFICATION_TAGS = ['<plan_clarification>', '</plan_clarification>']
 
-/** The hidden custom message that asks a plan run to re-send a reply without its plan block. */
+/** The hidden custom message that asks a plan run to finish an outcome it declared badly. */
 export const PLAN_REPAIR_CUSTOM_TYPE = 'xingular-plan-repair'
 
 /**
  * One repair turn, not a new plan request: it is sent only after a top-level attended plan run ends
- * without a complete block. The model preserves its plan or asks for necessary input.
+ * with a block it left incomplete, empty or in conflict. The model restates that outcome, states
+ * that there is nothing to plan, or asks for necessary input. A reply with no block is never
+ * repaired: it is a valid ending.
  */
-export const PLAN_REPAIR_INSTRUCTIONS = `Your last reply to this plan request did not end with the required plan block.
+export const PLAN_REPAIR_INSTRUCTIONS = `Your last reply to this plan request did not end with a usable ending: the block it declared was incomplete, empty or in conflict with another.
 - If you already proposed a sound plan, re-send it unchanged and complete inside one ${PLAN_OPEN_TAG} ... ${PLAN_CLOSE_TAG} block. Its first line must be the plan title as an H1 heading.
+- If the request is already satisfied or there is nothing to plan, say so in your own words and end with no block. That is a valid ending, and it is the answer when the person asked you not to plan.
 - Do not research again or change an existing plan. If necessary user input is missing, call ${ASK_USER} when available, then return a complete plan informed by the answer. Never ask a question in free text.
-- Only if necessary input cannot be obtained because ${ASK_USER} is unavailable, return one ${PLAN_BLOCKED_OPEN_TAG} ... ${PLAN_BLOCKED_CLOSE_TAG} block with a nonempty explanation of the blocker, not a question. Do not invent an answer.`
+- Only if necessary input cannot be obtained because ${ASK_USER} is unavailable, return one ${PLAN_BLOCKED_OPEN_TAG} ... ${PLAN_BLOCKED_CLOSE_TAG} block with a nonempty explanation of the blocker, not a question. Do not invent an answer, and do not invent work to fill a block.`
 
 export const PLAN_INSTRUCTIONS = `Plan mode is on for this request. Research and design; do not carry out the work.
+- Check whether the requested work already exists before designing it. Search the repository, the docs and the changelog; when it is already there, name the files and symbols that do it, say that no plan is needed, and stop. Do not plan work that exists, and do not invent work to fill a block. When the person says not to plan, or asks you to reject a plan, that instruction outranks this section: answer in your own words and end with no block.
 - Classify the task and scale investigation and plan detail to it. For repository work, read the governing instructions and relevant source, callers and tests before asserting paths, symbols, behavior or checks. Cite inspected code as path:line; cite external research with source URLs, and mark unverified claims as unknown.
 - Explore first to resolve facts available from the repository or other sources. Then identify user-owned decisions about the desired outcome, audience, scope, success criteria, constraints and tradeoffs. If a reasonable answer could materially change what is built, who it serves, or how success is judged, use ${ASK_USER} before finalizing—even if you have a recommended default. Also ask to confirm an important assumption when the user may reasonably want to choose it.
 - Batch related questions. Explain what each answer changes, offer meaningful choices with tradeoffs, and recommend a default when appropriate. Do not ask about discoverable facts, manufacture questions for routine work, or ask about decisions the user has explicitly delegated. When interaction is unavailable, state reasonable assumptions only when the task can proceed without the missing input.
@@ -95,11 +99,12 @@ export const PLAN_INSTRUCTIONS = `Plan mode is on for this request. Research and
 - Add \`Findings\` when inspection or research reveals material facts. Cite sources, separate facts from assumptions, and mark unverified claims as unknown; omit the section when there are no useful findings.
 - Before finalizing, check request coverage, evidence, dependencies, edge cases and specific verification. Scale detail, not word count: a small fix may have only a few steps but must still cover the requested outcome, scope and a specific verification; cross-cutting work needs ordered steps for owners and boundaries, dependencies, compatibility and important edge cases. Name verified files and symbols for code changes, and give repository-grounded checks with expected results without claiming they ran.
 - When revising a plan, use the latest request, preserve still-valid decisions and return a complete replacement, not a delta.
-- When ready, end the reply with exactly one block in this form, after any other text:
+- When there is work to design, end the reply with exactly one block in this form, after any other text:
 ${PLAN_OPEN_TAG}
 # <Plan title>
 <Markdown: Goal or Summary first; Findings when useful; ordered Steps with files and behavior; Verification with expected results; material Assumptions>
 ${PLAN_CLOSE_TAG}
+- A reply that ends with neither a plan block nor a blocked block is a valid ending: it says there is nothing to plan. A block you do start must be complete, nonempty, and the only one.
 - If the user's input is necessary before a sound plan is possible, call ${ASK_USER} when available and continue planning after the answer. Never ask the user a question in free text. Only when ${ASK_USER} is unavailable and necessary input cannot be obtained, end with exactly one ${PLAN_BLOCKED_OPEN_TAG} ... ${PLAN_BLOCKED_CLOSE_TAG} block containing a nonempty explanation of the blocker, not a question, instead of a plan. Do not invent an answer.`
 
 export const PLAN_RESEARCH_SUBAGENT_INSTRUCTIONS = `You are a read-only research subagent supporting a parent plan.
@@ -201,14 +206,36 @@ export interface ProposedPlan {
   complete: boolean
 }
 
-/** The last `<proposed_plan>` block in a reply, or null when the reply has none. */
+/**
+ * Where a tag appears outside fenced and inline code, so a reply that quotes plan syntax is not
+ * read as a declared outcome. This is the rule the App uses to find a plan in a reply.
+ */
+function tagOutsideCode(text: string, tag: string): number[] {
+  const found: number[] = []
+  let fence: string | null = null
+  let offset = 0
+  for (const line of text.split('\n')) {
+    const marker = /^\s{0,3}(`{3,}|~{3,})/u.exec(line)?.[1]
+    if (marker && (fence === null || (marker[0] === fence[0] && marker.length >= fence.length))) {
+      fence = fence === null ? marker : null
+    } else if (fence === null) {
+      // An even number of backticks before the tag leaves it outside inline code.
+      for (let at = line.indexOf(tag); at >= 0; at = line.indexOf(tag, at + tag.length)) {
+        if (line.slice(0, at).split('`').length % 2 === 1) found.push(offset + at)
+      }
+    }
+    offset += line.length + 1
+  }
+  return found
+}
+
+/** The last `<proposed_plan>` block outside code in a reply, or null when the reply has none. */
 export function parseProposedPlan(text: string): ProposedPlan | null {
-  const open = text.lastIndexOf(PLAN_OPEN_TAG)
-  if (open < 0) return null
+  const open = tagOutsideCode(text, PLAN_OPEN_TAG).at(-1)
+  if (open === undefined) return null
   const start = open + PLAN_OPEN_TAG.length
-  const close = text.indexOf(PLAN_CLOSE_TAG, start)
-  const complete = close >= 0
-  const inner = (complete ? text.slice(start, close) : text.slice(start)).trim()
+  const close = tagOutsideCode(text, PLAN_CLOSE_TAG).find((at) => at >= start)
+  const inner = (close === undefined ? text.slice(start) : text.slice(start, close)).trim()
   const heading = /^#\s+(.+)$/mu.exec(inner)
   const title = heading?.[1]?.trim() || 'Plan'
   const body = heading ? `${inner.slice(0, heading.index)}${inner.slice(heading.index + heading[0].length)}`.trim() : inner
@@ -216,33 +243,42 @@ export function parseProposedPlan(text: string): ProposedPlan | null {
     before: text.slice(0, open).trim(),
     title,
     body,
-    after: complete ? text.slice(close + PLAN_CLOSE_TAG.length).trim() : '',
-    complete
+    after: close === undefined ? '' : text.slice(close + PLAN_CLOSE_TAG.length).trim(),
+    complete: close !== undefined
   }
 }
 
 export type PlanOutcome =
   | { kind: 'plan_ready'; plan: ProposedPlan }
   | { kind: 'blocked'; reason: string }
+  /** The reply answered the request and concluded that there is nothing to plan. */
+  | { kind: 'no_plan' }
   | { kind: 'invalid' }
 
-/** Validate the final reply without changing the permissive streaming parser. */
+/**
+ * Validate the final reply without changing the permissive streaming parser. A reply with no
+ * declared block is a valid conclusion, not a formatting failure; only a block the model started
+ * and left incomplete, empty or in conflict is invalid.
+ */
 export function parsePlanOutcome(text: string): PlanOutcome {
-  if (LEGACY_CLARIFICATION_TAGS.some((tag) => text.includes(tag))) return { kind: 'invalid' }
-  const tags = [PLAN_OPEN_TAG, PLAN_CLOSE_TAG, PLAN_BLOCKED_OPEN_TAG, PLAN_BLOCKED_CLOSE_TAG]
-  const counts = tags.map((tag) => text.split(tag).length - 1)
-  if (counts[0] === 1 && counts[1] === 1 && counts[2] === 0 && counts[3] === 0) {
+  if (LEGACY_CLARIFICATION_TAGS.some((tag) => tagOutsideCode(text, tag).length > 0)) return { kind: 'invalid' }
+  const opens = tagOutsideCode(text, PLAN_OPEN_TAG)
+  const closes = tagOutsideCode(text, PLAN_CLOSE_TAG)
+  const blockedOpens = tagOutsideCode(text, PLAN_BLOCKED_OPEN_TAG)
+  const blockedCloses = tagOutsideCode(text, PLAN_BLOCKED_CLOSE_TAG)
+  if (opens.length === 1 && closes.length === 1 && blockedOpens.length === 0 && blockedCloses.length === 0) {
+    const start = opens[0]! + PLAN_OPEN_TAG.length
+    const end = closes[0]!
     const plan = parseProposedPlan(text)
-    const start = text.indexOf(PLAN_OPEN_TAG) + PLAN_OPEN_TAG.length
-    const end = text.indexOf(PLAN_CLOSE_TAG)
     if (plan?.complete && end >= start && text.slice(start, end).trim()) return { kind: 'plan_ready', plan }
   }
-  if (counts[0] === 0 && counts[1] === 0 && counts[2] === 1 && counts[3] === 1) {
-    const start = text.indexOf(PLAN_BLOCKED_OPEN_TAG) + PLAN_BLOCKED_OPEN_TAG.length
-    const end = text.indexOf(PLAN_BLOCKED_CLOSE_TAG)
+  if (opens.length === 0 && closes.length === 0 && blockedOpens.length === 1 && blockedCloses.length === 1) {
+    const start = blockedOpens[0]! + PLAN_BLOCKED_OPEN_TAG.length
+    const end = blockedCloses[0]!
     const reason = end >= start ? text.slice(start, end).trim() : ''
     if (reason) return { kind: 'blocked', reason }
   }
+  if (opens.length + closes.length + blockedOpens.length + blockedCloses.length === 0 && text.trim()) return { kind: 'no_plan' }
   return { kind: 'invalid' }
 }
 

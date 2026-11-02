@@ -19,7 +19,8 @@ import { CONTEXT_MESSAGE_TYPE, CONTEXT_SNAPSHOT_KEY, type ContextUpdate } from '
 import type { ToolSpec } from '../tools/types'
 import { PLAN_REPAIR_CUSTOM_TYPE, PLAN_REPAIR_INSTRUCTIONS, finalizePlanOutcome } from './planMode'
 import { MAX_CHECKPOINT_CHECKS, MAX_CHECKPOINT_FILES, MAX_CHECKPOINT_SUMMARY, type Checkpoint, type CheckpointCheck, type TodoItem } from './contracts'
-import { derivedReason, type SliceState } from './workSlice'
+import { withTransientRetry } from '../pi/retryPolicy'
+import { activeToolBeat, derivedReason, type SliceState } from './workSlice'
 import type { GoalController, GoalState } from './goal'
 import { goalStopOutcome, handoffFields, stopCheckpointReason, stopSummary } from './goalStop'
 import { TODO_WRITE } from '../tools/todo'
@@ -362,6 +363,7 @@ export async function runTurn(run: ActiveRun, session: PiSessionLike, params: Tu
   let firstOutputAt: number | null = null
   let costReported = false
   const toolStartedAt = new Map<string, number>()
+  const toolsInFlight = new Map<string, { name: string; at: number }>()
   const slice = params.slice?.state ?? null
   const ledger: SliceLedger = { files: new Map(), checks: [], lastText: '', todo: [] }
   const bashCommands = new Map<string, string>()
@@ -373,7 +375,8 @@ export async function runTurn(run: ActiveRun, session: PiSessionLike, params: Tu
           lastTool: slice.lastTool,
           compactions: slice.compactions,
           slice: slice.slice,
-          maxToolCalls: params.slice?.maxToolCalls ?? 0
+          maxToolCalls: params.slice?.maxToolCalls ?? 0,
+          ...activeToolBeat(toolsInFlight)
         })
       }, 30_000)
     : null
@@ -558,6 +561,7 @@ export async function runTurn(run: ActiveRun, session: PiSessionLike, params: Tu
       case 'tool_execution_start': {
         const tool = event as Extract<PiEvent, { type: 'tool_execution_start' }>
         toolStartedAt.set(tool.toolCallId, Date.now())
+        toolsInFlight.set(tool.toolCallId, { name: tool.toolName, at: Date.now() })
         const input = evidenceText(tool.args)
         const boundedInput = input === null ? null : limitedText(input)
         run.emit('tool.started', {
@@ -584,6 +588,7 @@ export async function runTurn(run: ActiveRun, session: PiSessionLike, params: Tu
         const tool = event as Extract<PiEvent, { type: 'tool_execution_end' }>
         const started = toolStartedAt.get(tool.toolCallId)
         toolStartedAt.delete(tool.toolCallId)
+        toolsInFlight.delete(tool.toolCallId)
         const resultChars = resultSize(tool.result)
         const output = evidenceText(tool.result)
         const boundedOutput = output === null ? null : limitedText(output)
@@ -749,17 +754,20 @@ export async function runTurn(run: ActiveRun, session: PiSessionLike, params: Tu
       session.clearQueue?.()
     }
     if (!aborted && !lastError) await params.settle?.()
+    // A plan reply with no block at all concludes that there is nothing to plan, and costs no
+    // second request. Only a block the model started and left incomplete, empty or in conflict is
+    // repaired, once, in this same run.
     if (params.plan && params.repairPlan && !aborted && !lastError && !slice?.endedBy) {
       const errorBeforeRepair = lastError
       const result = await finalizePlanOutcome(ledger.lastText, async () => {
         if (!session.sendCustomMessage) throw new Error('Plan repair unavailable')
         ledger.lastText = ''
-        await session.sendCustomMessage({ customType: PLAN_REPAIR_CUSTOM_TYPE, content: PLAN_REPAIR_INSTRUCTIONS, display: false, details: { reason: 'missing_plan_block' } }, { triggerTurn: true })
+        await session.sendCustomMessage({ customType: PLAN_REPAIR_CUSTOM_TYPE, content: PLAN_REPAIR_INSTRUCTIONS, display: false, details: { reason: 'invalid_plan_outcome' } }, { triggerTurn: true })
         return ledger.lastText
       })
       if (result.repaired && !aborted) lastError = errorBeforeRepair
       if (result.outcome.kind === 'invalid' && !aborted) {
-        run.emit('extension.notice', { kind: 'notify', level: 'warning', text: 'The plan reply did not include a valid plan or blocked block.' })
+        run.emit('extension.notice', { kind: 'notify', level: 'warning', text: 'The plan reply left its plan block incomplete, so no plan was offered.' })
       }
     }
     if (slice?.endedBy && !aborted && !lastError) {
@@ -947,6 +955,7 @@ export const piSessionFactory: SessionFactory = async ({ params, allow, gate, to
 
   const agentDir = params.account.configDir
   const automaticSettings = params.automatic ? pi.SettingsManager.inMemory({}) : undefined
+  const settingsManager = withTransientRetry(automaticSettings ?? pi.SettingsManager.create(params.cwd, agentDir))
   const resourceLoader = await loadResources(pi, params, gatedExtension, automaticSettings)
   const loaded = registeredBy(resourceLoader)
   // A tool an extension brought is offered to the model, and asks before every call: the person
@@ -985,7 +994,7 @@ export const piSessionFactory: SessionFactory = async ({ params, allow, gate, to
     tools: [...allow, ...extensionTools],
     customTools: customTools as never,
     resourceLoader,
-    ...(automaticSettings ? { settingsManager: automaticSettings } : {}),
+    settingsManager,
     sessionManager: params.historyFile ? pi.SessionManager.open(params.historyFile, params.sessionDir, params.cwd) : pi.SessionManager.continueRecent(params.cwd, params.sessionDir)
   })
   if (loaded.length && host) {

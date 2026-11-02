@@ -578,17 +578,33 @@ function StatusBar(props: { view: OpenTuiView }) {
   )
 }
 
-function PendingMessages(props: { messages: readonly PendingMessage[]; width: number; height: number }) {
+function PendingMessages(props: { messages: readonly PendingMessage[]; width: number; height: number; app: OpenTuiApplication }) {
   const rows = () => pendingMessageRows(props.messages, props.width, Math.min(4, Math.max(0, props.height - 8)))
   return (
     <Show when={rows().length > 0}>
       <box width='100%' paddingX={1} flexDirection='column' flexShrink={0}>
-        <For each={rows()}>{row => (
-          <text fg={theme.muted} wrapMode='none' truncate={true}>
-            <Show when={row.label}><Span fg={row.accent ? theme.accent : theme.muted}>{`${row.label} `}</Span></Show>
-            <Span fg={theme.muted}>{row.text}</Span>
-          </text>
-        )}</For>
+        <For each={rows()}>{row => {
+          const actionable = row.kind === 'followUp' || row.kind === 'steering'
+          const [hovered, setHovered] = createSignal(false)
+          return (
+            <box
+              backgroundColor={hovered() && actionable ? theme.selectionBg : undefined}
+              onMouseOver={() => { if (actionable) setHovered(true) }}
+              onMouseOut={() => setHovered(false)}
+              onMouseUp={event => {
+                if (!actionable || event.button !== 0 || event.isDragging) return
+                event.stopPropagation()
+                props.app.openFollowUpQueue()
+              }}
+            >
+              <text fg={hovered() && actionable ? theme.selectionText : theme.muted} wrapMode='none' truncate={true}>
+                <Show when={row.label}><Span fg={row.accent ? theme.accent : theme.muted}>{`${row.label} `}</Span></Show>
+                <Span fg={theme.muted}>{row.text}</Span>
+                <Show when={actionable}><Span fg={theme.accent}>  · manage</Span></Show>
+              </text>
+            </box>
+          )
+        }}</For>
       </box>
     </Show>
   )
@@ -1242,7 +1258,7 @@ export function OpenTuiRoot(props: { app: OpenTuiApplication }) {
           </box>
         </Show>
 
-        <PendingMessages messages={(view() as OpenTuiView & { pendingMessages?: readonly PendingMessage[] }).pendingMessages ?? []} width={Math.max(0, dimensions().width - 4)} height={dimensions().height} />
+        <PendingMessages messages={(view() as OpenTuiView & { pendingMessages?: readonly PendingMessage[] }).pendingMessages ?? []} width={Math.max(0, dimensions().width - 4)} height={dimensions().height} app={props.app} />
         <WorkingLine view={view()} width={Math.max(0, dimensions().width - 4)} />
         <For each={view().widgets.above}>
           {lines => <AnsiView lines={lines} fg={theme.text} />}

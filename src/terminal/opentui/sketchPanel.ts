@@ -1,3 +1,5 @@
+import { QUESTION_SKETCH_MAX_COLUMNS } from '../../sessions/contracts'
+
 export interface SketchPanel {
   text: string
   width: number
@@ -106,9 +108,9 @@ function connectFrames(lines: readonly string[], cells: string[][], kinds: Uint8
 }
 
 /** A display projection only: question events and answer metadata retain the original ASCII. */
-export function layoutSketchPanel(sketch: string, availableWidth: number): SketchPanel {
+export function layoutSketchPanel(sketch: string): SketchPanel {
   const source = sketch.split('\n')
-  const width = Math.max(1, Math.floor(availableWidth), ...source.map(line => line.length))
+  const width = Math.max(QUESTION_SKETCH_MAX_COLUMNS, ...source.map(line => line.length))
   const dividers: number[] = []
   const lines = source.map((line, row) => {
     // A standalone rule means a panel divider, not a model-sized string of dashes.

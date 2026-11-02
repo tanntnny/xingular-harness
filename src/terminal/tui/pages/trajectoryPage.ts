@@ -9,6 +9,7 @@ import type { TerminalPage } from '../page'
 import { FilterList, type ListRow } from '../list'
 import type { TerminalMouseInput } from '../mouse'
 import { stripMouseReports } from '../mouseReport'
+import { formatWorkingDuration } from '../workingStatus'
 
 const ACTIVE = new Set(['queued', 'running', 'waiting_for_approval', 'waiting_for_input'])
 type Payload = Record<string, unknown>
@@ -58,9 +59,18 @@ function eventDescription(event: RunEvent): string {
       return 'Recorded prompt and tool definitions'
     case 'failed':
       return stringOf(payload.message) ?? stringOf(payload.code) ?? 'run failed'
+    case 'heartbeat':
+      return heartbeatDescription(payload)
     default:
       return stringOf(payload.text) ?? stringOf(payload.name) ?? ''
   }
+}
+
+/** A beat proves the process lives; what it was inside tells a wait from a wedge. */
+function heartbeatDescription(payload: Payload): string {
+  const tools = Array.isArray(payload.activeTools) ? payload.activeTools.filter((name): name is string => typeof name === 'string') : []
+  const oldest = numberOf(payload.oldestToolMs)
+  return tools.length ? `${tools.join(', ')}${oldest === undefined ? '' : ` ${formatWorkingDuration(oldest)}`}` : 'no tool running'
 }
 
 function usageLine(events: readonly RunEvent[]): string {
@@ -240,13 +250,30 @@ export class TrajectoryPage implements TerminalPage {
   }
 
   private eventRows(): ListRow<RunEvent>[] {
-    return this.events.map(event => ({
-      id: String(event.sequence),
-      label: `${timeOf(event.timestamp)}  ${event.type}`,
-      detail: safe(eventDescription(event)),
-      searchText: `${event.timestamp} ${event.type} ${safe(eventDescription(event))} ${safe(JSON.stringify(payloadOf(event)))}`,
-      data: event
-    }))
+    // A long wait is dozens of identical beats; they fold into one row that shows how long it went on.
+    const rows: ListRow<RunEvent>[] = []
+    let beats: RunEvent[] = []
+    const flush = () => {
+      const last = beats.at(-1)
+      if (!last) return
+      const count = beats.length > 1 ? `×${beats.length} · ` : ''
+      const detail = count + safe(eventDescription(last))
+      rows.push({ id: String(last.sequence), label: `${timeOf(last.timestamp)}  ${last.type}`, detail, searchText: `${last.timestamp} ${last.type} ${detail}`, data: last })
+      beats = []
+    }
+    for (const event of this.events) {
+      if (event.type === 'heartbeat') { beats.push(event); continue }
+      flush()
+      rows.push({
+        id: String(event.sequence),
+        label: `${timeOf(event.timestamp)}  ${event.type}`,
+        detail: safe(eventDescription(event)),
+        searchText: `${event.timestamp} ${event.type} ${safe(eventDescription(event))} ${safe(JSON.stringify(payloadOf(event)))}`,
+        data: event
+      })
+    }
+    flush()
+    return rows
   }
 
   private eventJson(event: RunEvent): string {

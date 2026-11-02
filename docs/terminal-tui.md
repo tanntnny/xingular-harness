@@ -216,6 +216,15 @@ entry. Notifications, queue announcements and retry updates—including retries 
 context or branches—are one-line transcript entries at the point they occur, so subsequent chat
 moves them up rather than keeping them pinned at the bottom.
 
+When the verb would hide what the reply is doing, the working line names it instead
+(`src/terminal/opentui/workingPhase.ts`): `Waiting on 2 subagents · last activity 12s ago (Read)`,
+`Running Bash · 1m 23s` (a tool past ten seconds), `Waiting for the model · no output for 1m 15s`
+(past one minute of silence), `No progress for 6m · Esc to stop` (past five), and
+`Reconnecting 2/8 · retry in 12s · Connection error` while a failed model request waits to be
+retried. The verb returns as soon as the reply produces output again. A model request that fails for
+a transient reason is retried up to eight times over about four minutes (`src/pi/retryPolicy.ts`;
+a person's own `retry` settings win) before the reply ends with the error in the transcript.
+
 While context compaction runs, the working line shows `Compacting context` (or `Retrying
 compaction`) with the same spinner, in place of the working verb. During a run it keeps the run's
 clock; a `/compact` while idle shows the spinner with its own clock. Compaction does not start a new
@@ -361,9 +370,13 @@ inventory beside selected-item details on wide terminals, stacking details below
 on compact terminals. The existing Accounts, Permissions, Settings, Trajectory and Log
 pages retain their own tabs.
 
-`/settings` includes a Browser tab with the device-local **Private address access** setting. It is
-off by default. Enabling it asks for confirmation and allows agent browsing and annotation capture
-to reach localhost and private networks.
+`/settings` includes a device-local Browser tab. It selects the isolated browser or Brave profile,
+with explicit confirmation before selecting Brave, and shows extension pairing and connection status.
+Brave site access is granted separately from its toolbar popup; the in-page badge offers Pause and
+Stop. The extension controls normal tabs only (never Incognito) and does not request history or
+cookie permissions or export cookies. If it disconnects, browser calls fail without switching
+backends. **Private address access** is off by default; enabling it asks for confirmation and allows
+agent browsing and annotation capture to reach localhost and private networks.
 
 Within the broad `/harness` browser, resource sections share Installed/Discover and source filters.
 Installed includes locally present resources; current-session availability comes only from the runtime
@@ -461,14 +474,20 @@ line, one row per item: `Steer:` or `Follow-up:` in the accent blue for the two 
 muted `Plan:`, `Bash:` or `Prompt:` for deferred input, followed by the single-line text. A steering
 message is intended for the active reply; a follow-up waits until it finishes. With no active reply,
 a normal message starts a turn. Pi's steering and follow-up settings determine delivery within
-those queues.
+those queues. Hover or click a native `Steer` or `Follow-up` row, or use `/follow-up`, to open the
+queue page. It separates the two kinds, edits the selected message, sends the next eligible item,
+or removes the selection. Editing keeps attached images with that queued message; identical text is
+still distinguished by a stable local queue identity.
 
 A queued plan or `!` Bash command is a barrier: it runs as a standalone turn after the current
 response, and subsequent inputs wait behind it rather than entering Pi's native queues and
-crossing the barrier. `Alt+Up` restores queued text to the draft; queued images are dropped, with
-a warning for deferred images. Pi's queue projection can briefly include an item already taken
-for delivery; identical queued text can also make its displayed removal ambiguous. Interrupting a
-reply does not automatically clear native queues, and deferred work may run after it settles.
+crossing the barrier. On a successful reply, Pi keeps its configured queue behavior. After an
+explicit user stop (`Esc`, `Ctrl-C` or `/stop`), the terminal sends one unconsumed steer before any
+follow-up and returns the rest to Pi. It does not dispatch at retry boundaries, after a final
+provider error, or after a non-user interruption. `Alt+Up` restores queued text to the draft;
+queued images are dropped with a warning. Pi's queue projection can briefly include an item already
+taken for delivery; the queue page gives duplicate text stable local identities. Deferred Plan/Bash
+work retains its barrier ordering and is not released by the native queue page.
 
 ## `/goal` (ADR-0072)
 
@@ -531,9 +550,11 @@ dismisses it; the block yields to the composer as soon as the draft has text.
 Implement leaves plan mode, so the normal tools and the mode's own model and effort come back, and sends
 `Implement the plan: <title>`; the plan itself is already in the conversation. Edit the plan stays in plan
 mode and focuses the composer, so the next message revises the plan and offers a new choice. A plan run
-that was interrupted, failed, or had work queued behind it is not offered. If a completed plan run still
-has no complete block after the harness's one repair attempt, the terminal shows a warning notice instead
-of a plan choice; the plan request can be sent again.
+that was interrupted, failed, or had work queued behind it is not offered. A plan request whose reply
+needs no plan — the work already exists, or the person asked not to plan — ends as ordinary text with
+no card, notice or warning. If a completed plan run left its block incomplete after the harness's one
+repair attempt, the terminal shows a warning notice instead of a plan choice; the plan request can be
+sent again.
 
 A recognized leading slash command uses the selected theme's link color while typing and in its
 user-message bubble. Only the command token is accented; arguments and unknown slash tokens keep the
@@ -772,7 +793,8 @@ single-choice options remain numbered.
 One shared border-only monospace preview below the choices follows the hovered choice, falling
 back to keyboard focus. It has no visible caption or extra left rule. Under the approved
 [PROP-0026](architecture/proposals/PROP-0026-connected-sketch-display.md) /
-[ADR-0027](decisions/ADR-0027-connected-sketch-display.md) and
+[ADR-0027](decisions/ADR-0027-connected-sketch-display.md), amended by
+[ADR-0080](decisions/ADR-0080-fixed-width-question-sketch-canvas.md), and
 [PROP-0028](architecture/proposals/PROP-0028-normalize-question-wireframes.md) /
 [ADR-0029](decisions/ADR-0029-normalized-question-wireframe-borders.md) amendments,
 the terminal display uses a bounded structural projection in
@@ -780,11 +802,13 @@ the terminal display uses a bounded structural projection in
 top rules—and enclosed vertical table edges become connected box-drawing glyphs. Internal framed
 tables keep their original widths and positions. Within a high-confidence frame, a missing side
 edge may be filled or a displaced edge moved only through whitespace to matched corner columns;
-interior text and ambiguous rows remain literal. Bare standalone hyphen divider rows expand to
-`max(panel viewport width, original sketch widest line)` and attach to the outer single-line frame
-with `├` and `┤`. Prose, content operators, ordinary pipes and unrecognized rows remain literal;
-there is no global `+|-` substitution. The original validated ASCII source, including whitespace,
-is persisted untouched; normalization and projected glyphs are display-only.
+interior text and ambiguous rows remain literal. The display uses a fixed 80-column content canvas:
+short rows are padded and bare standalone hyphen dividers expand to 80 columns, attaching to the
+outer single-line frame with `├` and `┤`. The outer frame stays within the available dock width;
+Shift+arrows pan the canvas when it overflows. Prose, content operators, ordinary pipes and
+unrecognized rows remain literal; there is no global `+|-` substitution. The original validated
+ASCII source, including whitespace, is persisted untouched; padding, normalization and projected
+glyphs are display-only.
 
 A bounded two-axis viewport exposes all overflow without wrapping, reflow, truncation or
 Markdown/ANSI interpretation. Shift+arrows pan the sketch; ordinary arrows retain question/choice

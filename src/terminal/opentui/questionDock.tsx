@@ -2,7 +2,7 @@ import { For, Show, createEffect, createMemo, createSignal, on, onCleanup } from
 import { RGBA, TextAttributes, type OptimizedBuffer, type BoxRenderable, type KeyBinding, type MouseEvent, type ScrollBoxRenderable, type TextareaRenderable } from '@opentui/core'
 import { useKeyboard, useTerminalDimensions } from '@opentui/solid'
 
-import { questionDockAnswerWidth, questionDockBodyHeight, questionDockColumns, questionDockPreviewRevealDelta, sketchBorder, sketchViewportHeight } from './questionDockLayout'
+import { questionDockAnswerWidth, questionDockBodyHeight, questionDockColumns, questionDockPreviewRevealDelta, questionDockSketchFrameWidth, sketchBorder, sketchViewportHeight } from './questionDockLayout'
 import { layoutSketchPanel } from './sketchPanel'
 
 import type { OpenTuiApplication } from './app'
@@ -141,9 +141,10 @@ export function QuestionDock(props: { app: OpenTuiApplication; view: QuestionDoc
   onCleanup(() => { if (bodyMeasureTimer) clearTimeout(bodyMeasureTimer) })
   const columns = () => questionDockColumns(Math.max(0, contentWidth() - 2))
   const sketchLines = () => (props.view.sketchPreview?.sketch ?? '').split('\n')
-  const sketchPanel = createMemo(() => layoutSketchPanel(props.view.sketchPreview?.sketch ?? '', Math.max(1, contentWidth() - 2)))
+  const sketchPanel = createMemo(() => layoutSketchPanel(props.view.sketchPreview?.sketch ?? ''))
   // Both content bounds must be explicit: a Solid-created scrollbox retains a 100% max-width.
   const sketchWidth = () => sketchPanel().width
+  const sketchFrameWidth = () => questionDockSketchFrameWidth(Math.max(1, contentWidth() - 2), sketchWidth())
   const previewHeight = () => sketchViewportHeight(props.view.sketchPreview?.sketch ?? '', dimensions().height)
   const revealPreview = (direction: -1 | 1) => {
     if (!body || !previewFrame) return
@@ -315,7 +316,7 @@ export function QuestionDock(props: { app: OpenTuiApplication; view: QuestionDoc
         </For>
       </box>
       {props.view.sketchPreview ? (
-        <box ref={value => { previewFrame = value }} renderAfter={drawDividerJunctions} flexDirection='column' marginTop={1} height={previewHeight() + 2} border={true} customBorderChars={sketchBorder} borderColor={theme.dim} flexShrink={0}>
+        <box ref={value => { previewFrame = value }} renderAfter={drawDividerJunctions} width={sketchFrameWidth()} flexDirection='column' marginTop={1} height={previewHeight() + 2} border={true} customBorderChars={sketchBorder} borderColor={theme.dim} flexShrink={0}>
           <scrollbox
             ref={value => { preview = value }}
             height={previewHeight()}

@@ -86,26 +86,26 @@ steering 2,000, writing 1,900 (ADR-0072); application sections their own `budget
 
 Every pack ends with the harness's `reporting` section ("Reporting your work",
 `REPORTING_GUIDANCE` in `prompt/reporting.ts`, imported by `prompt/compile.ts`). It is fixed text
-that shapes the final reply. ADR-0076 adopts Codex's final-answer guidance (`gpt-6.1-sol`): the
-final answer is fully self-contained and focuses on the most important information, leads with the
-outcome, and explains what changed, why, how it was tested, and the material risks and limits, with
-the evidence needed to assess the conclusion and its practical limits. Routine verification is
-summarized instead of listed check by check; reasoning and evidence are ordered for assessment, not
-chronologically; and progress updates say what was learned, what remains uncertain and what the next
-step will resolve. Tables are used for mappings and comparisons. Headings are the model's: there is
-no required heading and no preferred set, and a shape-by-work table shows what different kinds of
-work need. Length follows complexity: a simple change is one or two sentences plus the validation, a
-larger one carries the reasoning, evidence and risks. Prose comes first; lists only when the
-information is genuinely parallel, sequential or easier to compare. The section ships two examples
-(a screen change and a blocked publish), the shape-by-work table and a four-line pre-send list; the
-exact command for a blocked login is in `autonomy`. A person, application or mode format takes
-precedence. The section names no application, is never dynamic, and is never cut; its budget is
-12,000 characters (ADR-0076), and the text it carries is about 3.7k characters, about 0.8k tokens
-measured with o200k.
+that shapes the final reply. ADR-0076 adopts Codex's final-answer guidance (`gpt-6.1-sol`), amended
+by ADR-0079: the reply is self-contained, outcome-first, explains the work and its evidence and
+limits, and gives the reader enough context to pick it up cold. It explicitly reports checks that
+were not run or failed; a person-owned next step appears only when one is needed. For substantial
+replies with distinct parts, it often uses content-named Markdown `#` and `##` headings; there is no
+fixed heading vocabulary or required template, and short replies may stay in prose. Tables are used
+for mappings and comparisons. Length follows complexity; prose comes first, with lists when the
+information is genuinely parallel, sequential or easier to compare. References and formatting
+follow rules supplied by the active session or host. Progress updates stay in the standard `writing`
+section, not `reporting`. A subagent's reply gives its caller the concise work
+summary and key findings, with useful absolute paths and evidence; snippets appear only when exact
+text is load-bearing, and code merely read is not recapped. The section ships two examples (a
+headed screen change and a heading-free blocked publish), the shape-by-work table and a four-line
+pre-send list; the exact command for a blocked login is in `autonomy`. A person, application or mode
+format takes precedence. The section names no application, is never dynamic, and is never cut; its
+budget is 12,000 characters, with 4,853 currently delivered (ADR-0079).
 
 ## When a reply may end
 
-A reply ends when the request is done, when the work-slice guard ends it (INV-RUN-13), when a person
+A reply ends when the request is done, when the compaction guard ends it (INV-RUN-13), when a person
 interrupts, or when the work cannot continue without the person. An open todo item, a passing check,
 a partial result or a long task is not such a reason: the words below ask the model to carry the
 request to completion, and they are the only layer (ADR-0075). The harness does not send a reply
@@ -149,11 +149,12 @@ Other fixed text that shapes the end of a reply:
   it points to, is the scope; add steps as the work shows them; list a handoff's steps instead of one
   "remaining work" item; before ending, compare the request, not the list, with what is done and
   checked. An open step is work to do in this reply, not something to report.
-- `reporting` (`REPORTING_GUIDANCE`): the final answer is fully self-contained and focuses on the
-  most important information; it leads with the outcome and explains what changed, why, how it was
-  tested, and the risks and limits, with the evidence needed to assess the conclusion. Verification
-  is summarized, not listed check by check. Headings and length follow the content; a simple change
-  is one or two sentences plus the validation. A login the work needs is named with its exact
+- `reporting` (`REPORTING_GUIDANCE`): the final answer is self-contained, outcome-first and gives
+  the reader enough context to pick up cold. It reports checks accurately, including checks not run
+  or failed; names a person's next step only when one is needed; and often uses content-named `#` / `##`
+  headings for substantial multi-part replies without a fixed heading set. A subagent gives its
+  caller a concise report of the work and findings. Length and structure follow the content, and
+  references follow the active session's format; a login the work needs is named with its exact
   command.
 - `ask_user` (`tools/askUser.ts`): for a decision the request and files do not answer, never for
   permission to do work inside the request; no answer means continue with best judgment (Codex's

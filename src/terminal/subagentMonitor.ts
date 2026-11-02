@@ -37,6 +37,8 @@ export type TerminalSubagentUsage = Partial<Pick<UsagePayload,
 
 export interface TerminalSubagentActivity extends TerminalSubagentRun {
   activity: string
+  /** When the run last did anything but heartbeat; how long it has been quiet is what a stall is. */
+  lastEventAt?: string
   /** Cumulative run usage only; provider reasoning summaries and request details stay private. */
   usage: TerminalSubagentUsage | null
   /** How far the child's own todo is: counts only, never the items. */
@@ -143,6 +145,7 @@ export class SubagentMonitor {
     row.endedAt = run.endedAt
 
     const payload = event ? payloadOf(event) : {}
+    if (event && event.type !== 'heartbeat') row.lastEventAt = event.timestamp
     if (!event) {
       // A seeded row keeps what it already folded.
     } else if (event.type === 'tool.started') {

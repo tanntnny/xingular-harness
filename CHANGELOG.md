@@ -2,6 +2,91 @@
 
 ## Unreleased
 
+- **Connect the agent to your own signed-in Brave profile (ADR-0082).**
+  - A device-local browser backend. `/settings` → Browser offers **Isolated browser** or **Brave
+    profile**; choosing Brave asks first, naming the extension's `debugger` permission, that a
+    signed-in page may hold private information, and that a disconnect never switches backends. No
+    project, variant or page can choose it.
+  - The **Brave extension** row starts a loopback bridge on `127.0.0.1` and shows a one-time
+    `port:code` that expires after five minutes. The unpacked `browser-extension/` folder now ships
+    in the package and is loaded from `brave://extensions`. The bridge accepts only the paired
+    extension origin with a bearer token, and keeps that pairing owner-only in
+    `<state dir>/browser/extension-bridge.json`.
+  - Each site is allowed separately in the extension popup by exact origin, port included; a tab
+    that leaves an allowed site becomes unavailable. Incognito is disabled, and the extension asks
+    for no history or cookie permission and exports no cookies.
+  - Brave adopts the existing `browser_*` tools and the shared gate: snapshot-scoped refs that are
+    invalidated when the page or the debugger attachment changes, a refused password field, and
+    fresh approval for sending, buying, deleting, account changes and granting access.
+    `browser_upload` stays with the App's WebKit backend.
+  - An in-page badge reads “Xingular Agent is on this site” with **Pause** and **Stop**. Pause
+    refuses new calls and lets an in-flight call finish; stop revokes the pairing and rejects
+    pending calls. A lost connection refuses calls with a reconnect message instead of switching
+    to the isolated browser.
+  - New methods `browser.config`, `browser.configure` and
+    `browser.extension.status|start|stop`, and `HarnessOptions.browserExtension` for a host that
+    supplies its own browser provider. `browser.json` gains `backend`; `<state dir>/browser/` is
+    now only profiles, downloads and pairing state.
+  - The live acceptance test drives a disposable Brave profile against a fixture page and runs only
+    when a person asks for it: `XINGULAR_BRAVE_LIVE=1 npx vitest run
+    src/browser/extension/brave-live.acceptance.test.ts`.
+
+- **A reply waiting on children, or on a flaky network, no longer looks stalled (ADR-0078).**
+  - Each child a terminal reply waits on gets its own stall clock: fifteen minutes without
+    progress, or thirty minutes inside one tool, ends that child as `stalled` and the parent
+    receives its result as `interrupted`. The parent's own clock pauses while only child-wait tools
+    run, so a long child is no longer recorded as the parent's stall.
+  - A transient model failure retries eight times over about four minutes (2, 4, 8, 16, 32, 60, 60
+    and 60 seconds) instead of Pi's three attempts over fourteen seconds. A retry budget the person
+    set in their own settings still wins.
+  - The working row says what the reply waits on instead of repeating the verb: `Waiting on 2
+    subagents · last activity 12s ago (Read)`, `Running Bash · 1m 23s`, `Waiting for the model · no
+    output for 1m 15s`, `Reconnecting 2/8 · retry in 12s`, and `No progress for 6m · Esc to stop`.
+  - `heartbeat` events carry optional `activeTools` and `oldestToolMs`; hosts must tolerate both.
+
+- **Edit the follow-up and steering queue from its own page.**
+  - `/follow-up`, and clicking a `Steer:` or `Follow-up:` row in the transcript, opens a page that
+    separates the two kinds, marks the next entry, and offers edit, send next, remove and return to
+    the composer. Queued images are preserved and marked `· images`.
+  - An explicit stop (`/stop` or Esc) now sends one unconsumed steering message before the
+    follow-ups, so a correction typed while the reply ran is applied first. A normal completion
+    still drains in FIFO order, and nothing is drained on a retry, a failure or a non-user
+    interruption.
+
+- **Every question sketch is drawn on one 80-column canvas (ADR-0080).**
+  - The `ask_user` guidance asks the model for its `uiSketch` on a fixed 80-column canvas, and the
+    terminal projects every valid sketch to 80 content columns: short rows are padded, a standalone
+    divider spans the canvas, and the frame stays inside the dock with horizontal panning.
+  - Padding is display-only. The permissive validator (1–24 lines, 80 columns), stored events and
+    answer payloads are unchanged, and a host may keep its literal, scrollable preview.
+
+- **No work-slice budget by default (ADR-0081).** A reply is no longer ended at 320 tool calls or
+  60 minutes, and is no longer continued as a "next slice". The defaults are now no tool-call, time
+  or token limit; `workSlice` on a run and `XINGULAR_WORK_SLICE` at launch still set one. The prompt
+  no longer tells the model a budget exists, and the standard prompt's "ends only when the guard
+  hands it back" now reads "keep working until the request is done or the person interrupts". The
+  three-compaction guard stays. This changes the stable prompt prefix once.
+
+- **Phase-led flexible reporting guidance (ADR-0079).** Final reports account for a reader picking
+  up cold, state when verification was not run or failed, and give subagents a concise caller-facing
+  report contract. Substantial multi-part reports often use content-named Markdown headings, with
+  no fixed heading vocabulary; the duplicated progress-update line is removed from `reporting` and
+  remains in `writing`. One example now demonstrates headings while the short blocked-publish
+  example stays prose.
+
+- **A plan run may conclude that no plan is needed (ADR-0077).**
+  - A plan-mode reply with no outcome block is a valid `no_plan` ending: no plan card, no notice, no
+    warning, and no repair turn. `plan_ready` and `blocked` are unchanged.
+  - The plan instructions say to check whether the requested work already exists, to name the
+    evidence and stop when it does, and that a person's instruction not to plan outranks the
+    mode's output shape. The one hidden repair stays, but only for a block the model started and
+    left incomplete, empty or in conflict; it may finish that block, state that there is nothing to
+    plan, or return the blocked block.
+  - Plan tags inside fenced or inline code are text, not outcomes, so a reply that quotes plan
+    syntax is no longer `invalid`.
+  - The terminal's warning reads “The plan reply left its plan block incomplete, so no plan was
+    offered.” The App needs no change: it already shows a card only for a complete block.
+
 - **Every tool-like name in CamelCase.**
   - `toolDisplayName` moves to `src/terminal/toolName.ts` and splits on any separator, so
     `todo_write`, `computer-screenshot`, `computer.screenshot` and `customTool` all read in

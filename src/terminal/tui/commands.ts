@@ -23,8 +23,19 @@ import { createVariantCommands } from './variantCommands'
 export type { TerminalCommandCompletion } from '../commandHelp'
 export { parseAnnotate } from './pluginCommands'
 
+export type FollowUpQueueEntry = { id: string; kind: 'steering' | 'followUp'; text: string; hasImages: boolean }
+
+export type FollowUpQueueEditor = {
+  entries(): readonly FollowUpQueueEntry[]
+  edit(id: string): Promise<void>
+  sendNext(): Promise<void>
+  remove(id: string): void
+  close(): void
+}
+
 export interface TerminalCommandHost {
   session(): AgentSession
+  followUpQueue(): FollowUpQueueEditor
   /** Navigation is scope checked by the Harness runtime adapter. */
   runtime(): Pick<TerminalRuntime, 'newSession' | 'switchSession' | 'fork' | 'importFromJsonl' | 'reload' | 'navigateTree' | 'installationDeviceId' | 'permissions' | 'setFullPermission' | 'setGlobalTool' | 'snapshot' | 'interrupt'>
   /** The protected `accounts.*`, `plugins.*` and `hub.*` calls of this session, made with its control key. */
@@ -366,6 +377,7 @@ export function createTerminalCommands(host: TerminalCommandHost) {
         case 'settings': await openPage('settings'); break
         case 'doctor': await openPage('doctor'); break
         case 'worktree': await openPage('worktree'); break
+        case 'follow-up': await openPage('follow-up'); break
         case 'trajectory': await openPage('trajectory', { runId: argument }); break
         case 'todo': {
           const items = await host.todo()

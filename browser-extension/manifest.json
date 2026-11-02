@@ -1,0 +1,16 @@
+{
+  "manifest_version": 3,
+  "name": "Xingular Agent — Brave bridge",
+  "version": "0.1.0",
+  "description": "Connect Xingular Agent to normal Brave tabs on sites you explicitly allow.",
+  "minimum_chrome_version": "109",
+  "incognito": "not_allowed",
+  "permissions": ["debugger", "tabs", "storage", "scripting"],
+  "host_permissions": ["http://127.0.0.1/*"],
+  "optional_host_permissions": ["http://*/*", "https://*/*"],
+  "background": { "service_worker": "background.js" },
+  "action": {
+    "default_title": "Xingular Agent",
+    "default_popup": "popup.html"
+  }
+}

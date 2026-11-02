@@ -28,6 +28,10 @@
   function-result clearing, cached micro-compact.
 - Tools: one `prompt.ts` per tool under `src/tools/*/`, which is where most tool instruction lives
   rather than in the system prompt.
+- Final-reply text: `# Output efficiency` (`prompts.ts:416`), `# Tone and style` (`:430`), the
+  ant-only `# Communicating with the user` (`:405`), faithful reporting (`:240`), the subagent report
+  sentence and notes (`:758`, `:765-768`) and the away-summary prompt (`services/awaySummary.ts:22`).
+  Measured in [STUDY-0009](../STUDY-0009-claude-code-reporting.md).
 
 ## Map to arms
 

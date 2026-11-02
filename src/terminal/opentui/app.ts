@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto'
 import { promisify } from 'node:util'
 import {
   copyToClipboard, initTheme, resizeImage,
-  type AgentSessionEvent, type ExtensionUIContext, type ReadonlyFooterDataProvider, type Theme
+  type AgentSession, type AgentSessionEvent, type ExtensionUIContext, type ReadonlyFooterDataProvider, type Theme
 } from '@earendil-works/pi-coding-agent'
 import { matchesKey, type Component, type EditorComponent } from '@earendil-works/pi-tui'
 
@@ -31,6 +31,7 @@ import { toolDisplayName } from '../toolName'
 import { createTerminalUi, type TerminalUi } from '../tui/ui'
 import { centeredDialogHost, dialogFits } from '../tui/dialogGeometry'
 import { MouseReportTail } from '../tui/mouseReport'
+import { workingPhase, type RetryPhase } from './workingPhase'
 import { chooseCompletionVerb, chooseWorkingVerb, getWorkingSpinnerFrames, SPINNER_INTERVAL_MS, spinnerFrameAt } from '../tui/workingStatus'
 import { stageClipboardFiles } from '../tui/clipboardFiles'
 import { readHarnessLogSnapshot, type HarnessLogChunk, type HarnessLogInfo } from '../logs'
@@ -87,6 +88,8 @@ type DeferredInput =
   | { kind: 'plan'; text: string; images?: TerminalImage[] }
   | { kind: 'bash'; text: string }
   | { kind: 'prompt'; text: string; followUp: boolean; images?: TerminalImage[] }
+type QueueKind = 'steering' | 'followUp'
+type QueueEntry = { id: string; kind: QueueKind; text: string; images?: TerminalImage[] }
 /** Larger images are refused when Pi cannot shrink them. */
 const MAX_UNRESIZED_IMAGE_BYTES = 5 * 1024 * 1024
 
@@ -261,6 +264,12 @@ export class OpenTuiApplication {
   private lastResponseTokensPerSecond: number | null = null
   private completedWorkingStatus?: { label: string; elapsedMs: number; tokensPerSecond: number | null }
   private activeVerb?: string
+  /** What the reply is inside right now, for the working row to name (see `workingPhase`). */
+  private readonly toolsInFlight = new Map<string, { name: string; at: number }>()
+  private retryPhase: RetryPhase | null = null
+  private progressAt: number | null = null
+  /** The last assistant message ended the turn without a tool call; the reply may still be joining children. */
+  private answered = false
   private toastMessage?: string
   private toastTimer?: ReturnType<typeof setTimeout>
   private hoveredLink: string | null = null
@@ -269,6 +278,14 @@ export class OpenTuiApplication {
   private activeTurnId?: string
   private toolsExpanded = false
   private deferredInputs: DeferredInput[] = []
+  private steeringMetadata: QueueEntry[] = []
+  private followUpMetadata: QueueEntry[] = []
+  private heldQueue: QueueEntry[] = []
+  private editorQueue: QueueEntry[] | null = null
+  private explicitStopRequested = false
+  private queueDispatchEligible = false
+  private queueRemainderPending = false
+  private startingQueuedEntry = false
   private planBarrierOpen = false
   private planActive = false
   private readonly planChoice = new PlanChoice()
@@ -358,6 +375,183 @@ export class OpenTuiApplication {
 
   setStopHandler(handler: () => void): void {
     this.stopHandler = handler
+  }
+
+  openFollowUpQueue(): void {
+    if (!this.commands) return
+    this.attempt(async () => { await this.commands!.execute('/follow-up') })
+  }
+
+  private orderedQueue(entries: QueueEntry[]): QueueEntry[] {
+    return [...entries.filter(entry => entry.kind === 'steering'), ...entries.filter(entry => entry.kind === 'followUp')]
+  }
+
+  private syncQueueMetadata(): void {
+    if (!this.runtime) return
+    const reconcile = (kind: QueueKind, messages: readonly string[], current: QueueEntry[]): QueueEntry[] => {
+      const remaining = current.slice()
+      return messages.map(text => {
+        const index = remaining.findIndex(entry => entry.text === text)
+        if (index >= 0) return remaining.splice(index, 1)[0]!
+        return { id: randomUUID(), kind, text }
+      })
+    }
+    const session = this.runtime?.session as (AgentSession & {
+      getSteeringMessages?: () => readonly string[]
+      getFollowUpMessages?: () => readonly string[]
+    }) | undefined
+    this.steeringMetadata = reconcile('steering', session?.getSteeringMessages?.() ?? [], this.steeringMetadata)
+    this.followUpMetadata = reconcile('followUp', session?.getFollowUpMessages?.() ?? [], this.followUpMetadata)
+  }
+
+  private captureNativeQueue(clear = false): QueueEntry[] {
+    this.syncQueueMetadata()
+    const entries = this.orderedQueue([...this.steeringMetadata, ...this.followUpMetadata])
+    if (clear) {
+      this.session.clearQueue?.()
+      this.steeringMetadata = []
+      this.followUpMetadata = []
+    }
+    return entries
+  }
+
+  private queueEntries(): QueueEntry[] {
+    if (this.editorQueue) return this.orderedQueue(this.editorQueue)
+    return this.orderedQueue([...this.heldQueue, ...this.captureNativeQueue()])
+  }
+
+  private openFollowUpQueueEditor() {
+    if (!this.editorQueue) {
+      this.editorQueue = this.orderedQueue([...this.heldQueue, ...this.captureNativeQueue(true)])
+      this.heldQueue = []
+      this.change()
+    }
+    return {
+      entries: () => this.editorQueue!.map(({ id, kind, text, images }) => ({ id, kind, text, hasImages: Boolean(images?.length) })),
+      edit: async (id: string) => {
+        const entry = this.editorQueue?.find(item => item.id === id)
+        if (!entry) return
+        try {
+          const text = await this.ui!.editor('Edit queued message', entry.text)
+          if (text === undefined) return
+          if (!text.trim()) { this.notify('A queued message cannot be empty.', 'warning'); return }
+          entry.text = text
+          this.change()
+        } catch (error) { this.notify(error instanceof Error ? error.message : String(error), 'error') }
+      },
+      sendNext: async () => {
+        try { await this.sendNextQueuedMessage() }
+        catch (error) { this.notify(error instanceof Error ? error.message : String(error), 'error') }
+      },
+      remove: (id: string) => {
+        if (!this.editorQueue) return
+        this.editorQueue = this.editorQueue.filter(entry => entry.id !== id)
+        this.change()
+      },
+      close: () => this.closeFollowUpQueueEditor()
+    }
+  }
+
+  private closeFollowUpQueueEditor(): void {
+    if (!this.editorQueue) return
+    const entries = this.orderedQueue(this.editorQueue)
+    this.editorQueue = null
+    if (this.session.isStreaming) {
+      this.heldQueue = this.orderedQueue([...this.heldQueue, ...entries])
+      this.attempt(() => this.restoreHeldQueueAfterStart())
+    } else {
+      this.heldQueue = this.orderedQueue([...this.heldQueue, ...entries])
+      this.dispatchManagedQueue()
+    }
+    this.change()
+  }
+
+  private async sendNextQueuedMessage(): Promise<void> {
+    if (!this.editorQueue?.length) return
+    const entries = this.orderedQueue(this.editorQueue)
+    const [next, ...remaining] = entries
+    if (!next) return
+    this.editorQueue = remaining
+    this.queueDispatchEligible = true
+    if (this.session.isIdle) {
+      this.startQueuedMessage(next)
+    } else {
+      try {
+        const queued = await this.submitQueuedWhileRunning(next)
+        if (!queued) this.startQueuedMessage(next)
+      } catch (error) {
+        this.editorQueue = this.orderedQueue([next, ...remaining])
+        this.queueDispatchEligible = false
+        this.change()
+        throw error
+      }
+    }
+    this.change()
+  }
+
+  private async submitQueuedWhileRunning(entry: QueueEntry): Promise<boolean> {
+    if (!this.session.isStreaming) return false
+    const metadata = entry.kind === 'steering' ? this.steeringMetadata : this.followUpMetadata
+    metadata.push(entry)
+    try { await this.runtime!.submit(entry.text, entry.kind === 'followUp', entry.images) }
+    catch (error) {
+      const index = metadata.findIndex(item => item.id === entry.id)
+      if (index >= 0) metadata.splice(index, 1)
+      throw error
+    }
+    return true
+  }
+
+  private startQueuedMessage(entry: QueueEntry): void {
+    this.startingQueuedEntry = true
+    this.queueRemainderPending = this.heldQueue.length > 0
+    this.queueDispatchEligible = false
+    this.attempt(async () => {
+      try { await this.runtime!.submit(entry.text, false, entry.images) }
+      catch (error) {
+        if (this.startingQueuedEntry) {
+          this.startingQueuedEntry = false
+          this.queueRemainderPending = false
+          if (this.editorQueue !== null) this.editorQueue = this.orderedQueue([entry, ...this.editorQueue])
+          else this.heldQueue = this.orderedQueue([entry, ...this.heldQueue])
+          this.queueDispatchEligible = false
+          this.change()
+        }
+        throw error
+      }
+    })
+  }
+
+  private async restoreHeldQueueAfterStart(): Promise<void> {
+    this.queueRemainderPending = false
+    while (this.heldQueue.length && this.session.isStreaming) {
+      const entry = this.heldQueue[0]!
+      try {
+        const queued = await this.submitQueuedWhileRunning(entry)
+        if (!queued) return
+      } catch (error) { this.notify(error instanceof Error ? error.message : String(error), 'error'); return }
+      this.heldQueue = this.heldQueue.filter(item => item.id !== entry.id)
+    }
+    this.change()
+  }
+
+  private dispatchManagedQueue(): void {
+    if (!this.runtime || !this.queueDispatchEligible || this.editorQueue || this.startingQueuedEntry || !this.session.isIdle || this.planBarrierOpen || this.planActive || this.deferredInputs.length || this.activeDeferredKind) return
+    const entries = this.orderedQueue([...this.heldQueue, ...this.captureNativeQueue(true)])
+    if (!entries.length) { this.queueDispatchEligible = false; return }
+    const [next, ...remaining] = entries
+    if (!next) return
+    this.heldQueue = remaining
+    this.startQueuedMessage(next)
+  }
+
+  private requestUserInterrupt(): void {
+    if (!this.runtime || this.session.isIdle) return
+    this.explicitStopRequested = true
+    this.attempt(async () => {
+      try { await this.runtime!.interrupt() }
+      catch (error) { this.explicitStopRequested = false; throw error }
+    })
   }
 
   resize(width: number, height: number): void {
@@ -583,6 +777,7 @@ export class OpenTuiApplication {
         cwd: () => this.runtime!.cwd,
         branch: () => this.branch,
         sessionDirectory: () => this.runtime!.sessionDirectory,
+        followUpQueue: () => this.openFollowUpQueueEditor(),
         refresh: () => this.refresh(),
         shutdown: () => { void this.shutdown() },
         setEditorText: text => this.setDraftExternal(text),
@@ -807,6 +1002,14 @@ export class OpenTuiApplication {
     this.questionDock = undefined
     this.dismissedDecisions.clear()
     this.deferredInputs = []
+    this.steeringMetadata = []
+    this.followUpMetadata = []
+    this.heldQueue = []
+    this.editorQueue = null
+    this.explicitStopRequested = false
+    this.queueDispatchEligible = false
+    this.queueRemainderPending = false
+    this.startingQueuedEntry = false
     this.planBarrierOpen = false
     this.planActive = false
     this.planChoice.clear()
@@ -861,14 +1064,26 @@ export class OpenTuiApplication {
     this.lastResponseTokensPerSecond = null
     this.activeVerb = undefined
     this.activeTurnId = undefined
+    this.toolsInFlight.clear()
+    this.retryPhase = null
+    this.progressAt = null
+    this.answered = false
   }
 
   private accept(event: AgentSessionEvent): void {
+    if (event.type === 'queue_update') this.syncQueueMetadata()
     if (event.type !== 'message_update') this.statistics = undefined
     if (event.type === 'bash_execution_update' && event.id?.startsWith('initial-bash:')) {
       this.transcript.appendBashOutput(event.id, event.delta)
     }
     if (event.type === 'turn_start') this.requestStartedAt = performance.now()
+    // Anything the reply does counts as progress; a gap of silence is what the row reports.
+    if (this.startedAt !== null) this.progressAt = Date.now()
+    if (event.type === 'turn_start' || event.type === 'message_start' || event.type === 'tool_execution_start') this.answered = false
+    if (event.type === 'message_end' && event.message.role === 'assistant') this.answered = event.message.stopReason === 'stop'
+    if (event.type === 'tool_execution_start') this.toolsInFlight.set(event.toolCallId, { name: event.toolName, at: Date.now() })
+    if (event.type === 'tool_execution_end') this.toolsInFlight.delete(event.toolCallId)
+    if (event.type === 'message_start' || event.type === 'message_update') this.retryPhase = null
     if (event.type === 'message_end' && event.message.role === 'assistant') {
       const outputTokens = event.message.usage?.output
       const requestStartedAt = this.requestStartedAt
@@ -881,6 +1096,10 @@ export class OpenTuiApplication {
       this.requestStartedAt = null
     }
     if (event.type === 'agent_start') {
+      if (this.startingQueuedEntry) {
+        this.startingQueuedEntry = false
+        if (this.queueRemainderPending) this.attempt(() => this.restoreHeldQueueAfterStart())
+      }
       this.subagentGeneration += 1
       this.subagentsRefreshPending = false
       this.startedAt = Date.now()
@@ -890,8 +1109,24 @@ export class OpenTuiApplication {
       this.completedWorkingStatus = undefined
       this.activeVerb = chooseWorkingVerb()
       this.activeTurnId = randomUUID()
+      this.toolsInFlight.clear()
+      this.retryPhase = null
+      this.progressAt = Date.now()
+      this.answered = false
     }
     if (event.type === 'agent_settled') {
+      const last = this.runtime?.session.messages.at(-1) as { role?: string; stopReason?: string } | undefined
+      const failed = last?.role === 'assistant' && last.stopReason === 'error'
+      const explicitlyStopped = event.aborted === true && this.explicitStopRequested
+      this.explicitStopRequested = false
+      if (explicitlyStopped) {
+        this.heldQueue = this.orderedQueue([...this.heldQueue, ...this.captureNativeQueue(true)])
+        this.queueDispatchEligible = true
+      } else if (event.aborted === true || failed) {
+        this.queueDispatchEligible = false
+      } else if (this.editorQueue !== null || this.heldQueue.length) {
+        this.queueDispatchEligible = true
+      }
       this.subagentGeneration += 1
       this.transcript.finishBash()
       if (this.startedAt !== null) {
@@ -905,8 +1140,15 @@ export class OpenTuiApplication {
       this.requestStartedAt = null
       this.activeVerb = undefined
       this.activeTurnId = undefined
+      this.toolsInFlight.clear()
+      this.retryPhase = null
+      this.progressAt = null
+      this.answered = false
       void this.refreshSubagents(true)
-      queueMicrotask(() => this.drainDeferred())
+      queueMicrotask(() => {
+        this.drainDeferred()
+        this.dispatchManagedQueue()
+      })
     }
     if (event.type === 'compaction_start') this.compacting = { since: Date.now(), label: 'Compacting context' }
     if (event.type === 'compaction_end') {
@@ -916,7 +1158,9 @@ export class OpenTuiApplication {
     }
     if (event.type === 'auto_retry_start') {
       this.notify(retryNotice(event.attempt, event.maxAttempts, event.delayMs, event.errorMessage), 'warning')
+      this.retryPhase = { attempt: event.attempt, maxAttempts: event.maxAttempts, retryAt: Date.now() + event.delayMs, error: event.errorMessage }
     }
+    if (event.type === 'auto_retry_end') this.retryPhase = null
     if (event.type === 'auto_retry_end' && event.finalError) this.notify(event.finalError, 'error')
     if (event.type === 'summarization_retry_scheduled') {
       this.notify(retryNotice(event.attempt, event.maxAttempts, event.delayMs, event.errorMessage), 'warning')
@@ -1348,8 +1592,9 @@ export class OpenTuiApplication {
     let items: PaletteItem[] = []
     try {
       items = skill && !this.paletteOpen
-        ? this.commands?.skills().map(item => ({ name: item.name, description: item.description, prefix: '$' as const })) ?? []
+        ? this.commands?.skills().map(item => ({ id: `$${item.name}`, name: item.name, description: item.description, prefix: '$' as const })) ?? []
         : this.commands?.completions().map(item => ({
+            id: `/${item.name}`,
             name: item.name,
             ...(item.aliases?.length ? { aliases: item.aliases } : {}),
             description: item.description
@@ -1608,6 +1853,8 @@ export class OpenTuiApplication {
     const command = text.trimStart().startsWith('/')
     if (images && (command || bangMode)) this.notify('Images are only sent with a message; this one runs without them.', 'warning')
     if (command) this.commandBusy = true
+    const explicitStopCommand = command && text.trim() === '/stop' && !this.session.isIdle
+    if (explicitStopCommand) this.explicitStopRequested = true
     this.clearDraft()
     this.attempt(async () => {
       try {
@@ -1617,6 +1864,7 @@ export class OpenTuiApplication {
           this.rememberSlashCommand(draft)
           return
         }
+        if (explicitStopCommand) this.explicitStopRequested = false
         if (bangMode) {
           if (this.planBarrierOpen || !this.session.isIdle) {
             this.planBarrierOpen = true
@@ -1635,8 +1883,18 @@ export class OpenTuiApplication {
           this.change()
           return
         }
-        if (!this.session.isIdle) this.notify(followUp ? 'Follow-up message queued.' : 'Steering message queued.')
-        await this.runtime!.submit(text, followUp, images)
+        const queued = !this.session.isIdle ? { id: randomUUID(), kind: followUp ? 'followUp' as const : 'steering' as const, text, ...(images ? { images } : {}) } : undefined
+        if (queued) (followUp ? this.followUpMetadata : this.steeringMetadata).push(queued)
+        if (queued) this.notify(followUp ? 'Follow-up message queued.' : 'Steering message queued.')
+        try { await this.runtime!.submit(text, followUp, images) }
+        catch (error) {
+          if (queued) {
+            const metadata = followUp ? this.followUpMetadata : this.steeringMetadata
+            const index = metadata.findIndex(entry => entry.id === queued.id)
+            if (index >= 0) metadata.splice(index, 1)
+          }
+          throw error
+        }
       } finally {
         if (command) this.commandBusy = false
         this.change()
@@ -1649,7 +1907,10 @@ export class OpenTuiApplication {
     this.change()
   }
 
-  /** Offers the reply's plan once a plan run ends cleanly with nothing queued behind it. */
+  /**
+   * Offers the reply's plan once a plan run ends cleanly with nothing queued behind it. A reply that
+   * concludes there is nothing to plan offers nothing at all.
+   */
   private offerPlan(): void {
     if (this.deferredInputs.length) return
     const last = this.session.messages.at(-1) as { role?: string; stopReason?: string } | undefined
@@ -1659,7 +1920,7 @@ export class OpenTuiApplication {
     else {
       this.planChoice.clear()
       if (outcome.kind === 'blocked') this.notify('Planning stopped because user input is unavailable.', 'warning')
-      else if (outcome.kind === 'invalid') this.notify('The plan reply did not include a valid plan or blocked outcome.', 'warning')
+      else if (outcome.kind === 'invalid') this.notify('The plan reply left its plan block incomplete, so no plan was offered.', 'warning')
     }
   }
 
@@ -1972,9 +2233,9 @@ export class OpenTuiApplication {
     if (is('app.commands')) this.openPalette()
     else if (is('app.interrupt')) {
       if (this.sideQuestion?.visible) void this.sideQuestion.dismiss()
-      else this.attempt(() => this.runtime!.interrupt())
+      else this.requestUserInterrupt()
     } else if (is('app.clear')) {
-      if (this.session.isStreaming) this.attempt(() => this.runtime!.interrupt())
+      if (this.session.isStreaming) this.requestUserInterrupt()
       else if (this.draft) this.clearDraft()
       else void this.shutdown()
     } else if (is('app.exit') && this.draft === '') void this.shutdown()
@@ -1993,12 +2254,14 @@ export class OpenTuiApplication {
       this.submit(editor?.getExpandedText?.() ?? (this.bashMode ? `!${this.draft}` : this.draft), false)
     }
     else if (is('app.message.dequeue')) {
-      const pending = this.session.clearQueue()
+      const pending = this.orderedQueue([...this.heldQueue, ...this.captureNativeQueue(true)])
       const deferred = this.deferredInputs.map(input => input.kind === 'plan' ? `/plan ${input.text}` : input.text)
-      if (this.deferredInputs.some(input => input.kind !== 'bash' && input.images?.length)) this.notify('Images on queued messages were dropped; paste them again.', 'warning')
+      if (pending.some(entry => entry.images?.length) || this.deferredInputs.some(input => input.kind !== 'bash' && input.images?.length)) this.notify('Images on queued messages were dropped; paste them again.', 'warning')
+      this.heldQueue = []
+      this.queueDispatchEligible = false
       this.deferredInputs = []
       this.planBarrierOpen = this.planActive || this.activeDeferredKind === 'plan'
-      this.setDraftExternal([...pending.steering, ...pending.followUp, ...deferred, this.draft].filter(Boolean).join('\n'))
+      this.setDraftExternal([...pending.map(entry => entry.text), ...deferred, this.draft].filter(Boolean).join('\n'))
     } else if (is('app.editor.external')) this.attempt(() => this.externalEditor())
     else if (is('app.message.copy')) {
       if (this.sideQuestion?.visible) this.attempt(() => this.sideQuestion!.copyAnswer())
@@ -2052,6 +2315,11 @@ export class OpenTuiApplication {
     return spinnerFrameAt(Date.now() - since, frames, indicator?.intervalMs ?? SPINNER_INTERVAL_MS)
   }
 
+  /** The run's real phase when the verb would hide it: a wait, a long tool, a quiet model, a retry. */
+  private phaseLabel(): string | null {
+    return workingPhase({ now: Date.now(), tools: this.toolsInFlight, subagents: this.subagents, retry: this.retryPhase, progressAt: this.progressAt, answered: this.answered })
+  }
+
   private working(): OpenTuiView['working'] {
     // A compaction during a run keeps the run's clock; a /compact while idle starts its own.
     const since = this.startedAt ?? this.compacting?.since ?? null
@@ -2064,7 +2332,7 @@ export class OpenTuiApplication {
       ? ''
       : this.compacting
         ? this.compacting.label
-        : state?.workingVisible === false ? '' : state?.workingMessage ?? this.activeVerb ?? 'Working…'
+        : state?.workingVisible === false ? '' : state?.workingMessage ?? this.phaseLabel() ?? this.activeVerb ?? 'Working…'
     const elapsedMs = since !== null ? Math.max(0, Date.now() - since) : null
     const frame = since !== null ? this.workingSpinnerFrame(since) : ''
     return {
@@ -2144,8 +2412,7 @@ export class OpenTuiApplication {
       sideQuestionDock,
       questionDock: this.questionDock?.view ?? null,
       pendingMessages: [
-        ...(this.runtime?.session?.getSteeringMessages?.() ?? []).map(text => ({ kind: 'steering' as const, text })),
-        ...(this.runtime?.session?.getFollowUpMessages?.() ?? []).map(text => ({ kind: 'followUp' as const, text })),
+        ...this.queueEntries().map(entry => ({ kind: entry.kind, text: entry.text })),
         ...this.deferredInputs.map(input => ({ kind: input.kind, text: input.text }))
       ],
       working: { ...this.working(), sessionName: snapshot?.name },

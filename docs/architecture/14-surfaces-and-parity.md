@@ -65,22 +65,24 @@ terminal command or page, a host screen.
   research; both terminal and host use the same gate and child-capability narrowing.
 - Question choice sketches use one optional validated event contract: up to 80 printable ASCII
   columns by 24 LF-separated lines (1,943 bytes maximum; page 02). Both surfaces use the same
-  literal ASCII source, persisted unchanged, in one shared preview with access to overflow; neither
-  changes the answer payload (PROP-0025, ADR-0026; originally PROP-0024). The terminal may project
-  recognized ASCII table-border rows—including title-bearing rules—and enclosed vertical table
-  edges into connected box-drawing glyphs, retaining internal framed table widths. For a
-  high-confidence frame, it may fill a missing boundary cell or realign a displaced edge only
-  through whitespace to matched corner columns; interior text and ambiguous rows remain unchanged
-  (PROP-0028, ADR-0029). Bare standalone hyphen dividers expand to the larger of viewport width and
-  original sketch widest line and join the outer single-line frame with `├` and `┤` (PROP-0026,
-  ADR-0027). Prose, content operators and ordinary pipes are not globally substituted. Hosts may
-  retain literal ASCII previews: equivalent capability does not require identical structural
-  typography. No schema, validation-bound, persistence or answer-payload change follows from these
-  display amendments. Terminal geometry, scrolling and projection boundaries follow page 11; hosts
-  may use native presentation without narrowing accepted metadata. Existing hosts with the old
-  bounds must update before accepting larger sketches. Acceptance of the expanded contract on both
-  surfaces is tracked in the parity register. Isolated production PTY evidence verifies bounded
-  fixture topology, not every emulator/font or live-model sketch quality.
+  literal ASCII source, persisted unchanged, and neither changes the answer payload (PROP-0025,
+  ADR-0026; originally PROP-0024). Shared `ask_user` guidance asks the model to use a fixed
+  80-column canvas, but validation remains permissive for shorter sketches. The terminal pads its
+  display projection to 80 content columns, bounds the outer frame to the available dock width and
+  provides horizontal panning. It may project recognized ASCII table-border rows—including
+  title-bearing rules—and enclosed vertical table edges into connected box-drawing glyphs, retaining
+  internal framed table widths. For a high-confidence frame, it may fill a missing boundary cell or
+  realign a displaced edge only through whitespace to matched corner columns; interior text and
+  ambiguous rows remain unchanged (PROP-0028, ADR-0029). Bare standalone hyphen dividers expand to
+  the fixed 80-column canvas and join the outer frame with `├` and `┤` (PROP-0026, ADR-0027,
+  amended by ADR-0080). Prose, content operators and ordinary pipes are not globally substituted.
+  Hosts may retain literal ASCII previews with accessible overflow; equivalent capability does not
+  require identical structural typography. No schema, validation-bound, persistence or answer-payload
+  change follows from these display amendments. Terminal geometry, scrolling and projection
+  boundaries follow page 11; hosts may use native presentation without narrowing accepted metadata.
+  Existing hosts with the old bounds must update before accepting larger sketches. Acceptance of the
+  expanded contract on both surfaces is tracked in the parity register. Isolated production PTY
+  evidence verifies bounded fixture topology, not every emulator/font or live-model sketch quality.
 - Side questions use one Harness service on both surfaces. Each caller supplies its visible
   transcript projection; Harness adds the parent run's effective prompt and public events, then
   starts an independent tool-free run.
@@ -96,10 +98,12 @@ terminal command or page, a host screen.
   the terminal reports Pi's active tools and schemas, applying its plan-mode allowed set when active.
   It is in the shared plan-mode allowlist and grants no permission. Hosts use this Harness tool rather
   than defining a duplicate.
-- `browser/contracts.ts` owns shared backend-neutral browser schemas. A native WebKit host backend
-  lacks accessibility snapshots and snapshot-ref interactions, waits and keyboard input; it supports
-  page screenshots without refs in source, with live acceptance pending. Unsupported calls return an
-  explicit refusal before effects and do not trigger an automatic backend switch (page 13, PAR-015).
+- `browser/contracts.ts` owns shared backend-neutral browser schemas. The isolated Harness engine
+  and paired Brave extension implement the snapshot-ref contract. A native WebKit host backend lacks
+  accessibility snapshots and snapshot-ref interactions, waits and keyboard input; it supports page
+  screenshots without refs in source, with live acceptance pending. The App chooses WebKit or Brave
+  at the device level; unsupported calls return an explicit refusal before effects and never trigger
+  an automatic backend switch (page 13, PAR-015, ADR-0082).
 - Shared interactive defaults, profile adoption, credentials and a cross-surface session catalog
   remain in progress under PROP-0040. Existing pins and explicit profile choices win; adoption must
   not merge stores, copy credentials or silently downgrade the secret backend.

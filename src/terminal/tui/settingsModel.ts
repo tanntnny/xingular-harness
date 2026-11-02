@@ -12,14 +12,26 @@ export interface SettingsModelHost {
 }
 
 interface BrowserSettings {
+  backend: 'isolated' | 'brave'
   allowPrivate: boolean
 }
 
+interface ExtensionSettings {
+  state: 'stopped' | 'pairing' | 'waiting' | 'connected' | 'paused'
+  paired: boolean
+  connected: boolean
+  paused: boolean
+}
+
+const BROWSER_BACKEND_ID = 'browser.backend'
+const BROWSER_CONNECTION_ID = 'browser.connection'
 const PRIVATE_ACCESS_ID = 'browser.allowPrivate'
-const GROUP_ORDER = ['Theme', 'Display', 'Images', 'Thinking', 'Recovery', 'Editor', 'Queues', 'Commands', 'Terminal', 'Keyboard', 'Compaction', 'Network']
+const GROUP_ORDER = ['Theme', 'Display', 'Images', 'Thinking', 'Recovery', 'Editor', 'Queues', 'Commands', 'Terminal', 'Keyboard', 'Compaction', 'Connection', 'Network']
 
 export function createSettingsModel(host: SettingsModelHost) {
   let browserSettings: BrowserSettings | null = null
+  let extensionSettings: ExtensionSettings | null = null
+  let pairingCode: string | null = null
 
   const booleans = (session: AgentSession) => {
     const settings = session.settingsManager
@@ -62,24 +74,96 @@ export function createSettingsModel(host: SettingsModelHost) {
       const split = option.indexOf(':')
       return { id: String(index), tab: locations[index]![0], group: locations[index]![1], label: split < 0 ? option : option.slice(0, split), value: split < 0 ? '' : option.slice(split + 1).trim(), description: descriptions[index] }
     })
-    if (browserSettings) result.push({
-      id: PRIVATE_ACCESS_ID,
-      tab: 'Browser',
-      group: 'Network',
-      label: 'Private address access',
-      value: browserSettings.allowPrivate ? 'On' : 'Off',
-      description: 'This device-wide setting affects agent browsing and annotation capture. When on, pages can reach localhost and private networks.'
-    })
+    if (browserSettings) {
+      result.push({
+        id: BROWSER_BACKEND_ID,
+        tab: 'Browser',
+        group: 'Connection',
+        label: 'Browser backend',
+        value: browserSettings.backend === 'brave' ? 'Brave profile' : 'Isolated browser',
+        description: 'Choose the browser the agent controls. Brave uses your existing signed-in profile and only sites you allow in the extension; Incognito is excluded. The extension does not request history or cookie permissions or export cookies. A disconnect never switches to the other backend.'
+      })
+      result.push({
+        id: BROWSER_CONNECTION_ID,
+        tab: 'Browser',
+        group: 'Connection',
+        label: 'Brave extension',
+        value: extensionSettings?.state ?? 'Checking',
+        description: pairingCode
+          ? `Enter pairing code ${pairingCode} in the extension popup. It expires in five minutes.`
+          : extensionSettings?.state === 'connected'
+            ? 'Connected to Brave. Use the in-page badge to pause or stop control.'
+            : extensionSettings?.paired
+              ? 'The extension is paired and waiting. Open its toolbar popup to reconnect, or select this row to reset pairing.'
+              : 'Select this row to start the loopback bridge and get a one-time pairing code.'
+      })
+      result.push({
+        id: PRIVATE_ACCESS_ID,
+        tab: 'Browser',
+        group: 'Network',
+        label: 'Private address access',
+        value: browserSettings.allowPrivate ? 'On' : 'Off',
+        description: 'This device-wide setting lets agent browsing and annotation capture reach localhost and private networks.'
+      })
+    }
     return result.sort((a, b) => GROUP_ORDER.indexOf(a.group) - GROUP_ORDER.indexOf(b.group))
   }
 
   async function load(): Promise<void> {
-    const config = await host.control<BrowserSettings>('terminal.browser.config')
-    if (!config || typeof config.allowPrivate !== 'boolean') throw new Error('The Harness returned invalid browser settings.')
-    browserSettings = { allowPrivate: config.allowPrivate }
+    const [config, extension] = await Promise.all([
+      host.control<BrowserSettings>('terminal.browser.config'),
+      host.control<ExtensionSettings>('terminal.browser.extension.status')
+    ])
+    if (!config || typeof config.allowPrivate !== 'boolean' || !['isolated', 'brave'].includes(config.backend)) throw new Error('The Harness returned invalid browser settings.')
+    if (!extension || typeof extension.connected !== 'boolean' || typeof extension.paired !== 'boolean' || !['stopped', 'pairing', 'waiting', 'connected', 'paused'].includes(extension.state)) throw new Error('The Harness returned invalid Brave extension status.')
+    browserSettings = { backend: config.backend, allowPrivate: config.allowPrivate }
+    extensionSettings = extension
+    if (extension.paired) pairingCode = null
   }
 
   async function apply(id: string): Promise<void> {
+    if (id === BROWSER_BACKEND_ID) {
+      if (!browserSettings) return
+      const selected = await host.ui.select('Browser backend', ['Isolated browser', 'Brave profile'])
+      const backend = selected === 'Brave profile' ? 'brave' : selected === 'Isolated browser' ? 'isolated' : null
+      if (!backend || backend === browserSettings.backend) return
+      if (backend === 'brave' && !await host.ui.confirm(
+        'Use your Brave profile?',
+        'The agent can see and control normal tabs on sites you explicitly allow in the extension. Your signed-in pages may contain private information. The extension requires Brave’s debugger permission but does not request history or cookie permissions or export cookies. Incognito is never available, and a disconnect will not switch browsers automatically.'
+      )) return
+      const saved = await host.control<BrowserSettings>('terminal.browser.configure', { backend })
+      if (!saved || saved.backend !== backend) throw new Error('The Harness did not save the browser backend.')
+      browserSettings = { ...browserSettings, backend: saved.backend }
+      extensionSettings = await host.control<ExtensionSettings>('terminal.browser.extension.status')
+      host.refresh()
+      return
+    }
+
+    if (id === BROWSER_CONNECTION_ID) {
+      if (!extensionSettings) return
+      let start = false
+      if (extensionSettings.paired) {
+        const action = await host.ui.select('Brave extension', ['Keep waiting', 'Stop and pair again'])
+        if (action === 'Stop and pair again') {
+          await host.control('terminal.browser.extension.stop')
+          extensionSettings = await host.control<ExtensionSettings>('terminal.browser.extension.status')
+          start = true
+        } else if (action === 'Keep waiting') {
+          const result = await host.control<{ status: ExtensionSettings; pairingCode?: string }>('terminal.browser.extension.start')
+          extensionSettings = result.status
+          pairingCode = result.pairingCode ?? null
+        }
+      } else start = true
+      if (start) {
+        const result = await host.control<{ status: ExtensionSettings; pairingCode?: string }>('terminal.browser.extension.start')
+        extensionSettings = result.status
+        pairingCode = result.pairingCode ?? null
+        if (pairingCode) host.ui.notify(`Pair the Brave extension with code ${pairingCode}.`, 'info')
+      }
+      host.refresh()
+      return
+    }
+
     if (id === PRIVATE_ACCESS_ID) {
       if (!browserSettings) return
       const allowPrivate = !browserSettings.allowPrivate
@@ -89,7 +173,7 @@ export function createSettingsModel(host: SettingsModelHost) {
       )) return
       const saved = await host.control<BrowserSettings>('terminal.browser.configure', { allowPrivate })
       if (!saved || typeof saved.allowPrivate !== 'boolean') throw new Error('The Harness returned invalid browser settings.')
-      browserSettings = { allowPrivate: saved.allowPrivate }
+      browserSettings = { ...browserSettings, allowPrivate: saved.allowPrivate }
       host.refresh()
       return
     }

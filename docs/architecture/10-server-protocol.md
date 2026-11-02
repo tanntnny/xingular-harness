@@ -33,7 +33,7 @@ harness → host   { v: 1, id, call, params }          host → harness   { v: 1
 - `harness.methods` lists every method. Groups in the table: `accounts`, `harnesses`, `runs`,
   `connections`, `plugins`, `wiki`, `refine`, `capabilities`, `hub`, `terminal`, `approvals`,
   `harness`, `subagents`, `agents`, `sessions`, `sideQuestions`, `library`, `recall`, `context`,
-  `worktrees`, `annotations`, `commands`, `usage`.
+  `worktrees`, `annotations`, `commands`, `usage`, `browser`.
 - Host calls (only with the matching `--host-*` flag): `secrets.get|set|delete`,
   `policy.scope|authorize|approval|connections`, `tools.call`. The host registers tools with
   `tools.register` and names with `directory.set`, and describes its parts with
@@ -69,8 +69,8 @@ harness → host   { v: 1, id, call, params }          host → harness   { v: 1
   work-slice handoff), and `sessions.run` accepts `continueFrom` (page 02, PROP-0007) and `workSlice`
   (PROP-0041). `harness.status` reports `recovery.interruptedRunIds`.
 - `workSlice { enabled?, maxToolCalls?, maxMinutes?, maxNewTokens?, maxSlices?, continue? }` on
-  `sessions.run` bounds that reply; absent uses 320 calls, 60 minutes, no new-token cap, 8 slices and
-  automatic continuation. A token cap, when set, counts new input, cache writes and output, never the
+  `sessions.run` bounds that reply; absent sets no limit (ADR-0081): no call, time or new-token cap, so nothing ends
+  or continues at a budget. A limit a caller sets continues up to 8 slices. A token cap, when set, counts new input, cache writes and output, never the
   cached prefix (PROP-0044). `enabled: false` turns the guard off for that run;
   `XINGULAR_WORK_SLICE=off` in the launching process turns it off for every run in it, and nothing is
   persisted. The policy is
@@ -97,6 +97,26 @@ harness → host   { v: 1, id, call, params }          host → harness   { v: 1
   Run records expose nullable `terminalCode`; `terminalReason` remains descriptive text. Older
   records and events may omit the code. Trajectory search exposes both fields (pages 02 and 08).
 - Errors carry a stable `code`, a message and an optional hint (`core/errors.ts`).
+
+## Browser configuration and extension (ADR-0082)
+
+Browser settings are device-local, not variant or project settings. `backend` selects the isolated
+Harness browser or the explicitly paired Brave extension; a disconnected Brave backend refuses
+calls and never falls back. Extension status never returns its bearer token.
+
+| Method | Input | Reply |
+|---|---|---|
+| `browser.config` | `{}` | `BrowserConfig`: backend, headed, CDP URL, executable path, private-address policy and allowed domains |
+| `browser.configure` | partial `BrowserConfig` | Updated `BrowserConfig`; selecting isolated from Brave stops and revokes the extension bridge |
+| `browser.extension.status` | `{}` | `BrowserExtensionStatus`: stopped/pairing/waiting/connected/paused, paired/connected/paused flags, loopback port and last heartbeat |
+| `browser.extension.start` | `{}` | `{ status, pairingCode?, expiresAt? }`; a new pair code is `port:CODE`, expires after five minutes, and is returned only while pairing |
+| `browser.extension.stop` | `{}` | Stopped `BrowserExtensionStatus`; revokes the pairing and rejects pending browser calls |
+
+Normal Harness shutdown closes the bridge while preserving the pairing for reconnection. Explicit
+stop revokes it. Pairing validates the extension origin. Every later bridge request requires the
+random bearer token, and any supplied Origin must match the paired extension; service-worker fetches
+may omit Origin. Loopback authentication is not a substitute for the extension's exact-origin site
+allow list.
 
 ## Plugin proposals
 

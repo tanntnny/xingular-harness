@@ -12,11 +12,11 @@ describe('pending message display', () => {
       { kind: 'plan', text: 'third' }, { kind: 'bash', text: 'fourth' }, { kind: 'prompt', text: 'fifth' }
     ]
     expect(pendingMessageRows(messages, 80, 5)).toEqual([
-      { label: 'Steer:', text: 'first', accent: true },
-      { label: 'Follow-up:', text: 'second', accent: true },
-      { label: 'Plan:', text: 'third', accent: false },
-      { label: 'Bash:', text: 'fourth', accent: false },
-      { label: 'Prompt:', text: 'fifth', accent: false }
+      { kind: 'steering', label: 'Steer:', text: 'first', accent: true },
+      { kind: 'followUp', label: 'Follow-up:', text: 'second', accent: true },
+      { kind: 'plan', label: 'Plan:', text: 'third', accent: false },
+      { kind: 'bash', label: 'Bash:', text: 'fourth', accent: false },
+      { kind: 'prompt', label: 'Prompt:', text: 'fifth', accent: false }
     ])
     expect(flat(pendingMessageRows(messages, 80, 3))).toEqual(['Steer: first', 'Follow-up: second', '+3 more pending'])
     expect(flat(pendingMessageRows(messages, 80, 1))).toEqual(['+5 more pending'])
@@ -44,7 +44,7 @@ describe('pending message display', () => {
     const messages: PendingMessage[] = [{ kind: 'steering', text: 'change direction' }]
     for (let width = 1; width < 'Steer: '.length + 1; width++) {
       const [row] = pendingMessageRows(messages, width)
-      expect(row).toEqual({ label: '', text: expect.any(String), accent: false })
+      expect(row).toEqual({ kind: 'steering', label: '', text: expect.any(String), accent: false })
       expect(visibleWidth(row!.text)).toBeLessThanOrEqual(width)
     }
     expect(pendingMessageRows(messages, 8)[0]).toMatchObject({ label: 'Steer:', accent: true })

@@ -4,7 +4,8 @@ import { describe, expect, it, vi } from 'vitest'
 import { createSettingsModel, type SettingsModelHost } from './settingsModel'
 
 function setup(confirmed = true) {
-  const browser = { allowPrivate: false }
+  const browser = { backend: 'isolated' as 'isolated' | 'brave', allowPrivate: false }
+  const extension = { state: 'stopped' as 'stopped' | 'pairing' | 'waiting' | 'connected' | 'paused', paired: false, connected: false, paused: false }
   const session = {
     autoCompactionEnabled: true,
     autoRetryEnabled: true,
@@ -23,15 +24,27 @@ function setup(confirmed = true) {
   } as unknown as AgentSession
   const control = vi.fn(async (method: string, params?: Record<string, unknown>) => {
     if (method === 'terminal.browser.config') return { ...browser }
+    if (method === 'terminal.browser.extension.status') return { ...extension }
+    if (method === 'terminal.browser.extension.start') {
+      Object.assign(extension, { state: 'pairing', paired: false, connected: false, paused: false })
+      return { status: { ...extension }, pairingCode: '38671:ABCDEF012345' }
+    }
+    if (method === 'terminal.browser.extension.stop') {
+      Object.assign(extension, { state: 'stopped', paired: false, connected: false, paused: false })
+      return { ...extension }
+    }
     if (method === 'terminal.browser.configure') {
-      browser.allowPrivate = params?.allowPrivate === true
+      if (params?.backend === 'isolated' || params?.backend === 'brave') browser.backend = params.backend
+      if (typeof params?.allowPrivate === 'boolean') browser.allowPrivate = params.allowPrivate
       return { ...browser }
     }
     throw new Error(`Unexpected control call: ${method}`)
   })
   const ui = {
     theme: { name: 'Test' },
-    confirm: vi.fn(async () => confirmed)
+    confirm: vi.fn(async () => confirmed),
+    select: vi.fn(async () => 'Brave profile'),
+    notify: vi.fn()
   } as unknown as ExtensionUIContext
   const refresh = vi.fn()
   const model = createSettingsModel({
@@ -54,6 +67,31 @@ describe('terminal settings model', () => {
     expect(model.items()).toContainEqual(expect.objectContaining({
       id: 'browser.allowPrivate', tab: 'Browser', label: 'Private address access', value: 'Off'
     }))
+    expect(model.items()).toContainEqual(expect.objectContaining({ id: 'browser.backend', value: 'Isolated browser' }))
+    expect(model.items()).toContainEqual(expect.objectContaining({ id: 'browser.connection', value: 'stopped' }))
+  })
+
+  it('requires confirmation before selecting the signed-in Brave profile', async () => {
+    const { model, browser, control, ui } = setup()
+    await model.load()
+
+    await model.apply('browser.backend')
+
+    expect(ui.confirm).toHaveBeenCalledWith('Use your Brave profile?', expect.stringContaining('signed-in pages'))
+    expect(control).toHaveBeenCalledWith('terminal.browser.configure', { backend: 'brave' })
+    expect(browser.backend).toBe('brave')
+    expect(model.items()).toContainEqual(expect.objectContaining({ id: 'browser.backend', value: 'Brave profile' }))
+  })
+
+  it('starts the bridge and displays its one-time pairing code', async () => {
+    const { model, control, ui } = setup()
+    await model.load()
+
+    await model.apply('browser.connection')
+
+    expect(control).toHaveBeenCalledWith('terminal.browser.extension.start')
+    expect(ui.notify).toHaveBeenCalledWith('Pair the Brave extension with code 38671:ABCDEF012345.', 'info')
+    expect(model.items()).toContainEqual(expect.objectContaining({ id: 'browser.connection', value: 'pairing', description: expect.stringContaining('38671:ABCDEF012345') }))
   })
 
   it('confirms before enabling and disables without another confirmation', async () => {

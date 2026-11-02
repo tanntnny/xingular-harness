@@ -4,7 +4,7 @@ title: Project structural ASCII sketch lines into connected terminal borders
 status: accepted
 created: 2026-10-24
 updated: 2026-10-24
-related: [PROP-0026, ADR-0026, ADR-0029, INV-RUN-3, INV-PAR-1, INV-PAR-2]
+related: [PROP-0026, ADR-0026, ADR-0029, ADR-0080, INV-RUN-3, INV-PAR-1, INV-PAR-2]
 supersedes: null
 superseded_by: null
 ---
@@ -13,7 +13,9 @@ superseded_by: null
 
 **Design accepted by the product owner on 2026-10-24** with “yes, fix it” after screenshot review.
 This foundation presentation change is implemented and verified in isolated production fixtures;
-see [retained evidence](../evidence/terminal-connected-sketches/README.md).
+see [retained evidence](../evidence/terminal-connected-sketches/README.md). The viewport-relative
+canvas and divider sizing was later amended by [ADR-0080](ADR-0080-fixed-width-question-sketch-canvas.md);
+the structural projection rules below remain in force.
 
 ## Context
 

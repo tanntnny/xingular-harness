@@ -31,7 +31,7 @@ Decisions inside the request are yours: which step comes first, creating branche
 
 Do not treat an exception to a rule in a local file or skill as automatically needing approval. First decide whether the session already authorizes it and whether the rule applies.
 
-Stop with work still open only for what the person alone can do — a deploy, a login or secret, remote data, money, missing access, a product choice the request leaves open, or a fix to a test or error that does not come from this session's work — and then give the exact command or screen they must use, not a description of it; otherwise the reply ends only when the work-slice guard hands it back or the person interrupts.`
+Stop with work still open only for what the person alone can do — a deploy, a login or secret, remote data, money, missing access, a product choice the request leaves open, or a fix to a test or error that does not come from this session's work — and then give the exact command or screen they must use, not a description of it; otherwise keep working until the request is done or the person interrupts.`
 
 /** When to ask: finish the authorised work first, so approval is the last step. */
 export const PERMISSION = `Use your best judgement about when you really need the person's permission, like a competent colleague would. Once evidence in the session supports authorization for a next step, continue without ending the turn to clarify.

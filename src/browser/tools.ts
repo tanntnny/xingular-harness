@@ -3,15 +3,14 @@
 // send, spend, delete, change an account or grant access asks the person, and is dropped if the
 // page changed while they decided. Fields for passwords, card numbers and one-time codes are
 // never filled: the person types those.
-import type { Locator } from 'playwright-core'
-
 import type { ToolResult, ToolSpec } from '../tools/types'
 import { askForAction, classifyAction, SENSITIVE_FIELD } from '../world/actions'
+import type { NetworkPolicy } from './network'
 import { untrusted } from '../world/untrusted'
 import type { WorldContext } from '../world/world'
 import { htmlToMarkdown } from '../web/markdown'
 import { PAGE_CHARS } from '../web/tools'
-import type { BrowserSession, Tab } from './session'
+import type { Download } from './session'
 
 export { BROWSER_TOOL_NAMES, SNAPSHOT_LINES, SNAPSHOT_CHARS } from './contracts'
 import { SNAPSHOT_LINES, SNAPSHOT_CHARS } from './contracts'
@@ -22,13 +21,71 @@ const isTimeout = (error: unknown): boolean => error instanceof Error && (error.
 const UNKNOWN = 'Its outcome is unknown: take browser_snapshot before trying again, so nothing is clicked, sent or bought twice.'
 const text = (value: unknown): string => (typeof value === 'string' ? value : '')
 
-async function where(tab: Tab): Promise<string> {
+export interface BrowserToolElement {
+  getAttribute(name: string): string | null
+}
+
+export interface BrowserToolLocator {
+  click(options?: { button?: 'left' | 'right' | 'middle' }): Promise<void>
+  dblclick(options?: { button?: 'left' | 'right' | 'middle' }): Promise<void>
+  screenshot(options: { type: 'jpeg'; quality: number }): Promise<Buffer>
+  evaluate<T>(callback: (element: BrowserToolElement) => T): Promise<T>
+  fill(value: string): Promise<void>
+  press(key: string): Promise<void>
+  selectOption(values: string[]): Promise<string[]>
+  scrollIntoViewIfNeeded(): Promise<void>
+}
+
+export interface BrowserToolPage {
+  url(): string
+  title(): Promise<string>
+  refresh?(): Promise<void>
+  goto(url: string, options?: { waitUntil?: 'domcontentloaded' }): Promise<{ status(): number } | null>
+  goBack(options?: { waitUntil?: 'domcontentloaded' }): Promise<{ status(): number } | null>
+  goForward(options?: { waitUntil?: 'domcontentloaded' }): Promise<{ status(): number } | null>
+  reload(options?: { waitUntil?: 'domcontentloaded' }): Promise<{ status(): number } | null>
+  close(): Promise<void>
+  ariaSnapshot(options?: { mode: 'ai'; depth?: number; timeout?: number }): Promise<string>
+  content(): Promise<string>
+  screenshot(options: { type: 'jpeg'; quality: number }): Promise<Buffer>
+  getByRef(ref: string): BrowserToolLocator
+  evaluate<T = unknown>(expression: string): Promise<T>
+  keyboard: { press(key: string): Promise<void> }
+  mouse: { wheel(x: number, y: number): Promise<void> }
+  waitForTimeout(ms: number): Promise<void>
+  getByText(text: string): { first(): { waitFor(options: { timeout: number }): Promise<void> } }
+}
+
+export interface BrowserToolTab {
+  id: string
+  page: BrowserToolPage
+  generation: number
+  refs: Map<string, string>
+  refsGeneration: number
+}
+
+export interface BrowserToolSession {
+  run<T>(work: () => Promise<T>): Promise<T>
+  tab(id?: string | null): Promise<BrowserToolTab>
+  open(): Promise<BrowserToolTab>
+  select(id: string): BrowserToolTab | Promise<BrowserToolTab>
+  list(): { id: string; url: string; current: boolean }[]
+  refresh?(): Promise<void>
+  readonly network: NetworkPolicy
+  readonly downloads: Download[]
+  close(): Promise<void>
+  readonly profileNote: string | null
+  readonly started: boolean
+}
+
+async function where(tab: BrowserToolTab): Promise<string> {
+  await tab.page.refresh?.()
   const title = await tab.page.title().catch(() => '')
   return `Tab ${tab.id}: ${tab.page.url()}${title ? ` — ${title}` : ''}`
 }
 
 /** An element named by a ref of the tab's latest snapshot. */
-function element(tab: Tab, ref: string): { locator: Locator; line: string } {
+function element(tab: BrowserToolTab, ref: string): { locator: BrowserToolLocator; line: string } {
   const id = ref.trim().replace(/^@/, '').replace(/^ref=/, '')
   if (tab.refsGeneration !== tab.generation) throw new Error(`The page in ${tab.id} changed since its last snapshot. Take browser_snapshot again and use a ref from it.`)
   const line = tab.refs.get(id)
@@ -37,10 +94,11 @@ function element(tab: Tab, ref: string): { locator: Locator; line: string } {
 }
 
 /** Asks the person when the action falls in a category that needs them; null when it may go ahead. */
-async function approve(context: WorldContext, tool: string, tab: Tab, target: string, args: Record<string, unknown>): Promise<string | null> {
+async function approve(context: WorldContext, tool: string, tab: BrowserToolTab, target: string, args: Record<string, unknown>): Promise<string | null> {
   const verdict = classifyAction(target)
   if (!verdict) return null
   if (!context.attended || !context.run) return `Refused: this would ${verdict.reason}, and nobody can approve it in this run.`
+  await tab.page.refresh?.()
   const before = { url: tab.page.url(), generation: tab.generation }
   let host = ''
   try {
@@ -50,6 +108,7 @@ async function approve(context: WorldContext, tool: string, tab: Tab, target: st
   }
   const refusal = await askForAction({ run: context.run, tool, target: `${target}${host ? ` on ${host}` : ''}`, args, reason: verdict.reason })
   if (refusal) return refusal
+  await tab.page.refresh?.()
   if (tab.page.url() !== before.url || tab.generation !== before.generation) return 'The page changed while waiting for approval, so nothing was done. Take browser_snapshot and decide again.'
   return null
 }
@@ -58,7 +117,7 @@ function attendedOnly(context: WorldContext, tool: string): string | null {
   return context.attended && !context.subagent ? null : `${tool} acts on a page and needs a person present; in this run the browser can only open and read pages.`
 }
 
-export function browserTools(context: WorldContext, session: () => BrowserSession): ToolSpec[] {
+export function browserTools(context: WorldContext, session: () => BrowserToolSession): ToolSpec[] {
   const act = (name: string, work: () => Promise<string | ToolResult>): Promise<string | ToolResult> =>
     session().run(async () => {
       try {
@@ -67,7 +126,7 @@ export function browserTools(context: WorldContext, session: () => BrowserSessio
         return isTimeout(error) ? `${name} timed out. ${UNKNOWN}` : `${name} failed: ${message(error)}`
       }
     })
-  const done = async (tab: Tab, what: string): Promise<string> => {
+  const done = async (tab: BrowserToolTab, what: string): Promise<string> => {
     const downloads = session().downloads.filter((download) => download.tab === tab.id).splice(0).map((download) => download.path)
     return untrusted(`${what}\n${await where(tab)}${downloads.length ? `\nDownloaded: ${downloads.join(', ')}` : ''}\nTake browser_snapshot to see the page now.`)
   }
@@ -116,6 +175,7 @@ export function browserTools(context: WorldContext, session: () => BrowserSessio
       ...browserToolSpec('browser_read'),
       execute: (input) => act('browser_read', async () => {
         const tab = await session().tab(text(input.tab) || null)
+        await tab.page.refresh?.()
         const { title, text: markdown } = htmlToMarkdown(await tab.page.content())
         const offset = Math.max(0, Math.floor(Number(input.offset)) || 0)
         const end = Math.min(markdown.length, offset + PAGE_CHARS)
@@ -228,13 +288,14 @@ export function browserTools(context: WorldContext, session: () => BrowserSessio
           if (url) await tab.page.goto(url, { waitUntil: 'domcontentloaded' })
           return untrusted(`Opened ${await where(tab)}`)
         }
-        if (input.op === 'switch') return untrusted(`Now in ${await where(browser.select(text(input.tab)))}`)
+        if (input.op === 'switch') return untrusted(`Now in ${await where(await browser.select(text(input.tab)))}`)
         if (input.op === 'close') {
           const tab = await browser.tab(text(input.tab) || null)
           await tab.page.close()
           return `Closed ${tab.id}.`
         }
         if (!browser.started) return 'No tabs are open yet. browser_navigate opens one.'
+        await browser.refresh?.()
         return untrusted(browser.list().map((tab) => `${tab.current ? '*' : ' '} ${tab.id} ${tab.url}`).join('\n'))
       })
     }

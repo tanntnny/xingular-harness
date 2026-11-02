@@ -43,6 +43,19 @@ async function opened(options: Parameters<typeof setup>[0] = {}) {
 afterEach(() => vi.useRealTimers())
 
 describe('the Trajectory page', () => {
+  it('folds a long wait into one row that says what the run was inside', async () => {
+    const events = [
+      event(0, 'tool.started', { toolCallId: 'w', name: 'wait_subagents' }),
+      ...[1, 2, 3, 4].map(sequence => event(sequence, 'heartbeat', { steps: 9, elapsedMs: sequence * 30_000, lastTool: 'bash', compactions: 0, slice: 1, maxToolCalls: 0, activeTools: ['wait_subagents'], oldestToolMs: sequence * 30_000 })),
+      event(5, 'tool.completed', { toolCallId: 'w', name: 'wait_subagents', ok: true })
+    ]
+    const { page } = await opened({ snapshot: { run: run('run-1'), events } })
+    page.handleInput('\t')
+    const text = plain(page, 24, 140)
+    expect(text.match(/ heartbeat/g)).toHaveLength(1)
+    expect(text).toContain('×4 · wait_subagents 2m')
+  })
+
   it('fills the screen and shows searchable events beside selected-event JSON', async () => {
     const { page } = setup()
     expect(page.presentation).toBe('fullscreen')

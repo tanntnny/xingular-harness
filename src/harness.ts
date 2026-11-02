@@ -60,6 +60,8 @@ import type { WorktreesOptions } from './worktrees/types'
 export interface HarnessOptions {
   /** Disable the generic backend when a host supplies its own browser tools. */
   browser?: boolean
+  /** Enables the Brave extension bridge when a host supplies its own isolated browser. */
+  browserExtension?: { port?: number }
   hub?: HubOptions
   /** Where knowledge and history live. May be set later with `open`. */
   dataRoot?: string | null
@@ -269,7 +271,7 @@ export class Harness {
       worktrees: this.worktrees
     })
     this.sideQuestions = new SideQuestions({ env: this.env, sessions: this.sessions, runs: this.runs })
-    this.world = new World({ root: () => this.env.root, stateDir: this.stateDir, secrets, browser: this.browserEnabled ? undefined : false })
+    this.world = new World({ root: () => this.env.root, stateDir: this.stateDir, secrets, browser: this.browserEnabled ? undefined : false, browserExtension: options.browserExtension })
     // The harness's own world tools come first; a tool an application provides under the same name is not added again.
     this.sessions.provide(this.world.provider())
     this.doctor = new Doctor({

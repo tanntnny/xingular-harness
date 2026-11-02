@@ -40,8 +40,8 @@ describe('browser settings in a terminal', () => {
 
     await expect(socketCall(connection, 'terminal.browser.config')).rejects.toMatchObject({ code: 'unauthorized' })
     await expect(socketCall(connection, 'terminal.browser.configure', { allowPrivate: true })).rejects.toMatchObject({ code: 'unauthorized' })
-    await expect(call('terminal.browser.config')).resolves.toEqual({ allowPrivate: false })
-    await expect(call('terminal.browser.configure', { allowPrivate: true })).resolves.toEqual({ allowPrivate: true })
+    await expect(call('terminal.browser.config')).resolves.toEqual({ backend: 'isolated', allowPrivate: false })
+    await expect(call('terminal.browser.configure', { allowPrivate: true })).resolves.toEqual({ backend: 'isolated', allowPrivate: true })
     expect(harness.world.browserConfig()).toMatchObject({ allowPrivate: true, headed: true, allowedDomains: ['example.com'] })
 
     await expect(call('terminal.browser.configure', { allowPrivate: 'yes' })).rejects.toMatchObject({ code: 'invalid_request' })

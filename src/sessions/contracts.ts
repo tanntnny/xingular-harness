@@ -319,7 +319,11 @@ const heartbeatPayload = z.object({
   lastTool: z.string().max(120).nullable(),
   compactions: z.number().int().nonnegative(),
   slice: z.number().int().positive(),
-  maxToolCalls: z.number().int().nonnegative()
+  maxToolCalls: z.number().int().nonnegative(),
+  /** The tools running when the beat was taken (deduplicated names), so a long wait says what it waits on. */
+  activeTools: z.array(z.string().max(120)).max(16).optional(),
+  /** How long the oldest of them has been running. */
+  oldestToolMs: z.number().nonnegative().optional()
 }).strict()
 const artifactPayload = z.object({ artifactId: z.string(), name: z.string(), file: z.unknown().optional() })
 const fileChangedPayload = z.object({ path: z.string(), change: z.enum(['added', 'modified', 'deleted']) })

@@ -9,6 +9,7 @@ export interface PendingMessage {
 
 /** One projected line: its label, the message body, and whether the label carries the accent. */
 export interface PendingMessageRow {
+  kind: PendingMessage['kind'] | null
   label: string
   text: string
   accent: boolean
@@ -31,15 +32,15 @@ export function pendingMessageRows(messages: readonly PendingMessage[], width: n
   const fit = (text: string, limit: number) => stripTerminalSequences(truncateToWidth(text, Math.max(0, limit), '…', false))
   const body = (message: PendingMessage) =>
     singleLine(message.text.replace(/[\u2028\u2029\u200e\u200f\u202a-\u202e\u2066-\u2069]/gu, ' ')) || '(empty)'
-  const result = messages.slice(0, shown).map(message => {
+  const result: PendingMessageRow[] = messages.slice(0, shown).map(message => {
     const { label, accent } = labels[message.kind]
     const room = columns - visibleWidth(label) - 1
     // A terminal narrower than the label shows the message rather than a clipped word.
-    if (room < 1) return { label: '', text: fit(body(message), columns), accent: false }
-    return { label, text: fit(body(message), room), accent }
+    if (room < 1) return { kind: message.kind, label: '', text: fit(body(message), columns), accent: false }
+    return { kind: message.kind, label, text: fit(body(message), room), accent }
   })
   if (messages.length > shown) {
-    result.push({ label: '', text: fit(`+${messages.length - shown} more pending`, columns), accent: false })
+    result.push({ kind: null, label: '', text: fit(`+${messages.length - shown} more pending`, columns), accent: false })
   }
   return result
 }

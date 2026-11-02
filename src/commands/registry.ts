@@ -45,6 +45,7 @@ export const CORE_COMMANDS = [
   { name: 'copy', description: 'Copy the last reply', group: 'Inspect', kind: 'local', methods: ['sessions.lastReply'] },
   { name: 'export', args: '[path.html|path.jsonl]', description: 'Export this branch to HTML or JSONL', group: 'Inspect', kind: 'session', methods: ['sessions.export', 'sessions.run'] },
   { name: 'todo', aliases: ['checklist'], description: 'Show the current todo list', group: 'Inspect', kind: 'session', methods: ['runs.todo'] },
+  { name: 'follow-up', description: 'Manage queued follow-up and steering messages', group: 'Run', kind: 'page' },
   { name: 'trajectory', args: '[run-id]', description: 'Inspect recorded runs for this session', group: 'Inspect', kind: 'page', methods: ['runs.list', 'runs.events'] },
   { name: 'reload', description: 'Reload trusted resources and keybindings', group: 'Harness', kind: 'session', methods: ['sessions.reload'] },
   { name: 'accounts', description: 'Sign in, switch, check and remove Pi accounts', group: 'Harness', kind: 'page', methods: ['accounts.list'] },

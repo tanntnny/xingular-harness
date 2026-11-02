@@ -12,7 +12,9 @@ affects: [INV-PAR-1, INV-PAR-2, 11-terminal.md, 14-surfaces-and-parity.md, termi
 The owner approved this foundation presentation change with “yes, fix it” after inspecting a
 screenshot of disconnected sketch lines. Implementation and rendered-topology verification passed
 in isolated production fixtures; see [retained evidence](../../evidence/terminal-connected-sketches/README.md) and
-[ADR-0027](../../decisions/ADR-0027-connected-sketch-display.md).
+[ADR-0027](../../decisions/ADR-0027-connected-sketch-display.md). The viewport-relative canvas and
+divider sizing below were later amended by [ADR-0080](../../decisions/ADR-0080-fixed-width-question-sketch-canvas.md);
+the connected-border projection remains in force.
 
 ## Problem
 

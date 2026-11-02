@@ -1318,13 +1318,39 @@ export class Terminals {
           if (call === 'terminal.browser.config') {
             const world = this.options.world
             if (!world) throw invalid('Browser settings are unavailable in this host.')
-            return { allowPrivate: world.browserConfig().allowPrivate }
+            const config = world.browserConfig()
+            return { backend: config.backend, allowPrivate: config.allowPrivate }
           }
           if (call === 'terminal.browser.configure') {
             const world = this.options.world
             if (!world) throw invalid('Browser settings are unavailable in this host.')
-            if (typeof params.allowPrivate !== 'boolean') throw invalid('allowPrivate must be a boolean.')
-            return { allowPrivate: world.configureBrowser({ allowPrivate: params.allowPrivate }).allowPrivate }
+            const change: { backend?: 'isolated' | 'brave'; allowPrivate?: boolean } = {}
+            if ('allowPrivate' in params) {
+              if (typeof params.allowPrivate !== 'boolean') throw invalid('allowPrivate must be a boolean.')
+              change.allowPrivate = params.allowPrivate
+            }
+            if ('backend' in params) {
+              if (params.backend !== 'isolated' && params.backend !== 'brave') throw invalid('backend must be isolated or brave.')
+              change.backend = params.backend
+            }
+            if (!Object.keys(change).length) throw invalid('Set a browser backend or allowPrivate value.')
+            const config = await world.configureBrowser(change)
+            return { backend: config.backend, allowPrivate: config.allowPrivate }
+          }
+          if (call === 'terminal.browser.extension.status') {
+            const world = this.options.world
+            if (!world) throw invalid('Browser settings are unavailable in this host.')
+            return world.browserExtensionStatus()
+          }
+          if (call === 'terminal.browser.extension.start') {
+            const world = this.options.world
+            if (!world) throw invalid('Browser settings are unavailable in this host.')
+            return world.browserExtensionStart()
+          }
+          if (call === 'terminal.browser.extension.stop') {
+            const world = this.options.world
+            if (!world) throw invalid('Browser settings are unavailable in this host.')
+            return world.browserExtensionStop()
           }
           if (call === 'terminal.browser.snapshot') return browser.snapshot(params.refresh === true)
           if (call === 'terminal.browser.read') {

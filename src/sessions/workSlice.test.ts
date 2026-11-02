@@ -34,11 +34,18 @@ afterEach(() => vi.unstubAllEnvs())
 describe('work slice policy', () => {
   it('uses the foundation defaults and accepts bounded overrides', () => {
     expect(parseWorkSlice(undefined)).toEqual(DEFAULT_SLICE_POLICY)
-    expect(DEFAULT_SLICE_POLICY).toMatchObject({ enabled: true, maxToolCalls: 320, maxMinutes: 60, maxNewTokens: 0, maxSlices: 8, continue: true })
+    expect(DEFAULT_SLICE_POLICY).toMatchObject({ enabled: true, maxToolCalls: 0, maxMinutes: 0, maxNewTokens: 0, maxSlices: 8, continue: true })
     expect(parseWorkSlice({ maxToolCalls: 10, maxMinutes: 5, maxNewTokens: 20_000, maxSlices: 2, continue: false })).toEqual({
       enabled: true, maxToolCalls: 10, maxMinutes: 5, maxNewTokens: 20_000, maxSlices: 2, continue: false
     })
     expect(parseWorkSlice({ maxToolCalls: 0 }).maxToolCalls).toBe(0)
+  })
+
+  it('has no budget by default, so no reply is ended or continued for its size or length', () => {
+    const state = createSliceState(DEFAULT_SLICE_POLICY, 1, 0)
+    state.steps = 100_000
+    state.tokens = 50_000_000
+    expect(sliceLimitReached(DEFAULT_SLICE_POLICY, state, 24 * 60 * 60_000)).toBeNull()
   })
 
   it('can be turned off for a run or at launch', () => {

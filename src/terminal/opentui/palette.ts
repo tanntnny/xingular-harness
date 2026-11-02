@@ -2,6 +2,11 @@ import { stripTerminalSequences, truncateToWidth, wrapTextWithAnsi } from '@eare
 import { formatTerminalCommandLabel } from '../commandHelp'
 
 export interface PaletteItem {
+  /**
+   * Identity across keystrokes. The terminal reconciles each view into a store keyed by `id`;
+   * without one, items merge by position and a row keeps another command's aliases.
+   */
+  id?: string
   name: string
   aliases?: string[]
   description?: string

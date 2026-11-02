@@ -10,6 +10,12 @@ export function questionDockColumns(availableWidth: number): { marker: number; l
   return { marker, label, gap, description: remaining - label }
 }
 
+export function questionDockSketchFrameWidth(availableContentWidth: number, canvasWidth: number): number {
+  const viewportWidth = Math.max(1, Math.floor(availableContentWidth))
+  const sketchWidth = Math.max(1, Math.floor(canvasWidth))
+  return Math.min(viewportWidth, sketchWidth) + 2
+}
+
 export const sketchBorder: BorderCharacters = {
   topLeft: '┌', topRight: '┐', bottomLeft: '└', bottomRight: '┘',
   horizontal: '─', vertical: '│', topT: '┬', bottomT: '┴', leftT: '├', rightT: '┤', cross: '┼'

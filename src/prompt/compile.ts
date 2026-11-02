@@ -162,9 +162,6 @@ export interface Launch {
   model?: string | null
 }
 
-/** What a person's own session is told about the work-slice budget (PROP-0041, ADR-0075). */
-export const WORK_SLICE_GUIDANCE = 'A reply also has a work-slice budget: when it is reached the harness records a checkpoint from your todo list, files and checks, and the work continues from there.'
-
 /** How a run's final reply is shaped. Fixed text: it sits in the stable prefix of every pack. */
 export { REPORTING_GUIDANCE }
 
@@ -285,10 +282,8 @@ export function toolGroups(context: CallerContext, launch: Launch, dataRoot?: st
   ]
   const progressTools = [TODO_WRITE].filter((name) => enabled.includes(name))
   if (progressTools.length) {
-    // A person's own session carries the work-slice budget in the prompt (PROP-0041); there is no
-    // todo gate (ADR-0075).
-    const slice = launch.standard ? WORK_SLICE_GUIDANCE : ''
-    groups.push({ group: 'Progress', tools: progressTools, order: 87, guidance: `Progress: ${[TODO_GUIDANCE, slice].filter(Boolean).join(' ')}` })
+    // There is no todo gate (ADR-0075) and no work-slice budget to describe (ADR-0081).
+    groups.push({ group: 'Progress', tools: progressTools, order: 87, guidance: `Progress: ${TODO_GUIDANCE}` })
   }
   if (enabled.includes(SESSION_NAME)) {
     groups.push({

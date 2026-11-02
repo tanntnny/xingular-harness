@@ -19,7 +19,7 @@ import { goalStopOutcome, handoffFields, stopCheckpointReason, stopSummary } fro
 import { launchSwitchOff, sessionCheckModel } from '../sessions/completionCheck'
 import { GOAL_STATE_ENTRY, GOAL_TOOLS, goalTools, type GoalController, type GoalState } from '../sessions/goal'
 import { GOAL_EXTENSION, goalLoop, goalNotice } from '../sessions/goalLoop'
-import { createSliceState, DEFAULT_SLICE_POLICY, parseWorkSlice, sliceContinuation, workSliceGuard, WORK_SLICE_EXTENSION, type SlicePolicy } from '../sessions/workSlice'
+import { activeToolBeat, createSliceState, DEFAULT_SLICE_POLICY, parseWorkSlice, sliceContinuation, workSliceGuard, WORK_SLICE_EXTENSION, type SlicePolicy } from '../sessions/workSlice'
 import { DEFAULT_COMMAND_TIMEOUT_SECONDS, withCommandBudget } from '../core/commandBudget'
 import { SESSION_NAME, deriveSessionName, sessionNameTool } from '../tools/sessionName'
 import { CAPABILITY_DISCOVERY, describeCapabilities } from '../tools/getCapabilities'
@@ -93,6 +93,7 @@ export default async function (pi: ExtensionAPI, planRun?: TerminalPlanRunState,
   let requestStartedAt: number | null = null
   let pendingRefusals: Promise<unknown>[] = []
   const toolStartedAt = new Map<string, number>()
+  const toolsInFlight = new Map<string, { name: string; at: number }>()
   const fileTools = new Map<string, string>()
   const writeAuthorizations = new Map<string, WorkspaceWriteAuthorization>()
   let workspaceRoot: string | null = null
@@ -306,6 +307,7 @@ export default async function (pi: ExtensionAPI, planRun?: TerminalPlanRunState,
     // A live reply reports progress so a person and the watchdog can tell a long turn from a wedged
     // one; a turn that stops producing anything is settled with reason `stalled` (INV-RUN-14).
     turnStartedAt = Date.now()
+    toolsInFlight.clear()
     if (heartbeat) clearInterval(heartbeat)
     heartbeat = setInterval(() => {
       void terminalCall('heartbeat', {
@@ -314,7 +316,8 @@ export default async function (pi: ExtensionAPI, planRun?: TerminalPlanRunState,
         lastTool: sliceState.lastTool,
         compactions: sliceState.compactions,
         slice: sliceState.slice,
-        maxToolCalls: slicePolicy.enabled ? slicePolicy.maxToolCalls : 0
+        maxToolCalls: slicePolicy.enabled ? slicePolicy.maxToolCalls : 0,
+        ...activeToolBeat(toolsInFlight)
       }, 10_000).catch(() => {})
     }, 30_000)
     heartbeat.unref?.()
@@ -691,11 +694,13 @@ export default async function (pi: ExtensionAPI, planRun?: TerminalPlanRunState,
   pi.on('tool_execution_start', async (event) => {
     if (['edit', 'write'].includes(event.toolName) && typeof event.args.path === 'string') fileTools.set(event.toolCallId, event.args.path)
     toolStartedAt.set(event.toolCallId, Date.now())
+    toolsInFlight.set(event.toolCallId, { name: event.toolName, at: Date.now() })
     await terminalCall('tool', { phase: 'start', id: event.toolCallId, name: event.toolName, summary: JSON.stringify(event.args).slice(0, 200) })
   })
   pi.on('tool_execution_end', async (event) => {
     const started = toolStartedAt.get(event.toolCallId)
     toolStartedAt.delete(event.toolCallId)
+    toolsInFlight.delete(event.toolCallId)
     const resultChars = resultSize(event.result)
     await terminalCall('tool', { phase: 'end', id: event.toolCallId, name: event.toolName, ok: !event.isError, ...(started === undefined ? {} : { durationMs: Date.now() - started }), ...(resultChars === null ? {} : { resultChars }) })
     const path = fileTools.get(event.toolCallId)

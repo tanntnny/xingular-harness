@@ -679,9 +679,9 @@ describe('session turns on Pi', () => {
     expect(normal.update ?? '').not.toContain('Plan mode is on')
   })
 
-  it('re-asks once when an attended plan reply lacks its plan block', async () => {
+  it('re-asks once when an attended plan reply leaves its plan block incomplete', async () => {
     const repairs: { customType: string; display: boolean; triggerTurn: boolean }[] = []
-    const first = 'I propose a plan.\n# Fix the composer\n\n1. Patch it.'
+    const first = '<proposed_plan># Fix the composer\n\n1. Patch it.'
     const repaired = '<proposed_plan># Fix the composer\n\n1. Patch it.</proposed_plan>'
     const { events, run, harness } = setup(async () => planRepairSession(first, repaired, repairs))
 
@@ -691,6 +691,33 @@ describe('session turns on Pi', () => {
     expect(repairs).toEqual([{ customType: PLAN_REPAIR_CUSTOM_TYPE, display: false, triggerTurn: true }])
     expect(events.filter(event => event.type === 'message.completed' && (event.payload as { role?: string }).role === 'assistant').map(event => (event.payload as { text?: string }).text)).toEqual([first, repaired])
     expect(loadRun(harness.env.root, 'plan-repair').status).toBe('completed')
+  })
+
+  it('accepts a plan reply that needs no plan without re-asking or warning', async () => {
+    const repairs: { customType: string; display: boolean; triggerTurn: boolean }[] = []
+    const answer = 'Nothing to plan: the tab memory already exists in src/chat/tabs.ts:41, and its two tests cover it.'
+    const { events, run, harness } = setup(async () => planRepairSession(answer, null, repairs))
+
+    await run('plan-not-needed', { plan: true, tools: { allow: ['read'] } })
+    await tick()
+
+    expect(repairs).toEqual([])
+    expect(events.filter(event => event.type === 'extension.notice')).toHaveLength(0)
+    expect(events.filter(event => event.type === 'message.completed' && (event.payload as { role?: string }).role === 'assistant')).toHaveLength(1)
+    expect(loadRun(harness.env.root, 'plan-not-needed').status).toBe('completed')
+  })
+
+  it('accepts a no-plan answer returned by the repair turn', async () => {
+    const repairs: { customType: string; display: boolean; triggerTurn: boolean }[] = []
+    const answer = 'Nothing to plan: the cache already stores the state.'
+    const { events, run, harness } = setup(async () => planRepairSession('<proposed_plan>', answer, repairs))
+
+    await run('plan-repaired-not-needed', { plan: true, tools: { allow: ['read'] } })
+    await tick()
+
+    expect(repairs).toHaveLength(1)
+    expect(events.filter(event => event.type === 'extension.notice')).toHaveLength(0)
+    expect(loadRun(harness.env.root, 'plan-repaired-not-needed').status).toBe('completed')
   })
 
   it('does not re-ask when a plan reply already has its plan block', async () => {
@@ -708,7 +735,7 @@ describe('session turns on Pi', () => {
   it('accepts unavailable-input blockers directly or after repair without warning', async () => {
     for (const [id, first, repaired, count] of [
       ['direct-blocked', '<plan_blocked>User input is unavailable.</plan_blocked>', null, 0],
-      ['repaired-blocked', 'Input is unavailable.', '<plan_blocked>User input is unavailable.</plan_blocked>', 1],
+      ['repaired-blocked', '<plan_blocked>Input is unavailable.', '<plan_blocked>User input is unavailable.</plan_blocked>', 1],
       ['legacy-repaired', '<plan_clarification>Which option?</plan_clarification>', '<proposed_plan># Plan\nSteps</proposed_plan>', 1]
     ] as const) {
       const repairs: { customType: string; display: boolean; triggerTurn: boolean }[] = []
@@ -724,7 +751,7 @@ describe('session turns on Pi', () => {
   it('accepts a plan after a repair turn asks the user', async () => {
     const repairs: { customType: string; display: boolean; triggerTurn: boolean }[] = []
     const plan = '<proposed_plan># Plan\nUse option A.</proposed_plan>'
-    const { events, run } = setup(async () => planRepairSession('Which option?', plan, repairs, true))
+    const { events, run } = setup(async () => planRepairSession('<proposed_plan>Which option?', plan, repairs, true))
     await run('repair-with-question', { plan: true })
     await tick()
     expect(repairs).toHaveLength(1)
@@ -733,16 +760,16 @@ describe('session turns on Pi', () => {
     expect(events.filter(event => event.type === 'extension.notice')).toHaveLength(0)
   })
 
-  it('keeps a plan run completed and warns when the repair also lacks its plan block', async () => {
+  it('keeps a plan run completed and warns when the repair also leaves its plan block incomplete', async () => {
     const repairs: { customType: string; display: boolean; triggerTurn: boolean }[] = []
-    const first = 'I propose a plan.\n# Fix the composer\n\n1. Patch it.'
+    const first = '<proposed_plan># Fix the composer\n\n1. Patch it.'
     const { events, run, harness } = setup(async () => planRepairSession(first, first, repairs))
 
     await run('plan-repair-failed', { plan: true, tools: { allow: ['read'] } })
     await tick()
 
     expect(repairs).toHaveLength(1)
-    expect(events).toContainEqual(expect.objectContaining({ type: 'extension.notice', payload: { kind: 'notify', level: 'warning', text: 'The plan reply did not include a valid plan or blocked block.' } }))
+    expect(events).toContainEqual(expect.objectContaining({ type: 'extension.notice', payload: { kind: 'notify', level: 'warning', text: 'The plan reply left its plan block incomplete, so no plan was offered.' } }))
     expect(loadRun(harness.env.root, 'plan-repair-failed').status).toBe('completed')
   })
 

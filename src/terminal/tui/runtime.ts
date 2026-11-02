@@ -8,6 +8,7 @@ import { closeSync, existsSync, openSync, readSync, realpathSync } from 'node:fs
 import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 
 import terminalExtension, { type TerminalPlanRunState } from '../piExtension'
+import { withTransientRetry } from '../../pi/retryPolicy'
 import { GoalController } from '../../sessions/goal'
 import { terminalCredentialStore } from '../credentialStore'
 import { normalModeTools, normalToolsForBranch, planModeTools, PLAN_TOOLS_ENTRY, QUESTION_TOOL_NAMES } from './planMode'
@@ -301,7 +302,7 @@ export async function createTerminalRuntime(args: string[], host: TerminalRuntim
   let native: AgentSessionRuntime
   const factory: CreateAgentSessionRuntimeFactory = async ({ cwd: targetCwd, sessionManager, sessionStartEvent }) => {
     if (realpathSync(targetCwd) !== cwd) throw new Error('A native session cannot change this terminal working folder.')
-    const settingsManager = SettingsManager.create(cwd, agentDir)
+    const settingsManager = withTransientRetry(SettingsManager.create(cwd, agentDir))
     const resourceLoader = new DefaultResourceLoader({
       cwd, agentDir,
       // The real settings still control models and tools; empty discovery settings prevent a

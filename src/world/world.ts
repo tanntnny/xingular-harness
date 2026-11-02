@@ -9,7 +9,8 @@ import { contributionId } from '../plugins/identity'
 import type { PluginDescriptor } from '../plugins/types'
 import type { ActiveRun } from '../sessions/registry'
 import { findRun } from '../sessions/runStore'
-import type { ToolProvider, ToolSpec } from '../tools/types'
+import type { ToolProvider, ToolSession, ToolSpec } from '../tools/types'
+import type { BrowserExtensionStart, BrowserExtensionStatus } from '../browser/extension/bridge'
 import { KEYLESS_SEARCH, WEB_PLUGIN, WEB_SETTINGS } from '../web/tools'
 import type { WebRequest } from '../web/safeRequest'
 import { SEARCH_PROVIDERS } from '../web/search'
@@ -39,6 +40,8 @@ export interface WorldOptions {
   request?: WebRequest
   /** Replaces the browser's launcher and address check in tests. */
   browser?: Omit<BrowserPartOptions, 'stateDir'> | false
+  /** Enables the loopback extension bridge even when the host supplies its own isolated browser. */
+  browserExtension?: { port?: number }
 }
 
 /** A family of world tools, switched as one plugin. */
@@ -58,8 +61,13 @@ export class World {
   private readonly browserEngine: BrowserEngine | null
 
   constructor(private readonly options: WorldOptions) {
-    this.browserEngine = options.browser === false ? null : createBrowserEngine({ stateDir: options.stateDir, ...options.browser })
-    this.parts.push(...BUILTIN_PLUGIN_REGISTRY.worldParts({ options, setting: (pluginId, key) => this.setting(pluginId, key), browserEngine: this.browserEngine }))
+    const disabled = options.browser === false
+    this.browserEngine = disabled && !options.browserExtension ? null : createBrowserEngine({
+      stateDir: options.stateDir,
+      ...(disabled ? {} : options.browser),
+      extensionPort: options.browserExtension?.port
+    })
+    this.parts.push(...BUILTIN_PLUGIN_REGISTRY.worldParts({ options, setting: (pluginId, key) => this.setting(pluginId, key), browserEngine: disabled ? null : this.browserEngine }))
   }
 
   add(part: WorldPart): void {
@@ -118,8 +126,40 @@ export class World {
     return readBrowserConfig(this.options.stateDir)
   }
 
-  configureBrowser(change: Partial<BrowserConfig>): BrowserConfig {
-    return writeBrowserConfig(this.options.stateDir, change)
+  async configureBrowser(change: Partial<BrowserConfig>): Promise<BrowserConfig> {
+    const before = this.browserConfig()
+    const next = writeBrowserConfig(this.options.stateDir, change)
+    if (before.backend === 'brave' && next.backend === 'isolated') await this.browserEngine?.extension.stop()
+    return next
+  }
+
+  browserExtensionStatus(): BrowserExtensionStatus {
+    if (!this.browserEngine) throw invalid('The Brave browser bridge is not enabled by this host.')
+    return this.browserEngine.extension.status()
+  }
+
+  browserExtensionStart(): Promise<BrowserExtensionStart> {
+    if (!this.browserEngine) return Promise.reject(invalid('The Brave browser bridge is not enabled by this host.'))
+    return this.browserEngine.extension.start()
+  }
+
+  browserExtensionStop(): Promise<BrowserExtensionStatus> {
+    if (!this.browserEngine) return Promise.reject(invalid('The Brave browser bridge is not enabled by this host.'))
+    return this.browserEngine.extension.stop()
+  }
+
+  /** Browser tools for a host provider that supplies its own tool registration surface. */
+  browserToolsForSession(session: ToolSession): ToolSpec[] {
+    if (!this.browserEngine) return []
+    const record = findRun(this.options.root(), session.run.runId)
+    return this.browserEngine.toolsForSession(session, {
+      run: session.run,
+      caller: session.caller,
+      attended: !UNATTENDED.has(record?.trigger ?? ''),
+      subagent: session.depth > 0 || record?.relation === 'subagent',
+      sessionKey: session.run.sessionId,
+      cwd: session.cwd
+    })
   }
 
   async release(sessionKey: string): Promise<void> {

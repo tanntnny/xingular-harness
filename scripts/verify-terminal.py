@@ -103,7 +103,7 @@ def assert_command_highlighting(terminal, command, argument, highlighted, label)
 
 
 def wireframe_fixture(mark):
-    frame_width = 74
+    frame_width = 80
     inner_width = frame_width - 2
 
     def panel_row(text, edge='aligned'):
@@ -111,7 +111,7 @@ def wireframe_fixture(mark):
         if edge == 'missing':
             return row[:-1].rstrip()
         if edge == 'shifted':
-            return row[:-1] + ' |'
+            return row[:-2] + '| '
         return row
 
     title = ' Empty welcome '
@@ -134,6 +134,8 @@ def wireframe_fixture(mark):
              panel_row('model / thinking')]
     lines += [panel_row(f'Context row {number:02d}', 'missing' if number == 2 else 'shifted' if number == 3 else 'aligned') for number in range(7)]
     lines += [panel_row(f'{mark}_BOTTOM'), '+' + '-' * inner_width + '+']
+    assert len(lines) <= 24, 'Question wireframe fixture exceeds 24 rows'
+    assert all(len(line) <= 80 for line in lines), 'Question wireframe fixture exceeds 80 columns'
     return '\n'.join(lines)
 
 
@@ -1607,24 +1609,24 @@ def main():
                     if width >= 80:
                         assert re.search(r'┌─+┬', visible), 'Nested table corners and column junctions were not connected'
                         assert any(re.fullmatch(r'\s*├─+┤\s*', line) for line in terminal.screen.display), 'Connected sketch divider was not visible'
-                        _, title_row = terminal.locate('Empty welcome')
-                        rendered_title = terminal.screen.display[title_row - 1]
-                        title_match = re.search(r'┌─+ Empty welcome ─+┐', rendered_title)
-                        assert title_match, f'Title-bearing frame rule was not connected: {rendered_title!r}'
-                        left_edge, right_edge = title_match.start(), title_match.end() - 1
-                        _, focus_row = terminal.locate('A_FOCUS')
-                        rendered_focus = terminal.screen.display[focus_row - 1]
-                        assert rendered_focus[left_edge] == '│' and rendered_focus[right_edge] == '│', f'Frame edges did not align around A_FOCUS: {rendered_focus!r}'
-                        if width < 120:
+                        if width >= 120:
+                            _, title_row = terminal.locate('Empty welcome')
+                            rendered_title = terminal.screen.display[title_row - 1]
+                            title_match = re.search(r'┌─+ Empty welcome ─+┐', rendered_title)
+                            assert title_match, f'Title-bearing frame rule was not connected: {rendered_title!r}'
+                            left_edge, right_edge = title_match.start(), title_match.end() - 1
+                            _, focus_row = terminal.locate('A_FOCUS')
+                            rendered_focus = terminal.screen.display[focus_row - 1]
+                            assert rendered_focus[left_edge] == '│' and rendered_focus[right_edge] == '│', f'Frame edges did not align around A_FOCUS: {rendered_focus!r}'
                             for _ in range(4):
                                 terminal.send('\x1b[1;2B')  # Reveal the repaired lower rows inside the sketch viewport.
-                        for label in ('[x orange]', '[AGENT blue display]'):
-                            _, row = terminal.locate(label)
-                            rendered_row = terminal.screen.display[row - 1]
-                            assert rendered_row[left_edge] == '│' and rendered_row[right_edge] == '│', f'Frame edges did not align around {label}: {rendered_row!r}'
+                            for label in ('[x orange]', '[AGENT blue display]'):
+                                _, row = terminal.locate(label)
+                                rendered_row = terminal.screen.display[row - 1]
+                                assert rendered_row[left_edge] == '│' and rendered_row[right_edge] == '│', f'Frame edges did not align around {label}: {rendered_row!r}'
                     terminal.snapshot('question-connected-frame')
                     assert any('Something else' in line for line in terminal.screen.display), 'Scrolling hid answer controls'
-                    if width < 80:
+                    if width < 120:
                         for _ in range(16):
                             terminal.send('\x1b[1;2C')  # Shift+Right pans without changing the question.
                         assert 'NEIGHBOR' in '\n'.join(terminal.screen.display), f'Horizontal sketch panning failed: {terminal.screen.display!r}'

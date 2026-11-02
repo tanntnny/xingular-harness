@@ -3,8 +3,9 @@ id: ADR-0076
 title: Codex's final-answer guidance, adopted verbatim
 status: accepted
 created: 2026-11-01
-updated: 2026-11-01
+updated: 2026-11-02
 supersedes: ADR-0074 (its four content questions, human-check block, next-step block and examples)
+amended_by: ADR-0079
 related:
   - ADR-0074
   - ADR-0075
@@ -15,6 +16,10 @@ related:
 > **Supersedes [ADR-0074](ADR-0074-report-content-not-report-blocks.md):** the four content
 > questions, the human-check block, the next-step block, the evidence table, the anti-pattern table
 > and the three examples are replaced by Codex's final-answer and technical-communication text.
+
+> **Amended by [ADR-0079](ADR-0079-phase-led-reporting-guidance.md):** add the cold-reader test,
+> explicit verification honesty, concise subagent reports and a preference for content-named `#` / `##`
+> headings in substantial reports. The phase order is explicit; heading wording remains flexible.
 
 ## Context
 
