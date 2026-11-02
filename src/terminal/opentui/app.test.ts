@@ -1531,7 +1531,11 @@ describe('OpenTuiApplication', () => {
     expect(app.view().linkHovered).toBe(true)
     expect(app.linkHighlight).toEqual({ id: 7, x: 12, y: 4 })
     expect(setMousePointer).toHaveBeenLastCalledWith('pointer')
-    expect(app.activateLinkAt(12, 4)).toBe(true)
+    // A plain click opens a link on macOS, whose terminal cannot report ⌘; elsewhere the gesture is
+    // Ctrl+click and a plain click stays with the composer.
+    const opening = process.platform === 'darwin' ? {} : { ctrl: true }
+    if (process.platform !== 'darwin') expect(app.activateLinkAt(12, 4)).toBe(false)
+    expect(app.activateLinkAt(12, 4, opening)).toBe(true)
     await vi.waitFor(() => expect(opened).toEqual([{ kind: 'web', url: 'https://example.test/docs' }]))
     expect(app.view().linkHovered).toBe(false)
     expect(app.linkHighlight).toBeNull()
@@ -1540,7 +1544,7 @@ describe('OpenTuiApplication', () => {
     target = 'javascript:alert(1)'
     app.updateLinkHover(12, 4)
     expect(app.view().linkHovered).toBe(true)
-    expect(app.activateLinkAt(12, 4)).toBe(true)
+    expect(app.activateLinkAt(12, 4, opening)).toBe(true)
     expect(openLink).toHaveBeenCalledOnce()
     expect(app.view().items.some(item => item.kind === 'notice' && item.text.includes('cannot be opened here'))).toBe(true)
 
