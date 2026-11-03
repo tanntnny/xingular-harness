@@ -313,7 +313,7 @@ test('the reporting guidance closes the stable prefix and never rides in a conte
   // ADR-0079 strengthens ADR-0076's phase-led reporting: reader context, honest checks, flexible
   // content-named headings and concise subagent reports.
   expect(REPORTING_GUIDANCE.length).toBeGreaterThan(3_000)
-  expect(REPORTING_GUIDANCE.length).toBeLessThan(5_000)
+  expect(REPORTING_GUIDANCE.length).toBeLessThan(5_500)
   expect(REPORTING_BUDGET).toBe(12_000)
   expect(REPORTING_GUIDANCE.match(/#### Example/g)).toHaveLength(2)
   expect(REPORTING_GUIDANCE).toContain('The final answer must always be fully self-contained')
@@ -332,6 +332,9 @@ test('the reporting guidance closes the stable prefix and never rides in a conte
   expect(REPORTING_GUIDANCE).toContain('For a substantive reply with distinct parts, often structure it with Markdown headings')
   expect(REPORTING_GUIDANCE).toContain('not a fixed set; do not reuse them by default')
   expect(REPORTING_GUIDANCE).toContain('Follow the file-link and citation format supplied by the active session or host')
+  expect(REPORTING_GUIDANCE).toContain('fenced Markdown blocks with a language identifier such as `python`, `bash` or `typescript`')
+  expect(REPORTING_GUIDANCE).toContain('put commands the person must run in a `bash` block')
+  expect(REPORTING_GUIDANCE).toMatch(/```bash\n\s+gh auth login --hostname github.com\n\s+```/u)
   expect(REPORTING_GUIDANCE).toContain('# The selected tab survives a reload')
   expect(REPORTING_GUIDANCE).toContain('## Stored choice')
   expect(REPORTING_GUIDANCE).toContain('When you are a subagent, give the caller a concise report')

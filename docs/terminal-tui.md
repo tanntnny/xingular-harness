@@ -203,9 +203,10 @@ An empty conversation shows a centered welcome. The default `Xingular Agent` ide
 an orange block `X` and blue letter-spaced `A G E N T`, followed by `Welcome.`, the tagline
 `One run, done well.`, and a blue `/help` hint. Explicit host product names use the same generic mark and
 subline formatting. The current model and thinking level remain available in dim text. Once a message
-exists, a scrollable transcript fills the space above the composer. Single-line notices can appear
-with the welcome, while multiline notices such as `/help` switch to the transcript layout so their
-output cannot overlap it. The composer is a single top and bottom rule, with the right-aligned `plan mode` label followed by one divider character in the top rule,
+exists, a scrollable transcript fills the space above the composer. Assistant replies, plan bodies,
+and other transcript Markdown use one renderer. Single-line notices
+can appear with the welcome, while multiline notices such as `/help` switch to the transcript layout
+so their output cannot overlap it. The composer is a single top and bottom rule, with the right-aligned `plan mode` label followed by one divider character in the top rule,
 and the textarea in the middle.
 The working status row shows the active verb with a soft, warm glint that feathers across it and
 fades past its edges, followed by run duration and the latest completed assistant response's output
@@ -310,8 +311,12 @@ bundle, an installer, a launchable script or an executable file is refused with 
 being run. The launcher receives the address as one argument without a shell. OSC 8 metadata is
 emitted where available, but link activation does not depend on terminal OSC 8 support; a terminal
 that opens OSC 8 links itself acts on its own modifier, so the Harness keeps the primary click.
-Inline and fenced code use a subtle panel fill with syntax colors. Emphasis, quotes, list markers,
-tables, dividers and task-list markers use the existing titanium palette. Images display their alt
+Inline code uses a subtle panel fill. Fenced code appears in a bordered panel labeled with the
+opening fence's language; JavaScript, TypeScript/TSX, Zig and other bundled grammars use tree-sitter,
+while Python, shell and JSON receive lightweight token highlighting. Unknown or unlabeled languages
+remain readable in the same panel, with `CODE` shown when no language is given. The code itself
+stays selectable and copyable, and the panel updates while a reply streams. Emphasis, quotes, list
+markers, tables, dividers and task-list markers use the existing titanium palette. Images display their alt
 text and are not fetched or rendered as image files.
 
 ## Todo block

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { addHeadingOneSpacing, markdownSyntaxStyles } from './markdown'
+import { addHeadingOneSpacing, codeFenceLanguageInfo, fallbackCodeHighlights, markdownSyntaxStyles } from './markdown'
 import { opentuiTheme } from './theme'
 
 describe('level-one heading spacing', () => {
@@ -18,6 +18,41 @@ describe('level-one heading spacing', () => {
   it('does not add spacing for headings inside fenced code blocks', () => {
     const content = '```md\n# Not a heading\n```\n\n## H2\nBody'
     expect(addHeadingOneSpacing(content)).toBe(content)
+  })
+})
+
+describe('fenced code languages and fallback highlighting', () => {
+  it('normalizes common aliases, sanitizes labels, and keeps unlabeled or unknown languages legible', () => {
+    expect(codeFenceLanguageInfo('py')).toMatchObject({ label: 'PYTHON', filetype: 'python', fallback: 'python' })
+    expect(codeFenceLanguageInfo('bash')).toMatchObject({ label: 'BASH', filetype: 'bash', fallback: 'bash' })
+    expect(codeFenceLanguageInfo('typescript title=example')).toMatchObject({ label: 'TYPESCRIPT', filetype: 'typescript' })
+    expect(codeFenceLanguageInfo('py\u001b[31m').label).toBe('PYTHON')
+    expect(codeFenceLanguageInfo(undefined).label).toBe('CODE')
+    expect(codeFenceLanguageInfo('unknown-lang').label).toBe('UNKNOWN-LANG')
+    expect(codeFenceLanguageInfo('unknown-lang').fallback).toBeUndefined()
+  })
+
+  it('highlights Python keywords, function names, strings, numbers, and comments by source range', () => {
+    const content = 'def greet(name):\n  return "hello", 42 # note\n'
+    const tokens = fallbackCodeHighlights(content, 'python').map(([start, end, group]) => [content.slice(start, end), group])
+    expect(tokens).toEqual([
+      ['def', 'keyword'],
+      ['greet', 'function'],
+      ['return', 'keyword'],
+      ['"hello"', 'string'],
+      ['42', 'number'],
+      ['# note', 'comment']
+    ])
+  })
+
+  it('highlights shell keywords and JSON values', () => {
+    expect(fallbackCodeHighlights('if true; then echo "ready"; fi', 'bash').map(([, , group]) => group)).toEqual([
+      'keyword', 'keyword', 'function', 'string', 'keyword'
+    ])
+    const json = '{"enabled": true, "count": 2}'
+    expect(fallbackCodeHighlights(json, 'json').map(([start, end, group]) => [json.slice(start, end), group])).toEqual([
+      ['"enabled"', 'string'], ['true', 'keyword'], ['"count"', 'string'], ['2', 'number']
+    ])
   })
 })
 

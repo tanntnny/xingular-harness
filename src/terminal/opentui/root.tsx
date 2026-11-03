@@ -15,7 +15,7 @@ import type { PlanChoiceView } from './planChoice'
 import { QuestionDock } from './questionDock'
 import type { QuestionDockView } from './questionDockState'
 import { type AnsiLine, type AnsiStyle } from './ansi'
-import { addHeadingOneSpacing, markdownSyntaxStyles } from './markdown'
+import { addHeadingOneSpacing, createTranscriptMarkdownRenderer, markdownSyntaxStyles } from './markdown'
 import { type TodoEntry, type CommandHelpItem, type CompactionItem, type ToolItem, type TranscriptItem } from './model'
 import { toolDisplayName } from '../toolName'
 import { commandHelpColumnWidth } from './commandHelpLayout'
@@ -167,6 +167,11 @@ export function labelledRule(label: string, width: number): string {
   return `${'─'.repeat(left)}${text}${'─'.repeat(room - left)}`
 }
 
+function TranscriptMarkdown(props: { content: string; syntax: SyntaxStyle; streaming?: boolean }) {
+  const renderNode = createTranscriptMarkdownRenderer(theme)
+  return <markdown content={addHeadingOneSpacing(props.content)} streaming={props.streaming} syntaxStyle={props.syntax} fg={theme.text} bg='transparent' conceal={true} renderNode={renderNode} tableOptions={{ borderColor: theme.dim, cellPaddingX: 1 }} />
+}
+
 function CompactionTranscriptItem(props: { item: CompactionItem; expanded: boolean; syntax: SyntaxStyle; width: number }) {
   // Shown by default; a click hides or shows this card, and Ctrl+O shows every card again.
   const [hidden, setHidden] = createSignal(false)
@@ -191,7 +196,7 @@ function CompactionTranscriptItem(props: { item: CompactionItem; expanded: boole
       </box>
       <Show when={!hidden()}>
         <box flexDirection='column' paddingLeft={1} flexShrink={0}>
-          <markdown content={addHeadingOneSpacing(props.item.summary)} syntaxStyle={props.syntax} fg={theme.text} bg='transparent' conceal={true} tableOptions={{ borderColor: theme.dim, cellPaddingX: 1 }} />
+          <TranscriptMarkdown content={props.item.summary} syntax={props.syntax} />
         </box>
         <box flexShrink={0} onMouseUp={toggle}>
           <text fg={theme.accent} wrapMode='none' truncate={true} selectable={false}>{labelledRule('End of summary', ruleWidth())}</text>
@@ -255,7 +260,7 @@ function TranscriptItemView(props: { item: TranscriptItem; expanded: boolean; sy
   if (item.kind === 'assistant') {
     return (
       <box flexDirection='column' paddingLeft={1} flexShrink={0}>
-        <markdown content={addHeadingOneSpacing(item.text)} streaming={item.streaming} syntaxStyle={props.syntax} fg={t.text} bg='transparent' conceal={true} tableOptions={{ borderColor: t.dim, cellPaddingX: 1 }} />
+        <TranscriptMarkdown content={item.text} streaming={item.streaming} syntax={props.syntax} />
       </box>
     )
   }
@@ -273,7 +278,7 @@ function TranscriptItemView(props: { item: TranscriptItem; expanded: boolean; sy
           <Show when={item.streaming}><Span fg={t.dim} attributes={0}> streaming…</Span></Show>
         </text>
         <box height={1} flexShrink={0} />
-        <markdown content={addHeadingOneSpacing(item.body)} streaming={item.streaming} syntaxStyle={props.syntax} fg={t.text} bg='transparent' conceal={true} tableOptions={{ borderColor: t.dim, cellPaddingX: 1 }} />
+        <TranscriptMarkdown content={item.body} streaming={item.streaming} syntax={props.syntax} />
       </box>
     )
   }
@@ -326,7 +331,7 @@ function TranscriptItemView(props: { item: TranscriptItem; expanded: boolean; sy
           Image result · {item.imageCount} image{item.imageCount === 1 ? '' : 's'}
         </text>
         <Show when={item.text}>
-          <markdown content={addHeadingOneSpacing(item.text)} syntaxStyle={props.syntax} fg={t.text} bg='transparent' conceal={true} tableOptions={{ borderColor: t.dim, cellPaddingX: 1 }} />
+          <TranscriptMarkdown content={item.text} syntax={props.syntax} />
         </Show>
         <For each={item.images}>
           {image => <image source={Buffer.from(image.data, 'base64')} width='100%' height={12} fit='fit' />}

@@ -91,17 +91,19 @@ by ADR-0079: the reply is self-contained, outcome-first, explains the work and i
 limits, and gives the reader enough context to pick it up cold. It explicitly reports checks that
 were not run or failed; a person-owned next step appears only when one is needed. For substantial
 replies with distinct parts, it often uses content-named Markdown `#` and `##` headings; there is no
-fixed heading vocabulary or required template, and short replies may stay in prose. Tables are used
-for mappings and comparisons. Length follows complexity; prose comes first, with lists when the
-information is genuinely parallel, sequential or easier to compare. References and formatting
+fixed heading vocabulary or required template, and short replies may stay in prose. Code fences name
+the language; commands the person must run use a `bash` fence, while short references stay inline.
+Tables are used for mappings and comparisons. Length follows complexity; prose comes first, with
+lists when the information is genuinely parallel, sequential or easier to compare. References and formatting
 follow rules supplied by the active session or host. Progress updates stay in the standard `writing`
 section, not `reporting`. A subagent's reply gives its caller the concise work
 summary and key findings, with useful absolute paths and evidence; snippets appear only when exact
 text is load-bearing, and code merely read is not recapped. The section ships two examples (a
 headed screen change and a heading-free blocked publish), the shape-by-work table and a four-line
-pre-send list; the exact command for a blocked login is in `autonomy`. A person, application or mode
-format takes precedence. The section names no application, is never dynamic, and is never cut; its
-budget is 12,000 characters, with 4,853 currently delivered (ADR-0079).
+pre-send list; the blocked-publish example puts its login command in a `bash` fence. A person,
+application or mode format takes precedence. The section names no application, is never dynamic, and is never cut; its
+budget is 12,000 characters, with 5,081 currently delivered (ADR-0079, amended for language-labeled
+code fences).
 
 ## When a reply may end
 

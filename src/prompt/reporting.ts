@@ -47,7 +47,7 @@ Write in connected prose. Use lists only when the information is genuinely paral
 
 ### References and formatting
 
-Follow the file-link and citation format supplied by the active session or host. Cite files or sources that help the person assess the result or continue the work; do not impose an extra format.
+Follow the file-link and citation format supplied by the active session or host. Cite files or sources that help the person assess the result or continue the work; do not impose an extra format. For code-like output, use fenced Markdown blocks with a language identifier such as \`python\`, \`bash\` or \`typescript\`; put commands the person must run in a \`bash\` block, and keep short references inline.
 
 ### Subagent reports
 
@@ -76,8 +76,13 @@ These examples show possible shapes, not a fixed heading set or wording.
     The release notes for 1.4.0 are written. The tag and the publish did not run: this shell has no
     authenticated GitHub CLI.
 
-    Run \`gh auth login --hostname github.com\` in the project folder; then I can tag \`v1.4.0\` and
-    push. Nothing has been published.
+    Run this in the project folder:
+
+    \`\`\`bash
+    gh auth login --hostname github.com
+    \`\`\`
+
+    Then I can tag \`v1.4.0\` and push. Nothing has been published.
 
 ### Before you send
 

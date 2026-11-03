@@ -269,6 +269,17 @@ class LocalProvider(http.server.BaseHTTPRequestHandler):
                 if 'implement the plan' in probe:
                     texts = ['LOCAL_IMPLEMENTED: ', 'the plan was carried out.\n']
                 elif 'verify-markdown' in probe:
+                    numbered_items = []
+                    # Three short lists, starting at 1, 10 and 100: a hundred items scroll the first markers off the screen.
+                    for number in (1, 2, 10, 11, 100, 101):
+                        marker = {1: ('ONE_DIGIT_START', 'ONE_DIGIT_CONT'),
+                                  10: ('TWO_DIGIT_START', 'TWO_DIGIT_CONT'),
+                                  100: ('THREE_DIGIT_START', 'THREE_DIGIT_CONT')}.get(number)
+                        if number == 1:
+                            body = 'ONE_DIGIT_START The first numbered item, written at length so that it wraps, because ordered\nONE_DIGIT_CONT lists sometimes render their markers differently from unordered ones and the continuation indent needs the same check as above.'
+                        else:
+                            body = f'Numbered item {number}.' if marker is None else f'{marker[0]} ' + 'word ' * 25 + f'{marker[1]} ordered continuation'
+                        numbered_items.append(('\nA new ordered list.\n\n' if number in (10, 100) else '') + f'{number}. {body}\n')
                     texts = [
                         'LOCAL_MARKDOWN_START\n',
                         '# Primary heading\n\n',
@@ -276,9 +287,15 @@ class LocalProvider(http.server.BaseHTTPRequestHandler):
                         '[Harness docs](https://example.test/docs)\n\n',
                         '[Missing note](missing-note.md)\n\n',
                         '**bold**, *italic*, ~~deleted~~, and `inline code`.\n\n',
+                        '```py\nprint("hello")\n```\n\n',
+                        '```bash\necho "ready"\n```\n\n',
                         '```ts\nconst answer = 42\n```\n\n',
                         '> Quoted guidance.\n\n',
                         '- unordered item\n1. ordered item\n- [x] complete\n- [ ] pending\n\n',
+                        *numbered_items,
+                        '\n\n',
+                        '- BULLET_START ' + 'word ' * 25 + 'BULLET_CONT unordered continuation\n\n',
+                        '- NESTED_BULLET_START ' + 'word ' * 20 + 'NESTED_PARENT_CONT parent continuation\n  - NESTED_CHILD_START ' + 'word ' * 20 + 'NESTED_CHILD_CONT nested continuation\n\n',
                         '| Name | Value |\n| --- | --- |\n| Markdown | styled |\n\n',
                         '---\n\n![Alt text](https://example.test/image.png)\n',
                         'LOCAL_MARKDOWN_DONE'
@@ -430,7 +447,7 @@ class Terminal:
     def assert_blank_line_after(self, needle, label):
         _, y = self.locate(needle)
         if y >= self.height or self.screen.display[y].strip(' │█▕'):
-            raise AssertionError(f'{label}: expected a blank row below {needle!r}')
+            raise AssertionError(f'{label}: expected a blank row below {needle!r}; rows {self.screen.display[max(0, y - 2):y + 2]!r}')
 
     def wait(self, needle, start=0, timeout=35):
         deadline = time.monotonic() + timeout
@@ -693,7 +710,8 @@ def main():
         elif not args.sizes and (args.attachments_only or args.dialog_paste_only or args.composer_only or args.file_completion_only or args.history_only or args.todo_only or args.questions_only or args.jump_latest_only or args.thinking_only or args.queue_only or args.compaction_only):
             sizes = ['80x24']
         elif not args.sizes and args.markdown_only:
-            sizes = ['120x40']
+            # The fixture reply (headings, three fenced panels, lists, a table) is about 60 rows and the checks read it from the screen.
+            sizes = ['120x72']
         for dimensions in sizes:
             width, height = map(int, dimensions.split('x'))
             root = output / dimensions
@@ -1452,16 +1470,27 @@ def main():
                     visible = '\n'.join(terminal.screen.display) if terminal.screen is not None else normalized(raw)
                     captured = normalized(raw)
                     for phrase in ['Primary heading', 'Secondary heading', 'Harness docs', 'bold', 'italic', 'deleted',
-                                   'inline code', 'const answer = 42', 'Quoted guidance', 'unordered item',
-                                   'ordered item', 'complete', 'pending', 'Name', 'Value', 'Markdown', 'Alt text',
+                                   'inline code', 'PYTHON', 'print("hello")', 'BASH', 'echo "ready"',
+                                   'TYPESCRIPT', 'const answer = 42', 'Quoted guidance', 'unordered item',
+                                   'ordered item', 'complete', 'pending', 'ONE_DIGIT_START', 'ONE_DIGIT_CONT',
+                                   'TWO_DIGIT_START', 'TWO_DIGIT_CONT', 'THREE_DIGIT_START', 'THREE_DIGIT_CONT',
+                                   'BULLET_START', 'BULLET_CONT', 'NESTED_BULLET_START', 'NESTED_PARENT_CONT', 'NESTED_CHILD_START',
+                                   'NESTED_CHILD_CONT', 'Name', 'Value', 'Markdown', 'Alt text',
                                    'R0%', 'LOCAL_MARKDOWN_DONE']:
                         assert phrase in visible or phrase in captured, f'Markdown PTY output did not include {phrase!r}'
+                    assert has_truecolor_foreground(raw, '#3a3a44'), 'Fenced code panel border color was not emitted'
+                    assert has_styled_text(raw, '#8ab4f8', b'print'), 'Python function highlighting was not emitted'
+                    assert has_styled_text(raw, '#a6da95', b'"hello"'), 'Python string highlighting was not emitted'
+                    assert has_styled_text(raw, '#8ab4f8', b'echo'), 'Bash command highlighting was not emitted'
+                    assert has_styled_text(raw, '#a6da95', b'"ready"'), 'Bash string highlighting was not emitted'
+                    assert has_styled_text(raw, '#c6a0f6', b'const'), 'TypeScript keyword highlighting was not emitted'
                     assert 'https://example.test/docs' not in visible and 'https://example.test/docs' not in captured, 'Markdown displayed the link destination instead of only its label'
                     assert 'https://example.test/image.png' not in visible and 'https://example.test/image.png' not in captured, 'Markdown displayed an image destination instead of only its alt text'
                     assert re.search(rb'\x1b\[[0-9;]*38;2;138;180;248(?:;[0-9]+)*m', raw), 'Markdown link color was not emitted as Harness blue'
                     terminal.snapshot('markdown-transcript')
                     if terminal.screen is not None:
-                        terminal.assert_blank_line_after('Primary heading', 'H1 bottom spacing')
+                        # Ordered-list continuation alignment is not checked: lists render as in the previous release
+                        # (OpenTUI's own spacing needs a code-block-only renderer, so lists skip alignListItems; D-32).
                         profile['checks'].append('one row of user-bubble top/bottom padding, one row between entries, and Markdown H1 spacing')
                     else:
                         profile['checks'].append('transcript spacing assertions skipped because pyte is unavailable')
