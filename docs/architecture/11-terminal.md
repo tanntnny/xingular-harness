@@ -144,13 +144,67 @@ The `/plugins` Proposals tab previews the complete stored files and generated ma
 confirmation. Accept and reject pass the preview hash through the control-key-protected socket;
 the proposal service checks it again. Acceptance leaves the package switched off and untrusted.
 
+## Client terminal and the long-lived harness (ADR-0083)
+
+The OpenTUI frontend is a client of the harness by default: `tui/harnessRuntime.ts` implements the
+same `TerminalRuntime` as `tui/runtime.ts`, so the screen code is shared.
+`XINGULAR_TERMINAL_RUNTIME=inprocess` runs the in-process runtime instead, for plugins that need
+their own terminal components (INV-TUI-8).
+
+- **Parent.** `terminal/liveTerminal.ts::LiveTerminal`, created on the first `terminal.live.*`
+  call, runs each turn as `sessions.run { live: true }` of the terminal's own session id, account,
+  folder, history folder, pinned variant version (`{ dir, scope }`), launch sections, Pi's four
+  default tools plus the launch and switched-on world tools, and no gated tools, as the in-process
+  terminal's policy has it. It journals the live session's native events (a newer
+  `message_update` replaces an unread one; at most 4,000) and serves them by long poll.
+- **Routes.** `terminal.live.state`, `.events { after, wait?, waitMs? }`, `.run { text, model?,
+  effort?, resume? | newHistory?, images?, plan?, goal?, command?, initialBashCommand?,
+  hiddenNotes? }`, `.steer`, `.followUp`, `.followUp.clear`, `.interrupt`, `.close { forget? }`,
+  `.rename`, `.pending`, `.pending.wait`, `.approve`, `.answer`, `.answers`. Once a client exists,
+  `terminal.pending|pending.wait|approve|answer|answers|interrupt` and remote control's send and
+  stop reach it instead of `TerminalController`. Pending decisions include the active reply's
+  subagents.
+- **Client.** It keeps the model catalogue, settings, the skills, prompts and themes it lists, and
+  `ModeChoices`. `$name` skills and goal notes go as `hiddenNotes`; a plugin command is sent as its
+  `/<prefix>:<name>` text; `/compact`, `/tree` navigation and HTML export are command runs;
+  `/new`, `/resume`, fork and import change the file it resumes and close the live session; `/session`
+  takes a history file or the session id its runs record. A `!` command is the run's initial Bash.
+  A plan run sends only the plan's tools (`planTools: 'active'`). A mode with no saved model keeps
+  the current one. Closing the client never interrupts a reply; the parent decides.
+- **What the window draws.** Besides the native events, the journal carries `harness_notice` (a
+  plugin's notice, status line, widget or title, and a failed reply's message), `harness_settled`
+  (the reply is over, with its goal state and history file, even when Pi's loop never started) and
+  `harness_dialog` / `harness_dialog_done` (a plugin's `select`, `confirm`, `input` or `editor`,
+  shown with the window's own dialog and closed when another surface answers first; the window's
+  question dock asks `terminal.pending.wait { ownDialogs: true }` and leaves them out). Before the
+  first turn the parent lists the trusted extensions' commands by loading them without a session;
+  one that cannot load stops the window's start, as in process. A session change or a steer first
+  asks the harness whether a reply really runs, so a window a moment behind its event stream does
+  not refuse `/new` or steer a reply that has ended.
+- **Failure.** When the window's harness is unreachable twice in a row, the window closes cleanly.
+  An error nothing caught in the standalone host (a plugin's timer, say) closes the window first,
+  then exits 1. The long-lived harness logs such an error and keeps its other sessions.
+- **Identity.** A client terminal's runs are harness runs: they record Pi's session id as
+  `nativeSessionId`, where an in-process terminal's record the history file. `/todo`,
+  `/trajectory`, `/context`, subagent rows and remote-control history match by the client's id, and
+  a relaunch resumes its history file.
+- **Long-lived harness.** `xagent daemon start|stop|status` runs one harness per state folder
+  (`terminal/daemon.ts`): a lock (`harness.lock`) refuses a second, and `harness.sock` (owner-only)
+  serves the protocol with `daemon.status` and `daemon.stop`. `xagent --daemon` starts it when
+  needed, prepares its terminal there and runs the client frontend. When the window closes while a
+  reply runs, `terminal.detach` keeps the reply and its live session without a window until it
+  settles; `xagent attach [session]` reattaches a new window to it (`prepare { attach: true }`, same
+  folder and account). Without a running reply, closing the window ends the session as before.
+
 ## Invariants
 
 - **INV-TUI-1** OpenTUI is the only terminal frontend. Pi's `InteractiveMode` is never constructed
   ([ADR-0006](../decisions/ADR-0006-opentui-only-terminal.md)).
 - **INV-TUI-2** The harness owns screen composition, input, scrolling, command routing and plugin
   UI. Pi owns the execution runtime, native history and rich content components. A host owns the
-  PTY and process supervision ([ADR-0001](../decisions/ADR-0001-owned-terminal.md)).
+  PTY and process supervision ([ADR-0001](../decisions/ADR-0001-owned-terminal.md)). In the default
+  client terminal the Pi session runs in the harness process as a live session (ADR-0083); the
+  window keeps composition, input and rendering.
 - **INV-TUI-3** Execution, account isolation, trust, authorization and run recording stay behind
   their existing layers. The terminal adds no second path for any of them; its runs are written
   through the controller and the run store.
@@ -167,8 +221,14 @@ the proposal service checks it again. Acceptance leaves the package switched off
   reconnects and resynchronizes after errors, and cancels its outstanding request on shutdown.
 - **INV-TUI-5** Every resource reload revalidates the original trusted selection; changed or
   revoked code needs review and a fresh terminal.
-- **INV-TUI-6** `sessions.run` stays the embedding and unattended path. The terminal keeps a
-  persistent child instead of opening a session per turn.
+- **INV-TUI-6** `sessions.run` stays the embedding and unattended path. The in-process terminal
+  keeps a persistent child instead of opening a session per turn; the client terminal (below) runs
+  every turn as a `sessions.run { live: true }` of one live session, which is equally persistent.
+- **INV-TUI-8** A client terminal runs no agent loop, tool or Pi extension of its own. It draws the
+  live session from its native events and its own read of the history file, and every action is a
+  protected `terminal.live.*` call (ADR-0083). Plugin presentation that needs an in-process
+  terminal (custom components, key handlers, renderers, shortcuts) is unavailable there, as it is
+  in a host: extensions get the dialog, notice, status and text-widget subset.
 - **INV-TUI-7** Harness core commands use unprefixed names and are registered independently of
   feature-plugin command metadata. This includes `/doctor`, `/worktree`, `/trajectory`, `/subagents`
   and `/agents`; `/history` remains session-branch navigation, and `/mcp` remains a Connections
@@ -438,6 +498,10 @@ aborts, and the run records `interrupted` with reason `stalled`. Pi's abort repo
 has run for thirty minutes ends the same way, and a reply waiting on an approval or question is never
 cut short. An interrupt, a stall included, also ends a settling reply's wait for its subagents
 (`terminal.subagents.delivery`).
+
+The client terminal (ADR-0083) has no controller of its own: its replies are harness runs, so
+`runTurn` heartbeats and applies the same stall rule (page 02, INV-RUN-14), and the live session of a
+stalled reply is closed. The in-process runtime keeps the controller's watch.
 
 ## Subagent activity monitor
 

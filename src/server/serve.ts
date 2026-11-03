@@ -10,12 +10,19 @@ export interface Served {
   shutdown(): Promise<void>
 }
 
-/** Registers the method table on `peer` and forwards events and notices to it. */
-export function attach(harness: Harness, peer: RpcPeer): void {
+/**
+ * Registers the method table on `peer` and forwards events and notices to it. Returns what stops the
+ * forwarding, for a peer that goes away before the harness does (a socket connection).
+ */
+export function attach(harness: Harness, peer: RpcPeer): () => void {
   for (const [name, handler] of Object.entries(methods(harness))) peer.handle(name, handler)
   peer.handle('harness.methods', () => peer.methods())
-  harness.runs.listen((event) => peer.send({ event }))
-  harness.bus.on((notice) => peer.send({ notice }))
+  const stopEvents = harness.runs.listen((event) => peer.send({ event }))
+  const stopNotices = harness.bus.on((notice) => peer.send({ notice }))
+  return () => {
+    stopEvents()
+    stopNotices()
+  }
 }
 
 export function serve(harness: Harness, transport: Transport): Served {

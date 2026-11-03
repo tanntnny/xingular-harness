@@ -14,22 +14,23 @@ describe('what an extension can ask and show without a terminal', () => {
   it('turns a choice, a yes or no, and typed text into questions', async () => {
     const choice = host({ selected: ['Block'] })
     expect(await choice.ui.select('Allow this command?', ['Allow', 'Block'])).toBe('Block')
-    expect(choice.asked[0]).toEqual({ question: 'Allow this command?', options: [{ label: 'Allow', recommended: true }, { label: 'Block' }], multiSelect: false, allowText: false })
+    // Each question says which dialog asked it, so a terminal can show the dialog itself (ADR-0083).
+    expect(choice.asked[0]).toEqual({ question: 'Allow this command?', options: [{ label: 'Allow', recommended: true }, { label: 'Block' }], multiSelect: false, allowText: false, dialog: { kind: 'select', title: 'Allow this command?', options: ['Allow', 'Block'] } })
 
     const yes = host({ selected: ['Yes'] })
     expect(await yes.ui.confirm('Clear the session?', 'All messages will be lost.')).toBe(true)
-    expect(yes.asked[0]).toMatchObject({ question: 'Clear the session?\n\nAll messages will be lost.', options: [{ label: 'Yes' }, { label: 'No', recommended: true }] })
+    expect(yes.asked[0]).toMatchObject({ question: 'Clear the session?\n\nAll messages will be lost.', options: [{ label: 'Yes' }, { label: 'No', recommended: true }], dialog: { kind: 'confirm', title: 'Clear the session?', message: 'All messages will be lost.' } })
     expect(await host({ selected: ['No'] }).ui.confirm('Sure?', '')).toBe(false)
     // No answer is a no, never a yes.
     expect(await host({ selected: [] }).ui.confirm('Sure?', '')).toBe(false)
 
     const typed = host({ selected: [], text: 'main' })
     expect(await typed.ui.input('Branch', 'a name')).toBe('main')
-    expect(typed.asked[0]).toMatchObject({ question: 'Branch (a name)', options: [{ label: 'Type your response', recommended: true }], allowText: true })
+    expect(typed.asked[0]).toMatchObject({ question: 'Branch (a name)', options: [{ label: 'Type your response', recommended: true }], allowText: true, dialog: { kind: 'input', title: 'Branch', placeholder: 'a name' } })
     expect(await host({ selected: [] }).ui.input('Branch')).toBeUndefined()
     const editor = host({ selected: [], text: 'edited' })
     expect(await editor.ui.editor('Edit', 'before')).toBe('edited')
-    expect(editor.asked[0]).toMatchObject({ options: [{ label: 'Type your response', recommended: true }], allowText: true })
+    expect(editor.asked[0]).toMatchObject({ options: [{ label: 'Type your response', recommended: true }], allowText: true, dialog: { kind: 'editor', title: 'Edit', prefill: 'before' } })
     const empty = host({ selected: [] })
     expect(await empty.ui.select('Pick', [])).toBeUndefined()
     expect(empty.asked).toHaveLength(0)

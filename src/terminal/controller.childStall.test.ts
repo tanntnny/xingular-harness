@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { RunEvent, RunRecord } from '../sessions/contracts'
 import type { ActiveRun } from '../sessions/registry'
 import { TerminalController, type ControllerHooks } from './controller'
-import { REPLY_STALL_MS, TOOL_STALL_MS } from './stallWatch'
+import { REPLY_STALL_MS, TOOL_STALL_MS } from '../sessions/stallWatch'
 
 function setup() {
   const interrupt = vi.fn(async () => {})

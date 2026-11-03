@@ -20,6 +20,7 @@ import type { ToolSpec } from '../tools/types'
 import { PLAN_REPAIR_CUSTOM_TYPE, PLAN_REPAIR_INSTRUCTIONS, finalizePlanOutcome } from './planMode'
 import { MAX_CHECKPOINT_CHECKS, MAX_CHECKPOINT_FILES, MAX_CHECKPOINT_SUMMARY, type Checkpoint, type CheckpointCheck, type TodoItem } from './contracts'
 import { withTransientRetry } from '../pi/retryPolicy'
+import { STALL_CHECK_MS, onlyWaitingForChildren, replyStalled } from './stallWatch'
 import { activeToolBeat, derivedReason, type SliceState } from './workSlice'
 import type { GoalController, GoalState } from './goal'
 import { goalStopOutcome, handoffFields, stopCheckpointReason, stopSummary } from './goalStop'
@@ -48,6 +49,12 @@ export interface TurnParams {
   /** Child runs may not gain tools registered by extensions outside their snapshot. */
   restrictTools?: boolean
   settle?: () => Promise<void>
+  /**
+   * A live session (ADR-0083): called instead of disposing the Pi session when the run settles, so
+   * the next run of the conversation can use it again. `close` asks to end the session instead,
+   * because the turn stalled and the session cannot be trusted.
+   */
+  release?: (close?: boolean) => void
   cwd: string
   /** Canonical project root pinned to this run. */
   workspaceRoot: string
@@ -56,8 +63,10 @@ export interface TurnParams {
   /** A top-level attended plan run: one hidden repair turn if the reply lacks its plan block. */
   repairPlan?: boolean
   sessionDir: string
-  /** The native history to open, or `null` to start a fresh one. */
+  /** The native history to open, or `null` to continue the folder's newest one or start one. */
   historyFile: string | null
+  /** Start a new history even when the folder has one (a new conversation). */
+  newHistory?: boolean
   model: string | null
   effort?: Effort | null
   text: string
@@ -98,6 +107,8 @@ export interface TurnParams {
   system: string
   /** Changed state, saved as a hidden message in native history before the request. */
   update: ContextUpdate | null
+  /** Other hidden messages saved before the request (`SessionRunInput.hiddenNotes`). */
+  hiddenNotes?: Array<{ customType: string; content: string }>
   /** Run a session command instead of a prompt: compact, navigate with a summary, or export. */
   command?: SessionCommand
   /** The work slice this reply is bounded by (PROP-0041); the guard updates it as the reply runs. */
@@ -163,6 +174,14 @@ export interface PiSessionLike {
   compact?(instructions?: string): Promise<unknown>
   navigateTree?(targetId: string, options?: { summarize?: boolean; customInstructions?: string }): Promise<{ editorText?: string; cancelled: boolean }>
   exportToHtml?(outputPath?: string): Promise<string>
+  /** The native history file the session writes, once it has one. */
+  readonly sessionFile?: string
+  /**
+   * Points an open session at the next run of its conversation (ADR-0083): that run's gate, tools,
+   * extension host and run-scoped extensions replace the previous run's. Only a session the factory
+   * built for reuse has it; the caller checks that the run's pins equal the session's first.
+   */
+  rebind?(input: SessionFactoryInput): Promise<void>
 }
 
 export interface ToolGate {
@@ -177,7 +196,7 @@ export interface ToolGate {
   ask?(toolNames: readonly string[]): void
 }
 
-export type SessionFactory = (input: {
+export interface SessionFactoryInput {
   params: TurnParams
   /** Pi's own tools and the custom tools switched on for this turn, in order. */
   allow: string[]
@@ -187,7 +206,9 @@ export type SessionFactory = (input: {
   runtime: () => Promise<ModelRuntime>
   /** Where a loaded extension's dialogs and notices go. Without it extensions have no interface. */
   extensions?: ExtensionHost
-}) => Promise<PiSessionLike>
+}
+
+export type SessionFactory = (input: SessionFactoryInput) => Promise<PiSessionLike>
 
 /** A one-line description of a tool call, for an approval request or the activity list. */
 export function summarize(input: unknown, toolName = ''): string {
@@ -214,6 +235,8 @@ export function resultSize(result: unknown): number | null {
 }
 
 const MAX_EVIDENCE_CHARS = 24_000
+/** How long a stalled turn gets to unwind after its abort before the session is closed under it. */
+const STALL_ABORT_GRACE_MS = 30_000
 const MAX_SYSTEM_PROMPT_CHARS = 100_000
 const MAX_TOOL_SPECS = 120
 
@@ -367,20 +390,54 @@ export async function runTurn(run: ActiveRun, session: PiSessionLike, params: Tu
   const slice = params.slice?.state ?? null
   const ledger: SliceLedger = { files: new Map(), checks: [], lastText: '', todo: [] }
   const bashCommands = new Map<string, string>()
-  const heartbeat = slice
-    ? setInterval(() => {
-        run.emit('heartbeat', {
-          steps: slice.steps,
-          elapsedMs: Date.now() - slice.startedAt,
-          lastTool: slice.lastTool,
-          compactions: slice.compactions,
-          slice: slice.slice,
-          maxToolCalls: params.slice?.maxToolCalls ?? 0,
-          ...activeToolBeat(toolsInFlight)
-        })
-      }, 30_000)
-    : null
-  heartbeat?.unref?.()
+  const startedAt = Date.now()
+  // Every reply reports liveness (INV-RUN-14): the sweep settles a record that went quiet, and a long
+  // tool or a person's pause must not look like one.
+  const heartbeat = setInterval(() => {
+    run.emit('heartbeat', {
+      steps: slice?.steps ?? 0,
+      elapsedMs: Date.now() - (slice?.startedAt ?? startedAt),
+      lastTool: slice?.lastTool ?? null,
+      compactions: slice?.compactions ?? 0,
+      slice: slice?.slice ?? 1,
+      maxToolCalls: params.slice?.maxToolCalls ?? 0,
+      ...activeToolBeat(toolsInFlight)
+    })
+  }, 30_000)
+  heartbeat.unref?.()
+
+  // A reply whose model request never came back, or whose tool never returned, is ended with the
+  // reason `stalled` instead of holding its session for ever (the provider's own timeout is longer).
+  // A person's pending decision and a wait for subagents (each watched by its own run) are not silence.
+  let progressAt = Date.now()
+  let stalled = false
+  // The session goes back (or is disposed) once, by the run's end or, when a stalled turn will not unwind, by the grace timer.
+  let handedBack = false
+  const handBack = (close: boolean): void => {
+    if (handedBack) return
+    handedBack = true
+    if (params.release) params.release(close)
+    else session.dispose()
+  }
+  let abortGrace: ReturnType<typeof setTimeout> | null = null
+  const stallGuard = setInterval(() => {
+    if (run.finished || stalled) return
+    const at = Date.now()
+    const tools = [...toolsInFlight.values()]
+    if (run.waiting || onlyWaitingForChildren(tools.map((tool) => tool.name))) {
+      progressAt = at
+      return
+    }
+    if (!replyStalled({ now: at, progressAt, runningTools: tools.map((tool) => tool.at) })) return
+    stalled = true
+    aborted = true
+    run.finish('interrupted', undefined, 'stalled', 'stalled')
+    session.abortBash?.()
+    void Promise.resolve(session.abort()).catch(() => undefined)
+    abortGrace = setTimeout(() => handBack(true), STALL_ABORT_GRACE_MS)
+    abortGrace.unref?.()
+  }, STALL_CHECK_MS)
+  stallGuard.unref?.()
 
   const systemPrompt = limitedText(session.systemPrompt ?? params.system, MAX_SYSTEM_PROMPT_CHARS)
   const contextUpdate = limitedText(params.update?.content ?? '', MAX_SYSTEM_PROMPT_CHARS)
@@ -463,6 +520,7 @@ export async function runTurn(run: ActiveRun, session: PiSessionLike, params: Tu
   }
 
   const unsubscribe = session.subscribe((event) => {
+    progressAt = Date.now()
     switch (event.type) {
       case 'message_start': {
         const { message } = event as Extract<PiEvent, { type: 'message_start' }>
@@ -622,6 +680,8 @@ export async function runTurn(run: ActiveRun, session: PiSessionLike, params: Tu
       case 'auto_retry_end': {
         const retry = event as unknown as Record<string, unknown>
         run.emit('retry.ended', { attempt: numberField(retry, 'attempt', 1), success: retry.success === true, ...(stringField(retry, 'finalError') ? { error: stringField(retry, 'finalError').slice(0, 1000) } : {}) })
+        // The request that failed was retried and answered: the reply did not fail.
+        if (retry.success === true) lastError = null
         break
       }
       case 'compaction_start': {
@@ -659,6 +719,10 @@ export async function runTurn(run: ActiveRun, session: PiSessionLike, params: Tu
       if (!session.sendCustomMessage) throw new HarnessError('provider_error', 'The Pi session cannot receive the compiled context update.')
       // The delivered snapshot is saved with the message, so the next turn compares against what Pi really holds.
       await session.sendCustomMessage({ customType: CONTEXT_MESSAGE_TYPE, content: params.update.content, display: false, details: { [CONTEXT_SNAPSHOT_KEY]: params.update.snapshot } }, { triggerTurn: false })
+    }
+    for (const note of params.hiddenNotes ?? []) {
+      if (!session.sendCustomMessage) throw new HarnessError('provider_error', 'The Pi session cannot receive a hidden note.')
+      await session.sendCustomMessage({ customType: note.customType, content: note.content, display: false, details: {} }, { triggerTurn: false })
     }
     const command = /^\/(\S+)/.exec(params.text)?.[1]
     if (params.preamble && command) {
@@ -792,9 +856,11 @@ export async function runTurn(run: ActiveRun, session: PiSessionLike, params: Tu
     if (aborted) run.finish('interrupted', undefined, undefined, 'user_abort')
     else run.finish('failed', { code: 'provider_error', message: error instanceof Error ? error.message : String(error) })
   } finally {
-    if (heartbeat) clearInterval(heartbeat)
+    clearInterval(heartbeat)
+    clearInterval(stallGuard)
+    if (abortGrace) clearTimeout(abortGrace)
     unsubscribe()
-    session.dispose()
+    handBack(stalled)
   }
 }
 
@@ -890,7 +956,11 @@ export function registeredBy(loader: { getExtensions(): { extensions: readonly u
 }
 
 /** Opens a Pi session for one turn: the account's runtime, the compiled prompt, and the gated tools. */
-export const piSessionFactory: SessionFactory = async ({ params, allow, gate, tools, runtime: loadRuntime, extensions: host }) => {
+export const piSessionFactory: SessionFactory = async (input) => {
+  const { params, allow, runtime: loadRuntime, extensions: host } = input
+  // What belongs to the current run. A live session (ADR-0083) swaps it at the start of every run,
+  // so everything below that is per run reads it here rather than closing over the first run's.
+  let bound: SessionFactoryInput = input
   const pi = await loadPi()
   const { Type } = await import('typebox')
   const runtime = await loadRuntime()
@@ -905,9 +975,9 @@ export const piSessionFactory: SessionFactory = async ({ params, allow, gate, to
   }
 
   const workspaceBash = createWorkspaceBashOperations(params.workspaceRoot, {
-    bypassWorkspaceBoundary: (request) => gate.workspaceBoundaryBypass?.('bash', { command: request.command, cwd: request.cwd, workspaceRoot: request.workspaceRoot }) ?? Promise.resolve(false),
-    requestWorkspaceWriteScope: (request) => gate.requestWorkspaceWriteScope?.('bash', { command: request.command, workspaceWriteScope: 'outside' }, request.reason) ?? Promise.resolve(false),
-    workspaceWriteScope: () => params.plan ? 'read-only' : undefined
+    bypassWorkspaceBoundary: (request) => bound.gate.workspaceBoundaryBypass?.('bash', { command: request.command, cwd: request.cwd, workspaceRoot: request.workspaceRoot }) ?? Promise.resolve(false),
+    requestWorkspaceWriteScope: (request) => bound.gate.requestWorkspaceWriteScope?.('bash', { command: request.command, workspaceWriteScope: 'outside' }, request.reason) ?? Promise.resolve(false),
+    workspaceWriteScope: () => bound.params.plan ? 'read-only' : undefined
   })
   const gatedExtension = (api: ExtensionAPI) => {
     const writeAuthorizations = new Map<string, WorkspaceWriteAuthorization>()
@@ -932,17 +1002,18 @@ export const piSessionFactory: SessionFactory = async ({ params, allow, gate, to
           }
         } catch (error) {
           const reason = error instanceof Error ? error.message : 'The active project workspace could not be verified.'
-          params.onRefusal?.(event.toolCallId, event.toolName, { code: 'workspace', reason })
+          bound.params.onRefusal?.(event.toolCallId, event.toolName, { code: 'workspace', reason })
           return { block: true, reason }
         }
       }
+      const gate = bound.gate
       const refusal = gate.checkDetailed ? await gate.checkDetailed(event.toolName, event.input) : null
       if (!gate.checkDetailed) {
         const reason = await gate.check(event.toolName, event.input)
         if (reason) return { block: true, reason }
       }
       if (refusal) {
-        params.onRefusal?.(event.toolCallId, event.toolName, refusal)
+        bound.params.onRefusal?.(event.toolCallId, event.toolName, refusal)
         return { block: true, reason: refusal.reason }
       }
       if (authorization) {
@@ -956,15 +1027,24 @@ export const piSessionFactory: SessionFactory = async ({ params, allow, gate, to
   const agentDir = params.account.configDir
   const automaticSettings = params.automatic ? pi.SettingsManager.inMemory({}) : undefined
   const settingsManager = withTransientRetry(automaticSettings ?? pi.SettingsManager.create(params.cwd, agentDir))
-  const resourceLoader = await loadResources(pi, params, gatedExtension, automaticSettings)
+  // The run's own extensions (lineage, subagents, checkpoint, slice, goal, first-party hooks) are
+  // loaded in slots that can be emptied and filled with the next run's (ADR-0083).
+  const slots = (params.inline ?? []).map((extension) => runSlot(extension))
+  let activated: string[] | null = null
+  const resourceLoader = await loadResources(pi, {
+    ...params,
+    inline: slots.map((slot) => slot.extension),
+    activatedPlugins: (ids) => { activated = ids; bound.params.activatedPlugins?.(ids) }
+  }, gatedExtension, automaticSettings)
   const loaded = registeredBy(resourceLoader)
   // A tool an extension brought is offered to the model, and asks before every call: the person
   // trusted the code to load, and still decides each thing it does through a tool.
   const extensionTools = [...new Set(loaded.flatMap((extension) => extension.tools))].filter((name) => !allow.includes(name) && !params.restrictTools)
-  gate.ask?.([...new Set(loaded.flatMap((extension) => extension.tools))])
+  const askedTools = [...new Set(loaded.flatMap((extension) => extension.tools))]
+  bound.gate.ask?.(askedTools)
 
   let supportsImageInput = false
-  const customTools = tools
+  const customTools = input.tools
     .filter((tool) => allow.includes(tool.name))
     .map((spec) =>
       pi.defineTool({
@@ -972,8 +1052,10 @@ export const piSessionFactory: SessionFactory = async ({ params, allow, gate, to
         label: spec.label,
         description: spec.description,
         parameters: spec.parameters(Type) as never,
-        execute: async (_toolCallId, input) => {
-          const result = await spec.execute(input as Record<string, unknown>)
+        execute: async (_toolCallId, toolInput) => {
+          // The current run's tool of this name: it is bound to that run's record and gate.
+          const current = bound.tools.find((tool) => tool.name === spec.name) ?? spec
+          const result = await current.execute(toolInput as Record<string, unknown>)
           const output = typeof result === 'string' ? { text: result } : result
           const images = [...(output.image ? [output.image] : []), ...(output.images ?? [])]
           if (images.length && !supportsImageInput) throw new HarnessError('image_input_unsupported', 'This model cannot inspect images. Choose a model that supports image input.')
@@ -995,14 +1077,21 @@ export const piSessionFactory: SessionFactory = async ({ params, allow, gate, to
     customTools: customTools as never,
     resourceLoader,
     settingsManager,
-    sessionManager: params.historyFile ? pi.SessionManager.open(params.historyFile, params.sessionDir, params.cwd) : pi.SessionManager.continueRecent(params.cwd, params.sessionDir)
+    sessionManager: params.historyFile
+      ? pi.SessionManager.open(params.historyFile, params.sessionDir, params.cwd)
+      : params.newHistory ? pi.SessionManager.create(params.cwd, params.sessionDir) : pi.SessionManager.continueRecent(params.cwd, params.sessionDir)
   })
   if (loaded.length && host) {
+    // Dialogs and notices go to whichever run is current; between runs nobody can answer.
+    const current: ExtensionHost = {
+      ask: (question) => bound.extensions ? bound.extensions.ask(question) : Promise.reject(new HarnessError('run_not_active', 'No reply is running in this session.')),
+      notice: (notice) => bound.extensions?.notice(notice)
+    }
     // Without this an extension never hears that its session started and has nobody to ask.
     await session.bindExtensions({
-      uiContext: extensionUi(host),
+      uiContext: extensionUi(current),
       mode: 'rpc',
-      onError: (error) => host.notice({ kind: 'error', text: `${error.event}: ${error.error}`.slice(0, 1000), extension: error.extensionPath })
+      onError: (error) => current.notice({ kind: 'error', text: `${error.event}: ${error.error}`.slice(0, 1000), extension: error.extensionPath })
     })
   }
   const piSession = session as unknown as PiSessionLike & { agent: { streamFunction: typeof runtime.streamSimple } }
@@ -1023,5 +1112,64 @@ export const piSessionFactory: SessionFactory = async ({ params, allow, gate, to
       }
     })
   }
+  const rebindable = slots.every((slot) => slot.rebindable())
+  if (rebindable && !params.automatic) {
+    Object.defineProperty(piSession, 'rebind', {
+      configurable: true,
+      value: async (next: SessionFactoryInput): Promise<void> => {
+        const names = (next.params.inline ?? []).map((extension) => extension.name)
+        if (names.length !== slots.length || names.some((name, index) => name !== slots[index].name)) {
+          throw new HarnessError('session_pin_mismatch', 'The next run loads different extensions than this live session.')
+        }
+        bound = next
+        for (const [index, slot] of slots.entries()) await slot.fill(next.params.inline![index])
+        next.gate.ask?.(askedTools)
+        if (activated) next.params.activatedPlugins?.(activated)
+      }
+    })
+  }
   return piSession
+}
+
+/**
+ * One run-scoped extension in a live session. Pi keeps an extension's handlers in its own table and
+ * `on` returns the way to remove one, so a slot removes the last run's handlers and runs the next
+ * run's factory against the same extension. Only `on` is tracked: a run-scoped extension that
+ * registers tools or commands keeps them, and makes the session one that is not reused.
+ */
+function runSlot(extension: InlineExtension) {
+  let api: ExtensionAPI | null = null
+  let offs: Array<() => void> = []
+  let registers = false
+  const tracked = (target: ExtensionAPI): ExtensionAPI => new Proxy(target, {
+    get(object, key, receiver) {
+      if (key === 'on') {
+        return (event: string, handler: unknown) => {
+          const off = (object.on as (event: string, handler: unknown) => unknown)(event, handler)
+          if (typeof off === 'function') offs.push(off as () => void)
+          else registers = true
+          return off
+        }
+      }
+      if (typeof key === 'string' && key.startsWith('register')) registers = true
+      return Reflect.get(object, key, receiver)
+    }
+  })
+  return {
+    name: extension.name,
+    extension: {
+      name: extension.name,
+      factory: (target: ExtensionAPI) => {
+        api = target
+        return (extension.factory as (pi: ExtensionAPI) => unknown)(tracked(target))
+      }
+    } as InlineExtension,
+    rebindable: () => api !== null && !registers,
+    async fill(next: InlineExtension): Promise<void> {
+      if (!api) throw new HarnessError('session_pin_mismatch', 'This live session never loaded its run extensions.')
+      for (const off of offs.splice(0)) off()
+      offs = []
+      await (next.factory as (pi: ExtensionAPI) => unknown)(tracked(api))
+    }
+  }
 }

@@ -96,6 +96,10 @@ harness → host   { v: 1, id, call, params }          host → harness   { v: 1
 - Run streams also carry `tool.refused` with the call id, name, refusal code and bounded reason.
   Run records expose nullable `terminalCode`; `terminalReason` remains descriptive text. Older
   records and events may omit the code. Trajectory search exposes both fields (pages 02 and 08).
+- `sessions.run` accepts `live: true` (ADR-0083): the Pi session stays open for the conversation's
+  next run. `sessions.live`, `sessions.close`, `sessions.followUp` and `sessions.followUp.clear`
+  manage live sessions (page 02). A run refused because the live session is replying fails with
+  `session_busy`.
 - Errors carry a stable `code`, a message and an optional hint (`core/errors.ts`).
 
 ## Browser configuration and extension (ADR-0082)
@@ -199,6 +203,23 @@ export instead of prompt submission (page 02). These retain tracked run lifecycl
 Saved-history helpers currently validate file scope but do not themselves fence active work;
 host adapters must not infer concurrency safety from method availability.
 
+## Socket transport and the long-lived harness (ADR-0083)
+
+`server/socket.ts::serveSocket` serves the same framing on a Unix socket, readable and writable by
+its owner only, with one peer per connection; a closed connection stops receiving events and
+notices. `connectHarness` is the matching client. The long-lived harness (page 11) adds
+`daemon.status` → `{ pid, startedAt, variantScope, live, detached }` and `daemon.stop` on its own
+socket only.
+
+| Method | Input | Reply |
+|---|---|---|
+| `terminal.detach` | `{ sessionId }` | `{ detached, activeRunId }`; a client terminal with a running reply keeps it without a window, anything else is disposed |
+| `terminal.detached` | `{}` | `{ sessions: DetachedTerminal[] }`: session id, folder, history folder, account, active run, history file, time |
+| `terminal.takeRelaunch` | `{ sessionId }` | the `TerminalRelaunch` the session asked for, or null |
+
+`terminal.prepare` accepts `attach: true` to reconnect to a detached session of the same id, folder,
+history folder and account. The private `terminal.live.*` routes are listed on page 11.
+
 ## Invariants
 
 - **INV-SRV-1** `src/server/methods.ts` is the contract for every non-Node host. Adding a method
@@ -207,7 +228,8 @@ host adapters must not infer concurrency safety from method availability.
 - **INV-SRV-2** A method handler calls the same in-process API a Node application uses. The server
   holds no logic of its own beyond parameter checking.
 - **INV-SRV-3** Events reach the host only after they are persisted and redacted (`INV-RUN-3`).
-- **INV-SRV-4** Changing the framing or `PROTOCOL_VERSION` is an architecture change.
+- **INV-SRV-4** Changing the framing or `PROTOCOL_VERSION` is an architecture change. A transport
+  that carries the same framing (stdio, the owner-only socket) is not; a new one is listed here.
 - **INV-SRV-5** The harness works with none of the host calls supplied (`INV-EXT-2`).
 - **INV-SRV-6** After a change to the server, the CLI or startup, `npm run prove` must pass: it
   starts the server on a throwaway data root with no application present and exercises accounts,

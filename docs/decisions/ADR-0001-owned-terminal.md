@@ -4,9 +4,9 @@ title: Own the terminal frontend and keep Pi as the session runtime
 status: accepted
 created: 2026-10-17
 updated: 2026-10-17
-related: []
+related: [ADR-0083]
 supersedes: null
-superseded_by: null
+superseded_by: ADR-0083 (runtime only)
 ---
 
 # ADR-0001 — Own the terminal frontend and keep Pi as the session runtime
@@ -85,3 +85,10 @@ had been reached. The isolated credentials were deleted, the source sign-in rema
 and terminal restoration passed; see the [live evidence](../evidence/terminal-2026-10-17-followup/live-codex/README.md).
 Successful live streaming/tool acceptance and App renderer acceptance remain open. This evidence
 does not establish a released package or exhaustive platform/visual parity.
+
+## Partly superseded — 2026-11-03
+
+[ADR-0083](ADR-0083-one-live-session-runtime.md) moved the terminal's persistent Pi runtime into
+the harness as a live session that every front end reaches through server methods; the client
+terminal is the default. The owned OpenTUI presentation decided here stays. The in-process runtime
+this record describes remains available with `XINGULAR_TERMINAL_RUNTIME=inprocess`.

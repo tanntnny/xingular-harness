@@ -19,7 +19,7 @@ import { defaultAssets } from './terminals'
 import { SOCKET_ENV, TOKEN_ENV, socketCall, type SocketConnection } from './client'
 import { SessionSocket } from './socket'
 import { LOG_READ_CHUNK_BYTES } from './logs'
-import { REPLY_STALL_MS } from './stallWatch'
+import { REPLY_STALL_MS } from '../sessions/stallWatch'
 
 const open: Harness[] = []
 afterEach(async () => {

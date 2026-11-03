@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+- **One session runtime: the terminal is now a client of the harness (ADR-0083).**
+  - A conversation keeps one open Pi session across turns (`sessions.run { live: true }`), so
+    steering, queued follow-ups and plugin state carry from one turn to the next. `sessions.live`,
+    `sessions.close`, `sessions.followUp` and `sessions.followUp.clear` manage them. App chat turns
+    use it.
+  - `xagent` runs no agent loop in its window any more: every turn is a harness run, with the same
+    gate, records, plan mode, goals and subagents as a host's. `XINGULAR_TERMINAL_RUNTIME=inprocess`
+    runs the previous in-process runtime. Plugins in the new terminal get the host's interface
+    (dialogs, notices, status lines and text widgets); custom terminal components, key handlers,
+    renderers, shortcuts and themes need the in-process runtime.
+  - `xagent daemon start|stop|status` runs one long-lived harness per state folder; `xagent --daemon`
+    windows use it, so a reply keeps running when its window closes, and `xagent attach` reconnects a
+    window to it. The protocol is also served on an owner-only socket (`server/socket.ts`).
+  - Terminal runs now record Pi's session id as `nativeSessionId`, as host runs do; in-process
+    terminal runs keep recording their history file.
+  - `/session` takes a saved conversation's session id as well as its file.
+- **Every harness run ends when it stops making progress.** A reply that produces nothing for fifteen
+  minutes (thirty with a tool running; a pending approval or a wait for subagents does not count) is
+  interrupted with reason `stalled`, whatever front end started it, and its live session is closed
+  rather than reused. Every run now sends the 30-second `heartbeat`, not only runs with a work slice,
+  so a long quiet tool is no longer settled as `owner_gone`.
+- **A reply whose provider request timed out and was retried successfully is now recorded as
+  completed**, not failed.
+- **A terminal window whose terminal closed no longer leaves its process running.** The frontend is
+  ended three seconds after the hang-up if it has not exited by itself.
+
 - **Connect the agent to your own signed-in Brave profile (ADR-0082).**
   - A device-local browser backend. `/settings` → Browser offers **Isolated browser** or **Brave
     profile**; choosing Brave asks first, naming the extension's `debugger` permission, that a

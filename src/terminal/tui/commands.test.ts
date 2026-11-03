@@ -632,3 +632,18 @@ it('offers /doctor as a first-class command and accepts former routes as hidden 
   expect(await commands.execute('/plugin:doctor')).toBe(true)
   expect(ui.custom).toHaveBeenCalledTimes(2)
 })
+
+describe('/session arguments', () => {
+  it('names a conversation by its file or by the session id in its header', async () => {
+    const { mkdtempSync, writeFileSync } = await import('node:fs')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    const { sessionFileFor } = await import('./commands')
+    const folder = mkdtempSync(join(tmpdir(), 'session-arg-'))
+    const file = join(folder, '2026_abc.jsonl')
+    writeFileSync(file, `${JSON.stringify({ type: 'session', id: 'abc-123', cwd: folder })}\n`)
+    expect(sessionFileFor('abc-123', folder, folder)).toBe(file)
+    expect(sessionFileFor(file, '/', folder)).toBe(file)
+    expect(sessionFileFor('missing-id', folder, folder)).toBe(join(folder, 'missing-id'))
+  })
+})

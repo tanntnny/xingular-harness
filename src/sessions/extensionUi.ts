@@ -51,25 +51,25 @@ export function extensionUi(host: ExtensionHost): ExtensionUIContext {
     select: (title: string, options: string[], opts?: { signal?: AbortSignal; timeout?: number }) =>
       dismissable(
         options.length
-          ? host.ask({ question: clip(title), options: options.map((label, index) => ({ label, ...(index === 0 ? { recommended: true } : {}) })), multiSelect: false, allowText: false }).then((answer) => answer.selected[0])
+          ? host.ask({ question: clip(title), options: options.map((label, index) => ({ label, ...(index === 0 ? { recommended: true } : {}) })), multiSelect: false, allowText: false, dialog: { kind: 'select', title: clip(title), options: options.map(clip) } }).then((answer) => answer.selected[0])
           : Promise.resolve(undefined),
         undefined,
         opts
       ),
     confirm: (title: string, message: string, opts?: { signal?: AbortSignal; timeout?: number }) =>
       dismissable(
-        host.ask({ question: clip(message ? `${title}\n\n${message}` : title), options: [{ label: 'Yes' }, { label: 'No', recommended: true }], multiSelect: false, allowText: false }).then((answer) => answer.selected[0] === 'Yes'),
+        host.ask({ question: clip(message ? `${title}\n\n${message}` : title), options: [{ label: 'Yes' }, { label: 'No', recommended: true }], multiSelect: false, allowText: false, dialog: { kind: 'confirm', title: clip(title), ...(message ? { message: clip(message) } : {}) } }).then((answer) => answer.selected[0] === 'Yes'),
         false,
         opts
       ),
     input: (title: string, placeholder?: string, opts?: { signal?: AbortSignal; timeout?: number }) =>
       dismissable(
-        host.ask({ question: clip(placeholder ? `${title} (${placeholder})` : title), options: [{ label: 'Type your response', recommended: true }], multiSelect: false, allowText: true }).then((answer) => answer.text || undefined),
+        host.ask({ question: clip(placeholder ? `${title} (${placeholder})` : title), options: [{ label: 'Type your response', recommended: true }], multiSelect: false, allowText: true, dialog: { kind: 'input', title: clip(title), ...(placeholder ? { placeholder: clip(placeholder) } : {}) } }).then((answer) => answer.text || undefined),
         undefined,
         opts
       ),
     editor: (title: string, prefill?: string) =>
-      host.ask({ question: clip(prefill ? `${title}\n\n${prefill}` : title), options: [{ label: 'Type your response', recommended: true }], multiSelect: false, allowText: true }).then((answer) => answer.text || undefined),
+      host.ask({ question: clip(prefill ? `${title}\n\n${prefill}` : title), options: [{ label: 'Type your response', recommended: true }], multiSelect: false, allowText: true, dialog: { kind: 'editor', title: clip(title), ...(prefill ? { prefill: prefill.slice(0, 100_000) } : {}) } }).then((answer) => answer.text || undefined),
     notify: (message: string, level?: 'info' | 'warning' | 'error') => host.notice({ kind: 'notify', level: level ?? 'info', text: clip(message) }),
     setStatus: (key: string, text: string | undefined) => host.notice({ kind: 'status', key, text: clip(text ?? '') }),
     setWidget: (key: string, content: unknown) => {

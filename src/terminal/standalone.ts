@@ -29,6 +29,11 @@ export interface StandalonePaths {
   variant?: string | null
   /** `--remote-control`, `--rc`: turn on `/remote-control` as the terminal opens. */
   remoteControl?: boolean
+  /**
+   * `--daemon`: run in the long-lived harness for these folders, starting it when it is not running,
+   * so a reply outlives this window (ADR-0083). The frontend is then a client of the harness.
+   */
+  daemon?: boolean
 }
 
 export interface StandaloneDependencies {
@@ -48,22 +53,27 @@ export function standaloneArguments(argv: string[]): string[] | null {
   return command === 'terminal' ? argv.slice(1) : null
 }
 
-interface ResolvedStandaloneOptions {
+export interface ResolvedStandaloneOptions {
   paths: StandalonePaths
   profile: InteractiveProfile
 }
 
-function resolveStandaloneOptions(argv: string[], home = homedir(), cwd = process.cwd()): ResolvedStandaloneOptions {
+export function resolveStandaloneOptions(argv: string[], home = homedir(), cwd = process.cwd()): ResolvedStandaloneOptions {
   const overrides: InteractiveProfileOverrides = {}
   const given = new Set<string>()
   let worktree: StandalonePaths['worktree']
   let variant: StandalonePaths['variant']
   let accountState: StandalonePaths['accountState']
   let remoteControl = false
+  let daemon = false
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index]
     if (argument === '--remote-control' || argument === '--rc') {
       remoteControl = true
+      continue
+    }
+    if (argument === '--daemon') {
+      daemon = true
       continue
     }
     if (argument === '--worktree' || argument === '-w') {
@@ -142,9 +152,42 @@ function resolveStandaloneOptions(argv: string[], home = homedir(), cwd = proces
       ...(accountState !== undefined ? { accountState } : {}),
       ...(worktree !== undefined ? { worktree } : {}),
       ...(variant !== undefined ? { variant } : {}),
-      ...(remoteControl ? { remoteControl } : {})
+      ...(remoteControl ? { remoteControl } : {}),
+      ...(daemon ? { daemon } : {})
     }
   }
+}
+
+/** The harness a standalone launch, or the long-lived harness for the same folders, runs. */
+export async function createStandaloneHarness(paths: StandalonePaths, profile: InteractiveProfile, dependencies: Pick<StandaloneDependencies, 'createHarness' | 'hostSecretStore'> = {}): Promise<Harness> {
+  // `--account-state` takes both halves of another state's account identity, so its credentials
+  // come from that state's own file store rather than from this launch's profile backend.
+  const secrets = paths.accountState
+    ? fileSecretStore(join(paths.accountState, 'secrets.json'))
+    : await interactiveProfileSecretStore(profile, dependencies.hostSecretStore)
+  const makeHarness = dependencies.createHarness ?? createHarness
+  return makeHarness({
+    dataRoot: paths.dataRoot,
+    stateDir: paths.stateDir,
+    ...(paths.accountState ? { accountsDir: join(paths.accountState, 'accounts') } : {}),
+    productName: DEFAULT_PRODUCT_NAME,
+    secrets
+  })
+}
+
+/** What every launch needs before its first terminal: the profile's default variant and an account. */
+export function ensureStandaloneDefaults(harness: Harness, paths: StandalonePaths, profile: InteractiveProfile): string {
+  const variantScope = paths.variant ?? profile.defaultVariantScope
+  if (variantScope === profile.defaultVariantScope && !variantStore.head(paths.dataRoot, variantScope)) {
+    variantStore.seed(paths.dataRoot, variantScope, seedVariant(paths.dataRoot, {}), 'interactive profile default')
+  }
+  if (harness.accounts.overview().accounts.length === 0) harness.accounts.create('Default', 'subscription')
+  return variantScope
+}
+
+/** Where a terminal in `cwd` keeps its compiled instructions and native history. */
+export function terminalSessionFolder(dataRoot: string, cwd: string): string {
+  return join(dataRoot, 'sessions', 'terminal', createHash('sha256').update(cwd).digest('hex'))
 }
 
 export function parseStandaloneOptions(argv: string[], home = homedir(), cwd = process.cwd()): StandalonePaths {
@@ -175,7 +218,7 @@ function spawnError(error: Error, launch: TerminalLaunch): Error {
   return new Error(`Could not start the Harness terminal. The Bun executable "${launch.program}" ${problem}; install Bun or set XINGULAR_HARNESS_BUN, then run npm run build:tui.`, { cause: error })
 }
 
-function spawnFrontend(launch: TerminalLaunch, cwd: string, spawn = nodeSpawn): Promise<number> {
+export function spawnFrontend(launch: TerminalLaunch, cwd: string, spawn = nodeSpawn): Promise<number> {
   return new Promise((resolveExit, reject) => {
     const child = spawn(launch.program, launch.args, {
       cwd,
@@ -183,10 +226,13 @@ function spawnFrontend(launch: TerminalLaunch, cwd: string, spawn = nodeSpawn): 
       stdio: 'inherit'
     })
     let settled = false
+    let fatal = false
     const cleanup = (): void => {
       process.off('SIGINT', onInterrupt)
       process.off('SIGTERM', onTerminate)
       process.off('SIGHUP', onHangup)
+      process.off('uncaughtException', onFatal)
+      process.off('unhandledRejection', onFatal)
     }
     const finish = (action: () => void): void => {
       if (settled) return
@@ -200,13 +246,34 @@ function spawnFrontend(launch: TerminalLaunch, cwd: string, spawn = nodeSpawn): 
     const onTerminate = (): void => {
       child.kill('SIGTERM')
     }
-    const onHangup = (): void => undefined
+    // The window closed: its frontend gets the same hangup and should end. One that is still there
+    // after a moment has no terminal left to restore, so it is ended, and this host carries on
+    // (a detached reply keeps running in the long-lived harness).
+    const onHangup = (): void => {
+      setTimeout(() => {
+        if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL')
+      }, 3000).unref()
+    }
+    // A client frontend's plugins run in this process (ADR-0083). An error nothing caught ends it, as
+    // it ends an in-process frontend, but the window closes first so the terminal is left as it was.
+    const onFatal = (error: unknown): void => {
+      if (fatal) return
+      fatal = true
+      process.stderr.write(`${error instanceof Error ? error.stack ?? error.message : String(error)}\n`)
+      child.kill('SIGTERM')
+      setTimeout(() => process.exit(1), 5000).unref()
+    }
 
     process.on('SIGINT', onInterrupt)
+    process.on('uncaughtException', onFatal)
+    process.on('unhandledRejection', onFatal)
     process.on('SIGTERM', onTerminate)
     process.on('SIGHUP', onHangup)
     child.once('error', (error) => finish(() => reject(spawnError(error, launch))))
-    child.once('exit', (code, signal) => finish(() => resolveExit(exitCode(code, signal))))
+    child.once('exit', (code, signal) => {
+      if (fatal) process.exit(1)
+      finish(() => resolveExit(exitCode(code, signal)))
+    })
   })
 }
 
@@ -233,19 +300,11 @@ export async function runStandaloneTerminal(argv: string[], dependencies: Standa
 
   let cwd = resolve(dependencies.cwd ?? process.cwd())
   const { paths, profile } = resolveStandaloneOptions(argv, dependencies.home, cwd)
-  // `--account-state` takes both halves of another state's account identity, so its credentials
-  // come from that state's own file store rather than from this launch's profile backend.
-  const secrets = paths.accountState
-    ? fileSecretStore(join(paths.accountState, 'secrets.json'))
-    : await interactiveProfileSecretStore(profile, dependencies.hostSecretStore)
-  const makeHarness = dependencies.createHarness ?? createHarness
-  const harness = makeHarness({
-    dataRoot: paths.dataRoot,
-    stateDir: paths.stateDir,
-    ...(paths.accountState ? { accountsDir: join(paths.accountState, 'accounts') } : {}),
-    productName: DEFAULT_PRODUCT_NAME,
-    secrets
-  })
+  if (paths.daemon) {
+    const { runDaemonTerminal } = await import('./daemon')
+    return runDaemonTerminal({ paths, profile, cwd, ...(dependencies.spawn ? { spawn: dependencies.spawn } : {}), ...(dependencies.createSessionId ? { createSessionId: dependencies.createSessionId } : {}) })
+  }
+  const harness = await createStandaloneHarness(paths, profile, dependencies)
   const newSessionId = dependencies.createSessionId ?? randomUUID
   let current = { sessionId: newSessionId(), accountId: null as string | null, nativeSessionId: null as string | null }
   // The frontend draws on this terminal, so the host's diagnostics go to a file the person can read instead.
@@ -260,11 +319,7 @@ export async function runStandaloneTerminal(argv: string[], dependencies: Standa
 
   try {
     await harness.ready
-    const variantScope = paths.variant ?? profile.defaultVariantScope
-    if (variantScope === profile.defaultVariantScope && !variantStore.head(paths.dataRoot, variantScope)) {
-      variantStore.seed(paths.dataRoot, variantScope, seedVariant(paths.dataRoot, {}), 'interactive profile default')
-    }
-    if (harness.accounts.overview().accounts.length === 0) harness.accounts.create('Default', 'subscription')
+    const variantScope = ensureStandaloneDefaults(harness, paths, profile)
 
     let worktreeId: string | null = null
     if (paths.worktree) {
@@ -275,7 +330,7 @@ export async function runStandaloneTerminal(argv: string[], dependencies: Standa
     // The version this conversation runs: the head at start, or one the person switched to (PROP-0052).
     let variantVersion: string | null = null
     for (;;) {
-      const sessionFolder = join(paths.dataRoot, 'sessions', 'terminal', createHash('sha256').update(cwd).digest('hex'))
+      const sessionFolder = terminalSessionFolder(paths.dataRoot, cwd)
       const launch = await harness.terminals.prepare({ ...current, cwd, sessionFolder, variant: { scope: variantScope, ...(variantVersion ? { version: variantVersion } : {}) }, ...(worktreeId ? { run: { worktreeId } } : {}) })
       const code = await spawnFrontend(paths.remoteControl ? { ...launch, env: { ...launch.env, [REMOTE_CONTROL_ENV]: '1' } } : launch, cwd, dependencies.spawn)
       // `/accounts` and `/worktree` ask for a switch and end the frontend. An account switch resumes

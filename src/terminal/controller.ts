@@ -9,7 +9,7 @@ import { isActiveStatus, runStatusSchema, type RunEvent, type RunRecord, type Ru
 import { briefTitle } from '../sessions/subagents'
 import type { ActiveRun, ApprovalDecision, InterruptStop, QuestionAnswer, QuestionInput } from '../sessions/registry'
 import { MAIN_PROFILE, SubagentMonitor, type TerminalSubagentActivity, type TerminalSubagentProfile, type TerminalSubagentRun } from './subagentMonitor'
-import { childStalled, replyStalled, waitingOnChildren, type ChildProgress } from './stallWatch'
+import { STALL_CHECK_MS, childStalled, replyStalled, waitingOnChildren, type ChildProgress } from '../sessions/stallWatch'
 
 /** Stop codes the native extension may report for a reply it settled itself. */
 const SETTLED_CODES = new Set<unknown>(['slice_budget', 'compaction_thrash', 'needs_person', 'unfinished'])
@@ -90,8 +90,6 @@ type Command = { type: 'interrupt' } | { type: 'send'; text: string }
 
 const READY_TIMEOUT_MS = 90_000
 const ACK_TIMEOUT_MS = 25_000
-/** How often a live reply's progress is checked against the stall windows. */
-const STALL_CHECK_MS = 30_000
 
 export class TerminalController {
   private run: ActiveRun | null = null

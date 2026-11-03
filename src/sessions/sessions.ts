@@ -49,8 +49,9 @@ import type { ToolPolicy } from './policy'
 import type { ActiveRun, RunRegistry } from './registry'
 import { piSessionFactory, runTurn, summarize, type Effort, type PiSessionLike, type SessionCommand, type SessionFactory, type ToolGate, type TurnParams } from './runner'
 import { loadRun, readEvents, runDir, saveRun, updateRun } from './runStore'
+import { livePin, LiveSessions, type LiveSessionStatus } from './live'
 import { combineWorkspaceScope, inspectRunWorkspaceWrite } from './workspaceBoundary'
-import { PLAN_INSTRUCTIONS, PLAN_RESEARCH_SUBAGENT_INSTRUCTIONS, planRefusal, planSection } from './planMode'
+import { PLAN_INSTRUCTIONS, PLAN_RESEARCH_SUBAGENT_INSTRUCTIONS, planModeTools, planRefusal, planSection } from './planMode'
 import { CONTINUATION_SECTION_ID, continuationOf, continuationSection, type Continuation } from './continuation'
 import { deliveredSnapshot } from '../prompt/compile'
 import { profileSection } from '../agents/profiles'
@@ -144,6 +145,26 @@ export interface SessionRunInput {
    * with a summary of the branch left behind, or export it to HTML. It pins the account like a turn.
    */
   command?: SessionCommand
+  /**
+   * Keep the Pi session open after this run (ADR-0083), and reuse an open one when this run's pins
+   * equal its own. Steer the running reply with `runs.steer`, queue the next message with
+   * `sessions.followUp`, and close it with `sessions.close`. Never for unattended or child runs.
+   */
+  live?: boolean
+  /** Start a new native history in `sessionDir` instead of continuing its newest one. */
+  newHistory?: boolean
+  /**
+   * How a plan run withholds what it may not use. `gate` (the default) keeps every tool in the
+   * request, so the prompt and its cache stay as they were, and refuses the calls at the gate.
+   * `active` sends only the plan's tools, as the terminal does (ADR-0083).
+   */
+  planTools?: 'gate' | 'active'
+  /**
+   * Hidden messages saved in the native history before the request, as the context update is: the
+   * skills a person required with `$name`, or a goal note. The person's own text reaches the model
+   * unchanged. At most 8, of at most 20,000 characters each.
+   */
+  hiddenNotes?: Array<{ customType: string; content: string }>
 }
 
 /** A session command acts on a saved conversation and is never combined with a request of its own. */
@@ -219,6 +240,8 @@ export interface SessionsOptions {
     acquire(id: string, holder: string): Promise<unknown>
     release(id: string, holder: string): Promise<void>
   } | null
+  /** How long an idle live session stays open (ADR-0083). */
+  liveIdleMs?: number
 }
 
 /** The harness's own plugins a person switched on for this caller, with the numbers they set. */
@@ -231,10 +254,78 @@ function firstPartyFor(root: string, contributions: readonly string[]): InlineEx
 export class Sessions {
   private readonly providers: ToolProvider[] = []
   private readonly factory: SessionFactory
+  /** Pi sessions kept open between the runs of a conversation (ADR-0083). */
+  readonly live: LiveSessions
+  /** The last live run's input per session, which a follow-up repeats with its own text. */
+  private readonly liveInputs = new Map<string, SessionRunInput>()
 
   constructor(private readonly options: SessionsOptions) {
     this.factory = options.factory ?? piSessionFactory
+    this.live = new LiveSessions({
+      idleMs: options.liveIdleMs,
+      record: (runId) => {
+        try {
+          return loadRun(this.env.root, runId)
+        } catch {
+          return null
+        }
+      },
+      followUp: async (sessionId, _lastRunId, text) => { await this.runFollowUp(sessionId, text) },
+      log: (message) => log(message)
+    })
+  }
 
+  /** The live sessions open now. */
+  liveSessions(): LiveSessionStatus[] {
+    return this.live.list()
+  }
+
+  /**
+   * Sends a message as the next run of a live session: now when it is idle, or after its active
+   * run settles. The run repeats the last live run's input with this text.
+   */
+  async followUp(sessionId: string, text: string): Promise<{ runId: string } | { queued: number }> {
+    if (typeof sessionId !== 'string' || !sessionId) throw invalid('A follow-up needs a session id.')
+    if (typeof text !== 'string') throw invalid('A follow-up needs text.')
+    const queued = this.live.queue(sessionId, text)
+    if ('queued' in queued) return queued
+    return { runId: await this.runFollowUp(sessionId, text) }
+  }
+
+  /** Closes a live session now, or as soon as its active run settles. */
+  closeLive(sessionId: string): { closed: boolean; afterRun: string | null } {
+    const result = this.live.close(sessionId)
+    if (!result.afterRun) this.liveInputs.delete(sessionId)
+    return result
+  }
+
+  /** Closes every live session; the harness calls it when it shuts down. */
+  close(): void {
+    this.live.closeAll()
+    this.liveInputs.clear()
+  }
+
+  private async runFollowUp(sessionId: string, text: string): Promise<string> {
+    const template = this.liveInputs.get(sessionId)
+    if (!template) throw new HarnessError('not_found', 'This session has no live run to follow.')
+    const status = this.live.status(sessionId)
+    const next: SessionRunInput = {
+      ...structuredClone(template),
+      run: { ...template.run, id: randomUUID(), resumedFromRunId: null },
+      text,
+      // The follow-up continues exactly the history the live session writes, once it has a file.
+      resume: status?.sessionFile ? { sessionFile: status.sessionFile, nativeSessionId: status.nativeSessionId } : template.resume ?? null,
+      live: true
+    }
+    next.initialBashCommand = undefined
+    next.initialBashContext = undefined
+    next.images = undefined
+    next.command = undefined
+    next.continueFrom = null
+    next.goal = undefined
+    next.workSlice = template.workSlice
+    const { runId } = await this.run(next)
+    return runId
   }
 
   private get env(): HarnessEnv {
@@ -452,6 +543,17 @@ export class Sessions {
 
   private async start(input: SessionRunInput): Promise<{ runId: string; nativeSessionId: string | null }> {
     const { root } = this.env
+    if (input.live) {
+      if (input.automatic || input.run.relation || (input.depth ?? 0) > 0 || (input.run.trigger != null && input.run.trigger !== 'user')) {
+        throw invalid('A live session is only for a person\'s own attended top-level runs.')
+      }
+      if (this.live.busy(input.run.sessionId)) throw new HarnessError('session_busy', 'This session is already replying. Steer it with runs.steer, or queue the message with sessions.followUp.')
+    }
+    // A run that opens its own session on this conversation's history reads and writes the file the
+    // live session holds in memory: the live session yields first (ADR-0083).
+    else if (input.run.relation == null && (input.depth ?? 0) === 0) this.live.yieldHistory({ sessionId: input.run.sessionId, sessionDir: input.sessionDir })
+    // A new conversation never continues the open one.
+    if (input.live && input.newHistory) this.live.yieldHistory({ sessionId: input.run.sessionId })
     if ((input.initialBashCommand !== undefined && input.initialBashCommand !== null) || (input.initialBashContext !== undefined && input.initialBashContext !== null)) {
       const request = input.text.trimStart()
       const requestedCommand = /^!\s*([\s\S]+)$/u.exec(request)?.[1]
@@ -473,7 +575,9 @@ export class Sessions {
       )) {
         throw invalid('A prior Bash result must be bounded and must not be combined with a new initial Bash command.')
       }
-      if (input.automatic || input.plan || input.resume || input.continueFrom || input.run.relation || input.run.trigger != null && input.run.trigger !== 'user') {
+      // A live session's turn is always a new turn on the saved history it resumes (ADR-0083); a
+      // host's retry of an earlier turn says so with initialBashContext instead.
+      if (input.automatic || input.plan || (input.resume && !input.live) || input.continueFrom || input.run.relation || input.run.trigger != null && input.run.trigger !== 'user') {
         throw invalid('An initial Bash command is available only for a new interactive user turn.')
       }
     }
@@ -489,7 +593,12 @@ export class Sessions {
     const workspaceRoot = previousRun?.workspaceRoot
       ? verifyWorkspaceRoot(previousRun.workspaceRoot)
       : resolveWorkspaceRoot(previousRun?.workingDirectory ?? input.cwd)
-    const historyFile = selectHistory({ sessionDir: input.sessionDir, resume: input.resume })
+    if (input.newHistory && (input.resume || input.continueFrom || input.command)) throw invalid('A new history cannot also resume, continue or run a command on a saved one.')
+    if (input.hiddenNotes !== undefined && (!Array.isArray(input.hiddenNotes) || input.hiddenNotes.length > 8 || input.hiddenNotes.some((note) =>
+      !note || typeof note.customType !== 'string' || !/^[a-z][a-z0-9-]{0,63}$/.test(note.customType) || typeof note.content !== 'string' || !note.content || note.content.length > 20_000))) {
+      throw invalid('Hidden notes are at most 8 messages, each with a lower-case type and up to 20,000 characters.')
+    }
+    const historyFile = input.newHistory ? null : selectHistory({ sessionDir: input.sessionDir, resume: input.resume })
     if (input.command) checkCommand(input.command, historyFile, input)
     const account = this.options.accounts.resolve(input.accountId, input.poolId)
     const context = this.options.accounts.context(account)
@@ -518,9 +627,10 @@ export class Sessions {
       ? await this.options.resolveCapabilities(caller, requestedTools, input.cwd)
       : { version: 1 as const, tools: requestedTools, connectors: [], contributions: [] }
     const requested = input.capabilities ? parseCapabilitySet(input.capabilities) : available
+    const allowedTools = available.tools.filter((tool) => requested.tools.includes(tool))
     const capabilities: CapabilitySet = {
       version: 1,
-      tools: available.tools.filter((tool) => requested.tools.includes(tool)),
+      tools: input.plan && input.planTools === 'active' ? planModeTools(allowedTools, [], [ASK_USER]) : allowedTools,
       connectors: available.connectors.filter((id) => requested.connectors.includes(id)),
       contributions: available.contributions.filter((id) => requested.contributions.includes(id))
     }
@@ -756,6 +866,7 @@ export class Sessions {
         workspaceRoot,
         sessionDir: input.sessionDir,
         historyFile,
+        ...(input.newHistory ? { newHistory: true } : {}),
         model: input.model ?? null,
         effort: input.effort ?? null,
         text: goalStart ?? input.text,
@@ -789,9 +900,10 @@ export class Sessions {
         ...(goalController ? { goal: goalHandle } : {}),
         // A command sends no request of its own, so the context update waits for the next turn.
         update: input.command ? null : update,
+        ...(input.hiddenNotes?.length && !input.command ? { hiddenNotes: input.hiddenNotes } : {}),
         ...(input.command ? { command: input.command } : {})
       }
-      pi = await this.factory({
+      const factoryInput: Parameters<SessionFactory>[0] = {
         params,
         allow,
         gate,
@@ -799,15 +911,62 @@ export class Sessions {
         runtime: () => this.options.accounts.runtime(context),
         // An unattended run loads no extension, so it has nobody to relay for.
         ...(input.automatic ? {} : { extensions: { ask: (question) => run.requestAnswer(question), notice: (notice) => run.emit('extension.notice', notice) } })
-      })
+      }
+      // A live session serves this run only when everything the run pins is what it was opened with.
+      const liveId = input.live ? input.run.sessionId : null
+      const pin = liveId ? livePin({
+        account: account.id,
+        configDir: context.configDir,
+        variantScope: variant?.scope ?? null,
+        variantVersion: variant?.fingerprint ?? null,
+        variantExtensions: params.variantExtensions,
+        resources: params.resources,
+        capabilities,
+        cwd: input.cwd,
+        workspaceRoot,
+        sessionDir: input.sessionDir,
+        plan: Boolean(input.plan),
+        repairPlan: Boolean(params.repairPlan),
+        allow,
+        tools: tools.map((tool) => tool.name),
+        gated: input.tools.gated ?? [],
+        system,
+        model: input.model ?? null,
+        effort: input.effort ?? null,
+        inline: (params.inline ?? []).map((extension) => extension.name),
+        providers: input.providers !== false
+      }) : null
+      const reused = liveId && pin ? this.live.claim(liveId, pin, runId, historyFile, input.resume?.nativeSessionId) : null
+      if (reused) {
+        pi = reused
+        try {
+          await reused.rebind!(factoryInput)
+        } catch (error) {
+          this.live.discard(liveId!, reused)
+          throw error
+        }
+      } else {
+        pi = await this.factory(factoryInput)
+        if (liveId && pin && pi.rebind) this.live.hold(liveId, pin, pi, runId, input.sessionDir)
+      }
+      const held = liveId && this.live.status(liveId)?.activeRunId === runId ? liveId : null
+      const opened0 = pi
+      const discard = (): void => {
+        if (held) this.live.discard(held, opened0)
+        else opened0.dispose()
+      }
       if (run.finished) {
-        pi.dispose()
+        discard()
         return { runId, nativeSessionId: null }
       }
       if ((input.requiresImageInput || input.images?.length) && !pi.model?.input.includes('image')) {
+        discard()
+        pi = undefined
         throw new HarnessError('image_input_unsupported', 'Choose a model that supports images, or remove the image attachments and send again.')
       }
       if (input.resume?.nativeSessionId && pi.sessionId !== input.resume.nativeSessionId) {
+        discard()
+        pi = undefined
         run.finish('failed', { code: 'native_resume_unavailable', message: 'The saved conversation could not be restored.' })
         throw new HarnessError('native_resume_unavailable', 'The saved conversation could not be restored.')
       }
@@ -833,10 +992,18 @@ export class Sessions {
       this.options.subagents.register(input, account.id, capabilities, Boolean(pi.sessionManager))
       if (openedModel) this.options.subagents.resolvedModel(runId, openedModel, pi.thinkingLevel)
       params.settle = () => this.options.subagents.verify(runId, opened.sessionManager ? subagentHistory(opened.sessionManager.getBranch()) : undefined)
+      if (held) {
+        this.live.started(held, runId)
+        this.liveInputs.set(held, structuredClone(input))
+        params.release = (close) => this.live.release(held, runId, close)
+      }
       void runTurn(run, pi, params).then(() => (sliceEnabled && !input.command ? this.continueSlice({ root, runId, source: input, policy: slicePolicy }) : undefined))
       return { runId, nativeSessionId: pi.sessionId }
     } catch (error) {
-      pi?.dispose()
+      if (pi) {
+        if (input.live && this.live.status(input.run.sessionId)?.activeRunId === runId) this.live.discard(input.run.sessionId, pi)
+        else pi.dispose()
+      }
       if (error instanceof HarnessError && error.code === 'native_resume_unavailable') throw error
       const message = error instanceof Error ? error.message : String(error)
       log('session failed to start', message)

@@ -43,6 +43,18 @@ function setup(options: { resolver?: Resolver } = {}) {
 }
 const empty = () => ({ owners: [], receipts: [] })
 
+describe('subagents of a live parent (ADR-0083)', () => {
+  it('starts the child as an ordinary run: it never inherits the parent\'s live session', async () => {
+    const { harness, start, finish } = setup()
+    await start('parent', { live: true, tools: { allow: ['read', 'spawn_subagent', 'wait_subagents'] } })
+    const child = await harness.subagents.spawn({ parentRunId: 'parent', brief: 'Read independently' })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    finish.get(child.runId)?.('done')
+    const [result] = await harness.subagents.wait({ parentRunId: 'parent', runIds: [child.runId] })
+    expect(result).toMatchObject({ runId: child.runId, status: 'completed' })
+  })
+})
+
 describe('subagents a harness defines (c5)', () => {
   it('starts one by name with its own instructions instead of the parent\'s, and refuses a name the harness lacks', async () => {
     const { harness, start, systems, updates } = setup()

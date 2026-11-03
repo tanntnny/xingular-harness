@@ -113,6 +113,10 @@ terminal command or page, a host screen.
   harness serves. It is not a host and owns no capability. A paired device acts through the same
   `Terminals` and controller paths as the terminal, and reaches no command, shell, link, plugin or
   account control.
+- The terminal is a client of the harness by default (page 11, ADR-0083): it presents the same
+  capabilities over harness live sessions, and its plugin presentation is the host subset
+  (INV-TUI-8). Its runs, approvals and questions are the structured path's, so the terminal and a
+  host share one lifecycle. `XINGULAR_TERMINAL_RUNTIME=inprocess` keeps the in-process runtime.
 - The register of capabilities and their surfaces is [`docs/parity.md`](../parity.md). It is
   descriptive; the invariants below are binding.
 - A host keeps its own register of host-only surfaces. The Harness names no host surface.

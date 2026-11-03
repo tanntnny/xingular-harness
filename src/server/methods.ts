@@ -342,13 +342,18 @@ export function methods(harness: Harness): Record<string, Handler> {
     // ---- Sessions ----------------------------------------------------------------------------------
     'sessions.spawnSubagent': (params: Params) => sessions.spawnSubagent(params as SubagentInput),
     'sessions.run': (params: Params) => sessions.run(params as SessionRunInput),
+    // Live sessions (ADR-0083): Pi sessions kept open between the runs of a conversation.
+    'sessions.live': () => ({ sessions: sessions.liveSessions() }),
+    'sessions.close': (params: Params) => sessions.closeLive(text(params, 'sessionId')),
+    'sessions.followUp': (params: Params) => sessions.followUp(text(params, 'sessionId'), text(params, 'text')),
+    'sessions.followUp.clear': (params: Params) => ({ removed: sessions.live.clearQueue(text(params, 'sessionId')) }),
     'sessions.history': (params: Params) => ({ sessionFile: selectHistory({ sessionDir: text(params, 'sessionDir'), resume: params.resume ?? null }) }),
     // The commands that need no model act on the saved history; see sessions/control.ts.
     'sessions.tree': (params: Params) => control.tree(sessionRef(params)),
-    'sessions.navigate': (params: Params) => control.navigate({ ...sessionRef(params), entryId: text(params, 'entryId') }),
+    'sessions.navigate': (params: Params) => { sessions.live.yieldHistory({ sessionDir: sessionRef(params).sessionDir }); return control.navigate({ ...sessionRef(params), entryId: text(params, 'entryId') }) },
     'sessions.fork': (params: Params) => control.fork({ ...sessionRef(params), entryId: text(params, 'entryId'), targetDir: text(params, 'targetDir') }),
     'sessions.clone': (params: Params) => control.clone({ ...sessionRef(params), targetDir: text(params, 'targetDir') }),
-    'sessions.rename': (params: Params) => control.rename({ ...sessionRef(params), name: text(params, 'name') }),
+    'sessions.rename': (params: Params) => { sessions.live.yieldHistory({ sessionDir: sessionRef(params).sessionDir }); return control.rename({ ...sessionRef(params), name: text(params, 'name') }) },
     'sessions.lastReply': (params: Params) => control.lastReply(sessionRef(params)),
     'sessions.export': (params: Params) => control.exportJsonl({ ...sessionRef(params), path: text(params, 'path') }),
     // Each structured turn loads its resources fresh; this reloads what lives between turns.
@@ -365,7 +370,11 @@ export function methods(harness: Harness): Record<string, Handler> {
     'terminal.send': (params: Params) => terminals.send({ sessionId: text(params, 'sessionId'), runId: optional(params, 'runId'), text: text(params, 'text') }),
     'terminal.input': (params: Params) => terminals.input(text(params, 'sessionId'), typeof params.data === 'string' ? params.data : ''),
     'terminal.state': (params: Params) => terminals.state(text(params, 'sessionId')),
-    'terminal.dispose': (params: Params) => terminals.dispose(text(params, 'sessionId'))
+    'terminal.dispose': (params: Params) => terminals.dispose(text(params, 'sessionId')),
+    // ADR-0083 phase 3: a client terminal's reply may outlive its window.
+    'terminal.detach': (params: Params) => terminals.detach(text(params, 'sessionId')),
+    'terminal.detached': () => ({ sessions: terminals.detached() }),
+    'terminal.takeRelaunch': (params: Params) => terminals.takeRelaunch(text(params, 'sessionId'))
   }
 
   const overlap = Object.keys(foundation).find(name => name in builtins)

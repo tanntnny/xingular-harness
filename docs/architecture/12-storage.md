@@ -49,7 +49,9 @@ index.
   browser.json        device-local BrowserConfig: backend, CDP, private-address policy and domains   (13)
   browser/             isolated profiles, downloads, and owner-only extension-bridge.json pairing state   (13, ADR-0082)
   notes-bridge.json    the page bridge's port and token, kept so an app's script tag stays valid   (13, PROP-0018)
-  harness.log          standalone terminal diagnostics
+  harness.log          standalone terminal and long-lived harness diagnostics
+  harness.sock         the long-lived harness's protocol socket, owner-only, while it runs   (10, ADR-0083)
+  harness.lock         { pid, startedAt, socket } of the one long-lived harness for this folder   (10, ADR-0083)
 ```
 
 `/remote-control` (page 15) stores nothing here: its pairing and device keys live in memory and end

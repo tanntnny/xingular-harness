@@ -106,6 +106,33 @@ describe('session commands', () => {
   })
 })
 
+describe('a provider retry', () => {
+  it('settles the run as completed when the failed request was retried and answered', async () => {
+    const { run, harness } = setup(async ({ gate }) => fakeSession(async (emit) => {
+      emit({ type: 'message_start', message: { role: 'assistant' } })
+      emit({ type: 'message_end', message: { role: 'assistant', content: [], stopReason: 'error', errorMessage: 'Request timed out.' } })
+      emit({ type: 'auto_retry_start', attempt: 1, maxAttempts: 8, delayMs: 1, errorMessage: 'Request timed out.' } as never)
+      emit({ type: 'message_start', message: { role: 'assistant' } })
+      emit({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: 'LYCHEE' }], stopReason: 'stop' } })
+      emit({ type: 'auto_retry_end', attempt: 1, success: true } as never)
+    }, gate))
+    await run('retried')
+    await tick()
+    expect(loadRun(harness.env.root, 'retried').status).toBe('completed')
+  })
+
+  it('still fails a run whose retries were used up', async () => {
+    const { run, harness } = setup(async ({ gate }) => fakeSession(async (emit) => {
+      emit({ type: 'message_start', message: { role: 'assistant' } })
+      emit({ type: 'message_end', message: { role: 'assistant', content: [], stopReason: 'error', errorMessage: 'Request timed out.' } })
+      emit({ type: 'auto_retry_end', attempt: 8, success: false, finalError: 'Request timed out.' } as never)
+    }, gate))
+    await run('exhausted')
+    await tick()
+    expect(loadRun(harness.env.root, 'exhausted').status).toBe('failed')
+  })
+})
+
 describe('session turns on Pi', () => {
   it('runs an initial Bash command before asking the agent to inspect its result', async () => {
     const calls: string[] = []
@@ -1327,7 +1354,8 @@ describe('work slices', () => {
       }, input.gate)
     })
     await run('slice-first', { workSlice: { maxToolCalls: 3, maxSlices: 2, continue: true } })
-    await tick(250)
+    // The next slice starts after the first settles; a loaded machine takes longer than a fixed wait.
+    for (let waited = 0; inputs.length < 2 && waited < 5000; waited += 25) await tick(25)
     expect(inputs).toHaveLength(2)
     expect(inputs[1].params.text).toBe('Continue from where you stopped.')
     const update = inputs[1].params.update?.content ?? ''

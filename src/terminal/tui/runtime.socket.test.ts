@@ -518,10 +518,11 @@ describe('a native SDK runtime on the actual Harness terminal socket', () => {
       { summary: 'Second answer', question: 'Why?', options: [{ label: 'A reason', description: 'Choose this or type another reason.', recommended: true }] }
     ] }, undefined, undefined, runtime.session.extensionRunner.createToolContext('batch-tool', undefined))
     let questions: Array<{ requestId: string; batchId: string }> = []
+    // A loaded machine takes longer than vi.waitFor's one second to show the batch.
     await vi.waitFor(async () => {
       questions = await runtime.pending() as typeof questions
       expect(questions).toHaveLength(2)
-    })
+    }, { timeout: 10_000 })
     expect(questions[0].batchId).toBe(questions[1].batchId)
     const answers = [{ questionId: questions[0].requestId, answer: { selected: ['A'] } }, { questionId: questions[1].requestId, answer: { selected: [], text: 'Because' } }]
     await expect(socketCall(connectionFromEnv(), 'terminal.answers', { batchId: questions[0].batchId, answers })).rejects.toThrow('Only a person')

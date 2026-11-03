@@ -29,6 +29,19 @@ import { resolveWorkspaceRoot } from '../core/workspace'
 import { prependSearchPath, searchPath } from '../core/path'
 import type { BrokerSession, ConnectedApps } from '../mcp/service'
 import type { CallerContext } from '../core/caller'
+import { LiveTerminal, registeredCommands } from './liveTerminal'
+import { loadResources } from '../sessions/runner'
+import { loadPi } from '../pi/runtime'
+
+/** A client terminal's decision and stop calls, and the live-session routes that answer them. */
+const LIVE_DECISION_CALLS: Record<string, string> = {
+  'terminal.pending': 'terminal.live.pending',
+  'terminal.pending.wait': 'terminal.live.pending.wait',
+  'terminal.approve': 'terminal.live.approve',
+  'terminal.answer': 'terminal.live.answer',
+  'terminal.answers': 'terminal.live.answers',
+  'terminal.interrupt': 'terminal.live.interrupt'
+}
 import { dispatch } from '../tools/dispatch'
 import { defaultSkillPaths } from '../tools/defaultSkills'
 import { materialise, type Materialised, type VariantChoice } from '../variant/materialise'
@@ -138,6 +151,19 @@ export interface TerminalPrepareInput {
   connections?: boolean
   /** Fields copied onto each run this session records. */
   run?: Partial<Pick<RunRecord, 'mode' | 'worktreeId'>>
+  /** Reattach to this session id's detached client terminal, whose reply kept running (ADR-0083). */
+  attach?: boolean
+}
+
+/** A client terminal whose window closed while its reply was running (ADR-0083, phase 3). */
+export interface DetachedTerminal {
+  sessionId: string
+  cwd: string
+  sessionFolder: string
+  accountId: string
+  activeRunId: string | null
+  sessionFile: string | null
+  detachedAt: string
 }
 
 /** What a session asked to restart as: another account, or another folder (a worktree or the main checkout). */
@@ -209,6 +235,8 @@ export interface TerminalsOptions {
   remoteControl?: RemoteControlOptions
   /** Refinements, for `/refine` (PROP-0052). */
   refine?: Refinements
+  /** The harness's sessions: a terminal frontend that is a client of the harness runs its turns here (ADR-0083). */
+  sessionService?: import('../sessions/sessions').Sessions
 }
 
 /** What `/plugins` in a terminal can do. Each takes the session's folder, account and project. */
@@ -251,6 +279,10 @@ export class Terminals {
   private readonly worktreeLeases = new Map<string, string>()
   /** `/remote-control` for each live session that opened it. */
   private readonly remotes = new Map<string, RemoteControl>()
+  /** Terminals whose frontend is a client of the harness (ADR-0083). */
+  private readonly clients = new Map<string, LiveTerminal>()
+  /** Client terminals whose window closed while a reply ran; they end when it settles. */
+  private readonly detachedClients = new Map<string, { client: LiveTerminal; info: DetachedTerminal; stop: () => void }>()
 
   /** Each child's profile name and colour, looked up once per child run. */
   private readonly childProfiles = new Map<string, TerminalSubagentProfile | null>()
@@ -281,7 +313,7 @@ export class Terminals {
    */
   private hydrateMonitor(live: Live, owners: readonly string[]): void {
     const { root } = this.options.env
-    const native = live.controller.nativeSessionId
+    const native = this.nativeOf(live)
     if (!native) return
     for (const id of [...owners].reverse()) {
       const record = findRun(root, id)
@@ -627,7 +659,7 @@ export class Terminals {
       case 'accounts.relaunch': {
         // Checked here so a bad choice is refused before the session is asked to end.
         const target = accounts.resolve(text('accountId'))
-        this.relaunches.set(sessionId, { accountId: target.id, nativeSessionId: live.controller.nativeSessionId })
+        this.relaunches.set(sessionId, { accountId: target.id, nativeSessionId: this.historyFileOf(live) })
         return { accountId: target.id, label: target.label }
       }
       default:
@@ -723,7 +755,7 @@ export class Terminals {
     if (params.runId !== undefined && (typeof params.runId !== 'string' || !params.runId)) throw invalid('A valid run id is required.')
     const runId = typeof params.runId === 'string' ? params.runId : live.controller.lastRun
     if (!runId) return { attribution: null, text: null }
-    if (params.runId !== undefined) readTerminalTrajectory(this.options.env.root, live.input.sessionId, live.controller.nativeSessionId, runId)
+    if (params.runId !== undefined) readTerminalTrajectory(this.options.env.root, live.input.sessionId, this.nativeOf(live), runId)
     const text = typeof params.section === 'string' && params.section ? rowText(this.options.env, runId, params.section) : null
     return { attribution: attribution(this.options.env, runId), text }
   }
@@ -1154,11 +1186,11 @@ export class Terminals {
       root: this.options.env.root,
       bus: this.options.bus,
       sessionId,
-      nativeSessionId: live.controller.nativeSessionId,
+      nativeSessionId: this.nativeOf(live),
       scope,
       pinned: live.variant?.fingerprint ?? null,
       active: () => Boolean(this.options.runs.activeForSession(sessionId)) || live.controller.state().active,
-      relaunchOn: (version) => this.relaunches.set(sessionId, { accountId: live.account.id, nativeSessionId: live.controller.nativeSessionId, variantVersion: version }),
+      relaunchOn: (version) => this.relaunches.set(sessionId, { accountId: live.account.id, nativeSessionId: this.historyFileOf(live), variantVersion: version }),
       refine: this.options.refine ?? null,
       started
     }
@@ -1166,18 +1198,18 @@ export class Terminals {
 
   private trajectoryCall(live: Live, call: string, params: Record<string, unknown>): unknown {
     if (call === 'terminal.trajectory.list') {
-      return { runs: listTerminalTrajectoryRuns(this.options.env.root, live.input.sessionId, live.controller.nativeSessionId) }
+      return { runs: listTerminalTrajectoryRuns(this.options.env.root, live.input.sessionId, this.nativeOf(live)) }
     }
     if (call === 'terminal.trajectory.details') {
       if (typeof params.runId !== 'string' || !params.runId) throw invalid('A run id is required.')
-      readTerminalTrajectory(this.options.env.root, live.input.sessionId, live.controller.nativeSessionId, params.runId)
+      readTerminalTrajectory(this.options.env.root, live.input.sessionId, this.nativeOf(live), params.runId)
       return runDetails(this.options.env.root, params.runId)
     }
     if (call === 'terminal.trajectory.events') {
       if (typeof params.runId !== 'string' || !params.runId) throw invalid('A run id is required.')
       const afterSequence = params.afterSequence
       if (afterSequence !== undefined && typeof afterSequence !== 'number') throw invalid('The event sequence must be a number.')
-      return readTerminalTrajectory(this.options.env.root, live.input.sessionId, live.controller.nativeSessionId, params.runId, afterSequence as number | undefined)
+      return readTerminalTrajectory(this.options.env.root, live.input.sessionId, this.nativeOf(live), params.runId, afterSequence as number | undefined)
     }
     throw new HarnessError('unknown_method', `Unknown call ${call}.`)
   }
@@ -1190,7 +1222,7 @@ export class Terminals {
       const context = params.context && typeof params.context === 'object' && !Array.isArray(params.context)
         ? params.context as SideQuestionContext
         : undefined
-      const latest = listTerminalTrajectoryRuns(this.options.env.root, live.input.sessionId, live.controller.nativeSessionId)
+      const latest = listTerminalTrajectoryRuns(this.options.env.root, live.input.sessionId, this.nativeOf(live))
         .find(run => findRun(this.options.env.root, run.id)?.trigger !== 'side-question')
       return service.start({
         sessionId: live.input.sessionId,
@@ -1233,6 +1265,17 @@ export class Terminals {
     const { env, accounts, apps, bus } = this.options
     const { root } = env
     if (!input?.sessionId || !input.cwd || !input.sessionFolder) throw invalid('A terminal session needs an id, a working folder, and its own folder.')
+    const carried = input.attach ? this.detachedClients.get(input.sessionId) ?? null : null
+    if (input.attach) {
+      if (!carried) throw new HarnessError('not_found', 'There is no detached terminal session with this id.')
+      if (carried.info.cwd !== input.cwd || carried.info.sessionFolder !== input.sessionFolder || (input.accountId && input.accountId !== carried.info.accountId)) {
+        throw invalid('Reattach a terminal session in its own folder, on its own account.')
+      }
+      this.detachedClients.delete(input.sessionId)
+      carried.stop()
+      input.accountId = carried.info.accountId
+      input.nativeSessionId = carried.client.sessionFile ?? input.nativeSessionId ?? null
+    }
     await this.dispose(input.sessionId)
     const sessionId = input.sessionId
     let acquiredWorktreeId: string | null = null
@@ -1310,6 +1353,7 @@ export class Terminals {
           answerQuestions: (runId, batchId, answers) => this.options.runs.answerQuestions(runId, batchId, answers)
         })
       }
+      if (carried) this.clients.set(sessionId, carried.client)
       token = this.socket.issue({
         sessionId,
         caller: () => ({ ...caller, runId: live.controller.activeRun?.runId ?? null }),
@@ -1398,6 +1442,7 @@ export class Terminals {
             if (call === 'terminal.doctor.cancel') return doctor.cancel(id)
             throw invalid('Unknown diagnostic operation.')
           }
+          if (call.startsWith('terminal.live.')) return this.liveTerminal(live).call(call, params)
           if (call.startsWith('terminal.agents.')) return this.agentsCall(live, call, params)
           if (call.startsWith('terminal.subagents.')) return this.subagentsCall(live, call, params)
           if (call.startsWith('terminal.sideQuestions.')) return this.sideQuestionCall(live, call, params)
@@ -1417,7 +1462,7 @@ export class Terminals {
           if (call.startsWith('terminal.refine.')) return refineCall(this.variantContext(live), call, params)
           if (call.startsWith('terminal.components.')) return this.componentsCall(live, call, params)
           if (call.startsWith('terminal.trajectory.')) return this.trajectoryCall(live, call, params)
-          if (call === 'terminal.todo') return latestTerminalTodo(this.options.env.root, live.input.sessionId, live.controller.nativeSessionId)
+          if (call === 'terminal.todo') return latestTerminalTodo(this.options.env.root, live.input.sessionId, this.nativeOf(live))
           if (call === 'terminal.permissions.get') {
             const policy = this.options.approvals.read()
             return { full: this.options.approvals.isAuto('pi'), globalTools: policy.globalTools.pi ?? [] }
@@ -1436,7 +1481,7 @@ export class Terminals {
           if (call.startsWith('terminal.usage.')) return this.usageCall(live, call, params)
           if (call === 'terminal.context') return this.contextCall(live, params)
           if (call.startsWith('terminal.remoteControl.')) return this.remoteCall(live, call, params)
-          if (call !== 'terminal.resources') return live.controller.control(call, params)
+          if (call !== 'terminal.resources') return this.controlFor(live)(call, params)
           const current = await this.options.plugins?.loading({ cwd: input.cwd, agentDir: configDir(accounts.dir, preparedAccount), install: false, caller: { projectId: input.projectId ?? null } }) ?? null
           const currentVariant = variant ? materialise(root, { dir: variant.dir, scope: variant.scope }, { trust: this.options.trust ?? null }) : null
           if (resourceIdentity(current) !== resourceIdentity(loading) || (variant && (currentVariant?.fingerprint !== variant.fingerprint || JSON.stringify(currentVariant.extensionPaths) !== JSON.stringify(variant.extensionPaths)))) {
@@ -1487,6 +1532,17 @@ export class Terminals {
       apps.revokeSession(sessionId)
       if (accountStarted && account) await accounts.terminalEnd(account).catch(() => undefined)
       if (acquiredWorktreeId) await this.options.worktrees?.release(acquiredWorktreeId, sessionId).catch(() => undefined)
+      // A reattach that failed leaves the reply running without a window, as before.
+      if (carried) {
+        if (this.clients.get(sessionId) === carried.client) this.clients.delete(sessionId)
+        const stop = carried.client.onSettled(() => {
+          if (this.detachedClients.get(sessionId)?.client !== carried.client) return
+          this.detachedClients.delete(sessionId)
+          stop()
+          void carried.client.dispose().catch(() => undefined)
+        })
+        this.detachedClients.set(sessionId, { client: carried.client, info: carried.info, stop })
+      }
       throw error
     }
   }
@@ -1559,10 +1615,13 @@ export class Terminals {
     return {
       sessionId,
       title: () => basename(live.input.cwd) || this.options.env.productName,
-      send: (text) => this.send({ sessionId, text }),
-      control: (call, params) => live.controller.control(call, params) as Promise<unknown>,
+      send: (text) => {
+        const client = this.clients.get(sessionId)
+        return client ? client.send(text).then((result) => ({ runId: 'runId' in result ? result.runId : client.lastRun ?? '' })) : this.send({ sessionId, text })
+      },
+      control: (call, params) => this.controlFor(live)(call, params) as Promise<unknown>,
       history: () => {
-        const native = live.controller.nativeSessionId
+        const native = this.nativeOf(live)
         if (!native) return []
         const runs = listRuns(root, { sessionId })
           .filter((run) => run.nativeSessionId === native && !run.relation && run.trigger !== 'side-question')
@@ -1599,9 +1658,117 @@ export class Terminals {
   }
 
   /** The terminal process ended (or never started): its turn, tokens, and written credentials go with it. */
+  /**
+   * The native conversation a terminal's runs carry. A client terminal's runs are harness runs, which
+   * record Pi's session id; an in-process terminal's record its history file (ADR-0083).
+   */
+  private nativeOf(live: Live): string | null {
+    const client = this.clients.get(live.input.sessionId)
+    return client ? client.nativeSessionId : live.controller.nativeSessionId
+  }
+
+  /** The history file a relaunch of this terminal resumes. */
+  private historyFileOf(live: Live): string | null {
+    const client = this.clients.get(live.input.sessionId)
+    return client ? client.sessionFile : live.controller.nativeSessionId
+  }
+
+  /**
+   * Where a terminal's decision and stop calls go: its controller, or, once the frontend is a client
+   * of the harness, the live session's run (ADR-0083).
+   */
+  private controlFor(live: Live): (call: string, params: Record<string, unknown>) => Promise<unknown> | unknown {
+    return (call, params) => {
+      const client = this.clients.get(live.input.sessionId)
+      const routed = client ? LIVE_DECISION_CALLS[call] : undefined
+      return routed ? client!.call(routed, params) : live.controller.control(call, params)
+    }
+  }
+
+  /** The client half of a terminal whose frontend runs no Pi of its own (ADR-0083). */
+  private liveTerminal(live: Live): LiveTerminal {
+    const existing = this.clients.get(live.input.sessionId)
+    if (existing) return existing
+    const sessions = this.options.sessionService
+    if (!sessions) throw invalid('This host does not run terminal turns in the harness.')
+    const { input } = live
+    const client = new LiveTerminal({
+      sessionId: input.sessionId,
+      root: this.options.env.root,
+      accountId: live.account.id,
+      cwd: input.cwd,
+      sessionDir: this.historyDir(input),
+      caller: live.caller,
+      // The version this terminal was prepared on stays pinned; a switch restarts the frontend (ADR-0065).
+      variant: live.variant ? { dir: live.variant.dir, scope: live.variant.scope ?? undefined } as VariantChoice : null,
+      launch: { ...input.launch, standard: input.launch?.standard === null ? null : input.launch?.standard ?? { cwd: input.cwd } },
+      connections: input.connections !== false,
+      readOnly: !!input.readOnly,
+      ...(input.subagents === null ? { subagents: null } : {}),
+      allowTool: (target) => { this.options.approvals.allowTool('pi', target) },
+      tools: async () => [...(input.launch?.tools ?? []), ...await this.worldToolNames(input, live.account)],
+      commands: async () => {
+        // The trusted extensions a turn would load, loaded only to read what they register.
+        const pi = await loadPi()
+        const account = this.options.accounts.context(live.account)
+        const plugins = this.options.plugins
+        const loader = await loadResources(pi, {
+          cwd: input.cwd, account, system: '', inline: [], variantExtensions: live.variant?.extensionPaths ?? [],
+          resources: { ids: [], skillPaths: [], promptPaths: [] },
+          ...(plugins ? { plugins: { loading: () => plugins.loading({ cwd: input.cwd, agentDir: account.configDir, install: false, caller: { projectId: input.projectId ?? null } }), loaded: () => undefined } } : {})
+        }, () => undefined)
+        // A plugin that cannot load stops the window, as it stops an in-process terminal's start.
+        const { errors } = loader.getExtensions()
+        if (errors.length) throw new Error(errors.map((error) => `${error.path}: ${error.error}`).join('\n'))
+        return registeredCommands(loader.getExtensions().extensions as never)
+      }
+    }, sessions, this.options.runs)
+    this.clients.set(input.sessionId, client)
+    return client
+  }
+
+  /**
+   * The terminal's window closed. A client terminal whose reply is still running keeps it running in
+   * the harness, without the window, until it settles; `prepare({ attach: true })` reconnects to it.
+   * Anything else ends now, as `dispose` does.
+   */
+  async detach(sessionId: string): Promise<{ detached: boolean; activeRunId: string | null }> {
+    const live = this.sessions.get(sessionId)
+    const client = this.clients.get(sessionId)
+    const activeRunId = client?.activeRun ?? null
+    if (!live || !client || !activeRunId) {
+      await this.dispose(sessionId)
+      return { detached: false, activeRunId: null }
+    }
+    // The window's binding goes; the client and its live session stay.
+    this.clients.delete(sessionId)
+    await this.dispose(sessionId)
+    const info: DetachedTerminal = {
+      sessionId, cwd: live.input.cwd, sessionFolder: live.input.sessionFolder, accountId: live.account.id,
+      activeRunId, sessionFile: client.sessionFile, detachedAt: new Date().toISOString()
+    }
+    const stop = client.onSettled(() => {
+      const entry = this.detachedClients.get(sessionId)
+      if (entry?.client !== client) return
+      this.detachedClients.delete(sessionId)
+      entry.stop()
+      void client.dispose().catch(() => undefined)
+    })
+    this.detachedClients.set(sessionId, { client, info, stop })
+    return { detached: true, activeRunId }
+  }
+
+  /** Client terminals whose reply is running without a window. */
+  detached(): DetachedTerminal[] {
+    return [...this.detachedClients.values()].map(({ client, info }) => ({ ...info, activeRunId: client.activeRun, sessionFile: client.sessionFile }))
+  }
+
   async dispose(sessionId: string): Promise<void> {
     const live = this.sessions.get(sessionId)
     if (!live) return
+    const client = this.clients.get(sessionId)
+    this.clients.delete(sessionId)
+    await client?.dispose().catch(() => undefined)
     for (const [id, owner] of this.diagnosticOwners) if (owner === sessionId) {
       this.options.doctor?.cancel(id)
       this.diagnosticOwners.delete(id)
@@ -1624,6 +1791,9 @@ export class Terminals {
   }
 
   async close(): Promise<void> {
+    const detached = [...this.detachedClients.values()]
+    this.detachedClients.clear()
+    await Promise.allSettled(detached.map(({ client, stop }) => { stop(); return client.dispose() }))
     await Promise.allSettled([...this.sessions.keys()].map((sessionId) => this.dispose(sessionId)))
     await this.socket.close()
   }

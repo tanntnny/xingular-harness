@@ -1,4 +1,5 @@
-import { isAbsolute, relative, resolve } from 'node:path'
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
+import { isAbsolute, join, relative, resolve } from 'node:path'
 import { SessionManager, type AgentSession, type ExtensionUIContext } from '@earendil-works/pi-coding-agent'
 import { CORE_COMMANDS, coreCommand } from '../../commands/registry'
 import { commandRoutes, promptCommandAvailable } from '../../commands/routes'
@@ -302,7 +303,8 @@ export function createTerminalCommands(host: TerminalCommandHost) {
             if (!selected) break
             path = selected
           }
-          const target = resolve(host.cwd(), path)
+          // A conversation by its file, or by the session id its runs record (ADR-0083).
+          const target = sessionFileFor(path, host.cwd(), host.sessionDirectory())
           const within = relative(host.sessionDirectory(), target)
           if (within === '..' || within.startsWith('../') || within.startsWith('..\\') || isAbsolute(within)) {
             throw new Error('Resume sessions from this account history folder.')
@@ -442,4 +444,21 @@ export function createTerminalCommands(host: TerminalCommandHost) {
     return true
   }
   return { execute, completions, skills, legacyAliases }
+}
+
+/** The history file a `/session` argument names: a path, or the session id in a file's header. */
+export function sessionFileFor(argument: string, cwd: string, sessionDirectory: string): string {
+  const named = resolve(cwd, argument)
+  if (existsSync(named) || /[\\/]|\.jsonl$/u.test(argument)) return named
+  try {
+    for (const name of readdirSync(sessionDirectory)) {
+      if (!name.endsWith('.jsonl')) continue
+      const file = join(sessionDirectory, name)
+      const header = JSON.parse(readFileSync(file, 'utf8').split('\n', 1)[0]) as { type?: string; id?: string }
+      if (header.type === 'session' && header.id === argument) return file
+    }
+  } catch {
+    // An unreadable folder or header names nothing.
+  }
+  return named
 }

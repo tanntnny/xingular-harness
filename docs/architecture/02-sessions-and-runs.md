@@ -261,6 +261,58 @@ not positional message counts. A host can route `/history` to Harness `sessions.
 navigate the same saved session; it must not substitute a fork. Shared session catalog registration
 is approved but remains in progress; no completed cross-surface catalog is implied (PAR-008).
 
+## Live sessions (ADR-0083)
+
+A *live session* is a Pi session the harness keeps open between the runs of one conversation, so a
+later run reuses it instead of opening and loading a new one. `sessions/live.ts::LiveSessions` holds
+them, one per `run.sessionId`.
+
+- **Opt in.** `SessionRunInput.live: true` keeps the session open after the run and reuses an open
+  one. It is refused (`invalid_request`) for an unattended, child, nested, probe, improver or
+  reflection run, and refused with `session_busy` while another run of the session is using it.
+  Without `live` a run opens and disposes its own session, as before.
+- **Pins.** A live session serves a run only when everything the run pins equals what the session
+  was opened with: account and its config folder, variant scope and version, variant extensions and
+  skill paths, the frozen capability set, working folder, workspace root and history folder, plan
+  and plan-repair flags, the allowed, gated and bound tool names, the stable system prompt, model,
+  effort, the run-scoped extension names and whether provider tools are asked. A supplied history
+  file and native session id must be the session's own. Any difference closes the idle session at
+  the turn boundary and the run opens a fresh one on the same native history.
+- **Rebinding.** `piSessionFactory` reads the run's gate, bound tools, extension host and
+  plan flag through a binding that `PiSessionLike.rebind` replaces at the start of each run. The
+  run-scoped inline extensions (lineage join, subagents, compaction checkpoint, work slice, goal,
+  first-party hooks) are loaded in slots: a rebind removes the last run's handlers (Pi's `on`
+  returns the remover) and runs the next run's factory against the same extension. A session whose
+  run-scoped extension registers anything but handlers is not reusable. Between runs an extension
+  dialog is refused with `run_not_active`.
+- **One writer of the history.** A top-level run of the same session that is not live (a command
+  run, for example), and `sessions.navigate` or `sessions.rename` on its history folder, close an
+  idle live session first so nothing holds a stale copy of the file; while the live session is
+  replying they are refused with `session_busy`.
+- **Settling.** `runTurn` calls `TurnParams.release` instead of disposing the session. An idle live
+  session closes after 30 minutes (`SessionsOptions.liveIdleMs`), on `sessions.close`, or when the
+  harness closes.
+- **Follow-ups.** `sessions.followUp { sessionId, text }` starts the next run at once when the
+  session is idle, or queues the text (at most 20) for after the active run. The queue follows the
+  queued-message dispatch rule above: it is sent after a reply that completed or that the person
+  stopped, and parked after a failure or any other interruption; a work-slice continuation runs
+  first. A follow-up run repeats the last live run's input with its own text and no Bash, images,
+  command, continuation or goal. `runs.steer` steers the active run as before.
+- **Other run inputs a live client uses.** `newHistory: true` starts a new native history in
+  `sessionDir` (refused with `resume`, `continueFrom` or `command`). `hiddenNotes` (at most 8, each a
+  lower-case type and up to 20,000 characters) are saved as hidden messages before the request, as
+  the context update is. `planTools: 'active'` makes a plan run's frozen tool set the plan's own
+  (`planModeTools`), so the request carries only those tools; the default `gate` keeps every tool in
+  the request and refuses at the gate. An initial Bash command is accepted on a live turn that
+  resumes its history.
+- **Question dialogs.** `question.requested` may carry `dialog { kind: select | confirm | input |
+  editor, title, message?, placeholder?, prefill?, options? }` when a Pi extension's dialog asked it
+  (`sessions/extensionUi.ts`). A host may ignore it; the answer is the usual `QuestionAnswer`.
+- **Methods.** `sessions.live {}` → `{ sessions: LiveSessionStatus[] }`; `sessions.close { sessionId }`
+  → `{ closed, afterRun }` (a busy session closes when its run settles);
+  `sessions.followUp { sessionId, text }` → `{ runId } | { queued }`;
+  `sessions.followUp.clear { sessionId }` → `{ removed }`.
+
 ## Invariants
 
 - **INV-RUN-1** A run pins one account, one variant version, one capability set and one canonical
@@ -387,10 +439,16 @@ is approved but remains in progress; no completed cross-surface catalog is impli
   the tools running at that moment). Every live reply emits a
   heartbeat every 30 seconds, terminal replies included. A heartbeat older than five minutes while
   the owner process lives marks the run `interrupted` with reason `stalled`; a run that never emitted
-  one keeps the 30-minute silence rule. A reply whose heartbeat keeps arriving but which produces no
-  other event for fifteen minutes is a wedged turn, not a busy one: the terminal ends it through the
+  one keeps the 30-minute silence rule. A heartbeat of a run with no work slice carries zero slice
+  counters. A reply whose heartbeat keeps arriving but which produces no
+  other event for fifteen minutes is a wedged turn, not a busy one: the harness ends it through the
   native abort and records `interrupted` with reason `stalled`, and grants a reply whose oldest
-  running tool has run for thirty minutes the same ending. A reply whose only running tools are
+  running tool has run for thirty minutes the same ending. `runTurn` applies this to every run
+  (a structured session, a live session, the client terminal, an unattended run) with the same
+  windows (`sessions/stallWatch.ts`); the in-process terminal's controller applies it to its own
+  reply. A live session whose turn stalled is closed rather than reused, its queued follow-ups
+  parked for the next session, and closed under the turn after thirty seconds if the abort did not
+  unwind it (ADR-0083). A reply whose only running tools are
   `wait_subagents` or `spawn_subagent` is judged by its children instead: each child has its own
   clock (its last event other than a heartbeat; its running tools), and a child quiet for the same
   windows is interrupted with reason `stalled`, so the wait returns and the parent carries on by

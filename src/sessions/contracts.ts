@@ -243,6 +243,15 @@ const questionRequestedPayload = z.object({
   multiSelect: z.boolean(),
   allowText: z.boolean(),
   userOnly: z.boolean().optional(),
+  /** The Pi extension dialog this question stands for (ADR-0083); a host may ignore it. */
+  dialog: z.object({
+    kind: z.enum(['select', 'confirm', 'input', 'editor']),
+    title: z.string().max(4_000),
+    message: z.string().max(4_000).optional(),
+    placeholder: z.string().max(4_000).optional(),
+    prefill: z.string().max(100_000).optional(),
+    options: z.array(z.string().max(4_000)).max(200).optional()
+  }).optional(),
   ...questionBatchFields
 }).superRefine(questionBatchRefinement).superRefine((value, context) => {
   const error = questionSketchError(value.uiSketch, value.options)

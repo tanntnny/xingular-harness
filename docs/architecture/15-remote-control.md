@@ -78,7 +78,9 @@ Phone browser ── http://<tailscale or LAN address>:<port> ──> RemoteCont
   the data root or the state directory; a phone keeps its own device key in its browser storage.
 - **INV-RC-3** A paired device acts only through the terminal's existing paths: `Terminals.send`,
   and `TerminalController.control` for `terminal.interrupt`, `terminal.approve`,
-  `terminal.answer`, `terminal.answers` and `terminal.pending.wait`. The validation those paths
+  `terminal.answer`, `terminal.answers` and `terminal.pending.wait`. For a client terminal
+  (ADR-0083) the same calls reach its `LiveTerminal`, and a message goes as a new reply or a
+  follow-up of the live session. The validation those paths
   apply (a busy session, a terminal draft, the rememberable check on "always allow", the policy
   recheck of a direct approval) applies unchanged.
 - **INV-RC-4** A decision is shown on the phone with its complete action text, never shortened,

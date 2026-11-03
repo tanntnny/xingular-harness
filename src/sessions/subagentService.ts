@@ -93,7 +93,7 @@ export class Subagents {
     let started!: () => void
     const ready = new Promise<void>(resolve => { started = resolve })
     if (!deferUntilPrompt) started()
-    this.parents.set(input.run.id, { ready, started, input: structuredClone({ ...input, text: '', images: undefined, requiresImageInput: false, preamble: null, resume: null }), accountId, capabilities: ceiling, stopped: new AbortController(), recovered: new Set(), launching: new Map() })
+    this.parents.set(input.run.id, { ready, started, input: structuredClone({ ...input, text: '', images: undefined, requiresImageInput: false, preamble: null, resume: null, live: undefined }), accountId, capabilities: ceiling, stopped: new AbortController(), recovered: new Set(), launching: new Map() })
   }
 
   runtimeSettings(runId: string): SubagentRuntimeSettings | null {

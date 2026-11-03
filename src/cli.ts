@@ -28,7 +28,7 @@ import { runStandaloneTerminal, standaloneArguments } from './terminal/standalon
 import { runWorktreeCli } from './worktrees/cli'
 
 const USAGE = `Usage: xagent [--data <dir>] [--state <dir>]
-       xagent <terminal | serve | wiki | mcp | plugins | hub | refine | web | browser | worktree> [arguments]
+       xagent <terminal | serve | daemon | attach | wiki | mcp | plugins | hub | refine | web | browser | worktree> [arguments]
 
   --version          Print the package version
   (no command)       Start the interactive Harness terminal
@@ -60,6 +60,13 @@ Standalone terminal options:
   --variant <scope>  Run on this variant scope's head (default: interactive profile scope)
   --remote-control, --rc
                      Turn on /remote-control at start, to continue from a phone or iPad
+  --daemon           Run in the long-lived harness for these folders (started when needed),
+                     so a reply keeps running when this window closes
+
+Long-lived harness (ADR-0083):
+  daemon <start | stop | status>
+                     Start, stop or check the harness that --daemon windows use
+  attach [session]   Reattach a window to a reply that kept running after its window closed
 `
 
 function flags(argv: string[]): { values: Record<string, string[]>; switches: Set<string> } {
@@ -129,6 +136,14 @@ async function main(): Promise<number> {
   const terminalArgs = standaloneArguments(argv)
   if (terminalArgs !== null) return runStandaloneTerminal(terminalArgs)
   if (command === 'serve') return serveCommand(rest)
+  if (command === 'daemon' || command === 'attach') {
+    // ADR-0083: the long-lived harness for these folders, and reattaching a window to it.
+    const positional = rest[0] && !rest[0].startsWith('-') ? rest[0] : undefined
+    const { resolveStandaloneOptions } = await import('./terminal/standalone')
+    const { paths, profile } = resolveStandaloneOptions(positional ? rest.slice(1) : rest)
+    const daemon = await import('./terminal/daemon')
+    return command === 'daemon' ? daemon.runDaemonCommand(positional, paths, profile) : daemon.runAttach(paths, profile, positional, process.cwd())
+  }
   if (command === 'wiki') return runWikiCli(rest)
   if (command === 'mcp') return runAppsCli(rest)
   if (command === 'plugins') return runPluginsCli(rest, { ask: terminalAsk() })

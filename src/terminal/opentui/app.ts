@@ -24,6 +24,7 @@ import { DialogPanel, SearchableSelect } from '../tui/dialogs'
 import { terminalKeybindings } from '../tui/keybindings'
 import { loadPiAdapter, setPiTheme } from '../tui/piAdapter'
 import { createTerminalRuntime, type TerminalDecision, type TerminalImage, type TerminalRuntime } from '../tui/runtime'
+import { createHarnessTerminalRuntime, harnessRuntimeSelected } from '../tui/harnessRuntime'
 import { SideQuestion, sideQuestionSnapshot } from '../tui/sideQuestion'
 import type { SideQuestionContext, SideQuestionRead } from '../../sessions/sideQuestions'
 import { createHarnessLightTheme, createHarnessTheme } from '../tui/theme'
@@ -729,7 +730,10 @@ export class OpenTuiApplication {
       process.on('SIGCONT', onContinue)
       this.cleanup.push(() => { process.off('SIGCONT', onContinue) })
       this.notify('Starting session…')
-      this.runtime = await createTerminalRuntime(this.args, {
+      // The frontend is a client of the harness and runs no Pi of its own (ADR-0083);
+      // XINGULAR_TERMINAL_RUNTIME=inprocess runs the in-process runtime instead.
+      const createRuntime = harnessRuntimeSelected() ? createHarnessTerminalRuntime : createTerminalRuntime
+      this.runtime = await createRuntime(this.args, {
         ui: this.ui,
         shutdown: () => { void this.shutdown() },
         notify: this.notify,
@@ -1227,7 +1231,8 @@ export class OpenTuiApplication {
     let revision: number | undefined
     while (!signal.aborted && !this.stopped) {
       try {
-        const snapshot = await controlCall<{ revision: number; requests: TerminalDecision[] }>('terminal.pending.wait', { revision }, 25_000, signal)
+        // A plugin's own dialogs reach this window as dialogs (ADR-0083), not as cards in this dock.
+        const snapshot = await controlCall<{ revision: number; requests: TerminalDecision[] }>('terminal.pending.wait', { revision, ownDialogs: true }, 25_000, signal)
         revision = snapshot.revision
         void this.decisions(snapshot.requests)
       } catch (error) {

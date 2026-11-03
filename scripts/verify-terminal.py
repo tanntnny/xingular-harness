@@ -444,6 +444,51 @@ class Terminal:
                 break
         raise AssertionError(f'PTY did not show {needle!r}; exit={self.process.poll()}; tail={normalized(self.data[-5000:])!r}')
 
+    def wait_any(self, needles, start=0, timeout=35):
+        """Waits for the first of several texts, for a label the terminal may show by id or by display name."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            self.read(0.08)
+            shown = normalized(self.data[start:])
+            screen = '\n'.join(self.screen.display) if self.screen is not None else ''
+            for needle in needles:
+                if needle in shown or needle in screen:
+                    return needle
+            if self.process.poll() is not None:
+                break
+        raise AssertionError(f'PTY did not show any of {needles!r}; exit={self.process.poll()}; tail={normalized(self.data[-5000:])!r}')
+
+    def wait_regex(self, pattern, start=0, timeout=35):
+        deadline = time.monotonic() + timeout
+        compiled = re.compile(pattern)
+        while time.monotonic() < deadline:
+            self.read(0.08)
+            screen = '\n'.join(self.screen.display) if self.screen is not None else ''
+            if compiled.search(normalized(self.data[start:])) or compiled.search(screen):
+                return
+            if self.process.poll() is not None:
+                break
+        raise AssertionError(f'PTY did not show /{pattern}/; exit={self.process.poll()}; tail={normalized(self.data[-5000:])!r}')
+
+    def allow_question(self, start, timeout=35):
+        """An ask_user question, whichever way the runtime brings it: the in-process terminal first asks
+        to approve the call (titled by the tool's id or its display name); a harness run, as the client
+        terminal and a host have it (ADR-0083), shows the question at once."""
+        deadline = time.monotonic() + timeout
+        approvals = ('Approve ask_user?', 'Approve AskUser?')
+        while time.monotonic() < deadline:
+            self.read(0.08)
+            shown = normalized(self.data[start:])
+            screen = '\n'.join(self.screen.display) if self.screen is not None else ''
+            if any(title in shown or title in screen for title in approvals):
+                self.send('\r')
+                return 'approval'
+            if 'Something else…' in shown or 'Something else…' in screen:
+                return 'question'
+            if self.process.poll() is not None:
+                break
+        raise AssertionError(f'PTY showed neither an ask_user approval nor its question; exit={self.process.poll()}; tail={normalized(self.data[-5000:])!r}')
+
     def snapshot(self, name):
         self.read(0.2)
         path = self.output / f'{name}.ansi'
@@ -524,6 +569,28 @@ def records(root):
         record['_events'] = [json.loads(line) for line in events.read_text().splitlines()] if events.exists() else []
         result.append(record)
     return result
+
+
+# The terminal runtime under test. The client terminal (ADR-0083) is the default; the in-process one
+# runs with XINGULAR_TERMINAL_RUNTIME=inprocess.
+CLIENT_TERMINAL = os.environ.get('XINGULAR_TERMINAL_RUNTIME', 'harness') != 'inprocess'
+
+
+def native_history(root, native):
+    """A run's native history file. An in-process terminal run records the file; a harness run (the
+    client terminal, ADR-0083) records Pi's session id, which the file's header carries."""
+    if not native:
+        return None
+    if Path(native).is_file():
+        return Path(native)
+    for path in (root / 'data' / 'sessions').rglob('*.jsonl'):
+        try:
+            header = json.loads(path.read_text().split('\n', 1)[0])
+        except (OSError, ValueError):
+            continue
+        if header.get('type') == 'session' and header.get('id') == native:
+            return path
+    return None
 
 
 def wait_for_goal(terminal, root, goal, timeout=30):
@@ -858,7 +925,8 @@ def main():
                         metadata_color = terminal.screen.buffer[title_y][time_x].fg
                         assert title_color != metadata_color, f'Title and metadata did not use distinct text colors: {terminal.screen.display!r}'
                         if width >= 80:
-                            assert 'resume-fixture' in metadata and 'KB' in metadata, f'Project branch and file size were not shown in the metadata row: {metadata!r}'
+                            # The size is the file's own: an in-process runtime adds its start entries to a resumed file, a client terminal does not.
+                            assert 'resume-fixture' in metadata and re.search(r'\d+(\.\d+)?\s?(B|KB|MB)\b', metadata), f'Project branch and file size were not shown in the metadata row: {metadata!r}'
                         assert 'OTHER_SESSION_TITLE' in visible, f'The unfiltered list did not show both sessions: {terminal.screen.display!r}'
                         _, other_title_y = terminal.locate('OTHER_SESSION_TITLE')
                         assert other_title_y == title_y + 3, f'Sessions were not separated by exactly one blank row: {terminal.screen.display!r}'
@@ -947,7 +1015,8 @@ def main():
                     if terminal.screen is not None:
                         visible = '\n'.join(terminal.screen.display)
                         assert 'Verifier Second' in visible and 'Use for this session' in visible, f'Account details or actions were not visible: {terminal.screen.display!r}'
-                        assert ('Type to search' in visible) == (width >= 100), f'Account detail layout did not match {dimensions}: {terminal.screen.display!r}'
+                        # The list stays beside the detail only on a wide screen (compact below 88 columns); its search holds "Second" by now.
+                        assert ('⌕ Second' in visible) == (width >= 88), f'Account detail layout did not match {dimensions}: {terminal.screen.display!r}'
                         assert 'Esc back/close' in terminal.screen.display[-1], f'Account detail footer was not visible: {terminal.screen.display!r}'
                     terminal.send('\x1b')
                     terminal.read(0.2)
@@ -985,17 +1054,20 @@ def main():
                     terminal.wait('Event JSON', start, timeout=15)
                     search_start = len(terminal.data)
                     terminal.send('usage.updated')
-                    terminal.wait('1 of', search_start, timeout=10)
+                    # A harness run records a usage event per request and one for the run, so the count varies.
+                    terminal.wait_regex(r'\b\d+ of \d+', search_start, timeout=10)
                     terminal.snapshot('trajectory-events-search')
                     if terminal.screen is not None:
                         visible = '\n'.join(terminal.screen.display)
                         assert 'Events' in terminal.screen.display[0], f'Trajectory Events tab was not active: {terminal.screen.display!r}'
-                        assert 'usage.updated' in visible and '1 of ' in visible, f'Event search did not filter the ledger: {terminal.screen.display!r}'
+                        assert 'usage.updated' in visible and re.search(r'\b\d+ of \d+', visible), f'Event search did not filter the ledger: {terminal.screen.display!r}'
                         assert 'Event JSON · usage.updated' in visible, f'Selected-event JSON was not shown: {terminal.screen.display!r}'
                         if width >= 80:
-                            event_line = next(line for line in terminal.screen.display if '❯' in line and 'usage.updated' in line)
-                            detail_line = next(line for line in terminal.screen.display if 'Event JSON · usage.updated' in line)
-                            assert detail_line.index('Event JSON') > event_line.index('usage.updated'), 'The JSON details did not appear beside the event list'
+                            # A wide list shows each event's summary rather than its type, so find the selected row by its marker.
+                            event_line = next((line for line in terminal.screen.display if '❯' in line and '⌕' not in line), None)
+                            detail_line = next((line for line in terminal.screen.display if 'Event JSON · usage.updated' in line), None)
+                            assert event_line is not None and detail_line is not None, f'Could not find the selected event row and its JSON title: {terminal.screen.display!r}'
+                            assert detail_line.index('Event JSON') >= len(event_line.split('│')[0].rstrip()), f'The JSON details did not appear beside the event list: {terminal.screen.display!r}'
                     profile['checks'].append('full-screen Runs/Events tabs, event search, selected-event JSON, and responsive layout')
                     terminal.send('\x1b')
                     terminal.send('\x1b')
@@ -1030,7 +1102,8 @@ def main():
                         terminal.send('\x1b')
                     start = len(terminal.data)
                     terminal.send('$browser-a')
-                    terminal.wait('Inspect a browser', start)
+                    # The description wraps inside a narrow completion column ("Inspect a" / "browser fixture.").
+                    terminal.wait_regex(r'Inspect a\s+browser', start)
                     terminal.snapshot('skill-completion')
                     terminal.send('\r')
                     terminal.read(0.2)
@@ -1116,15 +1189,26 @@ def main():
                                     return row, line.index(fragment)
                             raise AssertionError(f'Could not locate {fragment!r} in the palette: {rows!r}')
 
-                        short_description = locate_row('SHORT_DESC_START')
-                        long_description = locate_row('LONG_DESC_START')
+                        # A narrow palette wraps inside a word and shows three lines per row, so match a marker's prefix.
+                        short_description = locate_row('SHORT_DESC_')
+                        long_description = locate_row('LONG_DESC_')
                         assert short_description[1] == long_description[1], f'Description columns were not aligned: {rows!r}'
-                        command_start = locate_row('/verify-palette')
-                        command_end = locate_row('name-that-wraps')
-                        assert command_start[0] != command_end[0], f'The long command name did not wrap: {rows!r}'
-                        short_end = locate_row('SHORT_DESC_END')
-                        long_end = locate_row('LONG_DESC_END')
-                        assert short_description[0] != short_end[0] and long_description[0] != long_end[0], f'Descriptions did not wrap: {rows!r}'
+                        # Command names carry their owner (ADR-0061) and wrap inside their column; read the column down the rows.
+                        column = long_description[1]
+                        name_rows = []
+                        for following in rows[long_description[0]:long_description[0] + 6]:
+                            part = following[:column].strip()
+                            if not part:
+                                break
+                            name_rows.append(part)
+                        long_name = ''.join(name_rows)
+                        assert len(name_rows) > 1, f'The long command name did not wrap: {rows!r}'
+                        if width >= 80:
+                            assert 'verify-palette-with-a-deliberately-long-command-name-that-wraps' in long_name, f'The wrapped name lost text: {rows!r}'
+                            assert locate_row('SHORT_DESC_END')[0] != short_description[0] and locate_row('LONG_DESC_END')[0] != long_description[0], f'Descriptions did not wrap: {rows!r}'
+                        else:
+                            assert 'verify-palette-with' in long_name, f'The wrapped name lost text: {rows!r}'
+                            assert rows[long_description[0] + 1][column:].strip() and rows[short_description[0] + 1][column:].strip(), f'Descriptions did not wrap: {rows!r}'
                         profile['checks'].append('command and description columns align; long names and both descriptions wrap in the rendered PTY')
                     else:
                         rendered = normalized(bytes(terminal.data[start:]))
@@ -1177,11 +1261,29 @@ def main():
 
                         # The documented groups are Core, Run, Model, Session, Inspect, Harness, Plugins and Prompts (terminal-tui.md).
                         wrapped_name = 'that-wraps' if width >= 80 else 'that-wr'
+                        long_name = 'verify-palette-with-a-deliberately-long-command-name-that-wraps'
+
+                        def name_column(page_text):
+                            """The long command's name as its wrapped name column reads, joined across rows."""
+                            rows = page_text.splitlines()
+                            for index, row in enumerate(rows):
+                                if 'LONG_DESC_START' in row:
+                                    column = row.index('LONG_DESC_START')
+                                    parts = []
+                                    for following in rows[index:index + 6]:
+                                        part = following[:column].strip()
+                                        if not part:
+                                            break
+                                        parts.append(part)
+                                    return ''.join(parts)
+                            return ''
                         first_class_commands = ['/doctor', '/worktree', '/trajectory', '/subagents', '/agents', '/mcp']
-                        wanted = ['Run', 'Model', 'Session', 'Inspect', 'Harness', 'Plugins', *first_class_commands, 'SHORT_DESC_START', 'SHORT_DESC_END', 'LONG_DESC_START', 'LONG_DESC_END', wrapped_name]
+                        wanted = ['Run', 'Model', 'Session', 'Inspect', 'Harness', 'Plugins', *first_class_commands, 'SHORT_DESC_START', 'SHORT_DESC_END', 'LONG_DESC_START', 'LONG_DESC_END']
+                        # Where a long name wraps depends on its owner prefix (ADR-0061); its whole name is in its column.
+                        wrapped = lambda: any(long_name in name_column(page) for page in pages) if width >= 80 else wrapped_name in '\n'.join(pages)
                         pages = [top]
                         for _ in range(120):
-                            if all(item in '\n'.join(pages) for item in wanted):
+                            if all(item in '\n'.join(pages) for item in wanted) and wrapped():
                                 break
                             terminal.send('\x1b[6~')
                             terminal.read(0.15)
@@ -1189,8 +1291,9 @@ def main():
                         rendered = '\n'.join(pages)
                         for group in ['Run', 'Model', 'Session', 'Inspect', 'Harness', 'Plugins']:
                             assert group in rendered, f'/help did not render the {group} group while scrolling: {pages!r}'
-                        for marker in ['SHORT_DESC_START', 'SHORT_DESC_END', 'LONG_DESC_START', 'LONG_DESC_END', wrapped_name, *first_class_commands]:
+                        for marker in ['SHORT_DESC_START', 'SHORT_DESC_END', 'LONG_DESC_START', 'LONG_DESC_END', *first_class_commands]:
                             assert marker in rendered, f'/help did not render expected command content {marker!r}'
+                        assert wrapped(), f'/help did not wrap the long command name within its column: {pages!r}'
                         if width >= 80:
                             aligned_page = next((page.splitlines() for page in pages if 'SHORT_DESC_START' in page and 'LONG_DESC_START' in page), None)
                             assert aligned_page is not None, f'Could not inspect both extension descriptions in one view: {pages!r}'
@@ -1427,8 +1530,7 @@ def main():
                     terminal.read(0.2)
                     start = len(terminal.data)
                     terminal.send('verify-batch\r')
-                    terminal.wait('Approve ask_user?', start)
-                    terminal.send('\r')
+                    terminal.allow_question(start)
                     terminal.wait('Batch choice', start)
                     terminal.read(0.2)
                     if terminal.screen is not None:
@@ -1552,8 +1654,7 @@ def main():
                     # A plain single question reproduces the reported gap without sketch height affecting the layout.
                     start = len(terminal.data)
                     terminal.send('verify-question-layout\r')
-                    terminal.wait('Approve ask_user?', start)
-                    terminal.send('\r')
+                    terminal.allow_question(start)
                     terminal.wait('LAYOUT_QUESTION_TITLE', start)
                     terminal.wait('Something else…', start)
                     terminal.read(0.3)
@@ -1589,8 +1690,7 @@ def main():
                     # Use the production path again with deliberately uneven rows and a large diagram.
                     start = len(terminal.data)
                     terminal.send('verify-wireframe\r')
-                    terminal.wait('Approve ask_user?', start)
-                    terminal.send('\r')
+                    terminal.allow_question(start)
                     terminal.wait('UI layout', len(terminal.data) - 1)
                     terminal.read(0.3)
                     if terminal.screen is None:
@@ -1676,10 +1776,10 @@ def main():
                         raise AssertionError(f'{count} completed history runs for {goal!r} were not recorded in session {native_session_id!r}')
 
                     def wait_for_bash_command(native_session_id, command):
-                        session_path = Path(native_session_id)
                         deadline = time.monotonic() + 20
                         while time.monotonic() < deadline:
-                            if session_path.is_file():
+                            session_path = native_history(root, native_session_id)
+                            if session_path is not None:
                                 for line in session_path.read_text().splitlines():
                                     try:
                                         message = json.loads(line).get('message', {})
@@ -1696,7 +1796,7 @@ def main():
                     first_record = wait_for_goal(terminal, root, first_goal)
                     assert first_record.get('status') == 'completed', 'Initial prompt-history turn did not complete'
                     first_session = first_record.get('nativeSessionId')
-                    assert first_session and Path(first_session).is_file(), 'Initial prompt history did not retain its native session'
+                    assert native_history(root, first_session), 'Initial prompt history did not retain its native session'
 
                     terminal.send('/new\r')
                     terminal.read(0.8)
@@ -2081,16 +2181,15 @@ def main():
                 assert {'read', 'bash'} <= names, f'Real tools did not all succeed: {names}'
                 flow_requests = [item for item in LocalProvider.requests if 'verify-flow' in item.get('user', '')]
                 assert flow_requests and 'ask_user' not in flow_requests[-1]['tools'] and 'ask_user_question' not in flow_requests[-1]['tools'], 'Normal mode exposed a question tool'
-                native = record.get('nativeSessionId')
-                assert native and Path(native).is_file(), 'Run did not retain its real native history'
-                native_text = Path(native).read_text()
+                native = native_history(root, record.get('nativeSessionId'))
+                assert native, 'Run did not retain its real native history'
+                native_text = native.read_text()
                 assert 'LOCAL_FILE_CONTENT' in native_text and 'LOCAL_BASH_EXECUTED' in native_text, 'Native history lacks real tool outputs'
                 start = len(terminal.data)
                 terminal.send('\x1b[Z')
                 terminal.read(0.3)
                 terminal.send('verify-plan Unicode 知識\r')
-                terminal.wait('Approve ask_user?', start)
-                terminal.send('\r')
+                terminal.allow_question(start)
                 terminal.wait('Something else…', start)
                 terminal.send('\r')
                 terminal.send('\r')
@@ -2130,17 +2229,23 @@ def main():
                 profile['checks'].append('plan mode: question tool, plan card and choice block, Edit revises, Implement restores normal tools')
                 start = len(terminal.data)
                 terminal.send('/verify-plugin\r')
-                terminal.wait('PLUGIN_CUSTOM_UI', start)
-                terminal.snapshot('plugin-light')
-                terminal.send('\r')
-                terminal.wait('PLUGIN_CUSTOM_DONE: accepted', start)
-                profile['checks'].append('trusted plugin custom overlay, widget, status and disposal')
+                if CLIENT_TERMINAL:
+                    # A client terminal's plugins run in the harness, with the host's interface: no theme or
+                    # custom overlay (INV-TUI-8). The plugin's own refusal reaches the window.
+                    terminal.wait('Built-in light theme is unavailable', start)
+                    terminal.snapshot('plugin-client')
+                    profile['checks'].append('client terminal: a trusted plugin runs in the harness and its refusal of a custom overlay is shown')
+                else:
+                    terminal.wait('PLUGIN_CUSTOM_UI', start)
+                    terminal.snapshot('plugin-light')
+                    terminal.send('\r')
+                    terminal.wait('PLUGIN_CUSTOM_DONE: accepted', start)
+                    profile['checks'].append('trusted plugin custom overlay, widget, status and disposal')
                 terminal.send('\x1b[Z')
                 terminal.read(0.2)
                 start = len(terminal.data)
                 terminal.send('verify-batch\r')
-                terminal.wait('Approve ask_user?', start)
-                terminal.send('\r')
+                terminal.allow_question(start)
                 terminal.wait('Something else…', start)
                 next_question_start = len(terminal.data)
                 terminal.send('\r')
@@ -2169,7 +2274,7 @@ def main():
                 for scenario, decision in [('verify-deny', '\x1b[B\r'), ('verify-approval-cancel', '\x1b')]:
                     start = len(terminal.data)
                     terminal.send(scenario + '\r')
-                    terminal.wait('Approve workspace-write?', start)
+                    terminal.wait_any(['Approve workspace-write?', 'Approve WorkspaceWrite?'], start)
                     terminal.send(decision)
                     terminal.wait('LOCAL_FINAL', start)
                     terminal.read(0.4)
@@ -2183,8 +2288,7 @@ def main():
                 terminal.read(0.2)
                 start = len(terminal.data)
                 terminal.send('verify-question-cancel\r')
-                terminal.wait('Approve ask_user?', start)
-                terminal.send('\r')
+                terminal.allow_question(start)
                 terminal.wait('Cancel check', start)
                 terminal.wait('LOCAL_CANCEL_QUESTION', start)
                 terminal.send('\x1b')
@@ -2214,9 +2318,14 @@ def main():
                 terminal.send('verify-stop\r')
                 terminal.wait('CANCEL_STREAM_', start)
                 terminal.send('/stop\r')
-                terminal.read(0.8)
+                # The record is written behind /stop's return; a loaded machine needs longer than a fixed read.
+                stop_deadline = time.monotonic() + 8
+                while time.monotonic() < stop_deadline:
+                    terminal.read(0.1)
+                    stopped = [record for record in records(root) if 'verify-stop' in str(record.get('goal'))]
+                    if stopped and stopped[-1].get('status') == 'interrupted':
+                        break
                 terminal.snapshot('stopped-command')
-                stopped = [record for record in records(root) if 'verify-stop' in str(record.get('goal'))]
                 assert stopped and stopped[-1]['status'] == 'interrupted', 'The /stop command did not interrupt and persist the active run'
                 profile['checks'].append('/stop interrupts the live stream and records an interrupted run')
                 start = len(terminal.data)

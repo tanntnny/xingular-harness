@@ -4,7 +4,7 @@ import { REPLY_STALL_MS, TOOL_STALL_MS, replyStalled } from './stallWatch'
 
 const now = 1_000_000_000
 
-describe('terminal reply stall watch', () => {
+describe('reply stall watch', () => {
   it('waits out the reply window before calling silence a stall', () => {
     expect(replyStalled({ now, progressAt: now - REPLY_STALL_MS + 1, runningTools: [] })).toBe(false)
     expect(replyStalled({ now, progressAt: now - REPLY_STALL_MS, runningTools: [] })).toBe(true)

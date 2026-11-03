@@ -1,11 +1,13 @@
-// A live terminal reply that produced nothing for too long is not working: the person should be
-// told instead of watching a run that never settles. This is the turn-level rule; the run-store
-// sweep (`reconcileStaleRuns`) settles a record whose owner stopped reporting, and both use the
-// same reason, `stalled` (INV-RUN-14).
+// A reply that produced nothing for too long is not working: the person should be told instead of
+// watching a run that never settles. This is the turn-level rule, applied to every harness run
+// (`runTurn`) and to the in-process terminal's reply; the run-store sweep (`reconcileStaleRuns`)
+// settles a record whose owner stopped reporting, and all use the same reason, `stalled` (INV-RUN-14).
 //
 // A reply that waits for its subagents is not silent: each child is watched on its own clock and ended
 // with the same reason when it goes quiet, so the wait returns and the parent carries on by itself.
 
+/** How often a live reply's progress is checked against the stall windows. */
+export const STALL_CHECK_MS = 30_000
 /** Silence with no tool running: the model request never came back. */
 export const REPLY_STALL_MS = 15 * 60_000
 /** One tool may run this long; past it the reply is wedged, not busy. */
@@ -25,6 +27,11 @@ export function replyStalled({ now, progressAt, runningTools }: ReplyProgress): 
   return runningTools.length
     ? now - Math.min(...runningTools) >= TOOL_STALL_MS
     : now - progressAt >= REPLY_STALL_MS
+}
+
+/** Whether every tool still running only waits for subagents, which are watched by their own runs. */
+export function onlyWaitingForChildren(runningToolNames: readonly string[]): boolean {
+  return runningToolNames.length > 0 && runningToolNames.every((name) => CHILD_WAIT_TOOLS.has(name))
 }
 
 /** The tools that block a reply until its children settle. */

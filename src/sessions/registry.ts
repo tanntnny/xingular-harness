@@ -24,9 +24,20 @@ export interface ApprovalInput {
   timeoutMs?: number
 }
 
+/** The Pi extension dialog a question stands for, so a terminal can show the dialog itself (ADR-0083). */
+export interface QuestionDialog {
+  kind: 'select' | 'confirm' | 'input' | 'editor'
+  title: string
+  message?: string
+  placeholder?: string
+  prefill?: string
+  options?: string[]
+}
+
 export interface QuestionInput {
   requestId?: string
   userOnly?: boolean
+  dialog?: QuestionDialog
   summary?: string
   question: string
   uiSketch?: true
@@ -89,6 +100,8 @@ export interface ActiveRun {
    */
   finish(outcome: 'completed' | 'failed' | 'interrupted', failure?: { code: string; message: string }, reason?: string, code?: RunStopCode): void
   readonly finished: boolean
+  /** Whether the run is waiting for a person's approval or answer, which no stall guard may cut short. */
+  readonly waiting?: boolean
 }
 
 /** Called with every persisted event, and the run's record as it is after that event. */
@@ -278,6 +291,9 @@ export class RunRegistry {
       },
       get finished() {
         return finished
+      },
+      get waiting() {
+        return waitingStatus() !== 'running'
       },
       interrupt: async (stop?: InterruptStop) => {
         // Release approvals/questions before SDK abort waits for their blocked tools.
