@@ -121,6 +121,11 @@ export async function createHarnessTerminalRuntime(args: string[], host: Termina
   let planActive = false
   const recordingMode = (): ComposerMode => planActive ? 'plan' : currentMode
   const modelFor = (reference: string): ChoiceModel | undefined => resolveCliModel({ cliModel: reference, modelRuntime }).model
+  /** A model this account can use: offered by its catalogue and holding credentials. Never a request. */
+  const usableModel = async (reference: string): Promise<ChoiceModel | undefined> => {
+    const found = modelFor(reference)
+    return found && await modelRuntime.checkAuth(found.provider) ? found : undefined
+  }
   const goal = new GoalController()
 
   const listeners = new Set<AgentSessionEventListener>()
@@ -133,6 +138,8 @@ export async function createHarnessTerminalRuntime(args: string[], host: Termina
   let messages: Message[] = []
   const state: { messages: Message[]; streamingMessage?: Message; pendingToolCalls: Set<string> } = { messages, pendingToolCalls: new Set() }
   let streaming = false
+  /** A mode switch made during a reply: the next reply starts on the new mode's choice. */
+  let pendingApply = false
   let fresh = !sessionFile
   const steering: string[] = []
   const followUps: string[] = []
@@ -157,9 +164,23 @@ export async function createHarnessTerminalRuntime(args: string[], host: Termina
     const context = (manager as SessionManager | null)?.buildSessionContext() as unknown as { model?: { provider: string; modelId: string } } | undefined
     return context?.model ? `${context.model.provider}/${context.model.modelId}` : undefined
   }
+  // The level Pi resolves when no mode has saved an effort: the model's own default, then the account's.
+  const defaultEffort = (): AgentSession['thinkingLevel'] =>
+    ((model ? settingsManager.getModelThinkingLevel(model.provider, model.id) : undefined) ?? settingsManager.getDefaultThinkingLevel() ?? 'medium') as AgentSession['thinkingLevel']
   const initial = prepared.model ?? recorded() ?? startChoice.model
   if (initial) model = modelFor(initial)
-  if (startChoice.effort) thinkingLevel = startChoice.effort as never
+  thinkingLevel = (startChoice.effort ?? defaultEffort()) as never
+  // A conversation written on another account (a switch resumes it) can name a model this account
+  // cannot use. The account's own newest choice decides then; an explicit launch model is the host's.
+  const stale = prepared.model ? undefined : recorded()
+  let recovered: { recorded: string; reference: string; effort?: Effort } | null = null
+  if (stale && !(await usableModel(stale).then(Boolean, () => true))) {
+    const asSession = { get model() { return model }, setModel: async (next: ChoiceModel) => { model = next }, setThinkingLevel: (level: AgentSession['thinkingLevel']) => { thinkingLevel = level } }
+    const applied = await modeChoices.useFallback(asSession, 'normal', usableModel, defaultEffort()).catch(() => null)
+    if (applied) recovered = { recorded: stale, ...applied }
+    // Nothing on this account is usable: name no model, so the harness picks one rather than the old account's.
+    else model = undefined
+  }
 
   const reference = (): string | null => model ? `${model.provider}/${model.id}` : null
   const lastAssistant = (): Message | undefined => [...messages].reverse().find((message) => message.role === 'assistant')
@@ -251,6 +272,10 @@ export async function createHarnessTerminalRuntime(args: string[], host: Termina
       }
       case 'agent_settled': {
         streaming = false
+        if (pendingApply) {
+          pendingApply = false
+          void modeChoices.apply(session as never, currentMode, modelFor, defaultEffort()).then(() => host.changed())
+        }
         state.streamingMessage = undefined
         state.pendingToolCalls.clear()
         steering.length = 0
@@ -605,17 +630,33 @@ export async function createHarnessTerminalRuntime(args: string[], host: Termina
     async submitPlan(text, images) {
       if (!text.trim()) throw new Error('Use /plan <plan brief>.')
       if (await replying()) throw new Error('A plan request must wait until the current response settles.')
+      // A one-shot plan from the normal composer: the window shows and runs the plan's choice, then returns.
+      const previous = { model, effort: thinkingLevel }
+      const oneShot = currentMode !== 'plan'
+      if (oneShot) await modeChoices.apply(session as never, 'plan', modelFor, defaultEffort())
       planActive = true
       try {
         await startRun(text, { images, plan: true, mode: 'plan' })
         await session.waitForIdle()
       } finally {
         planActive = false
+        if (oneShot && !disposed) {
+          model = previous.model
+          thinkingLevel = previous.effort
+          if (pendingApply) {
+            pendingApply = false
+            await modeChoices.apply(session as never, currentMode, modelFor, defaultEffort())
+          }
+          host.changed()
+        }
       }
     },
     async setMode(mode) {
       currentMode = mode
-      await modeChoices.apply(session as never, mode, modelFor, thinkingLevel)
+      // A switch during a reply waits for it to settle, so the reply keeps the model it started with.
+      if (streaming) { pendingApply = true; return }
+      await modeChoices.apply(session as never, mode, modelFor, defaultEffort())
+      host.changed()
     },
     get session() { return session as unknown as AgentSession },
     get services() { return services },
@@ -689,5 +730,9 @@ export async function createHarnessTerminalRuntime(args: string[], host: Termina
 
   void pump()
   await announce()
+  if (recovered) {
+    const effort = recovered.effort ? ` at ${recovered.effort} effort` : ''
+    host.notify(`This account cannot use ${recovered.recorded}. Started on ${recovered.reference}${effort}, your latest choice on this account.`)
+  }
   return runtime
 }

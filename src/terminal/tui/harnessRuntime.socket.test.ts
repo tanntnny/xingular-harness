@@ -1,8 +1,8 @@
 // The terminal frontend as a client of the harness (ADR-0083, phase 2), over the real session
 // socket: the parent runs every turn on a live Pi session with a scripted model, and the client's
 // mirror draws it. Nothing here makes a provider request.
-import type { AgentSessionEvent, ExtensionUIContext } from '@earendil-works/pi-coding-agent'
-import { mkdtempSync, mkdirSync, rmSync } from 'node:fs'
+import { SessionManager, type AgentSessionEvent, type ExtensionUIContext } from '@earendil-works/pi-coding-agent'
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -306,5 +306,100 @@ describe('the terminal frontend as a client of the harness', () => {
     await runtime.switchSession(firstId)
     const { realpathSync } = await import('node:fs')
     expect(realpathSync(runtime.session.sessionFile!)).toBe(realpathSync(first!))
+  })
+})
+
+/** Opens the client terminal on an account whose catalogue offers `acme/alpha` and `acme/beta`, with its saved choices. */
+async function openOnCatalogue(options: { choices?: Record<string, { model?: string; effort?: string }>; recorded?: string } = {}): Promise<{ runtime: TerminalRuntime; notify: ReturnType<typeof vi.fn> }> {
+  const root = mkdtempSync(join(tmpdir(), 'harness-client-modes-'))
+  const cwd = join(root, 'project')
+  mkdirSync(cwd)
+  const harness = createHarness({ dataRoot: join(root, 'data'), stateDir: join(root, 'state'), secrets: memorySecretStore(), assets: { node: process.execPath, cli: join(root, 'cli.js'), piExtension: join(root, 'terminal-pi.js'), openTui: join(root, 'terminal-opentui.js') } })
+  const entry: { harness: Harness; runtime?: TerminalRuntime; root: string } = { harness, root }
+  opened.push(entry)
+  await harness.ready
+  const account = harness.accounts.create('Modes', 'apiKey').accounts[0]
+  for (const [mode, choice] of Object.entries(options.choices ?? {})) harness.accounts.choose(account.id, mode, choice as never)
+  const launch = await harness.terminals.prepare({ sessionId: 'client-modes', cwd, accountId: account.id, sessionFolder: join(root, 'history'), subagents: null })
+  for (const [name, value] of Object.entries(launch.env)) vi.stubEnv(name, value === null ? undefined : value)
+  vi.spyOn(process, 'cwd').mockReturnValue(cwd)
+  const agentDir = process.env.PI_CODING_AGENT_DIR!
+  writeFileSync(join(agentDir, 'models.json'), JSON.stringify({ providers: { acme: {
+    baseUrl: 'http://127.0.0.1:9/v1', api: 'openai-completions', apiKey: 'fixture-key',
+    models: ['alpha', 'beta'].map((id) => ({ id, name: id, reasoning: true, input: ['text'], contextWindow: 32768, maxTokens: 2048, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }))
+  } } }))
+  const args = launch.args.slice(2)
+  if (options.recorded) {
+    // A conversation another account wrote: its history names `options.recorded`.
+    const history = args[args.indexOf('--session-dir') + 1]
+    const manager = SessionManager.create(cwd, history)
+    const [provider, modelId] = options.recorded.split('/')
+    manager.appendModelChange(provider, modelId)
+    manager.appendMessage({ role: 'user', content: 'earlier', timestamp: Date.now() } as never)
+    manager.appendMessage({ role: 'assistant', content: [{ type: 'text', text: 'earlier answer' }], provider, model: modelId, api: 'openai-completions', usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: 'stop', timestamp: Date.now() } as never)
+    const file = manager.getSessionFile()!
+    writeFileSync(file, [manager.getHeader(), ...manager.getEntries()].map((item) => JSON.stringify(item)).join('\n') + '\n')
+    args.push('--session', file)
+  }
+  const notify = vi.fn()
+  const ui = { select: vi.fn(async () => undefined), confirm: vi.fn(async () => false), notify: vi.fn(), getEditorText: () => '' } as unknown as ExtensionUIContext
+  const runtime = await createHarnessTerminalRuntime(args, { ui, notify, changed: vi.fn(), shutdown: vi.fn() })
+  entry.runtime = runtime
+  return { runtime, notify }
+}
+
+const modelOf = (runtime: TerminalRuntime): string | undefined => runtime.session.model ? `${runtime.session.model.provider}/${runtime.session.model.id}` : undefined
+
+describe('the client terminal after an account switch', () => {
+  it("starts on the new account's own choice when the conversation names a model it cannot use", async () => {
+    const { runtime, notify } = await openOnCatalogue({ recorded: 'gone/old-model', choices: { normal: { model: 'acme/alpha', effort: 'low' } } })
+    expect(modelOf(runtime)).toBe('acme/alpha')
+    expect(runtime.session.thinkingLevel).toBe('low')
+    expect(notify).toHaveBeenCalledWith(expect.stringContaining('cannot use gone/old-model. Started on acme/alpha at low effort'))
+  })
+
+  it('names no model, rather than the old account\'s, when nothing on the new account is usable', async () => {
+    const { runtime } = await openOnCatalogue({ recorded: 'gone/old-model' })
+    expect(modelOf(runtime)).toBeUndefined()
+  })
+
+  it('keeps the conversation\'s own model when the account can use it', async () => {
+    const { runtime, notify } = await openOnCatalogue({ recorded: 'acme/beta', choices: { normal: { model: 'acme/alpha' } } })
+    expect(modelOf(runtime)).toBe('acme/beta')
+    expect(notify).not.toHaveBeenCalled()
+  })
+})
+
+describe('the client terminal keeps a model and an effort for each mode', () => {
+  it('applies the plan mode\'s own model and effort, and gives the normal mode its own back', async () => {
+    const { runtime } = await openOnCatalogue({ choices: { normal: { model: 'acme/alpha', effort: 'low' }, plan: { model: 'acme/beta', effort: 'high' } } })
+    expect(modelOf(runtime)).toBe('acme/alpha')
+    expect(runtime.session.thinkingLevel).toBe('low')
+    await runtime.setMode('plan')
+    expect(modelOf(runtime)).toBe('acme/beta')
+    expect(runtime.session.thinkingLevel).toBe('high')
+    await runtime.setMode('normal')
+    expect(modelOf(runtime)).toBe('acme/alpha')
+    expect(runtime.session.thinkingLevel).toBe('low')
+  })
+
+  it('does not carry an effort chosen for one mode into a mode that never chose one', async () => {
+    const { runtime } = await openOnCatalogue({ choices: { normal: { model: 'acme/alpha' }, plan: { effort: 'high' } } })
+    const normalEffort = runtime.session.thinkingLevel
+    expect(normalEffort).not.toBe('high')
+    await runtime.setMode('plan')
+    expect(runtime.session.thinkingLevel).toBe('high')
+    await runtime.setMode('normal')
+    expect(runtime.session.thinkingLevel).toBe(normalEffort)
+  })
+
+  it('records a selection made in plan mode against plan, not against normal', async () => {
+    const { runtime } = await openOnCatalogue({ choices: { normal: { model: 'acme/alpha', effort: 'low' } } })
+    await runtime.setMode('plan')
+    runtime.session.setThinkingLevel('xhigh' as never)
+    await runtime.setMode('normal')
+    expect(runtime.session.thinkingLevel).toBe('low')
+    await runtime.setMode('plan')
+    expect(runtime.session.thinkingLevel).toBe('xhigh')
   })
 })

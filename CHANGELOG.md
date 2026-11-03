@@ -23,6 +23,14 @@
   interrupted with reason `stalled`, whatever front end started it, and its live session is closed
   rather than reused. Every run now sends the 30-second `heartbeat`, not only runs with a work slice,
   so a long quiet tool is no longer settled as `owner_gone`.
+- **Switching accounts starts on the new account's model.** A conversation resumed on another
+  account that names a model this account cannot use now starts on this account's own latest choice
+  (with a notice), as the in-process terminal did, instead of showing and sending the old account's
+  model. If nothing on the account is usable, no model is named and the harness picks one.
+- **Plan and normal mode keep their own model and effort in the new terminal.** A mode that never
+  chose an effort starts on the model's or account's default instead of keeping the other mode's; a
+  mode switch during a reply waits for it to settle; a one-shot `/plan` shows and runs the plan
+  mode's choice, then returns to the normal one.
 - **A reply whose provider request timed out and was retried successfully is now recorded as
   completed**, not failed.
 - **A terminal window whose terminal closed no longer leaves its process running.** The frontend is
