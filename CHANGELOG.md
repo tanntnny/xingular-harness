@@ -31,10 +31,19 @@
   chose an effort starts on the model's or account's default instead of keeping the other mode's; a
   mode switch during a reply waits for it to settle; a one-shot `/plan` shows and runs the plan
   mode's choice, then returns to the normal one.
+- **The new terminal offers every effort level the model supports.** It stopped at `high`; it now
+  lists `xhigh` and `max` where the model maps them, as the in-process terminal did, and runs a
+  model at the nearest level it supports when asked for one it does not.
 - **A reply whose provider request timed out and was retried successfully is now recorded as
   completed**, not failed.
 - **A terminal window whose terminal closed no longer leaves its process running.** The frontend is
   ended three seconds after the hang-up if it has not exited by itself.
+
+- **Make fenced code easier to read in the terminal.** Code blocks now use a bordered panel labeled
+  from the fence language, with bundled tree-sitter highlighting where available and lightweight
+  Python, shell and JSON fallback highlighting. The final-answer prompt asks for language-labeled
+  fences and `bash` fences for commands the person must run; this changes the stable prompt prefix
+  once.
 
 - **Connect the agent to your own signed-in Brave profile (ADR-0082).**
   - A device-local browser backend. `/settings` → Browser offers **Isolated browser** or **Brave
