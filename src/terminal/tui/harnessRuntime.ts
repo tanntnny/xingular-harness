@@ -20,6 +20,7 @@ import { bodyOf } from '../../core/frontmatter'
 import { skillInvocations } from './skillInvocation'
 import { pluginCommandPrefix } from '../../plugins/commandPrefix'
 import type { ExtensionNotice } from '../../sessions/extensionUi'
+import { clampLevel, supportedLevels } from './thinkingLevels'
 import { ModeChoices, type ChoiceModel, type ChoiceStore, type ComposerMode } from './modeChoices'
 import type { ModeChoice } from '../../accounts/choices'
 import type { Effort } from '../../core/effort'
@@ -52,7 +53,6 @@ interface LiveState {
 }
 type Journal = { seq: number; events: Array<{ seq: number; event: AgentSessionEvent }>; reset: boolean }
 
-const THINKING: AgentSession['thinkingLevel'][] = ['off', 'minimal', 'low', 'medium', 'high'] as never
 const DEFAULT_TOOLS = ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls']
 
 /** The native session id a history file carries in its header. */
@@ -396,15 +396,17 @@ export async function createHarnessTerminalRuntime(args: string[], host: Termina
 
   const setModel = async (next: ChoiceModel, options: { persist?: boolean } = {}): Promise<void> => {
     model = next
+    // As Pi does: the new model runs at the nearest level it supports.
+    thinkingLevel = clampLevel(next, thinkingLevel) as never
     if (options.persist !== false) await modeChoices.record(recordingMode(), { model: `${next.provider}/${next.id}` })
     host.changed()
   }
   const setThinkingLevel = (level: AgentSession['thinkingLevel'], options: { persist?: boolean } = {}): void => {
-    thinkingLevel = level
-    if (options.persist !== false) void modeChoices.record(recordingMode(), { effort: level as Effort })
+    thinkingLevel = clampLevel(model, level) as never
+    if (options.persist !== false) void modeChoices.record(recordingMode(), { effort: thinkingLevel as Effort })
     host.changed()
   }
-  const availableLevels = (): AgentSession['thinkingLevel'][] => model?.reasoning ? THINKING : ['off'] as never
+  const availableLevels = (): AgentSession['thinkingLevel'][] => supportedLevels(model) as never
 
   const commandsNow = (): LiveCommand[] => live.session?.commands ?? live.commands ?? []
   const extensionRunner = {

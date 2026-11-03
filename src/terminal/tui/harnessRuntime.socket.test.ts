@@ -326,7 +326,8 @@ async function openOnCatalogue(options: { choices?: Record<string, { model?: str
   const agentDir = process.env.PI_CODING_AGENT_DIR!
   writeFileSync(join(agentDir, 'models.json'), JSON.stringify({ providers: { acme: {
     baseUrl: 'http://127.0.0.1:9/v1', api: 'openai-completions', apiKey: 'fixture-key',
-    models: ['alpha', 'beta'].map((id) => ({ id, name: id, reasoning: true, input: ['text'], contextWindow: 32768, maxTokens: 2048, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }))
+    // `beta` maps the two top levels; `alpha` stops at high.
+    models: ['alpha', 'beta'].map((id) => ({ id, name: id, reasoning: true, input: ['text'], contextWindow: 32768, maxTokens: 2048, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, ...(id === 'beta' ? { thinkingLevelMap: { xhigh: 'xhigh', max: 'max' } } : {}) }))
   } } }))
   const args = launch.args.slice(2)
   if (options.recorded) {
@@ -396,10 +397,24 @@ describe('the client terminal keeps a model and an effort for each mode', () => 
   it('records a selection made in plan mode against plan, not against normal', async () => {
     const { runtime } = await openOnCatalogue({ choices: { normal: { model: 'acme/alpha', effort: 'low' } } })
     await runtime.setMode('plan')
-    runtime.session.setThinkingLevel('xhigh' as never)
+    await runtime.session.setModel({ provider: 'acme', id: 'beta', name: 'beta', reasoning: true, thinkingLevelMap: { xhigh: 'xhigh', max: 'max' }, contextWindow: 32768, input: ['text'] } as never)
+    runtime.session.setThinkingLevel('max' as never)
     await runtime.setMode('normal')
+    expect(modelOf(runtime)).toBe('acme/alpha')
     expect(runtime.session.thinkingLevel).toBe('low')
     await runtime.setMode('plan')
-    expect(runtime.session.thinkingLevel).toBe('xhigh')
+    expect(modelOf(runtime)).toBe('acme/beta')
+    expect(runtime.session.thinkingLevel).toBe('max')
+  })
+
+  it('offers the levels the model supports, up to max where it maps them, and clamps what it does not', async () => {
+    const { runtime } = await openOnCatalogue({ choices: { normal: { model: 'acme/alpha', effort: 'low' }, plan: { model: 'acme/beta' } } })
+    expect(runtime.session.getAvailableThinkingLevels()).toEqual(['off', 'minimal', 'low', 'medium', 'high'])
+    runtime.session.setThinkingLevel('max' as never)
+    expect(runtime.session.thinkingLevel).toBe('high')
+    await runtime.setMode('plan')
+    expect(runtime.session.getAvailableThinkingLevels()).toEqual(['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
+    runtime.session.setThinkingLevel('max' as never)
+    expect(runtime.session.thinkingLevel).toBe('max')
   })
 })
