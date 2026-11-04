@@ -195,6 +195,21 @@ their own terminal components (INV-TUI-8).
   reply runs, `terminal.detach` keeps the reply and its live session without a window until it
   settles; `xagent attach [session]` reattaches a new window to it (`prepare { attach: true }`, same
   folder and account). Without a running reply, closing the window ends the session as before.
+- **Daemon version and lifetime.** The lock and `daemon.status` carry the package version. A new
+  window that finds a daemon of another version (or one older than the check) stops it and starts
+  its own when no window and no reply uses it; otherwise it leaves it running, says so, and runs in
+  its own harness. `attach`, `daemon status` and `daemon stop` reach a daemon of any version. The
+  daemon exits after 30 minutes (`DAEMON_IDLE_MS`) with no window, live session or connected client.
+  `--no-daemon` or `XINGULAR_DAEMON=0` keeps the window's own harness (the flag beats the
+  variable); the default is still `--daemon` off (`DAEMON_BY_DEFAULT`).
+- **Hosts and launch options.** A host that connects to the daemon (page 10) starts it with `xagent
+  daemon run --host-config <file>`; the file (`DaemonLaunch`) sets the product name, browser flags,
+  worktree branch prefix, built-ins, plugin descriptors, sign-in client ids, whether hosts may supply
+  policy and names (`hosts`), and whether credentials come from the host (`secrets: 'host'`). The lock
+  records a hash of it: a window or host that needs a different launch replaces an idle daemon, and is
+  refused (with a notice, and a private harness for a window) while a window, host or reply uses it.
+  A state folder whose socket path would exceed the platform's `sun_path` limit is refused up front
+  (`socket_path_too_long`).
 
 ## Invariants
 

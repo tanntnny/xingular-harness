@@ -12,9 +12,9 @@
 //   xagent browser <command>  How the agent's browser runs.
 //   xagent worktree <command> Managed git worktrees of the repository you are in.
 import { resolve } from 'node:path'
-import manifest from '../package.json' with { type: 'json' }
 
 import { log } from './core/bus'
+import { PACKAGE_VERSION } from './core/version'
 import { createHarness, type HarnessOptions } from './harness'
 import { runPluginsCli, terminalAsk } from './plugins/cli'
 import { runHubCli } from './hub/cli'
@@ -62,11 +62,14 @@ Standalone terminal options:
                      Turn on /remote-control at start, to continue from a phone or iPad
   --daemon           Run in the long-lived harness for these folders (started when needed),
                      so a reply keeps running when this window closes
+  --no-daemon        Run in this window's own harness (also XINGULAR_DAEMON=0)
 
 Long-lived harness (ADR-0083):
   daemon <start | stop | status>
                      Start, stop or check the harness that --daemon windows use
   attach [session]   Reattach a window to a reply that kept running after its window closed
+  daemon run --host-config <file>
+                     Start the harness with a host's launch options (a host that connects to it)
 `
 
 function flags(argv: string[]): { values: Record<string, string[]>; switches: Set<string> } {
@@ -125,7 +128,7 @@ function serveCommand(argv: string[]): Promise<number> {
 async function main(): Promise<number> {
   const argv = process.argv.slice(2)
   if (argv.length === 1 && (argv[0] === '--version' || argv[0] === '-v')) {
-    process.stdout.write(`${manifest.version}\n`)
+    process.stdout.write(`${PACKAGE_VERSION}\n`)
     return 0
   }
   const [command, ...rest] = argv
@@ -139,10 +142,15 @@ async function main(): Promise<number> {
   if (command === 'daemon' || command === 'attach') {
     // ADR-0083: the long-lived harness for these folders, and reattaching a window to it.
     const positional = rest[0] && !rest[0].startsWith('-') ? rest[0] : undefined
+    const given = positional ? rest.slice(1) : rest
+    // A host that starts the daemon passes its launch options as a file (page 11).
+    const configAt = given.indexOf('--host-config')
+    const hostConfig = configAt >= 0 ? given[configAt + 1] : undefined
+    if (configAt >= 0 && !hostConfig) throw new Error('--host-config needs a file path.')
     const { resolveStandaloneOptions } = await import('./terminal/standalone')
-    const { paths, profile } = resolveStandaloneOptions(positional ? rest.slice(1) : rest)
+    const { paths, profile } = resolveStandaloneOptions(configAt >= 0 ? [...given.slice(0, configAt), ...given.slice(configAt + 2)] : given)
     const daemon = await import('./terminal/daemon')
-    return command === 'daemon' ? daemon.runDaemonCommand(positional, paths, profile) : daemon.runAttach(paths, profile, positional, process.cwd())
+    return command === 'daemon' ? daemon.runDaemonCommand(positional, paths, profile, hostConfig) : daemon.runAttach(paths, profile, positional, process.cwd())
   }
   if (command === 'wiki') return runWikiCli(rest)
   if (command === 'mcp') return runAppsCli(rest)

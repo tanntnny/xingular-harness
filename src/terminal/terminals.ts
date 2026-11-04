@@ -91,7 +91,8 @@ import { SessionSocket, socketPath } from './socket'
 import { harnessLogInfo, readHarnessLogChunk } from './logs'
 import { listTerminalTrajectoryRuns, readTerminalTrajectory, latestTerminalTodo } from './trajectory'
 import { BrowserControl } from './browserControl'
-import { RemoteControl, type RemoteControlOptions, type RemoteSessionPort } from '../remote/service'
+import type { RemoteControl, RemoteSessionPort } from '../remote/service'
+import type { RemoteSessions } from '../remote/sessionRemotes'
 import type { RemoteInterfaceChoice } from '../remote/addresses'
 import { snapshotWorkingTree } from '../worktrees/snapshot'
 import { refineCall, variantCall, type VariantControlContext } from './variantControl'
@@ -231,8 +232,8 @@ export interface TerminalsOptions {
   usage?: Usage
   /** Provider plan windows, balances and rate limits (`/usage:limit`). */
   usageLimits?: UsageLimits
-  /** Where `/remote-control` listens; tests bind loopback here. */
-  remoteControl?: RemoteControlOptions
+  /** The harness's remote-control pairings: a terminal's `/remote-control` is one of them (page 15). */
+  remotes: RemoteSessions
   /** Refinements, for `/refine` (PROP-0052). */
   refine?: Refinements
   /** The harness's sessions: a terminal frontend that is a client of the harness runs its turns here (ADR-0083). */
@@ -277,8 +278,6 @@ export class Terminals {
   private readonly refinements = new Map<string, string[]>()
   /** The managed worktree each live session holds. */
   private readonly worktreeLeases = new Map<string, string>()
-  /** `/remote-control` for each live session that opened it. */
-  private readonly remotes = new Map<string, RemoteControl>()
   /** Terminals whose frontend is a client of the harness (ADR-0083). */
   private readonly clients = new Map<string, LiveTerminal>()
   /** Client terminals whose window closed while a reply ran; they end when it settles. */
@@ -1539,6 +1538,7 @@ export class Terminals {
           if (this.detachedClients.get(sessionId)?.client !== carried.client) return
           this.detachedClients.delete(sessionId)
           stop()
+          void this.options.remotes.end(sessionId)
           void carried.client.dispose().catch(() => undefined)
         })
         this.detachedClients.set(sessionId, { client: carried.client, info: carried.info, stop })
@@ -1584,14 +1584,13 @@ export class Terminals {
     return this.sessions.has(sessionId)
   }
 
+  /** Terminal sessions prepared and not yet disposed: the windows (and detached replies) this harness serves. */
+  windowCount(): number {
+    return this.sessions.size
+  }
+
   private remote(live: Live): RemoteControl {
-    const sessionId = live.input.sessionId
-    let remote = this.remotes.get(sessionId)
-    if (!remote) {
-      remote = new RemoteControl(this.remotePort(live), { productName: this.options.env.productName, ...this.options.remoteControl })
-      this.remotes.set(sessionId, remote)
-    }
-    return remote
+    return this.options.remotes.open(live.input.sessionId, 'terminal', live, () => this.remotePort(live))
   }
 
   /**
@@ -1740,9 +1739,10 @@ export class Terminals {
       await this.dispose(sessionId)
       return { detached: false, activeRunId: null }
     }
-    // The window's binding goes; the client and its live session stay.
+    // The window's binding goes; the client and its live session stay, and so does a phone paired to it.
     this.clients.delete(sessionId)
-    await this.dispose(sessionId)
+    this.options.remotes.keepLive(sessionId)
+    await this.dispose(sessionId, true)
     const info: DetachedTerminal = {
       sessionId, cwd: live.input.cwd, sessionFolder: live.input.sessionFolder, accountId: live.account.id,
       activeRunId, sessionFile: client.sessionFile, detachedAt: new Date().toISOString()
@@ -1752,6 +1752,7 @@ export class Terminals {
       if (entry?.client !== client) return
       this.detachedClients.delete(sessionId)
       entry.stop()
+      void this.options.remotes.end(sessionId)
       void client.dispose().catch(() => undefined)
     })
     this.detachedClients.set(sessionId, { client, info, stop })
@@ -1763,7 +1764,8 @@ export class Terminals {
     return [...this.detachedClients.values()].map(({ client, info }) => ({ ...info, activeRunId: client.activeRun, sessionFile: client.sessionFile }))
   }
 
-  async dispose(sessionId: string): Promise<void> {
+  /** `keepRemote`: the window closed but the reply goes on, so a paired phone stays (INV-RC-5). */
+  async dispose(sessionId: string, keepRemote = false): Promise<void> {
     const live = this.sessions.get(sessionId)
     if (!live) return
     const client = this.clients.get(sessionId)
@@ -1776,9 +1778,7 @@ export class Terminals {
     this.sessions.delete(sessionId)
     this.worldNames.delete(sessionId)
     this.refinements.delete(sessionId)
-    const remote = this.remotes.get(sessionId)
-    this.remotes.delete(sessionId)
-    await remote?.dispose().catch(() => undefined)
+    if (!keepRemote) await this.options.remotes.end(sessionId)
     const worktreeId = this.worktreeLeases.get(sessionId)
     this.worktreeLeases.delete(sessionId)
     if (worktreeId) await this.options.worktrees?.release(worktreeId, sessionId).catch(() => undefined)
@@ -1793,7 +1793,7 @@ export class Terminals {
   async close(): Promise<void> {
     const detached = [...this.detachedClients.values()]
     this.detachedClients.clear()
-    await Promise.allSettled(detached.map(({ client, stop }) => { stop(); return client.dispose() }))
+    await Promise.allSettled(detached.map(({ client, info, stop }) => { stop(); return Promise.all([this.options.remotes.end(info.sessionId), client.dispose()]) }))
     await Promise.allSettled([...this.sessions.keys()].map((sessionId) => this.dispose(sessionId)))
     await this.socket.close()
   }

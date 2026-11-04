@@ -99,7 +99,9 @@ harness → host   { v: 1, id, call, params }          host → harness   { v: 1
 - `sessions.run` accepts `live: true` (ADR-0083): the Pi session stays open for the conversation's
   next run. `sessions.live`, `sessions.close`, `sessions.followUp` and `sessions.followUp.clear`
   manage live sessions (page 02). A run refused because the live session is replying fails with
-  `session_busy`.
+  `session_busy`. `sessions.remoteControl.{start,stop,rotate,confirm,status,status.wait}
+  { sessionId, ... }` pair a phone with a live session (page 15); they fail with `not_found` when
+  the conversation has no live session.
 - Errors carry a stable `code`, a message and an optional hint (`core/errors.ts`).
 
 ## Browser configuration and extension (ADR-0082)
@@ -208,8 +210,10 @@ host adapters must not infer concurrency safety from method availability.
 `server/socket.ts::serveSocket` serves the same framing on a Unix socket, readable and writable by
 its owner only, with one peer per connection; a closed connection stops receiving events and
 notices. `connectHarness` is the matching client. The long-lived harness (page 11) adds
-`daemon.status` → `{ pid, startedAt, variantScope, live, detached }` and `daemon.stop` on its own
-socket only.
+`daemon.status` → `{ pid, version, startedAt, variantScope, windows, hosts, live, detached }` and
+`daemon.stop` on its own socket only. `version` is the package version and `windows` the count of
+terminal sessions the harness serves (detached ones included) and `hosts` the names of the hosts
+connected; a daemon older than the handshake reports neither. A client that starts a window compares `version` with its own (page 11).
 
 | Method | Input | Reply |
 |---|---|---|
@@ -219,6 +223,35 @@ socket only.
 
 `terminal.prepare` accepts `attach: true` to reconnect to a detached session of the same id, folder,
 history folder and account. The private `terminal.live.*` routes are listed on page 11.
+
+## Hosts on the long-lived harness (ADR-0084)
+
+A host that embeds the harness gives it its secret store, policy, names, tools, connected-apps broker
+and refine host in-process. A host that connects to the daemon's socket gives the same things as calls
+the harness makes back to it, with the same names the stdio host calls use (`secrets.*`, `policy.*`,
+`directory.set`, `tools.register`/`tools.call`/`tools.diagnose`, and for a broker `broker.list`,
+`broker.call`, `broker.revision`; for refinement `refine.workspace`, `.session`, `.cleanup`,
+`.deliverable`). A client answers them with `HarnessClient.handle`.
+
+- `host.register { name, secrets?, policy?, directory?, tools?, broker?: { names, note? }, refine? }`
+  makes the connection a host and replies `{ name, resumed }`, the sessions that name already owns.
+  `name` is the host's own; the harness names no host (INV-BND-2).
+- A session belongs to the host whose connection started its first run (`sessions.run`,
+  `sessions.spawnSubagent`). A subagent's or side question's run belongs to the host of the run that
+  started it. The owner is kept for as long as the daemon runs, so a host that reconnects under its name
+  finds its sessions again.
+- A host hears only the run events of its own sessions. Any other client hears every event, as before.
+- Calls are routed by the session's owner. A run with no host (a terminal's) is gated, named and given
+  tools as with no host at all. When the owner is not connected, `scope` and `authorize` fail with
+  `host_unavailable`, an approval has no facts (`unattended`), connections are empty and a secret read
+  fails: nothing is approved on a host's behalf in its absence.
+- The host's tools reach only its own sessions; a tool the harness itself offers a host's session (a
+  paired browser's) wins over a host tool of the same name.
+- `harness.open` with the root already open returns the recovery already made and changes nothing, so
+  a second host cannot mark the first host's running replies interrupted.
+- A daemon a host starts gets its construction options from a launch file, `xagent daemon run
+  --host-config <file>` (`DaemonLaunch`, page 11). `OAUTH_CLIENTS_ENV` carries sign-in client secrets,
+  never the file.
 
 ## Invariants
 
@@ -235,6 +268,10 @@ history folder and account. The private `terminal.live.*` routes are listed on p
   starts the server on a throwaway data root with no application present and exercises accounts,
   variants, the Wiki, the prompt, connected apps, a recorded session, a plugin hook and the
   refinement demo. The App's sidecar tests parse every reply with its schemas and must pass too.
+- **INV-SRV-7** A host on the long-lived harness is not a second writer: the daemon is the only
+  process writing a state folder's data root for it. What only the host has is answered by calls,
+  routed by the session's owner (above). A host that embeds its own harness is a separate writer, as
+  before; that stays the default until a host's daemon mode has been used for days (ADR-0084).
 
 Built-in feature modules may contribute handlers through `BuiltinPluginRegistry`, but the
 `methods(harness)` result remains the public contract. Plugin module ownership does not rename

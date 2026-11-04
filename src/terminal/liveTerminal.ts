@@ -11,7 +11,8 @@ import type { VariantChoice } from '../variant/materialise'
 import type { Launch } from '../prompt/compile'
 import type { Effort } from '../core/effort'
 import type { RunRegistry } from '../sessions/registry'
-import { loadRun, pendingDecisions, readEvents, recordedSubagents } from '../sessions/runStore'
+import { loadRun, recordedSubagents } from '../sessions/runStore'
+import { LiveDecisions } from '../sessions/liveDecisions'
 import type { SessionRunInput, Sessions } from '../sessions/sessions'
 import type { SessionCommand } from '../sessions/runner'
 import { rename as renameHistory } from '../sessions/control'
@@ -70,8 +71,8 @@ export class LiveTerminal {
   private readonly journal: Journaled[] = []
   private seq = 0
   private readonly waiters = new Set<() => void>()
-  private pendingRevision = 0
-  private readonly pendingWaiters = new Set<() => void>()
+  /** The decisions waiting for this terminal's reply and its subagents; a pairing on this session shares them. */
+  readonly decisions: LiveDecisions
   private activeRunId: string | null = null
   private lastRunId: string | null = null
   private readonly stops: Array<() => void> = []
@@ -79,13 +80,14 @@ export class LiveTerminal {
   private readonly settledListeners = new Set<() => void>()
 
   constructor(private readonly context: LiveTerminalContext, private readonly sessions: Sessions, private readonly runs: RunRegistry) {
+    this.decisions = new LiveDecisions({ root: context.root, runs, activeRun: () => this.activeRunId, allowTool: (target) => context.allowTool(target) })
     this.stops.push(sessions.live.watch(context.sessionId, (event) => this.append(event)))
     this.stops.push(runs.listen((event) => {
       // A follow-up the harness started after the last reply is this terminal's reply now.
       const liveActive = sessions.live.status(context.sessionId)?.activeRunId ?? null
       if (liveActive && liveActive === event.runId && this.activeRunId !== liveActive) this.started(liveActive)
       if (event.runId !== this.activeRunId && !this.isOwnChild(event.runId)) return
-      if (['approval.requested', 'approval.resolved', 'question.requested', 'question.answered'].includes(event.type)) this.bumpPending()
+      this.decisions.observe(event)
       // A plugin's dialog is shown by the window itself; its question stays answerable from anywhere.
       if (event.type === 'question.requested' && (event.payload as { dialog?: unknown }).dialog) {
         this.append({ type: 'harness_dialog', runId: event.runId, request: { ...(event.payload as Record<string, unknown>), requestId: (event.payload as { questionId: string }).questionId } })
@@ -111,7 +113,7 @@ export class LiveTerminal {
         const live = this.sessions.live.status(this.context.sessionId)
         this.append({ type: 'harness_settled', runId: event.runId, status: event.type === 'completed' ? 'completed' : event.type === 'failed' ? 'failed' : 'interrupted', goalMode, sessionFile: live?.sessionFile ?? null, nativeSessionId: live?.nativeSessionId ?? null })
         this.activeRunId = null
-        this.bumpPending()
+        this.decisions.bump()
         // A follow-up the harness queued starts in the same turn of the event loop; settle after it.
         setImmediate(() => {
           if (this.activeRunId || this.disposed) return
@@ -143,11 +145,6 @@ export class LiveTerminal {
     this.journal.push({ seq: ++this.seq, event })
     if (this.journal.length > JOURNAL) this.journal.splice(0, this.journal.length - JOURNAL)
     for (const wake of this.waiters) wake()
-  }
-
-  private bumpPending(): void {
-    this.pendingRevision += 1
-    for (const wake of this.pendingWaiters) wake()
   }
 
   private async wait(set: Set<() => void>, ms: number): Promise<void> {
@@ -209,11 +206,9 @@ export class LiveTerminal {
       }
       case 'terminal.live.followUp.clear': return { removed: this.sessions.live.clearQueue(this.context.sessionId) }
       case 'terminal.live.interrupt': {
-        const runId = this.activeRunId
         // The run is stopped and recorded at once; Pi's own abort finishes after the reply returns, so
         // the window never waits on a provider stream that is slow to close.
-        if (runId) void this.runs.interrupt(runId).catch(() => undefined)
-        return { runId }
+        return this.decisions.interrupt()
       }
       case 'terminal.live.close': {
         void this.nativeSessionId
@@ -234,14 +229,11 @@ export class LiveTerminal {
         const file = typeof params.sessionFile === 'string' ? params.sessionFile : undefined
         return renameHistory({ sessionDir: this.context.sessionDir, ...(file ? { sessionFile: file } : {}), cwd: this.context.cwd, name })
       }
-      case 'terminal.live.pending': return { revision: this.pendingRevision, requests: this.pending(params.ownDialogs === true) }
-      case 'terminal.live.pending.wait': {
-        if (params.revision === this.pendingRevision) await this.wait(this.pendingWaiters, WAIT_MS)
-        return { revision: this.pendingRevision, requests: this.pending(params.ownDialogs === true) }
-      }
-      case 'terminal.live.approve': return this.approve(params)
-      case 'terminal.live.answer': return this.answer(params)
-      case 'terminal.live.answers': return this.answers(params)
+      case 'terminal.live.pending': return this.decisions.snapshot(params.ownDialogs === true)
+      case 'terminal.live.pending.wait': return this.decisions.wait(params.revision, params.ownDialogs === true)
+      case 'terminal.live.approve': return this.decisions.approve(params)
+      case 'terminal.live.answer': return this.decisions.answer(params)
+      case 'terminal.live.answers': return this.decisions.answers(params)
       default: throw invalid(`Unknown live terminal operation ${call}.`)
     }
   }
@@ -291,7 +283,7 @@ export class LiveTerminal {
   private started(runId: string): void {
     this.activeRunId = runId
     this.lastRunId = runId
-    this.bumpPending()
+    this.decisions.bump()
   }
 
   private async run(params: Record<string, unknown>): Promise<{ runId: string; nativeSessionId: string | null }> {
@@ -340,59 +332,9 @@ export class LiveTerminal {
       return result
     } catch (error) {
       this.activeRunId = null
-      this.bumpPending()
+      this.decisions.bump()
       throw error
     }
-  }
-
-  /** The decisions waiting; `ownDialogs` leaves out plugin dialogs the window shows itself. */
-  private pending(ownDialogs = false): Array<Record<string, unknown>> {
-    const runId = this.activeRunId
-    if (!runId) return []
-    return [runId, ...this.children()].flatMap((id) => {
-      try {
-        return pendingDecisions(readEvents(this.context.root, id)).filter((decision) => !ownDialogs || !(decision.payload as { dialog?: unknown }).dialog).map((decision) => ({
-          ...(decision.payload as Record<string, unknown>),
-          type: decision.kind,
-          requestId: decision.id,
-          runId: id
-        }))
-      } catch {
-        return []
-      }
-    })
-  }
-
-  private decision(params: Record<string, unknown>, kind: 'approval' | 'question'): Record<string, unknown> {
-    const requestId = typeof params.requestId === 'string' ? params.requestId : ''
-    const request = this.pending().find((entry) => entry.requestId === requestId && entry.type === kind)
-    if (!request) throw new HarnessError('invalid_request', 'This terminal decision is no longer pending.')
-    return request
-  }
-
-  private approve(params: Record<string, unknown>): Record<string, never> {
-    const request = this.decision(params, 'approval')
-    const decision = params.decision === 'approved' ? 'approved' : params.decision === 'denied' ? 'denied' : null
-    if (!decision) throw invalid('A decision must be approved or denied.')
-    if (decision === 'approved' && params.alwaysAllow === true) {
-      if (request.rememberable !== true || typeof request.target !== 'string') throw invalid('This action cannot be always allowed.')
-      this.context.allowTool(request.target)
-    }
-    this.runs.resolveApproval(String(request.runId), String(request.requestId), decision)
-    return {}
-  }
-
-  private answer(params: Record<string, unknown>): Record<string, never> {
-    const request = this.decision(params, 'question')
-    this.runs.answerQuestion(String(request.runId), String(request.requestId), params.answer as never)
-    return {}
-  }
-
-  private answers(params: Record<string, unknown>): Record<string, never> {
-    const batch = this.pending().find((entry) => entry.batchId === params.batchId)
-    if (!batch || typeof params.batchId !== 'string' || !Array.isArray(params.answers)) throw invalid('This question batch is no longer pending.')
-    this.runs.answerQuestions(String(batch.runId), params.batchId, params.answers as never)
-    return {}
   }
 
   /** A message from another surface of this terminal (remote control): a new reply, or a follow-up. */
@@ -409,7 +351,8 @@ export class LiveTerminal {
     if (this.activeRunId) await this.runs.interrupt(this.activeRunId).catch(() => undefined)
     for (const stop of this.stops.splice(0)) stop()
     this.sessions.closeLive(this.context.sessionId)
-    for (const wake of [...this.waiters, ...this.pendingWaiters]) wake()
+    this.decisions.dispose()
+    for (const wake of [...this.waiters]) wake()
   }
 }
 

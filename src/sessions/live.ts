@@ -78,9 +78,20 @@ export class LiveSessions {
   /** Follow-ups of a session closed at a pin change, handed to the session that replaces it. */
   private readonly parked = new Map<string, string[]>()
   private readonly idleMs: number
+  private readonly endListeners = new Set<(sessionId: string) => void>()
 
   constructor(private readonly options: LiveSessionsOptions) {
     this.idleMs = options.idleMs ?? LIVE_IDLE_MS
+  }
+
+  /**
+   * Hears each time a conversation's live session ends for good: closed on request (now, or after the
+   * reply that was running), idle for too long, or closed with the harness. A session replaced at a pin
+   * change, a stalled turn or a history edit is not an end; the next run reopens it.
+   */
+  onEnd(listener: (sessionId: string) => void): () => void {
+    this.endListeners.add(listener)
+    return () => { this.endListeners.delete(listener) }
   }
 
   /** Whether a run of this session is using its live session now. */
@@ -157,7 +168,7 @@ export class LiveSessions {
       return
     }
     if (entry.closeWhenIdle) {
-      this.dispose(entry)
+      this.dispose(entry, true)
       return
     }
     this.startTimer(entry)
@@ -253,13 +264,13 @@ export class LiveSessions {
       entry.closeWhenIdle = true
       return { closed: true, afterRun: entry.activeRunId }
     }
-    this.dispose(entry)
+    this.dispose(entry, true)
     return { closed: true, afterRun: null }
   }
 
   closeAll(): void {
     this.parked.clear()
-    for (const entry of [...this.entries.values()]) this.dispose(entry)
+    for (const entry of [...this.entries.values()]) this.dispose(entry, true)
   }
 
   private statusOf(entry: Entry): LiveSessionStatus {
@@ -279,7 +290,7 @@ export class LiveSessions {
   private startTimer(entry: Entry): void {
     this.stopTimer(entry)
     entry.timer = setTimeout(() => {
-      if (!entry.activeRunId && this.entries.get(entry.sessionId) === entry) this.dispose(entry)
+      if (!entry.activeRunId && this.entries.get(entry.sessionId) === entry) this.dispose(entry, true)
     }, this.idleMs)
     entry.timer.unref?.()
   }
@@ -289,7 +300,7 @@ export class LiveSessions {
     entry.timer = null
   }
 
-  private dispose(entry: Entry): void {
+  private dispose(entry: Entry, ended = false): void {
     this.stopTimer(entry)
     this.unsubscribers.get(entry)?.()
     this.unsubscribers.delete(entry)
@@ -298,6 +309,14 @@ export class LiveSessions {
       entry.pi.dispose()
     } catch (error) {
       this.options.log?.(`a live session did not close cleanly: ${error instanceof Error ? error.message : String(error)}`)
+    }
+    if (!ended) return
+    for (const listener of [...this.endListeners]) {
+      try {
+        listener(entry.sessionId)
+      } catch (error) {
+        this.options.log?.(`a live session end listener failed: ${error instanceof Error ? error.message : String(error)}`)
+      }
     }
   }
 }

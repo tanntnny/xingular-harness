@@ -1,165 +1,104 @@
-# Handoff — 2026-11-04
+# Handoff — 2026-11-05
 
-One session runtime (ADR-0083). The harness keeps a conversation's Pi session open across turns, the
-terminal is a client of the harness by default, a long-lived harness (the "app-server", `xagent
---daemon`) lets a reply outlive its window, and every harness run ends when it stops making progress.
-**Released as `2.0.1-unstable`** (tag `v2.0.1-unstable`, commit `49b1991`, branch `release/1.0.0`);
-the workflow waits at the `npm-publish` approval until the owner approves it. The app-server is
-**opt-in**; "Making the app-server the default" below says what finishes it.
+One session runtime (ADR-0083), and now hosts on it (ADR-0084). The harness keeps a conversation's Pi
+session open across turns, the terminal is a client of the harness by default, a long-lived harness
+(the "app-server", `xagent --daemon`) lets a reply outlive its window, and a host (the App's sidecar)
+can connect to that same harness instead of embedding its own. **Nothing from 2026-11-05 is
+committed.** The last release is `2.1.0-unstable` (`30b5c49`). The daemon and the host's daemon mode
+are both **opt-in**; "What is left" says what finishes them.
 
-The decision, design and all measured evidence are in
-[`docs/decisions/ADR-0083-one-live-session-runtime.md`](docs/decisions/ADR-0083-one-live-session-runtime.md).
-The previous handoff (2026-10-11, the harness split) is in git history at `21721b0`.
+Decision and evidence: [`docs/decisions/ADR-0083-one-live-session-runtime.md`](docs/decisions/ADR-0083-one-live-session-runtime.md)
+and [`ADR-0084`](docs/decisions/ADR-0084-hosts-on-the-long-lived-harness.md). Known drift D-33 records
+the gap between what is built and what is the default.
 
-## Commit state
+## What changed on 2026-11-05
 
-Everything is committed and pushed on `release/1.0.0` (the working tree is clean as of
-`49b1991`): ADR-0083 (`97178bb`), the account-switch and per-mode model fixes, the effort-level fix,
-the other person's fenced-code panels and prompt change (`fc8fa74`, now with a code-block-only
-renderer, D-32) and the release commits. `2.0.0-unstable` was tagged but never published (its run
-was cancelled); `2.0.1-unstable` is its first release. The App change is a separate commit in
-`../agent-app` (`46924e3`); that repo holds a lot of the owner's own uncommitted work, and only the
-`live: true` hunk of `sidecar/src/agentRuns.ts` is ours.
+Uncommitted in two repositories; commit them separately.
 
-## What changed
+**`agent-harness`**
 
 | Area | Files |
 |---|---|
-| Live sessions (phase 1) | `src/sessions/live.ts` (new), `runner.ts` (rebind, run slots, `release`, retry fix), `sessions.ts` (`live`, follow-ups, `newHistory`, `hiddenNotes`, `planTools`), `subagentService.ts`, `server/methods.ts` |
-| Plugin dialogs as questions | `sessions/registry.ts`, `contracts.ts` (`question.requested.dialog`), `extensionUi.ts` |
-| Terminal as a client (phase 2) | `src/terminal/liveTerminal.ts` (parent, new), `src/terminal/tui/harnessRuntime.ts` (client, new), `terminals.ts` (routing, detach and attach), `opentui/app.ts` (runtime choice, `ownDialogs`), `tui/commands.ts` (`/session` by id) |
-| Long-lived harness (phase 3) | `src/server/socket.ts` (new), `src/terminal/daemon.ts` (new), `serve.ts`, `standalone.ts` (shared setup, fatal and hang-up handling), `cli.ts` |
-| Stall guard and heartbeat (2026-11-04) | `src/sessions/stallWatch.ts` (moved from `terminal/`), `runner.ts` (`runTurn`: unconditional heartbeat, stall guard, `handBack`), `live.ts` (`release(…, close)`), `registry.ts` (`ActiveRun.waiting`), `sessions/stall.test.ts` (new) |
-| Account switch, modes and effort (2026-11-04) | `tui/harnessRuntime.ts` (fallback to the account's own model, per-mode effort, deferred mode switch, one-shot `/plan`), `tui/thinkingLevels.ts` (new: Pi's supported-level and clamp rule) |
-| Fenced-code panels | `opentui/markdown.ts` (`createTranscriptMarkdownRenderer`, code-block-only), `root.tsx`, `prompt/reporting.ts` |
-| App | `../agent-app/sidecar/src/agentRuns.ts`: a person's chat turns pass `live: true` (4 lines) |
-| Spec | pages 02, 10, 11, 12, 14, 15; `README.md` Known drift D-28 to D-32; `docs/parity.md` PAR-004, PAR-008, PAR-018, PAR-019; ADR-0001 (runtime half superseded); ADR-0083 (new) |
+| Version handshake, idle exit, off switch | `src/server/daemonClient.ts` (new: lock, `connectDaemon`, version/launch check, socket-path guard), `src/terminal/daemon.ts`, `standalone.ts` (`--no-daemon`, `XINGULAR_DAEMON`, `DAEMON_BY_DEFAULT = false`), `src/core/version.ts` (new), `cli.ts`, `scripts/dev.mjs` |
+| Remote control of live sessions (PAR-018) | `src/sessions/liveDecisions.ts` (new, shared with `LiveTerminal`), `src/remote/liveSessionPort.ts`, `sessionRemotes.ts` (new: `Harness.remotes`, `SwitchablePort`), `sessions/live.ts` (`onEnd`), `terminals.ts` (detach keeps the pairing), `server/methods.ts` (`sessions.remoteControl.*`) |
+| Hosts on the daemon (ADR-0084) | `src/server/hostHub.ts` (new), `socket.ts` (`host.register`, `HarnessClient.handle`), `serve.ts` (`attach` options), `daemon.ts` (`DaemonLaunch`, `--host-config`), `remote.ts` (`mode` in policy calls), `methods.ts` (`harness.open` is idempotent) |
+| Spec | pages 02, 10 (hosts section, INV-SRV-7), 11, 12, 15 (INV-RC-3/5/7/9), `README.md` D-33, `docs/parity.md` PAR-018/019, ADR-0084, `docs/README.md`, `CHANGELOG.md` |
+
+**`agent-app`** (a repository with a lot of the owner's own uncommitted work: take only these hunks)
+
+- `sidecar/src/daemonMode.ts`, `daemonMode.test.ts`, `schemaType.ts` (new); `main.ts` (mode switch);
+  `app.ts` (`resolveSidecarRoots` extracted, nothing else changed); `agentRuns.ts` (`RunHarness` type);
+  `host.ts` (`directorySnapshot`).
+- `src-tauri/src/sidecar.rs`, `runs.rs` (`catch_up`), `harness.rs` (`remote_control` command), `lib.rs`.
+- `src/bridge/commands.ts` (`remoteControl`), `src/modes/solo/soloCommands.ts` (`/rc` page, tests),
+  `SoloConversation.tsx` (one line).
 
 How to use it:
 
-- `xagent`: the client terminal (default). `XINGULAR_TERMINAL_RUNTIME=inprocess xagent`: the
-  previous in-process runtime, for plugins that draw their own terminal components.
-- `xagent --daemon`: the window runs in the long-lived harness for its folders. Closing it during a
-  reply keeps the reply running. `xagent attach [session]` reconnects. Also
-  `xagent daemon start|stop|status`.
-- `XINGULAR_CLIENT_TRACE=<file>`: timestamped client events (runs, event batches, interrupts), for
-  diagnosing a slow window.
+- `xagent --daemon`, `xagent attach`, `xagent daemon start|stop|status` as before; `--no-daemon` or
+  `XINGULAR_DAEMON=0` keeps a window's own harness. `status` now shows the version and hosts.
+- The App as a host: start it with `XAGENT_HARNESS_MODE=daemon`. The sidecar writes
+  `<state>/host-launch.json`, starts `dist/cli.js daemon run --host-config` if no matching daemon
+  runs, registers as `xingular-agent`, and forwards every harness method Rust calls. Quitting the App
+  only disconnects; the next start catches up from the run logs (`RunTracker::catch_up`).
+- `/rc` in an App Solo conversation starts remote control for that conversation (`/rc off`,
+  `/rc tailscale|lan`) and shows the link, devices and a pair request to allow or deny.
 
-## Verified (2026-11-04)
+## Verified (2026-11-05)
 
-- Harness, on a clean checkout of `49b1991`: `npm run ci` (typecheck, 1,848 tests, `prove`) passed;
-  `release:pack`, `release:smoke --terminal` (fresh install, packaged terminal in a PTY) and
-  `release:preflight` passed. One test (`runtime.socket.test.ts`, a session-socket
-  `ECONNREFUSED`) failed once in the first clean CI run while the machine's load was above 14; it
-  passed 4 of 4 alone and in a full rerun, so it is treated as a load flake. Watch it in the GitHub
-  run.
-- `python3 scripts/verify-terminal.py`: the full run passed at 40x20, 80x24, 100x30 and 120x40, and
-  all 21 focused suites passed, `markdown` included (now at 120x72; D-31 resolved).
-- App: sidecar typecheck and 89 tests passed. `check:layers` exits non-zero on nine `computer_*`
-  names in the sibling `../Harness/src/computer/` (an older tree it scans); none are in this
-  repository. `cargo test` was not rerun (no Rust change).
+- Harness: `npm run typecheck` clean; `npm test` 1,877 passed, 4 skipped (up from 1,852 at the start of
+  the day); `npm run prove` passed, with `dist/cli.js` rebuilt. **One full run failed one test and I
+  did not capture which**: the output was cut to its tail. Five full runs after it passed with no
+  failure. The load-sensitive `runtime.socket.test.ts` (an `ECONNREFUSED`, first noted on
+  2026-11-04) is the likely candidate, but that is a guess. Watch for it.
+- Sidecar: 93 tests, 4 of them new and run against a real daemon in the same process with a fake Pi
+  session and a fake Rust host. App root tests: 613 pass; the one failure is the old `/goal` test
+  (PAR-017). `check:layers` still reports the same nine `computer_*` names in the harness tree,
+  none of them from this change. `cargo test`: 193 pass.
+- **Not verified:** the desktop App has not been launched in daemon mode, or in its default mode,
+  after these changes. No real model request was made. `npm run build` of the sidecar was not run
+  (it bundles `dist/cli.js` for the daemon). The remote-control page was not looked at on a phone.
 
-Real model requests were made on 2026-11-03 only, with the owner's permission, OpenCode account,
-`opencode-go/deepseek-v4.1-flash` (turns, steering, follow-ups, `/stop` and Esc, plan questions, a
-`--daemon` reply that survived its window). Real requests are allowed only on that model or on a
-Codex account's `openai-codex/gpt-6-luna`, and never against `~/.codex`, `~/.claude` or `~/.pi`. The
-stall guard was tested with a fake Pi session and fake timers; no live request exercised it.
+## What is left
 
-The live PTY scripts used for those checks lived in a session scratch folder and are gone. To redo
-them: run `dist/cli.js` in a PTY with `--data`/`--state` pointing at a throwaway folder and
-`--account-state ~/.xingular-harness/state`, answer `ESC[6n` and `ESC[c` queries, and read run
-records from `<data>/runs/*/run.json`. ADR-0083 lists what each check did.
-
-## Open
-
-- **PAR-018: remote control from the App.** Not built. Remote control still belongs to a terminal
-  session (`Terminals.remotes`, disposed with the terminal, INV-RC-5), so a phone cannot reach an
-  App chat, and a reply that outlives its window (`--daemon`) loses its phone. Minimum scope:
-  - Extract the pending-decision, approve, answer and interrupt logic of `LiveTerminal`
-    (`liveTerminal.ts`) so an App session and a terminal share it.
-  - A `RemoteSessionPort` (`src/remote/service.ts`) for a live session: `send` through
-    `sessions.followUp`/`runs.steer`, `history` from the session's runs, `listen`, `state` from
-    `sessions.live`, `control` through `runs.interrupt`/`answerQuestion(s)`/approvals.
-  - Dispose the pairing when the live session closes or on `stop`, not on `detach` while a reply runs.
-  - `sessions.remoteControl.{start,stop,rotate,confirm,status,status.wait}` in `server/methods.ts`
-    (keep `terminal.remoteControl.*` as aliases); revise INV-RC-3, INV-RC-5 and INV-RC-7 and add
-    "one pairing per live session"; update pages 10, 11, 15 and PAR-018.
-  - Tests: reuse the fake port of `remote/service.test.ts`; add one for lifetime (close the live
-    session, the phone gets `ended`).
-- **D-32: list wrapping.** The fenced-code renderer was written to keep a list item's wrapped lines
-  beneath its text, but a general OpenTUI `renderNode` drops the blank rows between paragraphs and
-  headings in every reply, so the renderer is code-block-only (`codeBlockOnly`) and lists wrap as in
-  the previous release. Finishing it needs structured lists with the block spacing restored (OpenTUI
-  tracks each block's margin itself and resets it on update), or OpenTUI support for both.
-- **Plugin presentation in the client**: custom components, key handlers, renderers, shortcuts
-  and themes are unavailable by design (INV-TUI-8). Dialogs, notices, status lines and text
-  widgets work.
-- **Provider request timeout**: Pi's is about ten minutes, retried by the harness's transient-retry
-  policy (`pi/retryPolicy.ts`, up to 8 retries). The stall guard now caps a reply that makes no
-  progress at fifteen minutes. A shorter request timeout was deliberately not set (see ADR-0083,
-  "Closing the migration"); revisit it only with measured first-token gaps.
-- **`/stop` under load**: the verifier now polls up to 8 seconds, so a load-average failure there
-  should be gone. If it fails anyway, check the run record in the evidence folder first.
-- **App, unrelated to this change**: `soloCommands.test.ts` expects Solo to handle `/goal`
-  (PAR-017), and the root `npm run typecheck` reports button-prop errors in the App UI.
-
-## Making the app-server the default
-
-Why it is opt-in in `2.0.1-unstable`: it is new, tested with fake sessions and a few live runs on
-one cheap model, never run for days, and a fault in it reaches every window on a state folder
-instead of one. Do these in order; each is small. Then use it yourself for a few days before
-flipping the default.
-
-1. **A version handshake (the likely real-world failure).** After `npm i -g`, an old daemon keeps
-   running and new windows connect to it. `daemon.ts` has no version check: `LockRecord`
-   (`{ pid, startedAt, socket }`, `acquireDaemonLock`) and `daemon.status` carry none. Add the
-   package version to both. In `connectDaemon` and `runDaemonTerminal`, compare it with the client's:
-   on a mismatch with no live reply, stop the old daemon (`daemon.stop`) and start the new one; with
-   a reply still running, keep the old daemon, say so in a notice, and let the window run in its own
-   harness (or ask). Tests in `terminal/daemon.test.ts`: a stale lock from an older version is
-   replaced; a busy older daemon is not killed.
-2. **Daemon idle exit.** Idle live sessions close after 30 minutes (`LIVE_IDLE_MS`,
-   `sessions/live.ts`), but the process stays until `xagent daemon stop`. Exit after a long period
-   (for example 30 minutes) with no windows, no live session and no reply without a window; keep the
-   lock/socket cleanup in `runDaemon`. Test with an injectable clock.
-3. **An off switch, then the flip.** `--daemon` is parsed in `terminal/standalone.ts`
-   (`let daemon = false`), and `cli.ts` documents it. Add `--no-daemon` and an environment variable
-   (for example `XINGULAR_DAEMON=0`), then make the default on: resolve `paths.daemon` as flag, else
-   environment, else true. `scripts/dev.mjs` already defaults `npm run dev` to `--daemon` (opt out
-   with `XINGULAR_DEV_DAEMON=0`); remove that once the default moves. Keep subcommands
-   (`serve`, `wiki`, `daemon …`) out of it.
-4. **Remote control (PAR-018)**, below. With the daemon as the default, a reply that outlives its
-   window should keep its phone; today the pairing ends with the window.
-5. **One writer per data root.** The daemon's lock covers only other daemons. The App's sidecar is a
-   separate writer on the same data root. Decide: the App connects to the daemon, or the daemon refuses
-   to start (and the sidecar refuses) while the other holds the root. Update page 12 (storage) and
-   INV-SRV-4 accordingly.
-6. **Soak and failure tests.** Run a daemon for a day or more with several windows (`xagent daemon
-   status` shows live sessions and replies without a window). Add tests for: the daemon killed
-   during a reply (windows close cleanly and the run records `owner_gone`/`stalled`, not `running`);
-   a hung plugin; a window that attaches to a session another window holds; the socket path length
-   limit on a deep state folder. Run one live check with the stall guard on the permitted models.
-7. **Docs.** Pages 10, 11 and 12 and ADR-0083 say the daemon is opt-in; change them with the flip,
-   add an ADR for the default, and update the `xagent --help` text and the release notes.
-
-Ready to flip when: 1–3 are done, 4 and 5 are decided (done, or written down as accepted gaps), 6
-has passed once on a quiet machine, and a few days of real use found no stuck daemon.
+1. **Launch the App** in both modes on a throwaway profile (`run` skill): a chat turn, a follow-up, a
+   steer, `/rc` pairing from a phone, then quit mid-reply and reopen with
+   `XAGENT_HARNESS_MODE=daemon`. Run `npm run build:sidecar` first.
+2. **Soak.** Run a daemon for a day or more with terminal windows and the App on one state folder
+   (`xagent daemon status`). Then one live stall-guard check on the permitted models only
+   (`opencode-go/deepseek-v4.1-flash`, `openai-codex/gpt-6-luna`), with the owner's permission.
+3. **Flip the default**, only after 1 and 2 and a few days of use: set `DAEMON_BY_DEFAULT = true` in
+   `terminal/standalone.ts`, drop the forcing in `scripts/dev.mjs`, make the App's daemon mode the
+   default in `sidecar/src/main.ts`, update pages 10, 11, 12, ADR-0083 ("opt-in"), the help text and
+   the release notes, and close D-33.
+4. A **hung plugin** in the daemon is untested. The failure tests that exist cover: a killed
+   daemon's running reply recorded as interrupted by the next one, a state folder too deep for the
+   socket (`socket_path_too_long`, the window falls back to its own harness), a window refused for a
+   session another window holds, and a stale or differently launched daemon.
+5. Things that behave differently in a host's daemon: a terminal window in that daemon has no generic
+   browser (the host's launch sets `browser: false`); the host's data root is the daemon's, so
+   `app.open` of another root moves it for every window; the sidecar still reads and seeds the variant
+   store on disk (`ensureHarness`), as it did before.
+6. Carried over: **D-32** (list wrapping), plugin presentation in the client terminal (INV-TUI-8), the
+   provider request timeout, and the App's unrelated `/goal` test and UI typecheck errors.
 
 ## Things that are easy to get wrong
 
 - A live session serves a run only when every pin matches (account, variant version, capability
   set, folders, tools, system prompt, model, effort, run-scoped extension names). Anything else
-  closes it at the turn boundary and opens a new one on the same history. That is intended, not a
-  bug. A stalled turn closes its session the same way.
-- Client terminal runs record Pi's session id as `nativeSessionId`, as host runs do; in-process
-  terminal runs record the history file. Terminal features look runs up through
-  `Terminals.nativeOf`/`historyFileOf`, never `controller.nativeSessionId` directly.
-- A command run, `sessions.navigate` or `sessions.rename` on a conversation with an idle live
-  session closes that session first (one writer of the history file), and is refused while it is
-  replying.
-- The client never interrupts a reply when it closes; the parent decides (dispose interrupts,
-  detach keeps it).
-- The stall guard is in `runTurn`; the in-process terminal still has its own watch in
-  `TerminalController`. Both use `sessions/stallWatch.ts`, so a change to the windows changes both.
-- Verifier layouts: names in the palette and `/help` carry their owner (`terminal-verifier:…`) and
-  wrap; read a name down its column rather than looking for it on one row.
+  closes it at the turn boundary and opens a new one on the same history. That is not an end:
+  `LiveSessions.onEnd` fires only for a close on request, idle, or at harness close, and only that
+  ends a host's remote-control pairing.
+- A terminal's pairing ends with its window, or with the reply of a closed window; a host's ends with
+  its live session. `Terminals.dispose(id, keepRemote)` is how `detach` keeps it.
+- A session belongs to the host whose connection started its run. A run with no host is never gated by
+  a host's policy; a host that is gone fails its sessions' calls and approves nothing.
+- Client terminal runs record Pi's session id as `nativeSessionId`; in-process terminal runs record the
+  history file. Terminal features look runs up through `Terminals.nativeOf`/`historyFileOf`.
+- A command run, `sessions.navigate` or `sessions.rename` on a conversation with an idle live session
+  closes that session first, and is refused while it is replying.
+- The client never interrupts a reply when it closes; the parent decides (dispose interrupts, detach
+  keeps it).
+- The stall guard is in `runTurn`; the in-process terminal still has its own watch. Both use
+  `sessions/stallWatch.ts`.
+- Verifier layouts: names in the palette and `/help` carry their owner (`terminal-verifier:…`) and wrap.

@@ -32,6 +32,8 @@ export interface StandalonePaths {
   /**
    * `--daemon`: run in the long-lived harness for these folders, starting it when it is not running,
    * so a reply outlives this window (ADR-0083). The frontend is then a client of the harness.
+   * `--no-daemon` and `XINGULAR_DAEMON=0` keep the window's own harness; the flag wins over the
+   * environment, and either wins over `DAEMON_BY_DEFAULT`.
    */
   daemon?: boolean
 }
@@ -58,22 +60,33 @@ export interface ResolvedStandaloneOptions {
   profile: InteractiveProfile
 }
 
-export function resolveStandaloneOptions(argv: string[], home = homedir(), cwd = process.cwd()): ResolvedStandaloneOptions {
+/** Whether a window with neither the flag nor the environment variable runs in the long-lived harness. */
+export const DAEMON_BY_DEFAULT = false
+export const DAEMON_ENV = 'XINGULAR_DAEMON'
+
+function daemonFromEnvironment(value: string | undefined): boolean | undefined {
+  const text = value?.trim().toLowerCase()
+  if (text === '0' || text === 'false' || text === 'off' || text === 'no') return false
+  if (text === '1' || text === 'true' || text === 'on' || text === 'yes') return true
+  return undefined
+}
+
+export function resolveStandaloneOptions(argv: string[], home = homedir(), cwd = process.cwd(), env: NodeJS.ProcessEnv = process.env): ResolvedStandaloneOptions {
   const overrides: InteractiveProfileOverrides = {}
   const given = new Set<string>()
   let worktree: StandalonePaths['worktree']
   let variant: StandalonePaths['variant']
   let accountState: StandalonePaths['accountState']
   let remoteControl = false
-  let daemon = false
+  let daemon: boolean | undefined
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index]
     if (argument === '--remote-control' || argument === '--rc') {
       remoteControl = true
       continue
     }
-    if (argument === '--daemon') {
-      daemon = true
+    if (argument === '--daemon' || argument === '--no-daemon') {
+      daemon = argument === '--daemon'
       continue
     }
     if (argument === '--worktree' || argument === '-w') {
@@ -153,24 +166,25 @@ export function resolveStandaloneOptions(argv: string[], home = homedir(), cwd =
       ...(worktree !== undefined ? { worktree } : {}),
       ...(variant !== undefined ? { variant } : {}),
       ...(remoteControl ? { remoteControl } : {}),
-      ...(daemon ? { daemon } : {})
+      ...((daemon ?? daemonFromEnvironment(env[DAEMON_ENV]) ?? DAEMON_BY_DEFAULT) ? { daemon: true } : {})
     }
   }
 }
 
 /** The harness a standalone launch, or the long-lived harness for the same folders, runs. */
-export async function createStandaloneHarness(paths: StandalonePaths, profile: InteractiveProfile, dependencies: Pick<StandaloneDependencies, 'createHarness' | 'hostSecretStore'> = {}): Promise<Harness> {
+export async function createStandaloneHarness(paths: StandalonePaths, profile: InteractiveProfile, dependencies: Pick<StandaloneDependencies, 'createHarness' | 'hostSecretStore'> = {}, extra: Partial<HarnessOptions> = {}): Promise<Harness> {
   // `--account-state` takes both halves of another state's account identity, so its credentials
   // come from that state's own file store rather than from this launch's profile backend.
-  const secrets = paths.accountState
+  const secrets = extra.secrets ?? (paths.accountState
     ? fileSecretStore(join(paths.accountState, 'secrets.json'))
-    : await interactiveProfileSecretStore(profile, dependencies.hostSecretStore)
+    : await interactiveProfileSecretStore(profile, dependencies.hostSecretStore))
   const makeHarness = dependencies.createHarness ?? createHarness
   return makeHarness({
     dataRoot: paths.dataRoot,
     stateDir: paths.stateDir,
     ...(paths.accountState ? { accountsDir: join(paths.accountState, 'accounts') } : {}),
     productName: DEFAULT_PRODUCT_NAME,
+    ...extra,
     secrets
   })
 }
@@ -190,8 +204,8 @@ export function terminalSessionFolder(dataRoot: string, cwd: string): string {
   return join(dataRoot, 'sessions', 'terminal', createHash('sha256').update(cwd).digest('hex'))
 }
 
-export function parseStandaloneOptions(argv: string[], home = homedir(), cwd = process.cwd()): StandalonePaths {
-  return resolveStandaloneOptions(argv, home, cwd).paths
+export function parseStandaloneOptions(argv: string[], home = homedir(), cwd = process.cwd(), env: NodeJS.ProcessEnv = process.env): StandalonePaths {
+  return resolveStandaloneOptions(argv, home, cwd, env).paths
 }
 
 function processEnvironment(overrides: Record<string, string | null>): NodeJS.ProcessEnv {
@@ -301,8 +315,16 @@ export async function runStandaloneTerminal(argv: string[], dependencies: Standa
   let cwd = resolve(dependencies.cwd ?? process.cwd())
   const { paths, profile } = resolveStandaloneOptions(argv, dependencies.home, cwd)
   if (paths.daemon) {
-    const { runDaemonTerminal } = await import('./daemon')
-    return runDaemonTerminal({ paths, profile, cwd, ...(dependencies.spawn ? { spawn: dependencies.spawn } : {}), ...(dependencies.createSessionId ? { createSessionId: dependencies.createSessionId } : {}) })
+    const { DAEMON_VERSION_MISMATCH, runDaemonTerminal } = await import('./daemon')
+    try {
+      return await runDaemonTerminal({ paths, profile, cwd, ...(dependencies.spawn ? { spawn: dependencies.spawn } : {}), ...(dependencies.createSessionId ? { createSessionId: dependencies.createSessionId } : {}) })
+    } catch (error) {
+      // An older harness still serves other windows or a reply (do not kill it), or this state folder
+      // cannot hold the harness's socket: run this window alone.
+      const code = (error as { code?: string }).code
+      if (code !== DAEMON_VERSION_MISMATCH && code !== 'socket_path_too_long') throw error
+      process.stderr.write(`${(error as Error).message}\nThis window runs in its own harness.\n`)
+    }
   }
   const harness = await createStandaloneHarness(paths, profile, dependencies)
   const newSessionId = dependencies.createSessionId ?? randomUUID

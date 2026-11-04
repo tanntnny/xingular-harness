@@ -73,6 +73,18 @@ describe('standalone terminal startup', () => {
     expect(standaloneArguments(['serve', '--state', '/tmp/state'])).toBeNull()
   })
 
+  it('runs in the long-lived harness only when the flag or the environment asks for it', () => {
+    const resolve = (argv: string[], env: NodeJS.ProcessEnv) => parseStandaloneOptions(argv, '/home/test', '/work/project', env).daemon
+    expect(resolve([], {})).toBeUndefined()
+    expect(resolve(['--daemon'], {})).toBe(true)
+    expect(resolve([], { XINGULAR_DAEMON: '1' })).toBe(true)
+    // The flag wins over the environment, in both directions.
+    expect(resolve(['--no-daemon'], { XINGULAR_DAEMON: '1' })).toBeUndefined()
+    expect(resolve(['--daemon'], { XINGULAR_DAEMON: '0' })).toBe(true)
+    expect(resolve([], { XINGULAR_DAEMON: '0' })).toBeUndefined()
+    expect(resolve([], { XINGULAR_DAEMON: 'maybe' })).toBeUndefined()
+  })
+
   it('uses a dedicated default data and state root and accepts path overrides', () => {
     expect(parseStandaloneOptions([], '/home/test', '/work/project')).toEqual({
       dataRoot: '/home/test/.xingular-harness/data',

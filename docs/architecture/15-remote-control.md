@@ -2,16 +2,16 @@
 
 ## Purpose
 
-Remote control lets a person continue a live terminal session from a phone or iPad. The session
-keeps running in `xagent` on the computer. A paired device sends messages, watches the reply as it
+Remote control lets a person continue a live conversation from a phone or iPad: a terminal session,
+or a host's chat on a live session (PAR-018). The session keeps running in the harness on the computer. A paired device sends messages, watches the reply as it
 streams, stops it, and answers approvals and questions. It works without a cloud relay: the
 harness serves a small web page on the computer's Tailscale address, or its private Wi-Fi or LAN
-address, and the device opens it from a QR code. Remote control ends when the terminal session
-ends ([ADR-0056](../decisions/ADR-0056-remote-control.md)).
+address, and the device opens it from a QR code. Remote control ends when its conversation ends:
+the terminal window, or the host's live session
+([ADR-0056](../decisions/ADR-0056-remote-control.md), INV-RC-5).
 
-A paired device is a second person at the terminal. It reaches the same controller and `Terminals`
-methods the terminal uses and nothing else, so remote control adds a surface, not a capability
-path.
+A paired device is a second person at the conversation. It reaches the same calls the terminal or the
+host's own chat uses and nothing else, so remote control adds a surface, not a capability path.
 
 ## Components
 
@@ -21,16 +21,19 @@ path.
 | `remote/seal.ts` | Sealed frames: NaCl `secretbox` (XSalsa20-Poly1305, `tweetnacl`) with a random 24-byte nonce; a counter inside each frame, checked by `ReplayGuard` (a 256-counter window). |
 | `remote/pairing.ts` | `Pairing`: the pairing link (id and key), one waiting pair request, paired devices (`RemoteDevice`), limits, rotation. |
 | `remote/server.ts` | `listenRemote`: `node:http` on one address; the page assets, `POST /rc/hello`, `POST /rc/call`, `GET /rc/events` (server-sent events). Host and Origin checks, body caps, no-store and CSP headers. |
-| `remote/service.ts` | `RemoteControl` for one terminal session over a `RemoteSessionPort`: start, stop, rotate, confirm, status and `waitStatus`; projects run events and decisions for the phone. |
+| `remote/service.ts` | `RemoteControl` for one conversation over a `RemoteSessionPort`: start, stop, rotate, confirm, status and `waitStatus`; projects run events and decisions for the phone. |
+| `remote/sessionRemotes.ts` | `RemoteSessions` (`Harness.remotes`): the pairings, one per conversation id, shared by terminal windows and host chats; `SwitchablePort` lets a pairing change its backing (window to live session) without the phone noticing. |
+| `remote/liveSessionPort.ts` | The `RemoteSessionPort` of a live session: sends through `Sessions.followUp`, decisions and interrupt through `LiveDecisions`, history and events from the conversation's own runs. No terminal behind it. |
+| `sessions/liveDecisions.ts` | `LiveDecisions`: the decisions pending for the reply running now and its subagents, their revision and long wait, approve, answer, answers and interrupt. `LiveTerminal` and the live-session port share it. |
 | `remote/webClient.ts` | The phone page: HTML, CSS and script, served as is. |
 | `terminal/tui/pages/remoteControlPage.ts`, `terminal/tui/qr.ts` | The `/remote-control` page and its half-block QR code (`uqr`). |
 
 ```text
-Phone browser ── http://<tailscale or LAN address>:<port> ──> RemoteControl (xagent parent)
-   sealed hello / calls / events                                  │ RemoteSessionPort
-                                                                   ├─ Terminals.send
-                                                                   ├─ TerminalController.control (interrupt, approve, answer, pending.wait)
-                                                                   └─ RunRegistry.listen (this session's own runs)
+Phone browser ── http://<tailscale or LAN address>:<port> ──> RemoteControl (the harness)
+   sealed hello / calls / events                                  │ RemoteSessionPort (via SwitchablePort)
+                                                                   ├─ terminal window: Terminals.send, TerminalController.control or LiveTerminal
+                                                                   ├─ live session: Sessions.followUp, LiveDecisions (interrupt, approve, answer, pending.wait)
+                                                                   └─ RunRegistry.listen (this conversation's own runs)
 ```
 
 ## Contracts
@@ -49,6 +52,11 @@ Phone browser ── http://<tailscale or LAN address>:<port> ──> RemoteCont
   changed revision, otherwise within 20 seconds). Each returns a `RemoteStatus`
   `{ running, revision, url, kind, kinds, devices, request, warning }`. All of them go through the
   session socket's control key (INV-TUI-4).
+  A host drives a live session's pairing with `sessions.remoteControl.start { sessionId, interface? }`,
+  `.stop`, `.rotate`, `.confirm { sessionId, requestId, allow }`, `.status` and `.status.wait
+  { sessionId, revision }`, the same replies. They need a live session (`sessions.run { live: true }`)
+  and are host calls, never model tools. A terminal's pairing and a host's for the same conversation id
+  are one pairing.
 - **Pairing.** The link is `http://<address>:<port>/#<pairingId>.<key>`. A browser never sends the
   fragment. The phone says hello with a frame sealed by the link key. The request waits up to 50
   seconds for the person at the terminal to allow it; the reply, sealed by the link key, carries
@@ -76,24 +84,32 @@ Phone browser ── http://<tailscale or LAN address>:<port> ──> RemoteCont
   inject a loopback address through `RemoteControlOptions.bindHost`.)
 - **INV-RC-2** Every remote-control key lives in memory only. Nothing about pairing is written to
   the data root or the state directory; a phone keeps its own device key in its browser storage.
-- **INV-RC-3** A paired device acts only through the terminal's existing paths: `Terminals.send`,
-  and `TerminalController.control` for `terminal.interrupt`, `terminal.approve`,
-  `terminal.answer`, `terminal.answers` and `terminal.pending.wait`. For a client terminal
-  (ADR-0083) the same calls reach its `LiveTerminal`, and a message goes as a new reply or a
-  follow-up of the live session. The validation those paths
-  apply (a busy session, a terminal draft, the rememberable check on "always allow", the policy
-  recheck of a direct approval) applies unchanged.
+- **INV-RC-3** A paired device acts only through the conversation's existing paths: for a terminal,
+  `Terminals.send` and `TerminalController.control` for `terminal.interrupt`, `terminal.approve`,
+  `terminal.answer`, `terminal.answers` and `terminal.pending.wait`; for a client terminal
+  (ADR-0083) the same calls reach its `LiveTerminal`; for a host's live session, `Sessions.followUp`
+  and `LiveDecisions`, which `LiveTerminal` uses too. A message goes as a new reply or a follow-up
+  of the live session. The validation those paths apply (a busy session, a terminal draft, the
+  rememberable check on "always allow", the policy recheck of a direct approval) applies unchanged.
 - **INV-RC-4** A decision is shown on the phone with its complete action text, never shortened,
   beside its choices. The first answer from either surface wins; the other surface's card goes
   away on the next pending revision.
-- **INV-RC-5** Remote control ends with its terminal session (`Terminals.dispose`): the server
-  closes, connected phones are told, and every device key is forgotten. `stop` does the same
-  without ending the session.
+- **INV-RC-5** Remote control ends with its conversation: a terminal's, when the window ends with no
+  reply running or the reply of a closed window settles (`Terminals.dispose`); a host's, when its
+  live session ends (`sessions.close`, 30 idle minutes, harness stop). Closing a window while a reply
+  runs (`terminal.detach`) does not end it: the pairing moves to the live-session port and the phone
+  keeps its reply. A live session replaced at a pin change is not an end. When it ends, the server
+  closes, connected phones are told, and every device key is forgotten. `stop` does the same without
+  ending the conversation.
 - **INV-RC-6** A paired device runs no slash command, no `!` shell command and no link, and reaches
   no plugin, account, Hub, worktree or browser control. A message starting with `/` or `!` is
   refused.
 - **INV-RC-7** Starting remote control and allowing a device are decisions of the person at the
-  terminal: both are control-key calls, and no phone can pair without that confirmation.
+  conversation's screen: a terminal's control-key calls, or a host's `sessions.remoteControl.*`
+  calls from its own UI. No phone can pair without that confirmation, and no model tool reaches
+  either.
+- **INV-RC-9** One pairing per live conversation: a terminal window and a host's chat on the same
+  conversation id share it, and a second start returns it.
 - **INV-RC-8** Every body between the phone and the harness, except the static page, is sealed.
   A frame that does not open, or whose counter was seen, is refused the same way.
 
@@ -112,7 +128,9 @@ None stored. The phone's browser keeps `{ deviceId, deviceKey, label }` under
 
 ## Source map
 
-`src/remote/`, `src/terminal/terminals.ts` (`remote`, `remotePort`, `remoteCall`, dispose),
+`src/remote/` (`sessionRemotes.ts`, `liveSessionPort.ts`), `src/sessions/liveDecisions.ts`,
+`src/sessions/live.ts` (`onEnd`), `src/server/methods.ts` (`sessions.remoteControl.*`),
+`src/terminal/terminals.ts` (`remote`, `remotePort`, `remoteCall`, `detach`, dispose),
 `src/terminal/controller.ts` (`delta`), `src/terminal/piExtension.ts` (`message_update`),
 `src/terminal/tui/pages/remoteControlPage.ts`, `src/terminal/tui/qr.ts`,
 `src/terminal/opentui/app.ts` (`watchRemoteControl`), `src/terminal/opentui/statusBar.ts`,

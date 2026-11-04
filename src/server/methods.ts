@@ -26,6 +26,7 @@ import { runsSince } from '../sessions/runIndex'
 import { findRun, listRuns, loadRun, pendingDecisions, readEvents, runFamily, snapshot } from '../sessions/runStore'
 import type { SubagentInput } from '../sessions/subagents'
 import type { SessionRunInput } from '../sessions/sessions'
+import type { RemoteInterfaceChoice } from '../remote/addresses'
 import type { TerminalPrepareInput } from '../terminal/terminals'
 import { todoOf } from '../tools/todo'
 import { dispatch } from '../tools/dispatch'
@@ -72,13 +73,20 @@ function check(variant: Variant): { ok: true; census: ReturnType<typeof validate
 export function methods(harness: Harness): Record<string, Handler> {
   const { accounts, approvals, runs, sessions, terminals, env } = harness
   const root = (): string => env.root
+  const remoteOf = (sessionId: string) => {
+    const remote = harness.remotes.forLive(sessionId)
+    if (!remote) throw new HarnessError('not_found', 'This session has no live session to control from a phone. Start a run with live: true first.')
+    return remote
+  }
   const variantsChanged = (scope: string): void => harness.bus.emit({ type: 'variants.changed', scope })
   const builtins = BUILTIN_PLUGIN_REGISTRY.serverMethods(harness)
 
   const foundation: Record<string, Handler> = {
     // ---- The harness itself --------------------------------------------------------------------
     'harness.status': () => ({ dataRoot: harness.dataRoot, productName: env.productName, recovery: harness.recovery, activeRuns: runs.activeRunIds() }),
-    'harness.open': (params: Params) => harness.open(text(params, 'dataRoot'), Array.isArray(params.agentIds) ? params.agentIds : []),
+    // Opening the root that is already open changes nothing. A second host on a shared harness must not
+    // re-run recovery, which would mark the runs other hosts have in flight as interrupted.
+    'harness.open': (params: Params) => text(params, 'dataRoot') === harness.dataRoot ? harness.recovery : harness.open(text(params, 'dataRoot'), Array.isArray(params.agentIds) ? params.agentIds : []),
     'harness.rebuildIndex': () => harness.rebuildIndex(),
 
     // ---- Accounts --------------------------------------------------------------------------------
@@ -346,6 +354,21 @@ export function methods(harness: Harness): Record<string, Handler> {
     'sessions.live': () => ({ sessions: sessions.liveSessions() }),
     'sessions.close': (params: Params) => sessions.closeLive(text(params, 'sessionId')),
     'sessions.followUp': (params: Params) => sessions.followUp(text(params, 'sessionId'), text(params, 'text')),
+    // Remote control of a host's live session from a phone (page 15). These are host calls: starting a
+    // pairing and allowing a device are decisions of the person at the host's screen (INV-RC-7).
+    'sessions.remoteControl.status': (params: Params) => remoteOf(text(params, 'sessionId')).status(),
+    'sessions.remoteControl.status.wait': (params: Params) => remoteOf(text(params, 'sessionId')).waitStatus(params.revision as number | undefined),
+    'sessions.remoteControl.start': (params: Params) => {
+      const choice = optional(params, 'interface') ?? 'auto'
+      if (!['auto', 'tailscale', 'lan'].includes(choice)) throw invalid('Choose auto, tailscale or lan.')
+      return remoteOf(text(params, 'sessionId')).start(choice as RemoteInterfaceChoice)
+    },
+    'sessions.remoteControl.stop': (params: Params) => remoteOf(text(params, 'sessionId')).stop(),
+    'sessions.remoteControl.rotate': (params: Params) => remoteOf(text(params, 'sessionId')).rotate(),
+    'sessions.remoteControl.confirm': (params: Params) => {
+      if (typeof params.allow !== 'boolean') throw invalid('A pairing request id and a boolean choice are required.')
+      return remoteOf(text(params, 'sessionId')).confirm(text(params, 'requestId'), params.allow)
+    },
     'sessions.followUp.clear': (params: Params) => ({ removed: sessions.live.clearQueue(text(params, 'sessionId')) }),
     'sessions.history': (params: Params) => ({ sessionFile: selectHistory({ sessionDir: text(params, 'sessionDir'), resume: params.resume ?? null }) }),
     // The commands that need no model act on the saved history; see sessions/control.ts.

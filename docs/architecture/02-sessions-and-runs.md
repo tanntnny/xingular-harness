@@ -311,7 +311,10 @@ them, one per `run.sessionId`.
 - **Methods.** `sessions.live {}` → `{ sessions: LiveSessionStatus[] }`; `sessions.close { sessionId }`
   → `{ closed, afterRun }` (a busy session closes when its run settles);
   `sessions.followUp { sessionId, text }` → `{ runId } | { queued }`;
-  `sessions.followUp.clear { sessionId }` → `{ removed }`.
+  `sessions.followUp.clear { sessionId }` → `{ removed }`;
+  `sessions.remoteControl.*` pairs a phone with the live session (page 15). `LiveSessions.onEnd`
+  reports a session closed for good (a request, 30 idle minutes, harness close), not one replaced at
+  a pin change.
 
 ## Invariants
 

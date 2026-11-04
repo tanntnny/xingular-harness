@@ -2,7 +2,8 @@
 // as they are recorded, and notices when state changes.
 import type { Harness } from '../harness'
 import { methods } from './methods'
-import { RpcPeer, type Transport } from './rpc'
+import type { RunEvent } from '../sessions/contracts'
+import { RpcPeer, type Handler, type Transport } from './rpc'
 
 export interface Served {
   peer: RpcPeer
@@ -14,10 +15,12 @@ export interface Served {
  * Registers the method table on `peer` and forwards events and notices to it. Returns what stops the
  * forwarding, for a peer that goes away before the harness does (a socket connection).
  */
-export function attach(harness: Harness, peer: RpcPeer): () => void {
-  for (const [name, handler] of Object.entries(methods(harness))) peer.handle(name, handler)
+export function attach(harness: Harness, peer: RpcPeer, options: { deliver?(event: RunEvent): boolean; wrap?(name: string, handler: Handler): Handler } = {}): () => void {
+  for (const [name, handler] of Object.entries(methods(harness))) peer.handle(name, options.wrap ? options.wrap(name, handler) : handler)
   peer.handle('harness.methods', () => peer.methods())
-  const stopEvents = harness.runs.listen((event) => peer.send({ event }))
+  const stopEvents = harness.runs.listen((event) => {
+    if (!options.deliver || options.deliver(event)) peer.send({ event })
+  })
   const stopNotices = harness.bus.on((notice) => peer.send({ notice }))
   return () => {
     stopEvents()

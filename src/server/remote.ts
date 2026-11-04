@@ -22,7 +22,7 @@ export function remoteSecrets(peer: RpcPeer): SecretStore {
 
 /** `policy.scope`, `policy.authorize`, `policy.approval`, `policy.connections` on the host. */
 export function remotePolicy(peer: RpcPeer): ToolPolicy {
-  const identify = (call: { run: { id: string; sessionId: string }; caller: unknown; tool: string; args: unknown }) => ({ runId: call.run.id, sessionId: call.run.sessionId, caller: call.caller, tool: call.tool, args: call.args })
+  const identify = (call: { run: { id: string; sessionId: string; mode?: string }; caller: unknown; tool: string; args: unknown }) => ({ runId: call.run.id, sessionId: call.run.sessionId, mode: call.run.mode, caller: call.caller, tool: call.tool, args: call.args })
   return {
     scope: (call) => peer.callHost('policy.scope', identify(call), 90_000),
     authorize: async (call) => void (await peer.callHost('policy.authorize', identify(call), 90_000)),

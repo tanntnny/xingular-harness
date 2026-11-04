@@ -16,7 +16,7 @@ import { PAGE_CSS, PAGE_JS, pageHtml, pageManifest } from './webClient'
 const MAX_TEXT = 1_000_000
 const MAX_HISTORY = 400
 
-/** The session remote control drives. Terminals supplies it; tests supply a fake. */
+/** The session remote control drives. Terminals or a host's live session supplies it; tests supply a fake. */
 export interface RemoteSessionPort {
   sessionId: string
   /** A short title for the phone's header. */
@@ -29,6 +29,8 @@ export interface RemoteSessionPort {
   /** Events of this session's own runs, after they are redacted and saved. */
   listen(listener: (event: RunEvent) => void): () => void
   state(): { ready: boolean; active: boolean }
+  /** Releases what the port holds once its pairing ends or moves to another port. */
+  close?(): void
 }
 
 /** What the phone is sent for one run event. Everything else in an event stays on the computer. */

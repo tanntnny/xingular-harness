@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **A phone can control a host's live session, and a pairing outlives a closed terminal window (PAR-018).** `sessions.remoteControl.{start,stop,rotate,confirm,status,status.wait}` pair a phone with any live session; a terminal window closed during a reply keeps its phone until the reply settles. `LiveDecisions` is shared by the client terminal and the pairing; `LiveSessions.onEnd` reports a session closed for good.
+- **The long-lived harness checks its version and exits when idle.** After an upgrade, a window
+  replaces an old daemon that nothing uses, or runs in its own harness (with a notice) when a window
+  or reply still uses it. The daemon exits after 30 idle minutes. `--no-daemon` and
+  `XINGULAR_DAEMON=0` keep a window's own harness. `daemon.status` reports `version` and `windows`.
 - **The terminal screen no longer gets garbled by a failed code highlight.** Code fences always take
   the app's syntax style, and `console` output is held while the terminal window runs and printed
   after it exits.

@@ -49,6 +49,8 @@ import type { SessionFactory } from './sessions/runner'
 import { Sessions } from './sessions/sessions'
 import { SideQuestions } from './sessions/sideQuestions'
 import { Terminals, type TerminalAssets } from './terminal/terminals'
+import { RemoteSessions } from './remote/sessionRemotes'
+import type { RemoteControlOptions } from './remote/service'
 import { Worktrees } from './worktrees/service'
 import { Usage } from './usage/service'
 import { UsageLimits } from './usage/limits/service'
@@ -63,6 +65,8 @@ export interface HarnessOptions {
   /** Enables the Brave extension bridge when a host supplies its own isolated browser. */
   browserExtension?: { port?: number }
   hub?: HubOptions
+  /** Where remote control listens; tests bind loopback here (page 15). */
+  remoteControl?: RemoteControlOptions
   /** Where knowledge and history live. May be set later with `open`. */
   dataRoot?: string | null
   /** Device-local state that never belongs in the data root: accounts, approvals, connections, sockets. */
@@ -179,6 +183,8 @@ export class Harness {
   readonly lessons: Lessons
   refineHost: RefineHost | null
   readonly terminals: Terminals
+  /** The remote-control pairings, one per conversation: a terminal's and a host's live session's (page 15). */
+  readonly remotes: RemoteSessions
   readonly doctor: Doctor
   /** Usage analytics over the derived ledger, and the provider limits last reported. */
   readonly usage: Usage
@@ -282,7 +288,8 @@ export class Harness {
     this.refine = new Refinements({ root: () => this.env.root, bus: this.bus, trust: this.trust, host: () => this.refineHost, runtime: refineRuntime })
     this.lessons = new Lessons({ root: () => this.env.root, runtime: refineRuntime })
     this.pageNotes = new NoteDeliveries({ root: () => this.env.root, bus: this.bus, terminals: () => this.terminals ?? null })
-    this.terminals = new Terminals({ trust: this.trust, subagents: this.subagents, sideQuestions: this.sideQuestions, resolveCapabilities: (caller, tools, cwd) => capabilities.resolve(this, { agentId: caller.agentId ?? null, projectId: caller.projectId ?? null, cwd, tools }), env: this.env, stateDir: this.stateDir, accounts: this.accounts, runs: this.runs, approvals: this.approvals, apps: this.apps, policy: this.policy, bus: this.bus, plugins: this.plugins, usage: this.usage, usageLimits: this.usageLimits, pluginControl: { list: (scope) => pluginApi.list(this, scope), attach: (params, on) => pluginApi.attach(this, params, on), trust: (scope) => pluginApi.trust(this, scope), untrust: (scope) => pluginApi.untrust(this, scope), configure: (params) => pluginApi.configure(this, params), install: params => pluginInstall.install(this, params), remove: params => pluginInstall.remove(this, params), proposals: { list: () => pluginProposals.list(this.env.root), preview: id => pluginProposals.preview(this.env.root, id), accept: (id, hash) => pluginProposals.accept(this, id, hash), reject: (id, hash) => pluginProposals.reject(this.env.root, id, hash) } }, assets: options.assets, hub: this.hub, world: this.world, doctor: this.doctor, worktrees: this.worktrees, noteCapture: this.noteCapture, pageNotes: this.pageNotes, refine: this.refine, sessionService: this.sessions })
+    this.remotes = new RemoteSessions({ root: () => this.env.root, runs: this.runs, sessions: this.sessions, productName: this.env.productName, allowTool: (target) => { this.approvals.allowTool('pi', target) }, ...(options.remoteControl ? { remoteControl: options.remoteControl } : {}) })
+    this.terminals = new Terminals({ remotes: this.remotes, trust: this.trust, subagents: this.subagents, sideQuestions: this.sideQuestions, resolveCapabilities: (caller, tools, cwd) => capabilities.resolve(this, { agentId: caller.agentId ?? null, projectId: caller.projectId ?? null, cwd, tools }), env: this.env, stateDir: this.stateDir, accounts: this.accounts, runs: this.runs, approvals: this.approvals, apps: this.apps, policy: this.policy, bus: this.bus, plugins: this.plugins, usage: this.usage, usageLimits: this.usageLimits, pluginControl: { list: (scope) => pluginApi.list(this, scope), attach: (params, on) => pluginApi.attach(this, params, on), trust: (scope) => pluginApi.trust(this, scope), untrust: (scope) => pluginApi.untrust(this, scope), configure: (params) => pluginApi.configure(this, params), install: params => pluginInstall.install(this, params), remove: params => pluginInstall.remove(this, params), proposals: { list: () => pluginProposals.list(this.env.root), preview: id => pluginProposals.preview(this.env.root, id), accept: (id, hash) => pluginProposals.accept(this, id, hash), reject: (id, hash) => pluginProposals.reject(this.env.root, id, hash) } }, assets: options.assets, hub: this.hub, world: this.world, doctor: this.doctor, worktrees: this.worktrees, noteCapture: this.noteCapture, pageNotes: this.pageNotes, refine: this.refine, sessionService: this.sessions })
     this.ready = this.apps.start().catch((error) => log('connected apps', error instanceof Error ? error.message : String(error)))
     this.runs.listen((event, run) => {
       this.accounts.onRunEvent(event, run)
@@ -419,6 +426,7 @@ export class Harness {
     await this.refine.close()
     await this.lessons.close()
     await this.terminals.close()
+    await this.remotes.close()
     this.sessions.close()
     await this.noteCapture.close()
     await this.sideQuestions.close()

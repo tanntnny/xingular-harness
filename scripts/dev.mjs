@@ -30,7 +30,7 @@ if (!args.includes('--account-state')) defaults.push('--account-state', installe
 // exercised. A subcommand (`serve`, `wiki`, `daemon status`, ...) is passed through unchanged, and
 // XINGULAR_DEV_DAEMON=0 keeps the window's own private harness.
 const SUBCOMMANDS = new Set(['serve', 'daemon', 'attach', 'wiki', 'mcp', 'plugins', 'hub', 'refine', 'web', 'browser', 'worktree'])
-if (process.env.XINGULAR_DEV_DAEMON !== '0' && !args.includes('--daemon') && !args.some((argument) => SUBCOMMANDS.has(argument))) {
+if (process.env.XINGULAR_DEV_DAEMON !== '0' && process.env.XINGULAR_DAEMON === undefined && !args.includes('--daemon') && !args.includes('--no-daemon') && !args.some((argument) => SUBCOMMANDS.has(argument))) {
   defaults.push('--daemon')
 }
 
