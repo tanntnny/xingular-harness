@@ -73,16 +73,60 @@ describe('standalone terminal startup', () => {
     expect(standaloneArguments(['serve', '--state', '/tmp/state'])).toBeNull()
   })
 
-  it('runs in the long-lived harness only when the flag or the environment asks for it', () => {
-    const resolve = (argv: string[], env: NodeJS.ProcessEnv) => parseStandaloneOptions(argv, '/home/test', '/work/project', env).daemon
-    expect(resolve([], {})).toBeUndefined()
-    expect(resolve(['--daemon'], {})).toBe(true)
-    expect(resolve([], { XINGULAR_DAEMON: '1' })).toBe(true)
+  it('runs in the long-lived harness by default, and the flag or the environment can turn that off', () => {
+    const resolve = (argv: string[], env: NodeJS.ProcessEnv) => parseStandaloneOptions(argv, '/home/test', '/work/project', env)
+    // Nothing said: the daemon, unless this platform cannot run it.
+    expect(resolve([], {})).toMatchObject(process.platform === 'win32' ? {} : { daemon: true, daemonSource: 'default' })
+    expect(resolve(['--daemon'], {})).toMatchObject({ daemon: true, daemonSource: 'flag' })
+    expect(resolve([], { XINGULAR_DAEMON: '1' })).toMatchObject({ daemon: true, daemonSource: 'environment' })
     // The flag wins over the environment, in both directions.
-    expect(resolve(['--no-daemon'], { XINGULAR_DAEMON: '1' })).toBeUndefined()
-    expect(resolve(['--daemon'], { XINGULAR_DAEMON: '0' })).toBe(true)
-    expect(resolve([], { XINGULAR_DAEMON: '0' })).toBeUndefined()
-    expect(resolve([], { XINGULAR_DAEMON: 'maybe' })).toBeUndefined()
+    expect(resolve(['--no-daemon'], { XINGULAR_DAEMON: '1' }).daemon).toBeUndefined()
+    expect(resolve(['--daemon'], { XINGULAR_DAEMON: '0' })).toMatchObject({ daemon: true, daemonSource: 'flag' })
+    expect(resolve([], { XINGULAR_DAEMON: '0' }).daemon).toBeUndefined()
+    expect(resolve([], { XINGULAR_DAEMON: 'off' }).daemon).toBeUndefined()
+    // A value that means nothing is not an answer: the default stands.
+    expect(resolve([], { XINGULAR_DAEMON: 'maybe' }).daemonSource).toBe(process.platform === 'win32' ? undefined : 'default')
+  })
+
+  it('refuses --daemon where the window must run its own harness, and falls back quietly for the default', async () => {
+    const home = temporaryDirectory('harness-daemon-routing-')
+    const cwd = temporaryDirectory('harness-daemon-routing-cwd-')
+    const state = join(home, 's')
+    const common = { home, cwd, stdinIsTTY: true as const, stdoutIsTTY: true as const }
+    const embedded = { createHarness: harnessFactory, spawn: fakeSpawn(() => undefined) }
+    // Asked for by name, but the embedding program brought its own harness.
+    await expect(runStandaloneTerminal(['--daemon', '--data', join(home, 'd'), '--state', state], { ...common, ...embedded })).rejects.toThrow(/own harness.*--no-daemon/s)
+    // The same through the environment variable.
+    vi.stubEnv('XINGULAR_DAEMON', '1')
+    await expect(runStandaloneTerminal(['--data', join(home, 'd'), '--state', state], { ...common, ...embedded })).rejects.toThrow(/--no-daemon/)
+    vi.stubEnv('XINGULAR_DAEMON', '')
+    // Plugins that draw their own terminal components need the window's own process.
+    vi.stubEnv('XINGULAR_TERMINAL_RUNTIME', 'inprocess')
+    await expect(runStandaloneTerminal(['--daemon', '--data', join(home, 'd'), '--state', state], { ...common, spawn: fakeSpawn(() => undefined) })).rejects.toThrow(/inprocess/)
+    vi.unstubAllEnvs()
+  })
+
+  it('runs the window in its own harness when the daemon it was given by default cannot start', async () => {
+    const home = temporaryDirectory('hdf-')
+    const cwd = temporaryDirectory('hdf-cwd-')
+    vi.stubEnv('XINGULAR_DAEMON', '')
+    vi.stubEnv('XINGULAR_TERMINAL_RUNTIME', '')
+    const started: string[] = []
+    // The process meant to be the daemon exits at once; the frontend of the window's own harness runs.
+    const spawn = fakeSpawn((_program, args) => { started.push(args.includes('daemon') ? 'daemon' : 'frontend') })
+    const errors: string[] = []
+    vi.spyOn(process.stderr, 'write').mockImplementation(((text: string) => { errors.push(String(text)); return true }) as never)
+    const code = await runStandaloneTerminal(['--data', join(home, 'd'), '--state', join(home, 's')], { home, cwd, stdinIsTTY: true, stdoutIsTTY: true, spawn, createSessionId: () => 'fallback' })
+    expect(code).toBe(0)
+    if (process.platform !== 'win32') {
+      expect(started).toEqual(['daemon', 'frontend'])
+      expect(errors.join('')).toMatch(/exited \(0\)[\s\S]*This window runs in its own harness/)
+    }
+    // Asked for by name, the same failure is the person's to see.
+    started.length = 0
+    await expect(runStandaloneTerminal(['--daemon', '--data', join(home, 'd'), '--state', join(home, 's')], { home, cwd, stdinIsTTY: true, stdoutIsTTY: true, spawn, createSessionId: () => 'named' })).rejects.toMatchObject({ code: 'daemon_unavailable' })
+    expect(started).toEqual(['daemon'])
+    vi.unstubAllEnvs()
   })
 
   it('uses a dedicated default data and state root and accepts path overrides', () => {

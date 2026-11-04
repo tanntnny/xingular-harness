@@ -34,7 +34,7 @@ const factory = (): SessionFactory => async () => {
   return session
 }
 
-async function start(): Promise<{ harness: Harness; hub: HostHub; server: SocketServer; connect: () => Promise<HarnessClient> }> {
+async function start(hubOptions: Partial<ConstructorParameters<typeof HostHub>[0]> = {}): Promise<{ harness: Harness; hub: HostHub; server: SocketServer; connect: () => Promise<HarnessClient> }> {
   // A short folder: a Unix socket path has a small length limit.
   const dir = mkdtempSync(join(tmpdir(), 'hh-'))
   cleanup.push(() => rmSync(dir, { recursive: true, force: true }))
@@ -42,7 +42,7 @@ async function start(): Promise<{ harness: Harness; hub: HostHub; server: Socket
   cleanup.push(() => harness.close())
   mkdirSync(join(dir, 'state'), { recursive: true })
   harness.accounts.create('Main', 'apiKey')
-  const hub = new HostHub({ root: () => harness.env.root })
+  const hub = new HostHub({ root: () => harness.env.root, awayMs: 0, ...hubOptions })
   const server = await serveSocket(harness, join(dir, 'state', 'h.sock'), {}, { hub })
   cleanup.push(() => server.close())
   const clients: HarnessClient[] = []
@@ -185,5 +185,61 @@ describe('a host on the shared harness', () => {
     const client = await connect()
     const before = harness.recovery
     expect(await client.call('harness.open', { dataRoot: harness.dataRoot! })).toEqual(before)
+  })
+
+  it('waits for a host that is briefly away, and fails only when it stays away', async () => {
+    const { connect, hub } = await start({ awayMs: 3000 })
+    const reading = hub.secrets.get('k')
+    await tick(100)
+    const host = await connect()
+    host.handle('secrets.get', () => 'back')
+    await host.call('host.register', { name: 'app', secrets: true })
+    expect(await reading).toBe('back')
+    const { hub: stays } = await start({ awayMs: 150 })
+    const started = Date.now()
+    await expect(stays.secrets.get('k')).rejects.toMatchObject({ code: 'host_unavailable' })
+    expect(Date.now() - started).toBeGreaterThanOrEqual(120)
+  })
+
+  it('gives a host the sessions its calls start, whatever started them', async () => {
+    const { connect, hub } = await start()
+    const host = await connect()
+    await host.call('host.register', { name: 'app' })
+    const peer = [...(hub as unknown as { byPeer: Map<object, unknown> }).byPeer.keys()][0] as never
+    hub.claimFromCall('outside')
+    expect(hub.ownerOf('outside')).toBeNull()
+    hub.origin.run(peer, () => hub.claimFromCall('side-question'))
+    expect(hub.ownerOf('side-question')).toBe('app')
+  })
+
+  it('forgets the least recently used owner first, and keeps a session that is in use', async () => {
+    const { connect, hub } = await start({ ownerLimit: 3 })
+    const host = await connect()
+    await host.call('host.register', { name: 'app' })
+    const peer = [...(hub as unknown as { byPeer: Map<object, unknown> }).byPeer.keys()][0] as never
+    for (const id of ['a', 'b', 'c']) hub.claim(peer, id)
+    expect(hub.ownerOf('a')).toBe('app')
+    hub.claim(peer, 'd')
+    expect(hub.ownerOf('a')).toBe('app')
+    expect(hub.ownerOf('b')).toBeNull()
+  })
+
+  it('sends a sign-in link only to the call that asked for it', async () => {
+    const { connect, hub } = await start()
+    const host = await connect()
+    const plain = await connect()
+    await host.call('host.register', { name: 'app' })
+    const peers = (hub as unknown as { byPeer: Map<object, unknown> }).byPeer
+    const hostPeer = [...peers.keys()][0] as never
+    const otherPeer = {} as never
+    const notice = { type: 'connections.openUrl' }
+    // A host's call: only that host. A call no host made: the clients that are not hosts.
+    expect(hub.origin.run(hostPeer, () => hub.deliverNotice(hostPeer, notice))).toBe(true)
+    expect(hub.origin.run(hostPeer, () => hub.deliverNotice(otherPeer, notice))).toBe(false)
+    expect(hub.deliverNotice(hostPeer, notice)).toBe(false)
+    expect(hub.deliverNotice(otherPeer, notice)).toBe(true)
+    // Everything else goes to everyone.
+    expect(hub.deliverNotice(hostPeer, { type: 'plugins.changed' })).toBe(true)
+    plain.close()
   })
 })

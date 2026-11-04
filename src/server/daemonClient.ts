@@ -3,7 +3,7 @@
 // the terminal so a host that is not a terminal (an application's sidecar) can use it.
 import { spawn as nodeSpawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { closeSync, existsSync, openSync, readFileSync, rmSync, writeSync } from 'node:fs'
+import { closeSync, existsSync, linkSync, mkdirSync, openSync, readFileSync, rmSync, writeSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -26,7 +26,41 @@ export function daemonFiles(stateDir: string): DaemonFiles {
  * `version` is absent in a lock written before the handshake, which always counts as a different
  * version. `config` identifies the launch options of a daemon a host started (page 11).
  */
-export interface LockRecord { pid: number; startedAt: string; socket: string; version?: string; config?: string }
+export interface LockRecord {
+  pid: number
+  startedAt: string
+  socket: string
+  version?: string
+  config?: string
+  /** The folders this daemon serves; a window that names others cannot use it. */
+  dataRoot?: string
+  accountState?: string | null
+  /** A hash of the `cli.js` the daemon runs, for a host that needs its own build. */
+  build?: string
+}
+
+/** What a daemon records about itself beyond its version. */
+export interface LockIdentity {
+  config?: string
+  dataRoot?: string
+  accountState?: string | null
+  build?: string
+}
+
+/** A hash of a file's contents, or undefined when it cannot be read. */
+export function fileIdentity(file: string): string | undefined {
+  try {
+    return createHash('sha256').update(readFileSync(file)).digest('hex').slice(0, 16)
+  } catch {
+    return undefined
+  }
+}
+
+/** The identity of the bundle this code runs from, when it is the CLI (`cli.js`); undefined from source. */
+export function runningBuild(): string | undefined {
+  const here = fileURLToPath(import.meta.url)
+  return here.endsWith('cli.js') ? fileIdentity(here) : undefined
+}
 
 function alive(pid: number): boolean {
   try {
@@ -60,15 +94,33 @@ export function socketPathProblem(stateDir: string): string | null {
     : null
 }
 
-/** Takes the state folder's lock for this process, or refuses when another daemon holds it. */
-export function acquireDaemonLock(stateDir: string, version: string = PACKAGE_VERSION, config?: string): () => void {
+/**
+ * Takes the state folder's lock for this process, or refuses when another daemon holds it. The record
+ * is written whole to a private file and linked into place, so no process ever sees a half-written lock
+ * (and takes it for a stale one) while another starts.
+ */
+export function acquireDaemonLock(stateDir: string, version: string = PACKAGE_VERSION, identity: LockIdentity | string = {}): () => void {
   const files = daemonFiles(stateDir)
+  // A bare string is the launch hash, as callers passed it before the lock held more.
+  const extra: LockIdentity = typeof identity === 'string' ? { config: identity } : identity
+  const record: LockRecord = {
+    pid: process.pid, startedAt: new Date().toISOString(), socket: files.socket, version,
+    ...(extra.config ? { config: extra.config } : {}),
+    ...(extra.dataRoot ? { dataRoot: extra.dataRoot } : {}),
+    ...(extra.accountState !== undefined ? { accountState: extra.accountState } : {}),
+    ...(extra.build ? { build: extra.build } : {})
+  }
+  const mine = `${files.lock}.${process.pid}.tmp`
   for (let attempt = 0; attempt < 2; attempt += 1) {
+    const descriptor = openSync(mine, 'w', 0o600)
     try {
-      const descriptor = openSync(files.lock, 'wx', 0o600)
-      const record: LockRecord = { pid: process.pid, startedAt: new Date().toISOString(), socket: files.socket, version, ...(config ? { config } : {}) }
       writeSync(descriptor, JSON.stringify(record))
+    } finally {
       closeSync(descriptor)
+    }
+    try {
+      linkSync(mine, files.lock)
+      rmSync(mine, { force: true })
       return () => {
         try {
           const current = JSON.parse(readFileSync(files.lock, 'utf8')) as LockRecord
@@ -78,6 +130,7 @@ export function acquireDaemonLock(stateDir: string, version: string = PACKAGE_VE
         }
       }
     } catch (error) {
+      rmSync(mine, { force: true })
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
       const running = daemonRecord(stateDir)
       if (running) throw new HarnessError('daemon_running', `A harness is already running for this state folder (process ${running.pid}).`)
@@ -133,6 +186,9 @@ export interface DaemonLaunch {
   oauthClients?: { ids: string[] }
 }
 
+/** Where a host leaves its launch options in the state folder: every `daemon run` there reads them. */
+export const HOST_LAUNCH_FILE = 'host-launch.json'
+
 /** Where a host passes the sign-in clients' secrets to the daemon it starts: a JSON map by catalog id. */
 export const OAUTH_CLIENTS_ENV = 'XINGULAR_DAEMON_OAUTH_CLIENTS'
 
@@ -159,6 +215,8 @@ export interface ConnectDaemonOptions {
   config?: DaemonConfigRef
   /** The CLI that runs `daemon run`; by default the one this code was bundled into. */
   cli?: string
+  /** A hash of the `cli.js` the daemon must run (`fileIdentity`); a daemon of another build is replaced when idle. */
+  build?: string
   spawn?: typeof nodeSpawn
   /** The environment of a daemon this starts; by default this process's. */
   env?: NodeJS.ProcessEnv
@@ -167,6 +225,9 @@ export interface ConnectDaemonOptions {
 
 /** The daemon is of another version or launch and cannot be replaced yet, because a window or a reply still uses it. */
 export const DAEMON_VERSION_MISMATCH = 'daemon_version_mismatch'
+
+/** How long a started daemon may take to open its socket: recovery reads the whole data root first. */
+export const DAEMON_START_MS = 45_000
 
 /** The path flags that name these folders, for a daemon started in another process. */
 function pathArguments(paths: DaemonPaths): string[] {
@@ -203,6 +264,9 @@ async function replaceStaleDaemon(paths: DaemonPaths, stale: LockRecord): Promis
   return daemonRecord(paths.stateDir)?.pid !== stale.pid
 }
 
+/** The folder a path names, so `./a` and `a/` are the same. */
+const same = (a: string | null | undefined, b: string | null | undefined): boolean => (a ? resolve(a) : null) === (b ? resolve(b) : null)
+
 /** Connects to the daemon for these folders, starting it first when `start` is set and none runs. */
 export async function connectDaemon(paths: DaemonPaths, options: ConnectDaemonOptions = { start: true }): Promise<HarnessClient> {
   const files = daemonFiles(paths.stateDir)
@@ -210,27 +274,61 @@ export async function connectDaemon(paths: DaemonPaths, options: ConnectDaemonOp
   const tooDeep = socketPathProblem(paths.stateDir)
   if (tooDeep && options.start) throw new HarnessError('socket_path_too_long', tooDeep)
   const tryConnect = async (): Promise<HarnessClient | null> => {
-    if (!daemonRecord(paths.stateDir) || !existsSync(files.socket)) return null
-    return connectHarness(files.socket).catch(() => null)
+    const record = daemonRecord(paths.stateDir)
+    // No lock, or a daemon that has not opened its socket yet.
+    if (!record || !existsSync(files.socket)) return null
+    try {
+      return await connectHarness(files.socket)
+    } catch (error) {
+      // A live process that holds the lock but whose socket refuses: the pid was reused after a crash or a
+      // reboot. A daemon still starting is young, so it is left alone.
+      const age = Date.now() - Date.parse(record.startedAt)
+      if ((error as NodeJS.ErrnoException).code === 'ECONNREFUSED' && Number.isFinite(age) && age > 30_000) {
+        rmSync(files.lock, { force: true })
+        rmSync(files.socket, { force: true })
+      }
+      return null
+    }
   }
   // After an upgrade the old daemon keeps running; a new window must not silently talk to it. A host
-  // that needs particular launch options does not talk to a daemon started without them either.
+  // that needs particular launch options or a build does not talk to a daemon started without them either.
   const record = daemonRecord(paths.stateDir)
-  const wrongLaunch = (found: LockRecord): boolean => found.version !== expected || (options.config !== undefined && found.config !== options.config.hash)
-  if (record && !options.anyVersion && wrongLaunch(record)) {
-    if (!(await replaceStaleDaemon(paths, record))) {
-      throw new HarnessError(DAEMON_VERSION_MISMATCH, `The running harness is version ${record.version ?? 'older than the version check'}${record.version === expected ? ', started with other options,' : `, not ${expected},`} and a window, host or reply still uses it. Close its windows and run: xagent daemon stop`)
+  const differs = (found: LockRecord): string | null => {
+    if (found.version !== expected) return found.version ? `version ${found.version}, not ${expected}` : `older than the version check, not ${expected}`
+    if (options.config !== undefined && found.config !== options.config.hash) return 'started with other options'
+    if (options.build !== undefined && found.build !== options.build) return 'a different build'
+    if (found.dataRoot !== undefined && !same(found.dataRoot, paths.dataRoot)) return `serving another data folder (${found.dataRoot})`
+    if (found.accountState !== undefined && !same(found.accountState, paths.accountState)) return 'serving other accounts'
+    return null
+  }
+  if (record && !options.anyVersion) {
+    const reason = differs(record)
+    if (reason && !(await replaceStaleDaemon(paths, record))) {
+      throw new HarnessError(DAEMON_VERSION_MISMATCH, `The running harness is ${reason}, and a window, host or reply still uses it. Close its windows, or run: xagent daemon stop`)
     }
   }
   const existing = await tryConnect()
   if (existing) return existing
   if (!options.start) throw new HarnessError('daemon_not_running', 'No harness is running for these folders. Start one with: xagent daemon start')
-  const child = (options.spawn ?? nodeSpawn)(process.execPath, [options.cli ?? cliPath(), 'daemon', 'run', ...pathArguments(paths), ...(options.config ? ['--host-config', options.config.file] : [])], { detached: true, stdio: 'ignore', env: options.env ?? process.env })
-  child.unref()
-  const deadline = Date.now() + (options.timeoutMs ?? 20_000)
+  // Its output goes to the log, where a person looks when it does not start.
+  mkdirSync(paths.stateDir, { recursive: true, mode: 0o700 })
+  const output = openSync(files.log, 'a', 0o600)
+  let child: ReturnType<typeof nodeSpawn>
+  try {
+    child = (options.spawn ?? nodeSpawn)(process.execPath, [options.cli ?? cliPath(), 'daemon', 'run', ...pathArguments(paths), ...(options.config ? ['--host-config', options.config.file] : [])], { detached: true, stdio: ['ignore', output, output], cwd: paths.stateDir, env: options.env ?? process.env })
+  } finally {
+    closeSync(output)
+  }
+  let exited: string | null = null
+  child.once?.('exit', (code, signal) => { exited = `exited (${code ?? signal})` })
+  child.once?.('error', (error) => { exited = `could not start (${error.message})` })
+  child.unref?.()
+  const deadline = Date.now() + (options.timeoutMs ?? DAEMON_START_MS)
   while (Date.now() < deadline) {
     const client = await tryConnect()
     if (client) return client
+    // The child is gone and no other daemon took its place: waiting longer cannot help.
+    if (exited && !daemonRecord(paths.stateDir)) throw new HarnessError('daemon_unavailable', `The harness ${exited} before it was ready; see ${files.log}.`)
     await new Promise((wait) => setTimeout(wait, 100))
   }
   throw new HarnessError('daemon_unavailable', `The harness did not start; see ${files.log}.`)

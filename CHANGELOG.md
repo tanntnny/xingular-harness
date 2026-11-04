@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **The long-lived harness is the default for `xagent` (ADR-0085).** A window runs in it unless told
+  otherwise (`--no-daemon`, `XINGULAR_DAEMON=0`); on Windows, with `XINGULAR_TERMINAL_RUNTIME=inprocess`, when its
+  socket path is too long, or when it cannot start, the window runs its own harness and says why. `--worktree`
+  now works in the daemon, a window that is killed no longer leaves its session (or the daemon) held open, a
+  daemon that goes does not hang the window for a minute, and the start of the daemon is logged and fails fast.
+  The lock is created atomically, records the folders and build, and a reused pid is recognised as stale.
+- **A host's sessions are its own by the call that started them (ADR-0085).** Side questions, refinements,
+  subagents and probes a host starts are now gated and heard by it, a host that is briefly away is waited for,
+  sign-in links go only to the call that asked for them, and a host's launch options are read by every `daemon
+  run` from `<state>/host-launch.json`. `harness.open` of another data folder is refused while terminal
+  windows use the harness.
+
 - **A phone can control a host's live session, and a pairing outlives a closed terminal window (PAR-018).** `sessions.remoteControl.{start,stop,rotate,confirm,status,status.wait}` pair a phone with any live session; a terminal window closed during a reply keeps its phone until the reply settles. `LiveDecisions` is shared by the client terminal and the pairing; `LiveSessions.onEnd` reports a session closed for good.
 - **The long-lived harness checks its version and exits when idle.** After an upgrade, a window
   replaces an old daemon that nothing uses, or runs in its own harness (with a notice) when a window

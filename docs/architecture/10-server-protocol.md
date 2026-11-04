@@ -236,19 +236,23 @@ the harness makes back to it, with the same names the stdio host calls use (`sec
 - `host.register { name, secrets?, policy?, directory?, tools?, broker?: { names, note? }, refine? }`
   makes the connection a host and replies `{ name, resumed }`, the sessions that name already owns.
   `name` is the host's own; the harness names no host (INV-BND-2).
-- A session belongs to the host whose connection started its first run (`sessions.run`,
-  `sessions.spawnSubagent`). A subagent's or side question's run belongs to the host of the run that
-  started it. The owner is kept for as long as the daemon runs, so a host that reconnects under its name
-  finds its sessions again.
+- A session belongs to the host whose call started its run. Every call a host's connection makes runs in a
+  call context (`AsyncLocalStorage`), and a run that starts inside it (a side question, a refinement, a
+  subagent, a doctor probe) is claimed for that host when it starts. A subagent's run also belongs to the host of
+  the run that started it. Owners are kept (least recently used forgotten first) for as long as the daemon runs,
+  so a host that reconnects under its name finds its sessions again.
 - A host hears only the run events of its own sessions. Any other client hears every event, as before.
 - Calls are routed by the session's owner. A run with no host (a terminal's) is gated, named and given
-  tools as with no host at all. When the owner is not connected, `scope` and `authorize` fail with
-  `host_unavailable`, an approval has no facts (`unattended`), connections are empty and a secret read
-  fails: nothing is approved on a host's behalf in its absence.
+  tools as with no host at all. When the owner is not connected, a call that needs it (`scope`, `authorize`,
+  a secret, a broker call) waits for it to register again, two minutes by default; after that it fails with
+  `host_unavailable`. An approval then has no facts (`unattended`) and connections are empty: nothing is
+  approved on a host's behalf in its absence. A sign-in link (`connections.openUrl`, `accounts.loginEvent`) goes
+  to the connection whose call asked for it, or, for a call no host made, to the clients that are not hosts.
 - The host's tools reach only its own sessions; a tool the harness itself offers a host's session (a
   paired browser's) wins over a host tool of the same name.
 - `harness.open` with the root already open returns the recovery already made and changes nothing, so
-  a second host cannot mark the first host's running replies interrupted.
+  a second host cannot mark the first host's running replies interrupted. A different root is refused
+  (`harness_busy`) while terminal windows use the harness.
 - A daemon a host starts gets its construction options from a launch file, `xagent daemon run
   --host-config <file>` (`DaemonLaunch`, page 11). `OAUTH_CLIENTS_ENV` carries sign-in client secrets,
   never the file.
@@ -271,7 +275,7 @@ the harness makes back to it, with the same names the stdio host calls use (`sec
 - **INV-SRV-7** A host on the long-lived harness is not a second writer: the daemon is the only
   process writing a state folder's data root for it. What only the host has is answered by calls,
   routed by the session's owner (above). A host that embeds its own harness is a separate writer, as
-  before; that stays the default until a host's daemon mode has been used for days (ADR-0084).
+  before; it is the fallback and the kill switch, not the default (ADR-0085).
 
 Built-in feature modules may contribute handlers through `BuiltinPluginRegistry`, but the
 `methods(harness)` result remains the public contract. Plugin module ownership does not rename

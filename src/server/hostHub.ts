@@ -7,6 +7,8 @@
 //
 // The hub holds no application's name or concept (INV-BND-2): a host says what it is called and what
 // it supplies when it registers.
+import { AsyncLocalStorage } from 'node:async_hooks'
+
 import { HarnessError } from '../core/errors'
 import type { Directory } from '../core/env'
 import type { SecretStore } from '../accounts/secrets'
@@ -50,9 +52,15 @@ export interface HostHubOptions {
   extraTools?(session: ToolSession): ToolSpec[] | Promise<ToolSpec[]>
   /** Called once, the first time a host registers a tool provider, a broker or a refine host. */
   install?: { tools?(provider: ToolProvider): void; broker?(tools: BrokeredTools): void; refine?(host: RefineHost): void }
+  /** How long a call that needs a host waits for it to come back before it fails (default two minutes). */
+  awayMs?: number
+  /** How many sessions' owners are remembered; the least recently used is forgotten first. */
+  ownerLimit?: number
 }
 
-const OWNER_LIMIT = 5000
+const OWNER_LIMIT = 50_000
+/** Notices that belong to the call that caused them (a sign-in URL opens where the person asked for it). */
+const PRIVATE_NOTICES = new Set(['connections.openUrl', 'accounts.loginEvent'])
 const unavailable = (name: string): HarnessError => new HarnessError('host_unavailable', `The host ${name} that started this session is not connected.`)
 
 export class HostHub {
@@ -60,23 +68,31 @@ export class HostHub {
   private readonly byPeer = new Map<RpcPeer, Host>()
   private readonly owners = new Map<string, string>()
   private readonly unowned = new Set<string>()
+  private readonly arrivals = new Set<(name: string) => void>()
   private installed = { tools: false, broker: false, refine: false }
+
+  /**
+   * The host connection a call came in on, for as long as that call's work runs. A run started inside it
+   * (a side question, a refinement, a subagent, a doctor probe) belongs to that host without the call
+   * having to say so.
+   */
+  readonly origin = new AsyncLocalStorage<RpcPeer>()
 
   /** Secrets from the host that supplies them; with none connected a call fails, never answers empty. */
   readonly secrets: SecretStore = {
-    get: async (key) => this.secretHost().get(key),
-    set: async (key, value) => this.secretHost().set(key, value),
-    delete: async (key) => this.secretHost().delete(key)
+    get: async (key) => (await this.secretHost()).get(key),
+    set: async (key, value) => (await this.secretHost()).set(key, value),
+    delete: async (key) => (await this.secretHost()).delete(key)
   }
 
   /** The policy of the host that owns the run; a run with no host is not gated by one. */
   readonly policy: ToolPolicy = {
     scope: async (call) => {
-      const policy = this.policyFor(call.run.sessionId, call.run.id)
+      const policy = await this.policyFor(call.run.sessionId, call.run.id)
       return policy ? policy.scope(call) : { allowed: true }
     },
     authorize: async (call) => {
-      const policy = this.policyFor(call.run.sessionId, call.run.id)
+      const policy = await this.policyFor(call.run.sessionId, call.run.id)
       if (policy) await policy.authorize(call)
     },
     approval: async (input) => {
@@ -138,7 +154,8 @@ export class HostHub {
       },
       has: (name) => [...hub.hosts.values()].some((host) => host.brokerNames.has(name)),
       call: async (session, name, args) => {
-        const host = hub.brokerHost(session)
+        const owner = hub.ownerOf(session.sessionId, session.runId ?? undefined)
+        const host = owner ? await hub.until(() => { const found = hub.hosts.get(owner); return found?.registration.broker ? found : undefined }) : undefined
         if (!host) throw new HarnessError('host_unavailable', 'The host that offers this tool is not connected.')
         return host.peer.callHost('broker.call', { session: wire(session), name, args }, 360_000)
       },
@@ -178,6 +195,7 @@ export class HostHub {
       this.installed.refine = true
       this.options.install?.refine?.(this.refine)
     }
+    for (const wake of [...this.arrivals]) wake(name)
     return { name, resumed: [...this.owners].filter(([, owner]) => owner === name).map(([sessionId]) => sessionId) }
   }
 
@@ -201,8 +219,20 @@ export class HostHub {
   claim(peer: RpcPeer, sessionId: unknown): void {
     const host = this.byPeer.get(peer)
     if (!host || typeof sessionId !== 'string' || !sessionId) return
-    if (!this.owners.has(sessionId) && this.owners.size >= OWNER_LIMIT) this.owners.delete(this.owners.keys().next().value as string)
-    this.owners.set(sessionId, host.name)
+    this.own(sessionId, host.name)
+  }
+
+  /** A run started while a host's call was being served: its session is that host's. */
+  claimFromCall(sessionId: string): void {
+    const peer = this.origin.getStore()
+    if (peer) this.claim(peer, sessionId)
+  }
+
+  /** Records an owner and makes it the newest, so the sessions in use are the last to be forgotten. */
+  private own(sessionId: string, name: string): void {
+    this.owners.delete(sessionId)
+    this.owners.set(sessionId, name)
+    while (this.owners.size > (this.options.ownerLimit ?? OWNER_LIMIT)) this.owners.delete(this.owners.keys().next().value as string)
     this.unowned.delete(sessionId)
   }
 
@@ -213,10 +243,23 @@ export class HostHub {
     return this.ownerOf(event.sessionId, event.runId) === host.name
   }
 
+  /**
+   * Whether a notice goes to this connection. A sign-in link belongs to the call that asked for it: the
+   * host that made the call, or, for a call no host made, the clients that are not hosts.
+   */
+  deliverNotice(peer: RpcPeer, notice: { type?: string }): boolean {
+    if (!notice.type || !PRIVATE_NOTICES.has(notice.type)) return true
+    const origin = this.origin.getStore()
+    return origin ? origin === peer : !this.byPeer.has(peer)
+  }
+
   /** The host that owns a session, directly or through the run that started it (a subagent's). */
   ownerOf(sessionId: string, runId?: string): string | null {
     const direct = this.owners.get(sessionId)
-    if (direct) return direct
+    if (direct) {
+      this.own(sessionId, direct)
+      return direct
+    }
     if (this.unowned.has(sessionId) && !runId) return null
     let id = runId
     for (let depth = 0; id && depth < 6; depth += 1) {
@@ -224,7 +267,7 @@ export class HostHub {
       if (!record) break
       const owner = this.owners.get(record.sessionId)
       if (owner) {
-        this.owners.set(sessionId, owner)
+        this.own(sessionId, owner)
         return owner
       }
       id = record.parentRunId ?? undefined
@@ -235,19 +278,43 @@ export class HostHub {
   }
 
   /** The scope and authorize calls of the host that owns the run, or null when no host does. */
-  private policyFor(sessionId: string, runId: string): { scope: NonNullable<ToolPolicy['scope']>; authorize: NonNullable<ToolPolicy['authorize']> } | null {
+  private async policyFor(sessionId: string, runId: string): Promise<{ scope: NonNullable<ToolPolicy['scope']>; authorize: NonNullable<ToolPolicy['authorize']> } | null> {
     const owner = this.ownerOf(sessionId, runId)
     if (!owner) return null
-    const host = this.hosts.get(owner)
+    // A host that is briefly away (it restarted) is waited for; a run is never gated by nobody.
+    const host = await this.until(() => this.hosts.get(owner))
     if (!host) throw unavailable(owner)
     // A host that supplies no policy leaves its runs ungated, as an embedded host with none does.
     if (!host.policy?.scope || !host.policy.authorize) return { scope: async () => ({ allowed: true }), authorize: async () => undefined }
     return { scope: host.policy.scope.bind(host.policy), authorize: host.policy.authorize.bind(host.policy) }
   }
 
-  private secretHost(): SecretStore {
-    for (const host of this.hosts.values()) if (host.secrets) return host.secrets
-    throw new HarnessError('host_unavailable', 'The host that keeps this profile\'s credentials is not connected.')
+  private async secretHost(): Promise<SecretStore> {
+    const host = await this.until(() => [...this.hosts.values()].find((candidate) => candidate.secrets))
+    if (!host?.secrets) throw new HarnessError('host_unavailable', 'The host that keeps this profile\'s credentials is not connected.')
+    return host.secrets
+  }
+
+  /** The host `find` looks for, now or when one registers within `awayMs`; undefined when none comes. */
+  private async until(find: () => Host | undefined): Promise<Host | undefined> {
+    const now = find()
+    if (now) return now
+    const limit = this.options.awayMs ?? 120_000
+    if (limit <= 0) return undefined
+    return new Promise<Host | undefined>((resolve) => {
+      const done = (host?: Host): void => {
+        clearTimeout(timer)
+        this.arrivals.delete(arrived)
+        resolve(host)
+      }
+      const arrived = (): void => {
+        const found = find()
+        if (found) done(found)
+      }
+      const timer = setTimeout(() => done(undefined), limit)
+      timer.unref?.()
+      this.arrivals.add(arrived)
+    })
   }
 
   private firstDirectory(look: (directory: Directory) => string | null): string | null {

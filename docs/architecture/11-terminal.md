@@ -199,14 +199,36 @@ their own terminal components (INV-TUI-8).
   window that finds a daemon of another version (or one older than the check) stops it and starts
   its own when no window and no reply uses it; otherwise it leaves it running, says so, and runs in
   its own harness. `attach`, `daemon status` and `daemon stop` reach a daemon of any version. The
-  daemon exits after 30 minutes (`DAEMON_IDLE_MS`) with no window, live session or connected client.
+  daemon exits after 30 minutes (`DAEMON_IDLE_MS`) with no window, live session, phone pairing or connected client.
+  The lock is created whole and linked into place (no window ever reads a half-written one) and records
+  version, launch hash, data folder, account folder and the `cli.js` build; a lock held by a live process whose
+  socket refuses a connection and is more than 30 seconds old is stale (a reused pid).
   `--no-daemon` or `XINGULAR_DAEMON=0` keeps the window's own harness (the flag beats the
-  variable); the default is still `--daemon` off (`DAEMON_BY_DEFAULT`).
+  variable beats the default). **The daemon is the default** (`DAEMON_BY_DEFAULT`, ADR-0085), except on
+  Windows, with `XINGULAR_TERMINAL_RUNTIME=inprocess` (plugins that draw their own components) and when the
+  embedding program supplies its own harness.
+- **Default and fallback.** A window that got the daemon by default and cannot have it (it would not start or
+  exited before it was ready, the state folder's socket path is too long, the running daemon is another
+  version, build, data folder or account folder and is in use, a connect-phase socket error) runs its own
+  harness and prints why. Nothing is repeated once the frontend has drawn: the window's later errors are
+  its own. A window that asked for the daemon by flag or variable gets the error, except for a version or
+  folder mismatch. A daemon that goes while the window is open ends the window without a 60-second wait.
+- **What the window brings.** `--worktree` (and `/worktree`) enter and release the worktree through the daemon's
+  `worktrees.*` methods and the session's lease; the window's credential variables are removed from its
+  frontend's environment as well as the daemon's. The agent's shell commands run with the daemon's
+  environment (Known drift D-34).
+- **Credentials a host keeps.** On a profile whose secret backend is a host's, a window never starts the
+  daemon: it uses one the host is connected to, or fails as its own harness would ("credential backend
+  unavailable"). The daemon gives such a profile's credentials to whoever the host serves, only while the
+  host is connected (up to two minutes of absence are waited out).
+- **Windows end with their connection.** When a window's connection closes without `terminal.detach` or
+  `terminal.dispose` (its process was killed), the daemon detaches it (a running reply goes on) or disposes it.
 - **Hosts and launch options.** A host that connects to the daemon (page 10) starts it with `xagent
   daemon run --host-config <file>`; the file (`DaemonLaunch`) sets the product name, browser flags,
-  worktree branch prefix, built-ins, plugin descriptors, sign-in client ids, whether hosts may supply
-  policy and names (`hosts`), and whether credentials come from the host (`secrets: 'host'`). The lock
-  records a hash of it: a window or host that needs a different launch replaces an idle daemon, and is
+  worktree branch prefix, built-ins, plugin descriptors and sign-in client ids. A host leaves the file at
+  `<state>/host-launch.json`, and every `daemon run` there reads it, so a daemon a terminal starts is the one
+  the host needs (`--host-config` overrides it). The file gives policy and names to the host; credentials come
+  from a host whenever the profile's secret backend is one. The lock records a hash of it: a window or host that needs a different launch replaces an idle daemon, and is
   refused (with a notice, and a private harness for a window) while a window, host or reply uses it.
   A state folder whose socket path would exceed the platform's `sun_path` limit is refused up front
   (`socket_path_too_long`).

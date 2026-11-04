@@ -59,7 +59,7 @@ Work proceeds in phases; each lands with its spec pages and checks.
    local socket and renders from run events. The private `terminal.*` mirrors give way to the
    public methods, scoped by the caller identity the control key proves. The old path stays behind
    a flag until production PTY acceptance at 40x20, 80x24 and 100x30, then is removed.
-3. **Optional daemon.** Decided after phase 2: a long-lived `xagent serve --daemon` on a Unix
+3. **Optional daemon** (the default since ADR-0085). Decided after phase 2: a long-lived `xagent serve --daemon` on a Unix
    socket under the state directory, with one writer per data root, so a run outlives its window,
    and remote control belongs to a live session rather than a terminal (PAR-018).
 

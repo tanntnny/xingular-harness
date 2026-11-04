@@ -5,7 +5,8 @@
 // writing for that state folder.
 import type { spawn as nodeSpawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { appendFileSync, mkdirSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync } from 'node:fs'
+import { join } from 'node:path'
 
 import { log, setLogSink } from '../core/bus'
 import { PACKAGE_VERSION } from '../core/version'
@@ -13,8 +14,8 @@ import type { InteractiveProfile } from '../core/interactiveProfile'
 import type { Harness, HarnessOptions } from '../harness'
 import { HostHub } from '../server/hostHub'
 import { HarnessError } from '../core/errors'
-import { acquireDaemonLock, connectDaemon, daemonFiles, daemonLaunchHash, daemonRecord, DAEMON_VERSION_MISMATCH, OAUTH_CLIENTS_ENV, readDaemonLaunch, socketPathProblem, type DaemonLaunch, type DaemonStatus } from '../server/daemonClient'
-import { serveSocket } from '../server/socket'
+import { acquireDaemonLock, connectDaemon, daemonFiles, daemonLaunchHash, daemonRecord, DAEMON_VERSION_MISMATCH, HOST_LAUNCH_FILE, OAUTH_CLIENTS_ENV, readDaemonLaunch, runningBuild, socketPathProblem, type DaemonLaunch, type DaemonStatus } from '../server/daemonClient'
+import { serveSocket, type HarnessClient } from '../server/socket'
 import { REMOTE_CONTROL_ENV } from './client'
 import { HARNESS_RUNTIME_ENV } from './tui/harnessRuntime'
 import {
@@ -59,7 +60,12 @@ export async function runDaemon(paths: StandalonePaths, profile: InteractiveProf
   const launch = options.launch
   const tooDeep = socketPathProblem(paths.stateDir)
   if (tooDeep) throw new HarnessError('socket_path_too_long', tooDeep)
-  const release = acquireDaemonLock(paths.stateDir, undefined, launch ? daemonLaunchHash(launch) : undefined)
+  const release = acquireDaemonLock(paths.stateDir, undefined, {
+    ...(launch ? { config: daemonLaunchHash(launch) } : {}),
+    dataRoot: paths.dataRoot,
+    accountState: paths.accountState ?? null,
+    ...(runningBuild() ? { build: runningBuild() } : {})
+  })
   setLogSink((text) => {
     try {
       appendFileSync(files.log, `${new Date().toISOString()} [daemon] ${text}\n`)
@@ -79,28 +85,47 @@ export async function runDaemon(paths: StandalonePaths, profile: InteractiveProf
       refine: (host) => { if (started) started.refineHost = host }
     }
   })
-  const extra: Partial<HarnessOptions> = launch ? {
-    ...(launch.productName ? { productName: launch.productName } : {}),
-    ...(launch.browser !== undefined ? { browser: launch.browser } : {}),
-    ...(launch.browserExtension ? { browserExtension: launch.browserExtension } : {}),
-    ...(launch.worktrees ? { worktrees: launch.worktrees } : {}),
-    ...(launch.builtins ? { builtins: launch.builtins } : {}),
-    ...(launch.plugins ? { plugins: launch.plugins } : {}),
-    ...(launch.oauthClients ? { oauthClients: oauthClientsFrom(launch.oauthClients.ids) } : {}),
-    ...(launch.hosts ? { policy: hub.policy, directory: hub.directory } : {}),
-    ...(launch.secrets === 'host' ? { secrets: hub.secrets } : {})
-  } : {}
-  const harness = await createStandaloneHarness(paths, profile, dependencies, extra)
-  started = harness
+  // A profile whose credentials a host keeps is served by that host, when it is connected. This holds
+  // whoever started the daemon: the credentials are the host's, not the launch's.
+  const hostSecrets = launch?.secrets === 'host' || profile.secretBackend.kind === 'host'
+  const extra: Partial<HarnessOptions> = {
+    ...(launch ? {
+      ...(launch.productName ? { productName: launch.productName } : {}),
+      ...(launch.browser !== undefined ? { browser: launch.browser } : {}),
+      ...(launch.browserExtension ? { browserExtension: launch.browserExtension } : {}),
+      ...(launch.worktrees ? { worktrees: launch.worktrees } : {}),
+      ...(launch.builtins ? { builtins: launch.builtins } : {}),
+      ...(launch.plugins ? { plugins: launch.plugins } : {}),
+      ...(launch.oauthClients ? { oauthClients: oauthClientsFrom(launch.oauthClients.ids) } : {}),
+      // A launch is a host's: its sessions are gated by it and named by it. (`hosts` is no longer needed.)
+      policy: hub.policy,
+      directory: hub.directory
+    } : {}),
+    ...(hostSecrets ? { secrets: hub.secrets } : {})
+  }
   // Plugins run here for every window. One plugin's uncaught error is logged; it does not end every
   // session the harness holds, as it would end a single in-process terminal.
   const survive = (error: unknown): void => { log('uncaught error in the long-lived harness', error instanceof Error ? error.stack ?? error.message : String(error)) }
   process.on('uncaughtException', survive)
   process.on('unhandledRejection', survive)
   let removeSignals = (): void => undefined
+  let created: Harness | null = null
   try {
+    // A start that fails says why in the log, where the window that started it points, and frees the lock.
+    try {
+      created = await createStandaloneHarness(paths, profile, dependencies, extra)
+    } catch (error) {
+      log('the long-lived harness could not start', error instanceof Error ? error.stack ?? error.message : String(error))
+      throw error
+    }
+    const harness: Harness = created
+    started = harness
+    // A run started while a host's call was served is that host's, whatever started it.
+    harness.runs.listen((event) => { if (event.type === 'started') hub.claimFromCall(event.sessionId) })
     await harness.ready
-    const variantScope = ensureStandaloneDefaults(harness, paths, profile)
+    // A host's daemon leaves accounts and the default variant to the host (and to the terminals that
+    // ask for them); a daemon nobody configured prepares both, as a window's own harness does.
+    const variantScope = launch ? (paths.variant ?? profile.defaultVariantScope) : ensureStandaloneDefaults(harness, paths, profile)
     const startedAt = new Date().toISOString()
     let stopping: (() => void) | null = null
     const stopped = new Promise<void>((resolveStop) => { stopping = resolveStop })
@@ -146,7 +171,7 @@ export async function runDaemon(paths: StandalonePaths, profile: InteractiveProf
     await server.close()
     return 0
   } finally {
-    await Promise.race([harness.close(), new Promise((done) => setTimeout(done, 5000))])
+    if (created) await Promise.race([created.close(), new Promise((done) => setTimeout(done, 5000))])
     removeSignals()
     process.off('uncaughtException', survive)
     process.off('unhandledRejection', survive)
@@ -163,48 +188,98 @@ export interface DaemonTerminalOptions {
   createSessionId?: () => string
   /** Reattach to this detached session instead of starting a new one. */
   attach?: DetachedTerminal
+  /** Start the daemon when none runs. False for a window that must not be the one to start it. */
+  startDaemon?: boolean
 }
 
 /** `xagent --daemon` and `xagent attach`: a terminal window on the long-lived harness. */
+/** The folder `--worktree` names, made or found through the daemon, as the window's own harness does it. */
+async function enterWorktree(client: HarnessClient, cwd: string, wanted: string | true): Promise<{ id: string; path: string }> {
+  const name = wanted === true ? undefined : wanted
+  const existing = name ? (await client.call<Array<{ id: string; name: string; path: string }>>('worktrees.list', { repo: cwd })).find((record) => record.name === name) : undefined
+  if (existing) return existing
+  const created = await client.call<{ worktree: { id: string; name: string; path: string }; setup: { state: string; log?: string } }>('worktrees.create', { repo: cwd, ...(name ? { name } : {}) }, 120_000)
+  process.stdout.write(`Working in worktree ${created.worktree.name} (${created.worktree.path}).\n`)
+  if (created.setup.state === 'untrusted') process.stdout.write('This repository has a setup script you have not trusted; read .xharness/worktree-setup, then run: xagent worktree trust-setup\n')
+  if (created.setup.state === 'failed') process.stdout.write(`The worktree setup script failed; see ${created.setup.log}.\n`)
+  await client.call('worktrees.prune', { repo: cwd }).catch(() => undefined)
+  return created.worktree
+}
+
+/** Whether a call failed because the daemon is gone, not because it refused. */
+const daemonGone = (error: unknown): boolean => ['harness_unavailable', 'harness_timeout'].includes((error as { code?: string })?.code ?? '')
+
 export async function runDaemonTerminal(options: DaemonTerminalOptions): Promise<number> {
   const { paths, profile } = options
-  const client = await connectDaemon(paths, { start: !options.attach, anyVersion: Boolean(options.attach), ...(options.spawn ? { spawn: options.spawn } : {}) })
+  // Errors before the frontend has drawn on the terminal are marked, so the caller may run the window in its
+  // own harness instead; nothing is repeated after the person has seen the terminal.
+  let frontendStarted = false
+  const early = (error: unknown): never => {
+    if (error && typeof error === 'object') (error as { beforeFrontend?: boolean }).beforeFrontend = !frontendStarted
+    throw error
+  }
+  const client = await connectDaemon(paths, { start: options.startDaemon !== false && !options.attach, anyVersion: Boolean(options.attach), ...(options.spawn ? { spawn: options.spawn } : {}) }).catch(early)
   const newSessionId = options.createSessionId ?? randomUUID
   let cwd = options.attach?.cwd ?? options.cwd
   let current = options.attach
     ? { sessionId: options.attach.sessionId, accountId: options.attach.accountId as string | null, nativeSessionId: null as string | null }
     : { sessionId: newSessionId(), accountId: null as string | null, nativeSessionId: null as string | null }
   let attach = Boolean(options.attach)
+  let ended = false
   try {
     const status = await client.call<{ variantScope: string }>('daemon.status')
     const variantScope = paths.variant ?? status.variantScope ?? profile.defaultVariantScope
+    let worktreeId: string | null = null
+    if (paths.worktree && !options.attach) {
+      const worktree = await enterWorktree(client, cwd, paths.worktree)
+      cwd = worktree.path
+      worktreeId = worktree.id
+    }
     let variantVersion: string | null = null
     for (;;) {
       const sessionFolder = options.attach && attach ? options.attach.sessionFolder : terminalSessionFolder(paths.dataRoot, cwd)
       const launch = await client.call<TerminalLaunch>('terminal.prepare', {
         ...current, cwd, sessionFolder,
         variant: { scope: variantScope, ...(variantVersion ? { version: variantVersion } : {}) },
+        ...(worktreeId ? { run: { worktreeId } } : {}),
         ...(attach ? { attach: true } : {})
       }, 120_000)
       attach = false
       const env = { ...launch.env, [HARNESS_RUNTIME_ENV]: 'harness', ...(paths.remoteControl ? { [REMOTE_CONTROL_ENV]: '1' } : {}) }
+      frontendStarted = true
       const code = await spawnFrontend({ ...launch, env }, cwd, options.spawn)
-      const next = await client.call<TerminalRelaunch | null>('terminal.takeRelaunch', { sessionId: current.sessionId })
+      // A daemon that went while the window was open has nothing left to keep or end.
+      const next = await client.call<TerminalRelaunch | null>('terminal.takeRelaunch', { sessionId: current.sessionId }).catch((error) => {
+        if (daemonGone(error)) return null
+        throw error
+      })
       if (!next) {
-        const detached = await client.call<{ detached: boolean; activeRunId: string | null }>('terminal.detach', { sessionId: current.sessionId })
+        const detached = await client.call<{ detached: boolean; activeRunId: string | null }>('terminal.detach', { sessionId: current.sessionId }).catch((error) => {
+          if (daemonGone(error)) return { detached: false, activeRunId: null }
+          throw error
+        })
+        ended = true
         if (detached.detached) process.stdout.write(`The reply is still running in the harness. Reattach with: xagent attach ${current.sessionId}\n`)
         return code
       }
       if (next.cwd) {
         process.stdout.write(`Opening ${next.cwd}.\n`)
         cwd = next.cwd
+        worktreeId = next.worktreeId ?? null
       } else if (next.variantVersion) {
         process.stdout.write(`Switching this conversation to variant version ${next.variantVersion.slice(0, 8)}.\n`)
         variantVersion = next.variantVersion
-      } else process.stdout.write('Switching this session to another account.\n')
+      } else {
+        const accounts = await client.call<{ accounts?: Array<{ id: string; label: string }> }>('accounts.list').catch(() => null)
+        process.stdout.write(`Switching this session to account ${accounts?.accounts?.find((account) => account.id === next.accountId)?.label ?? 'another account'}.\n`)
+      }
       await client.call('terminal.dispose', { sessionId: current.sessionId })
       current = { sessionId: newSessionId(), accountId: next.accountId, nativeSessionId: next.nativeSessionId }
     }
+  } catch (error) {
+    // A window that could not run (the frontend would not start, the daemon went away) leaves nothing prepared.
+    if (!ended) await client.call('terminal.dispose', { sessionId: current.sessionId }, 5000).catch(() => undefined)
+    return early(error)
   } finally {
     client.close()
   }
@@ -234,7 +309,11 @@ export async function runAttach(paths: StandalonePaths, profile: InteractiveProf
 /** `xagent daemon <start | stop | status | run>`. */
 export async function runDaemonCommand(subcommand: string | undefined, paths: StandalonePaths, profile: InteractiveProfile, hostConfig?: string): Promise<number> {
   switch (subcommand) {
-    case 'run': return runDaemon(paths, profile, {}, hostConfig ? { launch: readDaemonLaunch(hostConfig) } : {})
+    case 'run': {
+      // A host leaves its launch options in the state folder, so a daemon any window starts is the one that host needs.
+      const file = hostConfig ?? (existsSync(join(paths.stateDir, HOST_LAUNCH_FILE)) ? join(paths.stateDir, HOST_LAUNCH_FILE) : undefined)
+      return runDaemon(paths, profile, {}, file ? { launch: readDaemonLaunch(file) } : {})
+    }
     case 'start': {
       const client = await connectDaemon(paths, { start: true })
       const status = await client.call<{ pid: number }>('daemon.status')
@@ -271,5 +350,5 @@ export async function runDaemonCommand(subcommand: string | undefined, paths: St
   }
 }
 
-export { acquireDaemonLock, connectDaemon, daemonFiles, daemonLaunchHash, daemonRecord, DAEMON_VERSION_MISMATCH, readDaemonLaunch }
+export { acquireDaemonLock, connectDaemon, daemonFiles, daemonLaunchHash, daemonRecord, DAEMON_VERSION_MISMATCH, HOST_LAUNCH_FILE, readDaemonLaunch }
 export type { ConnectDaemonOptions, DaemonFiles, DaemonLaunch, DaemonStatus, LockRecord } from '../server/daemonClient'

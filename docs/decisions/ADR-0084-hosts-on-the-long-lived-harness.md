@@ -37,8 +37,7 @@ host's policy.
 5. `harness.open` of the open root changes nothing over the protocol.
 6. Remote control moves from a terminal session to a live conversation (INV-RC-5, INV-RC-9), so a phone
    can reach a host's chat, and a pairing outlives a closed terminal window while its reply runs.
-7. The default does not flip in this change. A host's daemon mode is opt-in, and the daemon stays opt-in
-   for terminals, until it has been used for days (D-33).
+7. The default did not flip in this change; ADR-0085 flips it for terminals and for the App's sidecar.
 
 ## Consequences
 
@@ -48,4 +47,4 @@ host's policy.
 - A daemon started by a terminal has no host options; a host that needs its own gets a new daemon when
   the first is idle, or runs with its own harness. Browser tools of a host's daemon come from the host (or
   a paired browser); a terminal window in that daemon has no generic browser.
-- Work left: the soak, the default flip (a constant and the docs it names), and a hung-plugin test.
+- Work left when this was written: the soak, the default flip (ADR-0085), and a hung-plugin test.

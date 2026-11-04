@@ -1,5 +1,7 @@
 // The long-lived harness (ADR-0083, phase 3): one per state folder, serving the protocol on a socket.
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { spawn as spawnProcess } from 'node:child_process'
+import { EventEmitter } from 'node:events'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -8,10 +10,11 @@ import { memorySecretStore } from '../accounts/secrets'
 import { createHarness, type Harness, type HarnessOptions } from '../harness'
 import type { InteractiveProfile } from '../core/interactiveProfile'
 import { connectHarness, serveSocket } from '../server/socket'
+import { execFileSync } from 'node:child_process'
 import { PACKAGE_VERSION } from '../core/version'
 import { runRecordSchema } from '../sessions/contracts'
 import { appendEvent, loadRun, saveRun } from '../sessions/runStore'
-import { acquireDaemonLock, connectDaemon, DAEMON_VERSION_MISMATCH, daemonFiles, daemonLaunchHash, daemonRecord, runDaemon, type DaemonOptions } from './daemon'
+import { runDaemonTerminal, acquireDaemonLock, connectDaemon, DAEMON_VERSION_MISMATCH, daemonFiles, daemonLaunchHash, daemonRecord, runDaemon, type DaemonOptions } from './daemon'
 
 const cleanup: Array<() => Promise<void> | void> = []
 afterEach(async () => {
@@ -325,5 +328,158 @@ describe('when the daemon cannot serve', () => {
     await first.call('daemon.stop')
     expect(await running).toBe(0)
     second.close()
+  })
+})
+
+describe('a daemon that is robust to the way windows and processes fail', () => {
+  const folder = () => {
+    const dir = base()
+    const paths = { dataRoot: join(dir, 'data'), stateDir: join(dir, 'state') }
+    const profile: InteractiveProfile = { version: 1, dataRoot: paths.dataRoot, stateDir: paths.stateDir, defaultVariantScope: 'default', secretBackend: { kind: 'file', path: join(paths.stateDir, 'secrets.json') } }
+    return { dir, paths, profile }
+  }
+  const make = (given: HarnessOptions): Harness => createHarness({ ...given, secrets: memorySecretStore() })
+  const up = async (f: ReturnType<typeof folder>) => {
+    const running = runDaemon(f.paths, f.profile, { createHarness: make }, { idleMs: null })
+    for (let i = 0; i < 200 && !existsSync(daemonFiles(f.paths.stateDir).socket); i++) await new Promise((resolve) => setTimeout(resolve, 25))
+    return running
+  }
+
+  it('leaves no temporary lock file and refuses a second holder', () => {
+    const state = base()
+    const release = acquireDaemonLock(state)
+    expect(readdirSync(state).filter((name) => name.endsWith('.tmp'))).toEqual([])
+    expect(() => acquireDaemonLock(state)).toThrow(/already running/)
+    release()
+    expect(existsSync(daemonFiles(state).lock)).toBe(false)
+  })
+
+  it('treats a lock held by a live process whose socket refuses as stale, once it is not young', async () => {
+    const f = folder()
+    mkdirSync(f.paths.stateDir, { recursive: true })
+    const files = daemonFiles(f.paths.stateDir)
+    // A socket file nobody listens on: what a killed daemon leaves behind.
+    const orphan = spawnProcess(process.execPath, ['-e', `require('net').createServer().listen(${JSON.stringify(files.socket)}, () => console.log('ready'))`], { stdio: ['ignore', 'pipe', 'ignore'] })
+    await new Promise<void>((resolve) => orphan.stdout!.once('data', () => resolve()))
+    orphan.kill('SIGKILL')
+    await new Promise((resolve) => orphan.once('exit', resolve))
+    expect(existsSync(files.socket)).toBe(true)
+    // The pid is alive (this test process), as a reused pid would be.
+    writeFileSync(files.lock, JSON.stringify({ pid: process.pid, startedAt: new Date(Date.now() - 120_000).toISOString(), socket: files.socket, version: PACKAGE_VERSION }))
+    await expect(connectDaemon(f.paths, { start: false })).rejects.toMatchObject({ code: 'daemon_not_running' })
+    expect(existsSync(files.lock)).toBe(false)
+    expect(existsSync(files.socket)).toBe(false)
+    // A young lock is a daemon that is still starting, and is left alone.
+    mkdirSync(f.paths.stateDir, { recursive: true })
+    writeFileSync(files.lock, JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString(), socket: files.socket, version: PACKAGE_VERSION }))
+    await expect(connectDaemon(f.paths, { start: false })).rejects.toMatchObject({ code: 'daemon_not_running' })
+    expect(existsSync(files.lock)).toBe(true)
+  })
+
+  it('rejects a call at once on a connection that has closed', async () => {
+    const f = folder()
+    const running = up(f)
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    const client = await (async () => { for (let i = 0; i < 100; i++) { try { return await connectDaemon(f.paths, { start: false }) } catch { await new Promise((r) => setTimeout(r, 25)) } } throw new Error('no daemon') })()
+    client.close()
+    await client.closed
+    const started = Date.now()
+    await expect(client.call('daemon.status')).rejects.toMatchObject({ code: 'harness_unavailable' })
+    expect(Date.now() - started).toBeLessThan(1000)
+    const stopper = await connectDaemon(f.paths, { start: false })
+    await stopper.call('daemon.stop')
+    expect(await running).toBe(0)
+  })
+
+  it('ends the windows of a connection that drops, so nothing is left prepared', async () => {
+    const f = folder()
+    const running = up(f)
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    const window = await (async () => { for (let i = 0; i < 100; i++) { try { return await connectDaemon(f.paths, { start: false }) } catch { await new Promise((r) => setTimeout(r, 25)) } } throw new Error('no daemon') })()
+    const watcher = await connectDaemon(f.paths, { start: false })
+    const cwd = join(f.dir, 'project')
+    mkdirSync(cwd)
+    await window.call('terminal.prepare', { sessionId: 'dropped', cwd, sessionFolder: join(f.dir, 'sf') })
+    expect(await watcher.call('daemon.status')).toMatchObject({ windows: 1 })
+    // The window's process is killed: its connection goes without a detach or a dispose.
+    window.close()
+    await window.closed
+    for (let i = 0; i < 100; i++) {
+      if ((await watcher.call<{ windows: number }>('daemon.status')).windows === 0) break
+      await new Promise((resolve) => setTimeout(resolve, 25))
+    }
+    expect(await watcher.call('daemon.status')).toMatchObject({ windows: 0 })
+    await watcher.call('daemon.stop')
+    expect(await running).toBe(0)
+  })
+
+  it('fails at once, naming the log, when the daemon it started exits before it is ready', async () => {
+    const f = folder()
+    const spawn = (() => {
+      const child = new EventEmitter() as EventEmitter & { unref(): void }
+      child.unref = () => undefined
+      setTimeout(() => child.emit('exit', 1, null), 50)
+      return child
+    }) as never
+    const started = Date.now()
+    await expect(connectDaemon(f.paths, { start: true, spawn })).rejects.toMatchObject({ code: 'daemon_unavailable', message: expect.stringMatching(/exited \(1\).*harness\.log/) })
+    expect(Date.now() - started).toBeLessThan(5000)
+    // The window that started it left its output file for the daemon, in the state folder.
+    expect(existsSync(daemonFiles(f.paths.stateDir).log)).toBe(true)
+  })
+
+  it('records the folders and build it serves, and is not used by a window that names others', async () => {
+    const f = folder()
+    const running = up(f)
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    const first = await (async () => { for (let i = 0; i < 100; i++) { try { return await connectDaemon(f.paths, { start: false }) } catch { await new Promise((r) => setTimeout(r, 25)) } } throw new Error('no daemon') })()
+    expect(daemonRecord(f.paths.stateDir)).toMatchObject({ dataRoot: f.paths.dataRoot, accountState: null })
+    const cwd = join(f.dir, 'project')
+    mkdirSync(cwd)
+    await first.call('terminal.prepare', { sessionId: 'busy', cwd, sessionFolder: join(f.dir, 'sf') })
+    const spawn = (() => { throw new Error('must not start another harness') }) as never
+    await expect(connectDaemon({ ...f.paths, dataRoot: join(f.dir, 'other') }, { start: true, spawn })).rejects.toMatchObject({ code: DAEMON_VERSION_MISMATCH, message: expect.stringContaining('another data folder') })
+    await expect(connectDaemon({ ...f.paths, accountState: join(f.dir, 'accounts') }, { start: true, spawn })).rejects.toMatchObject({ code: DAEMON_VERSION_MISMATCH, message: expect.stringContaining('other accounts') })
+    await expect(connectDaemon(f.paths, { start: true, spawn, build: 'a-build-it-is-not' })).rejects.toMatchObject({ code: DAEMON_VERSION_MISMATCH, message: expect.stringContaining('different build') })
+    // The same folders, spelled differently, are the same.
+    const same = await connectDaemon({ ...f.paths, dataRoot: `${f.paths.dataRoot}/` }, { start: true, spawn })
+    same.close()
+    await first.call('terminal.detach', { sessionId: 'busy' })
+    await first.call('daemon.stop')
+    expect(await running).toBe(0)
+  })
+})
+
+describe('a window on the daemon keeps what the window\'s own harness gave it', () => {
+  it('enters the worktree --worktree names, and runs the frontend there', async () => {
+    const dir = base()
+    const paths = { dataRoot: join(dir, 'data'), stateDir: join(dir, 'state'), worktree: true as const }
+    const profile: InteractiveProfile = { version: 1, dataRoot: paths.dataRoot, stateDir: paths.stateDir, defaultVariantScope: 'default', secretBackend: { kind: 'file', path: join(paths.stateDir, 'secrets.json') } }
+    const repo = join(dir, 'repo')
+    mkdirSync(repo)
+    const git = (...args: string[]) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { cwd: repo, stdio: 'ignore' })
+    git('init', '-q')
+    writeFileSync(join(repo, 'a.txt'), 'a')
+    git('add', '.')
+    git('commit', '-q', '-m', 'first')
+    const running = runDaemon(paths, profile, { createHarness: (given) => createHarness({ ...given, secrets: memorySecretStore() }) as Harness }, { idleMs: null })
+    for (let i = 0; i < 200 && !existsSync(daemonFiles(paths.stateDir).socket); i++) await new Promise((resolve) => setTimeout(resolve, 25))
+    const ran: Array<{ cwd?: string }> = []
+    const spawn = ((_program: string, _args: string[], options: { cwd?: string }) => {
+      ran.push(options)
+      const child = new EventEmitter()
+      queueMicrotask(() => child.emit('exit', 0, null))
+      return child
+    }) as never
+    const code = await runDaemonTerminal({ paths, profile, cwd: repo, spawn, createSessionId: () => 'wt-session' })
+    expect(code).toBe(0)
+    // The frontend ran in the new worktree, not in the repository.
+    expect(ran).toHaveLength(1)
+    expect(ran[0]!.cwd).not.toBe(repo)
+    expect(existsSync(join(ran[0]!.cwd!, 'a.txt'))).toBe(true)
+    expect(ran[0]!.cwd).toContain('worktree')
+    const client = await connectDaemon(paths, { start: false })
+    await client.call('daemon.stop')
+    expect(await running).toBe(0)
   })
 })

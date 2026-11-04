@@ -5,6 +5,7 @@ import { appendFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { isAbsolute, join, resolve } from 'node:path'
 
+import { inheritedCredentialVars } from '../accounts/env'
 import { fileSecretStore, type SecretStore } from '../accounts/secrets'
 import { setLogSink } from '../core/bus'
 import { DEFAULT_PRODUCT_NAME } from '../core/env'
@@ -36,6 +37,8 @@ export interface StandalonePaths {
    * environment, and either wins over `DAEMON_BY_DEFAULT`.
    */
   daemon?: boolean
+  /** Where `daemon` came from: a launch that asked for it by name is told when it cannot have it; a default is not. */
+  daemonSource?: 'flag' | 'environment' | 'default'
 }
 
 export interface StandaloneDependencies {
@@ -60,8 +63,8 @@ export interface ResolvedStandaloneOptions {
   profile: InteractiveProfile
 }
 
-/** Whether a window with neither the flag nor the environment variable runs in the long-lived harness. */
-export const DAEMON_BY_DEFAULT = false
+/** Whether a window with neither the flag nor the environment variable runs in the long-lived harness (ADR-0085). */
+export const DAEMON_BY_DEFAULT = true
 export const DAEMON_ENV = 'XINGULAR_DAEMON'
 
 function daemonFromEnvironment(value: string | undefined): boolean | undefined {
@@ -69,6 +72,13 @@ function daemonFromEnvironment(value: string | undefined): boolean | undefined {
   if (text === '0' || text === 'false' || text === 'off' || text === 'no') return false
   if (text === '1' || text === 'true' || text === 'on' || text === 'yes') return true
   return undefined
+}
+
+/** The flag beats the environment, which beats the default. The default is off where the daemon cannot run. */
+function daemonChoice(flag: boolean | undefined, environment: boolean | undefined): Pick<StandalonePaths, 'daemon' | 'daemonSource'> {
+  if (flag !== undefined) return flag ? { daemon: true, daemonSource: 'flag' } : {}
+  if (environment !== undefined) return environment ? { daemon: true, daemonSource: 'environment' } : {}
+  return DAEMON_BY_DEFAULT && process.platform !== 'win32' ? { daemon: true, daemonSource: 'default' } : {}
 }
 
 export function resolveStandaloneOptions(argv: string[], home = homedir(), cwd = process.cwd(), env: NodeJS.ProcessEnv = process.env): ResolvedStandaloneOptions {
@@ -166,7 +176,7 @@ export function resolveStandaloneOptions(argv: string[], home = homedir(), cwd =
       ...(worktree !== undefined ? { worktree } : {}),
       ...(variant !== undefined ? { variant } : {}),
       ...(remoteControl ? { remoteControl } : {}),
-      ...((daemon ?? daemonFromEnvironment(env[DAEMON_ENV]) ?? DAEMON_BY_DEFAULT) ? { daemon: true } : {})
+      ...daemonChoice(daemon, daemonFromEnvironment(env[DAEMON_ENV]))
     }
   }
 }
@@ -210,6 +220,9 @@ export function parseStandaloneOptions(argv: string[], home = homedir(), cwd = p
 
 function processEnvironment(overrides: Record<string, string | null>): NodeJS.ProcessEnv {
   const environment = { ...process.env }
+  // The harness that prepared the launch (a daemon, started from another window) names the credential
+  // variables of its own environment; this window's are dropped too, so none bypasses the account's sign-in.
+  for (const name of inheritedCredentialVars(environment)) delete environment[name]
   for (const [name, value] of Object.entries(overrides)) {
     if (value === null) delete environment[name]
     else environment[name] = value
@@ -307,6 +320,16 @@ async function enterWorktree(harness: Harness, cwd: string, wanted: string | tru
   return created.worktree
 }
 
+/** Why this launch cannot use the long-lived harness, or null. */
+function daemonUnsupported(dependencies: StandaloneDependencies, environment: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): string | null {
+  // The daemon's socket and lock are Unix ones.
+  if (platform === 'win32') return 'it is not available on Windows.'
+  // Plugins that draw their own terminal components run in the window's own process.
+  if (environment.XINGULAR_TERMINAL_RUNTIME === 'inprocess') return 'XINGULAR_TERMINAL_RUNTIME=inprocess runs the window in its own harness.'
+  if (dependencies.createHarness) return 'the embedding program supplied its own harness.'
+  return null
+}
+
 export async function runStandaloneTerminal(argv: string[], dependencies: StandaloneDependencies = {}): Promise<number> {
   if (!(dependencies.stdinIsTTY ?? process.stdin.isTTY) || !(dependencies.stdoutIsTTY ?? process.stdout.isTTY)) {
     throw new Error('The interactive Harness terminal needs a TTY. Run it from a terminal, or use `xagent serve` for a host process.')
@@ -315,15 +338,27 @@ export async function runStandaloneTerminal(argv: string[], dependencies: Standa
   let cwd = resolve(dependencies.cwd ?? process.cwd())
   const { paths, profile } = resolveStandaloneOptions(argv, dependencies.home, cwd)
   if (paths.daemon) {
-    const { DAEMON_VERSION_MISMATCH, runDaemonTerminal } = await import('./daemon')
-    try {
-      return await runDaemonTerminal({ paths, profile, cwd, ...(dependencies.spawn ? { spawn: dependencies.spawn } : {}), ...(dependencies.createSessionId ? { createSessionId: dependencies.createSessionId } : {}) })
-    } catch (error) {
-      // An older harness still serves other windows or a reply (do not kill it), or this state folder
-      // cannot hold the harness's socket: run this window alone.
-      const code = (error as { code?: string }).code
-      if (code !== DAEMON_VERSION_MISMATCH && code !== 'socket_path_too_long') throw error
-      process.stderr.write(`${(error as Error).message}\nThis window runs in its own harness.\n`)
+    const why = daemonUnsupported(dependencies)
+    if (why && paths.daemonSource !== 'default') throw new Error(`The long-lived harness cannot be used: ${why} Run with --no-daemon.`)
+    if (!why) {
+      const { DAEMON_VERSION_MISMATCH, runDaemonTerminal } = await import('./daemon')
+      // Credentials the application keeps (a host secret backend) are reachable only through a daemon that
+      // application is connected to; a daemon this window starts could not read them.
+      const hostCredentials = profile.secretBackend.kind === 'host' && !dependencies.hostSecretStore
+      try {
+        return await runDaemonTerminal({ paths, profile, cwd, startDaemon: !hostCredentials, ...(dependencies.spawn ? { spawn: dependencies.spawn } : {}), ...(dependencies.createSessionId ? { createSessionId: dependencies.createSessionId } : {}) })
+      } catch (error) {
+        const { code, beforeFrontend } = error as { code?: string; beforeFrontend?: boolean }
+        // No harness holds the application's credentials: say so, as the window's own harness would.
+        if (hostCredentials && code === 'daemon_not_running') await interactiveProfileSecretStore(profile, dependencies.hostSecretStore)
+        // Nothing has drawn on the terminal yet. An older harness still serves other windows or a reply (do
+        // not kill it), the folder cannot hold the socket, or the daemon would not start: this window runs
+        // alone. A window that asked for the daemon by name is told instead, except where nobody could have
+        // had it (a version or folder that differs).
+        const fallsBack = code === DAEMON_VERSION_MISMATCH || code === 'socket_path_too_long' || (paths.daemonSource === 'default' && beforeFrontend === true)
+        if (!fallsBack) throw error
+        process.stderr.write(`${(error as Error).message}\nThis window runs in its own harness.\n`)
+      }
     }
   }
   const harness = await createStandaloneHarness(paths, profile, dependencies)

@@ -334,6 +334,10 @@ class Terminal:
                        if not key.upper().endswith(('_API_KEY', '_AUTH_TOKEN', '_OAUTH_TOKEN', '_ACCESS_TOKEN'))
                        and key not in ['PI_CODING_AGENT_DIR', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME']}
         environment.update({'TERM': 'xterm-256color', 'COLORTERM': 'truecolor'})
+        # These checks drive the window's own harness: its fatal-error exit codes and the account-switch text
+        # are that harness's. The daemon has its own run (VERIFY_TERMINAL_DAEMON=1).
+        if os.environ.get('VERIFY_TERMINAL_DAEMON') != '1':
+            environment['XINGULAR_DAEMON'] = '0'
 
         def control_terminal():
             os.setsid()

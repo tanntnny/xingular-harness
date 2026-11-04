@@ -60,13 +60,13 @@ Standalone terminal options:
   --variant <scope>  Run on this variant scope's head (default: interactive profile scope)
   --remote-control, --rc
                      Turn on /remote-control at start, to continue from a phone or iPad
-  --daemon           Run in the long-lived harness for these folders (started when needed),
-                     so a reply keeps running when this window closes
+  --daemon           Run in the long-lived harness for these folders (the default: started when
+                     needed, so a reply keeps running when this window closes)
   --no-daemon        Run in this window's own harness (also XINGULAR_DAEMON=0)
 
-Long-lived harness (ADR-0083):
+Long-lived harness (ADR-0083, ADR-0085):
   daemon <start | stop | status>
-                     Start, stop or check the harness that --daemon windows use
+                     Start, stop or check the harness that windows use by default
   attach [session]   Reattach a window to a reply that kept running after its window closed
   daemon run --host-config <file>
                      Start the harness with a host's launch options (a host that connects to it)

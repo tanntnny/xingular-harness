@@ -15,13 +15,15 @@ export interface Served {
  * Registers the method table on `peer` and forwards events and notices to it. Returns what stops the
  * forwarding, for a peer that goes away before the harness does (a socket connection).
  */
-export function attach(harness: Harness, peer: RpcPeer, options: { deliver?(event: RunEvent): boolean; wrap?(name: string, handler: Handler): Handler } = {}): () => void {
+export function attach(harness: Harness, peer: RpcPeer, options: { deliver?(event: RunEvent): boolean; deliverNotice?(notice: { type?: string }): boolean; wrap?(name: string, handler: Handler): Handler } = {}): () => void {
   for (const [name, handler] of Object.entries(methods(harness))) peer.handle(name, options.wrap ? options.wrap(name, handler) : handler)
   peer.handle('harness.methods', () => peer.methods())
   const stopEvents = harness.runs.listen((event) => {
     if (!options.deliver || options.deliver(event)) peer.send({ event })
   })
-  const stopNotices = harness.bus.on((notice) => peer.send({ notice }))
+  const stopNotices = harness.bus.on((notice) => {
+    if (!options.deliverNotice || options.deliverNotice(notice as { type?: string })) peer.send({ notice })
+  })
   return () => {
     stopEvents()
     stopNotices()

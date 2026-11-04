@@ -51,7 +51,8 @@ index.
   notes-bridge.json    the page bridge's port and token, kept so an app's script tag stays valid   (13, PROP-0018)
   harness.log          standalone terminal and long-lived harness diagnostics
   harness.sock         the long-lived harness's protocol socket, owner-only, while it runs   (10, ADR-0083)
-  harness.lock         { pid, startedAt, socket, version, config? } of the one long-lived harness for this folder   (10, ADR-0083, ADR-0084)
+  harness.lock         { pid, startedAt, socket, version, config?, dataRoot, accountState, build? } of the one long-lived harness for this folder   (10, ADR-0083..0085)
+  host-launch.json     a host's launch options for the daemon, read by every `daemon run` here; written by the host, not the harness   (11, ADR-0085)
 ```
 
 `/remote-control` (page 15) stores nothing here: its pairing and device keys live in memory and end

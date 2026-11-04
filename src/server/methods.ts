@@ -86,7 +86,13 @@ export function methods(harness: Harness): Record<string, Handler> {
     'harness.status': () => ({ dataRoot: harness.dataRoot, productName: env.productName, recovery: harness.recovery, activeRuns: runs.activeRunIds() }),
     // Opening the root that is already open changes nothing. A second host on a shared harness must not
     // re-run recovery, which would mark the runs other hosts have in flight as interrupted.
-    'harness.open': (params: Params) => text(params, 'dataRoot') === harness.dataRoot ? harness.recovery : harness.open(text(params, 'dataRoot'), Array.isArray(params.agentIds) ? params.agentIds : []),
+    'harness.open': (params: Params) => {
+      const requested = text(params, 'dataRoot')
+      if (requested === harness.dataRoot) return harness.recovery
+      // The data location is the harness's, not one window's: not while terminal windows are using it.
+      if (terminals.windowCount() > 0) throw new HarnessError('harness_busy', 'Terminal windows are using this harness. Close them before changing its data location.')
+      return harness.open(requested, Array.isArray(params.agentIds) ? params.agentIds : [])
+    },
     'harness.rebuildIndex': () => harness.rebuildIndex(),
 
     // ---- Accounts --------------------------------------------------------------------------------

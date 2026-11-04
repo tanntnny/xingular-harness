@@ -308,6 +308,29 @@ terminal that cannot start. The harness runs `dist/terminal-opentui.js`, which u
 session runtime, accounts, command pages, approvals, questions, plugins and run records as the
 embedded SDK. See [the terminal guide](docs/terminal-tui.md).
 
+### The long-lived harness
+
+`xagent` runs in a long-lived harness for its data and state folders, started the first time it is
+needed. A reply keeps running when its window closes (`xagent attach` reconnects a window to it); the
+daemon exits on its own 30 minutes after nothing uses it. Several windows, and an application that hosts
+the same harness, share it: one process writes the folders.
+
+- `xagent daemon start|stop|status` start, stop and inspect it. `status` shows its version and the hosts
+  connected to it. An upgrade replaces an idle daemon of another version; one that windows or replies still
+  use is left running, and the window that needed the new one runs its own harness and says so.
+- `xagent --no-daemon`, or `XINGULAR_DAEMON=0`, runs the window in its own harness for that launch.
+  That is also what happens on Windows, with `XINGULAR_TERMINAL_RUNTIME=inprocess` (plugins that draw
+  their own terminal components), when a folder's path is too long for the daemon's socket, and when the daemon
+  cannot start. Asking for `--daemon` by name in a case that cannot have it is an error.
+- What differs from a window's own harness: the agent's shell commands run with the environment of the process
+  that started the daemon (PATH, virtualenv, proxies), not the window's. Run `xagent daemon stop`, or use
+  `--no-daemon`, for work that needs another environment.
+- `xagent plugins`, `hub`, `refine run`, `worktree`, `web`, `browser` and `serve` are separate processes on the
+  same folders. A change they make applies from the next session, and a `worktree` command can lose a
+  concurrent update.
+- A profile whose credentials an application keeps (a host secret backend) is served only while that
+  application is connected; a window never starts a daemon that could not read them.
+
 ### Worktrees
 
 Run `xagent --worktree` (or `-w [name]`) inside a git repository to start in a fresh managed

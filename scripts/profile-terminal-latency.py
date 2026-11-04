@@ -476,7 +476,9 @@ def launch(target, root, project, provider_url, real, cli):
         (shared / 'settings.json').write_text(json.dumps({'defaultProvider': 'latency', 'defaultModel': 'latency-model',
                                                           'defaultThinkingLevel': 'medium', 'enableAnalytics': False}))
         create_harness_account(cli, root)
-        return ['node', str(cli), '--state', str(root / 'state'), '--data', str(root / 'data')], env
+        # The terminal is a client of the long-lived harness by default; PROFILE_DAEMON=0 measures the window's own harness.
+        own = ['--no-daemon'] if os.environ.get('PROFILE_DAEMON') == '0' else []
+        return ['node', str(cli), *own, '--state', str(root / 'state'), '--data', str(root / 'data')], env
     if target == 'pi':
         agent = root / 'pi-agent'
         agent.mkdir(parents=True, exist_ok=True)

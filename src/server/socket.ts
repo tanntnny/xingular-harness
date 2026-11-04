@@ -9,6 +9,7 @@ import { HarnessError, toErrorShape, type ErrorShape } from '../core/errors'
 import type { Harness } from '../harness'
 import { PROTOCOL_VERSION, RpcPeer, type Transport } from './rpc'
 import { attach } from './serve'
+import type { RunEvent } from '../sessions/contracts'
 import type { HostHub } from './hostHub'
 
 /** Protocol lines over one socket. */
@@ -38,19 +39,45 @@ export async function serveSocket(harness: Harness, path: string, extra: Record<
   const server: Server = createServer((socket) => {
     open.add(socket)
     const peer = new RpcPeer(socketTransport(socket))
+    // The terminal sessions this connection prepared and has not ended: when it drops, each is detached
+    // (a reply that is running goes on without a window) or disposed (nothing running), so a killed
+    // window does not hold a worktree, an account or the daemon open.
+    const windows = new Set<string>()
     // A host hears only its own sessions' events, and a run it starts makes its session its own (page 10).
-    const stop = attach(harness, peer, hub ? {
-      deliver: (event) => hub.deliver(peer, event),
-      wrap: (name, handler) => name === 'sessions.run' || name === 'sessions.spawnSubagent'
-        ? (params) => { hub.claim(peer, (params as { run?: { sessionId?: unknown } })?.run?.sessionId); return handler(params) }
-        : handler
-    } : undefined)
+    const stop = attach(harness, peer, {
+      ...(hub ? { deliver: (event: RunEvent) => hub.deliver(peer, event), deliverNotice: (notice: { type?: string }) => hub.deliverNotice(peer, notice) } : {}),
+      wrap: (name, handler) => {
+        let wrapped = handler
+        if (hub && (name === 'sessions.run' || name === 'sessions.spawnSubagent')) {
+          wrapped = (params) => { hub.claim(peer, (params as { run?: { sessionId?: unknown } })?.run?.sessionId); return handler(params) }
+        } else if (name === 'terminal.prepare') {
+          wrapped = async (params) => {
+            const result = await handler(params)
+            const id = (params as { sessionId?: unknown })?.sessionId
+            if (typeof id === 'string') windows.add(id)
+            return result
+          }
+        } else if (name === 'terminal.dispose' || name === 'terminal.detach') {
+          wrapped = async (params) => {
+            const id = (params as { sessionId?: unknown })?.sessionId
+            if (typeof id === 'string') windows.delete(id)
+            return handler(params)
+          }
+        }
+        if (!hub) return wrapped
+        // Whatever a host's call starts or emits is the host's: its runs, and the notices it asked for.
+        const inner = wrapped
+        return (params) => hub.isHost(peer) ? hub.origin.run(peer, () => inner(params)) : inner(params)
+      }
+    })
     for (const [name, handler] of Object.entries(extra)) peer.handle(name, handler)
     if (hub) peer.handle('host.register', (params) => hub.register(peer, params))
     const gone = (): void => {
       open.delete(socket)
       hub?.drop(peer)
       stop()
+      for (const id of windows) void harness.terminals.detach(id).catch(() => undefined)
+      windows.clear()
     }
     socket.once('close', gone)
     socket.on('error', () => socket.destroy())
@@ -96,7 +123,9 @@ export async function connectHarness(path: string): Promise<HarnessClient> {
   const listeners = new Set<(message: { event?: unknown; notice?: unknown }) => void>()
   const handlers = new Map<string, (params: any) => Promise<unknown> | unknown>()
   let next = 0
+  let isClosed = false
   const closed = new Promise<void>((resolve) => socket.once('close', () => {
+    isClosed = true
     for (const [, call] of pending) {
       clearTimeout(call.timer)
       call.reject(new HarnessError('harness_unavailable', 'The harness closed the connection.'))
@@ -142,6 +171,11 @@ export async function connectHarness(path: string): Promise<HarnessClient> {
   })
   return {
     call: <T>(method: string, params: Record<string, unknown> = {}, timeoutMs = 60_000) => new Promise<T>((resolve, reject) => {
+      // A closed connection never answers: say so now rather than after the call's timeout.
+      if (isClosed || socket.destroyed) {
+        reject(new HarnessError('harness_unavailable', 'The harness closed the connection.'))
+        return
+      }
       const id = `c${++next}`
       const timer = setTimeout(() => {
         pending.delete(id)

@@ -25,13 +25,11 @@ if (!args.includes('--data')) defaults.push('--data', join(devRoot, 'data'))
 if (!args.includes('--state')) defaults.push('--state', join(devRoot, 'state'))
 if (!args.includes('--account-state')) defaults.push('--account-state', installedStateDir())
 
-// Development runs the terminal in the long-lived harness (ADR-0083, `xagent --daemon`), so the whole
-// path a person uses (the daemon, its socket, live sessions, the client terminal) is what gets
-// exercised. A subcommand (`serve`, `wiki`, `daemon status`, ...) is passed through unchanged, and
-// XINGULAR_DEV_DAEMON=0 keeps the window's own private harness.
+// The terminal runs in the long-lived harness by default (ADR-0085), so development exercises the whole
+// path a person uses. XINGULAR_DEV_DAEMON=0 keeps the window's own private harness for this launch.
 const SUBCOMMANDS = new Set(['serve', 'daemon', 'attach', 'wiki', 'mcp', 'plugins', 'hub', 'refine', 'web', 'browser', 'worktree'])
-if (process.env.XINGULAR_DEV_DAEMON !== '0' && process.env.XINGULAR_DAEMON === undefined && !args.includes('--daemon') && !args.includes('--no-daemon') && !args.some((argument) => SUBCOMMANDS.has(argument))) {
-  defaults.push('--daemon')
+if (process.env.XINGULAR_DEV_DAEMON === '0' && !args.includes('--daemon') && !args.includes('--no-daemon') && !args.some((argument) => SUBCOMMANDS.has(argument))) {
+  defaults.push('--no-daemon')
 }
 
 const cli = fileURLToPath(new URL('../dist/cli.js', import.meta.url))

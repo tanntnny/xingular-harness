@@ -10,3 +10,7 @@ process.env.HOME = mkdtempSync(join(tmpdir(), 'harness-home-'))
 // scripted model would have to answer it in every test that runs real Pi, so it is off here; the
 // tests that are about it switch it on with vi.stubEnv('XINGULAR_COMPLETION_CHECK', 'on').
 process.env.XINGULAR_COMPLETION_CHECK = 'off'
+
+// A terminal window runs in the long-lived harness by default (ADR-0085). Tests that launch one drive the
+// window's own harness with a fake session; the ones about the daemon say so with --daemon.
+process.env.XINGULAR_DAEMON = '0'

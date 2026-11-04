@@ -1,104 +1,107 @@
-# Handoff — 2026-11-05
+# Handoff — 2026-11-05 (second session)
 
-One session runtime (ADR-0083), and now hosts on it (ADR-0084). The harness keeps a conversation's Pi
-session open across turns, the terminal is a client of the harness by default, a long-lived harness
-(the "app-server", `xagent --daemon`) lets a reply outlive its window, and a host (the App's sidecar)
-can connect to that same harness instead of embedding its own. **Nothing from 2026-11-05 is
-committed.** The last release is `2.1.0-unstable` (`30b5c49`). The daemon and the host's daemon mode
-are both **opt-in**; "What is left" says what finishes them.
+The long-lived harness (the "app-server", `xagent daemon`) is now the **default** for the terminal and for
+the App's sidecar (ADR-0085). It was opt-in at `2.1.0-unstable`. Decisions and evidence:
+[`ADR-0083`](docs/decisions/ADR-0083-one-live-session-runtime.md) (one live-session runtime),
+[`ADR-0084`](docs/decisions/ADR-0084-hosts-on-the-long-lived-harness.md) (hosts connect to it),
+[`ADR-0085`](docs/decisions/ADR-0085-the-long-lived-harness-is-the-default.md) (it is the default).
 
-Decision and evidence: [`docs/decisions/ADR-0083-one-live-session-runtime.md`](docs/decisions/ADR-0083-one-live-session-runtime.md)
-and [`ADR-0084`](docs/decisions/ADR-0084-hosts-on-the-long-lived-harness.md). Known drift D-33 records
-the gap between what is built and what is the default.
+## Commit state
 
-## What changed on 2026-11-05
+- `agent-harness`: `cfd697a` holds the first session's work (version handshake, idle exit, remote control of
+  live sessions, hosts). **This session's work is uncommitted** (daemon robustness, terminal parity, host
+  layer fixes, the flip, docs). `docs/study/00-index.md` and `docs/study/STUDY-0010-plugin-reach.md` are not
+  ours; leave them out of the commit.
+- `agent-app`: nothing from either session is committed. The repository has a lot of the owner's own
+  uncommitted work, and `src/modes/solo/soloCommands.ts` and its test are **untracked as whole files**, so the
+  `/rc` change cannot be split from the owner's file. Touched files are listed below.
 
-Uncommitted in two repositories; commit them separately.
+## What changed this session
 
 **`agent-harness`**
 
 | Area | Files |
 |---|---|
-| Version handshake, idle exit, off switch | `src/server/daemonClient.ts` (new: lock, `connectDaemon`, version/launch check, socket-path guard), `src/terminal/daemon.ts`, `standalone.ts` (`--no-daemon`, `XINGULAR_DAEMON`, `DAEMON_BY_DEFAULT = false`), `src/core/version.ts` (new), `cli.ts`, `scripts/dev.mjs` |
-| Remote control of live sessions (PAR-018) | `src/sessions/liveDecisions.ts` (new, shared with `LiveTerminal`), `src/remote/liveSessionPort.ts`, `sessionRemotes.ts` (new: `Harness.remotes`, `SwitchablePort`), `sessions/live.ts` (`onEnd`), `terminals.ts` (detach keeps the pairing), `server/methods.ts` (`sessions.remoteControl.*`) |
-| Hosts on the daemon (ADR-0084) | `src/server/hostHub.ts` (new), `socket.ts` (`host.register`, `HarnessClient.handle`), `serve.ts` (`attach` options), `daemon.ts` (`DaemonLaunch`, `--host-config`), `remote.ts` (`mode` in policy calls), `methods.ts` (`harness.open` is idempotent) |
-| Spec | pages 02, 10 (hosts section, INV-SRV-7), 11, 12, 15 (INV-RC-3/5/7/9), `README.md` D-33, `docs/parity.md` PAR-018/019, ADR-0084, `docs/README.md`, `CHANGELOG.md` |
+| Daemon robustness | `server/daemonClient.ts` (lock created whole and linked; stale lock when the socket refuses; start logged to `harness.log`, child watched, fail fast; lock records `dataRoot`, `accountState`, `build`), `terminal/daemon.ts`, `server/socket.ts` (a closed client rejects at once; a dropped window is detached or disposed) |
+| Terminal parity and default | `terminal/standalone.ts` (`DAEMON_BY_DEFAULT = true`, `daemonSource`, `daemonUnsupported`, connect-phase fallback, host-credential guard, frontend env), `terminal/daemon.ts` (`--worktree`, account label, `beforeFrontend`), `scripts/dev.mjs`, `scripts/verify-terminal.py`, `scripts/profile-terminal-latency.py`, `tests/setup.ts` (`XINGULAR_DAEMON=0`) |
+| Host layer | `server/hostHub.ts` (call context, LRU owners, waiting for a host, private notices), `server/serve.ts`, `server/socket.ts`, `server/methods.ts` (`harness.open` refused while windows exist), `terminal/daemon.ts` (every `daemon run` reads `<state>/host-launch.json`; no default account for a host's daemon) |
+| Docs | ADR-0085, pages 10, 11, 12, 14, ADR-0083/0084, D-33 resolved, **D-34 new**, `README.md` (daemon section), `src/cli.ts` USAGE, `CHANGELOG.md`, `docs/parity.md` |
 
-**`agent-app`** (a repository with a lot of the owner's own uncommitted work: take only these hunks)
+**`agent-app`** (take these hunks only)
 
-- `sidecar/src/daemonMode.ts`, `daemonMode.test.ts`, `schemaType.ts` (new); `main.ts` (mode switch);
-  `app.ts` (`resolveSidecarRoots` extracted, nothing else changed); `agentRuns.ts` (`RunHarness` type);
-  `host.ts` (`directorySnapshot`).
-- `src-tauri/src/sidecar.rs`, `runs.rs` (`catch_up`), `harness.rs` (`remote_control` command), `lib.rs`.
-- `src/bridge/commands.ts` (`remoteControl`), `src/modes/solo/soloCommands.ts` (`/rc` page, tests),
-  `SoloConversation.tsx` (one line).
+- `sidecar/src/daemonMode.ts` (+ test), `main.ts` (daemon by default, falls back to the in-process sidecar and
+  sends `harness.fallback`), `agentRuns.ts` (`ensureHarness` async, `seedVariant`), `app.ts`, `host.ts`,
+  `pageNotesMigration.ts` (`migrateBrowserAnnotationsVia`), `schemaType.ts`.
+- `src-tauri/src/sidecar.rs` (`daemon_wanted`, `hosted`, 2-minute grace), `runs.rs` (followed-runs journal,
+  extended `catch_up`), `harness.rs` (`remote_control`), `lib.rs`.
+- `src/bridge/commands.ts`, `src/modes/solo/soloCommands.ts` (+ test), `SoloConversation.tsx`;
+  `docs/architecture/overview.md`, `implementation-stage.md` (quit text).
 
-How to use it:
-
-- `xagent --daemon`, `xagent attach`, `xagent daemon start|stop|status` as before; `--no-daemon` or
-  `XINGULAR_DAEMON=0` keeps a window's own harness. `status` now shows the version and hosts.
-- The App as a host: start it with `XAGENT_HARNESS_MODE=daemon`. The sidecar writes
-  `<state>/host-launch.json`, starts `dist/cli.js daemon run --host-config` if no matching daemon
-  runs, registers as `xingular-agent`, and forwards every harness method Rust calls. Quitting the App
-  only disconnects; the next start catches up from the run logs (`RunTracker::catch_up`).
-- `/rc` in an App Solo conversation starts remote control for that conversation (`/rc off`,
-  `/rc tailscale|lan`) and shows the link, devices and a pair request to allow or deny.
+Kill switches: `--no-daemon`, `XINGULAR_DAEMON=0` (terminal); `XAGENT_HARNESS_MODE=inprocess` (App).
+`XINGULAR_DEV_DAEMON=0` for `npm run dev`.
 
 ## Verified (2026-11-05)
 
-- Harness: `npm run typecheck` clean; `npm test` 1,877 passed, 4 skipped (up from 1,852 at the start of
-  the day); `npm run prove` passed, with `dist/cli.js` rebuilt. **One full run failed one test and I
-  did not capture which**: the output was cut to its tail. Five full runs after it passed with no
-  failure. The load-sensitive `runtime.socket.test.ts` (an `ECONNREFUSED`, first noted on
-  2026-11-04) is the likely candidate, but that is a guess. Watch for it.
-- Sidecar: 93 tests, 4 of them new and run against a real daemon in the same process with a fake Pi
-  session and a fake Rust host. App root tests: 613 pass; the one failure is the old `/goal` test
-  (PAR-017). `check:layers` still reports the same nine `computer_*` names in the harness tree,
-  none of them from this change. `cargo test`: 193 pass.
-- **Not verified:** the desktop App has not been launched in daemon mode, or in its default mode,
-  after these changes. No real model request was made. `npm run build` of the sidecar was not run
-  (it bundles `dist/cli.js` for the daemon). The remote-control page was not looked at on a phone.
+- Harness: typecheck clean; `npm test` 1,890 passed, 4 skipped (1,852 at the start of the first session);
+  `npm run prove` passed. The PTY verifier (`python3 scripts/verify-terminal.py`) passed the full run at
+  40x20, 80x24 and 120x40 against the window's own harness, and seven focused suites (welcome, composer,
+  history, resume, queue, questions, compaction) pass with the daemon as the window's harness
+  (`VERIFY_TERMINAL_DAEMON=1`). **Not run in daemon mode:** the full run and the browser, palette, accounts,
+  trajectory, attachments, thinking and other focused suites.
+- **A flaky test, not ours:** `src/terminal/tui/runtime.socket.test.ts` ("submits grouped terminal answers
+  atomically...") fails with `ECONNREFUSED` on the terminal's session socket in some full runs, never alone.
+  The code from before the first session (`30b5c49`) failed it in 2 of 3 full runs, the current code in 1 of 5
+  (3 of 3 clean in the controlled comparison). Neither the test nor `terminal/socket.ts` changed.
+- Sidecar: typecheck clean, 97 tests (13 new). App root: 613 pass, 1 fails (the old `/goal` test, PAR-017);
+  `check:layers` reports the same nine `computer_*` names; `check:ui` passes at its baseline.
+  Rust: `cargo test` 197 passed.
+- **Real processes** (not unit tests): the built sidecar (`node sidecar/dist/main.js`, default mode) started a
+  real detached daemon and was ready in 1.5 s; `system.ping` reported `mode: daemon`; 256 methods answered
+  (`refine.list` included); the daemon survived the sidecar's exit and was stopped by `xagent daemon stop`; its
+  lock carried the launch hash, data folder and build. With a terminal's daemon already in use, the sidecar
+  stayed up, ran its own harness and sent `harness.fallback`.
+- **Not verified:** the Tauri desktop app has not been launched (it needs an Apple development identity and a
+  display, which a headless run does not have), so the Rust relaunch path, the renderer, the `/rc` page, and
+  the fallback notice's display have only unit-level or protocol-level checks. No real model request was made.
+  The sidecar's npm dependencies are not installed in `agent-app/sidecar` on this machine (the real-process
+  runs linked the harness's `node_modules`); a normal `npm --prefix sidecar install` is needed to run the
+  desktop app.
 
 ## What is left
 
-1. **Launch the App** in both modes on a throwaway profile (`run` skill): a chat turn, a follow-up, a
-   steer, `/rc` pairing from a phone, then quit mid-reply and reopen with
-   `XAGENT_HARNESS_MODE=daemon`. Run `npm run build:sidecar` first.
-2. **Soak.** Run a daemon for a day or more with terminal windows and the App on one state folder
-   (`xagent daemon status`). Then one live stall-guard check on the permitted models only
-   (`opencode-go/deepseek-v4.1-flash`, `openai-codex/gpt-6-luna`), with the owner's permission.
-3. **Flip the default**, only after 1 and 2 and a few days of use: set `DAEMON_BY_DEFAULT = true` in
-   `terminal/standalone.ts`, drop the forcing in `scripts/dev.mjs`, make the App's daemon mode the
-   default in `sidecar/src/main.ts`, update pages 10, 11, 12, ADR-0083 ("opt-in"), the help text and
-   the release notes, and close D-33.
-4. A **hung plugin** in the daemon is untested. The failure tests that exist cover: a killed
-   daemon's running reply recorded as interrupted by the next one, a state folder too deep for the
-   socket (`socket_path_too_long`, the window falls back to its own harness), a window refused for a
-   session another window holds, and a stale or differently launched daemon.
-5. Things that behave differently in a host's daemon: a terminal window in that daemon has no generic
-   browser (the host's launch sets `browser: false`); the host's data root is the daemon's, so
-   `app.open` of another root moves it for every window; the sidecar still reads and seeds the variant
-   store on disk (`ensureHarness`), as it did before.
-6. Carried over: **D-32** (list wrapping), plugin presentation in the client terminal (INV-TUI-8), the
-   provider request timeout, and the App's unrelated `/goal` test and UI typecheck errors.
+1. **Launch the desktop app** in default mode on a throwaway profile and walk it: a chat turn, a follow-up and a
+   steer, refinement, a side question, `/rc` from a phone, a terminal window open at the same time (start it
+   first, then the App, and the reverse), quit mid-reply and reopen, kill the daemon during a reply.
+   Needs `npm --prefix sidecar install`, `npm run build:sidecar` and `npm run tauri dev`.
+2. **Soak**: one day with several windows and the App on one state folder (`xagent daemon status`). A live
+   stall-guard check only on `opencode-go/deepseek-v4.1-flash` or `openai-codex/gpt-6-luna`, with permission.
+3. **D-34**: the agent's shell runs with the daemon's environment. Fix by sending an environment snapshot in
+   `terminal.prepare` and applying it through Pi's `BashSpawnHook` (`node_modules/@earendil-works/pi-coding-agent`,
+   `core/tools/bash.d.ts`). Until then, `--no-daemon` for work in a different environment.
+4. Methods the Rust host and renderer call that no harness table has, in either mode (listed and enforced in
+   `sidecar/src/daemonMode.test.ts`, `ALREADY_UNANSWERED`): `annotations.queue|dequeue|queued`,
+   `memory.permissions`, `references.pin`, `wiki.ingest`, `blocks.list`, `context.profiles`, `skills.list`,
+   `wiki.reindex`. They were already `unknown_method`; each is its own bug.
+5. A hung plugin in the daemon is untested. The doctor's `live` probe for computer control is not registered
+   with the daemon (its local check is).
+6. Carried over: D-32 (list wrapping), plugin presentation in the client terminal (INV-TUI-8), the provider
+   request timeout, the App's `/goal` test and UI typecheck errors, and the nine `computer_*` names in
+   `check:layers`.
 
 ## Things that are easy to get wrong
 
-- A live session serves a run only when every pin matches (account, variant version, capability
-  set, folders, tools, system prompt, model, effort, run-scoped extension names). Anything else
-  closes it at the turn boundary and opens a new one on the same history. That is not an end:
-  `LiveSessions.onEnd` fires only for a close on request, idle, or at harness close, and only that
-  ends a host's remote-control pairing.
-- A terminal's pairing ends with its window, or with the reply of a closed window; a host's ends with
-  its live session. `Terminals.dispose(id, keepRemote)` is how `detach` keeps it.
-- A session belongs to the host whose connection started its run. A run with no host is never gated by
-  a host's policy; a host that is gone fails its sessions' calls and approves nothing.
-- Client terminal runs record Pi's session id as `nativeSessionId`; in-process terminal runs record the
-  history file. Terminal features look runs up through `Terminals.nativeOf`/`historyFileOf`.
-- A command run, `sessions.navigate` or `sessions.rename` on a conversation with an idle live session
-  closes that session first, and is refused while it is replying.
-- The client never interrupts a reply when it closes; the parent decides (dispose interrupts, detach
-  keeps it).
-- The stall guard is in `runTurn`; the in-process terminal still has its own watch. Both use
-  `sessions/stallWatch.ts`.
-- Verifier layouts: names in the palette and `/help` carry their owner (`terminal-verifier:…`) and wrap.
+- A live session closes at a pin change without ending the conversation; only a close on request, idle, or at
+  harness close ends a host's pairing (`LiveSessions.onEnd`). A terminal's pairing ends with its window, or with
+  the reply of a closed window.
+- A session belongs to the host whose **call** started the run (call context), not whose method name was used.
+  A run with no host is never gated by one; a host that stays away past two minutes fails closed.
+- The daemon's idle exit counts windows, live sessions, pairings and connections. A killed window used to hold
+  it open; its connection closing now detaches or disposes it.
+- `daemonSource` decides whether a window that cannot have the daemon is told or runs its own: default is
+  quiet, `--daemon` / `XINGULAR_DAEMON=1` is loud, except version and folder mismatches.
+- On a profile whose credentials an application keeps, a window never starts a daemon.
+- The App's sidecar must not create its stdio peer before the daemon is connected; two peers on one pipe both
+  answer. `createDaemonSidecar` connects first and marks later failures `afterConnect`.
+- Client terminal runs record Pi's session id as `nativeSessionId`; in-process terminal runs record the history file.
+- A command run, `sessions.navigate` or `sessions.rename` on a conversation with an idle live session closes that
+  session first, and is refused while it is replying.
