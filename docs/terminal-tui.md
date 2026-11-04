@@ -219,7 +219,7 @@ moves them up rather than keeping them pinned at the bottom.
 
 When the verb would hide what the reply is doing, the working line names it instead
 (`src/terminal/opentui/workingPhase.ts`): `Waiting on 2 subagents · last activity 12s ago (Read)`,
-`Running Bash · 1m 23s` (a tool past ten seconds), `Waiting for the model · no output for 1m 15s`
+`Running Bash: impeccable live-poll · 1m 23s` (a tool past ten seconds; a lone Bash call is named by its command, and past five minutes the row adds `· Esc to stop`), `Waiting for the model · no output for 1m 15s`
 (past one minute of silence), `No progress for 6m · Esc to stop` (past five), and
 `Reconnecting 2/8 · retry in 12s · Connection error` while a failed model request waits to be
 retried. The verb returns as soon as the reply produces output again. A model request that fails for

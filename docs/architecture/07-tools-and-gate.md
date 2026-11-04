@@ -156,7 +156,9 @@ beside the choices (INV-RC-3, INV-RC-4).
   goal stopped it (INV-RUN-15); a slice or goal stop writes the checkpoint from the run's evidence.
 - **INV-TOOL-10** Bash keeps one command budget on every surface: 120 seconds when the call says
   nothing, 300 seconds as the ceiling without a `reason`, 900 seconds as the maximum, and a timeout
-  returns the partial output with a narrowing instruction instead of blocking the reply.
+  returns the partial output with a narrowing instruction instead of blocking the reply. The shell
+  tool's own timeout reaches the model with that text too (`explainNativeTimeout`), including the advice
+  that a command which waits for an outside event needs a budget longer than its own wait.
 - **INV-GATE-2** The gate is the last extension loaded, after disk, variant and inline extensions, so
   it sees the final input of every call.
 - **INV-GATE-3** Order is fixed: capability and plan-mode refusals, canonicalize native file-write

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { COMMAND_TIMEOUT_CEILING_SECONDS, COMMAND_TIMEOUT_MAX_SECONDS, DEFAULT_COMMAND_TIMEOUT_SECONDS, resolveCommandTimeout, withCommandBudget } from './commandBudget'
+import { COMMAND_TIMEOUT_CEILING_SECONDS, COMMAND_TIMEOUT_MAX_SECONDS, DEFAULT_COMMAND_TIMEOUT_SECONDS, explainNativeTimeout, resolveCommandTimeout, withCommandBudget } from './commandBudget'
 
 describe('command budget', () => {
   it('gives an ordinary command the default and honours a smaller timeout', () => {
@@ -37,5 +37,14 @@ describe('command budget', () => {
 
   it('returns what a command produced when it finishes in time', async () => {
     await expect(withCommandBudget(async () => 'done', () => undefined, 5)).resolves.toBe('done')
+  })
+
+  it('explains a native timeout without losing the partial output', () => {
+    const text = explainNativeTimeout('half the output\n\nCommand timed out after 600 seconds')
+    expect(text).toContain('half the output')
+    expect(text).toContain('Command timed out after 600 seconds')
+    expect(text).toContain('stopped it after 600 seconds')
+    expect(text).toContain('longer than that wait')
+    expect(explainNativeTimeout('exit code 1')).toBeNull()
   })
 })

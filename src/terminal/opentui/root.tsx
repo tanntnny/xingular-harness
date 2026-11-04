@@ -168,8 +168,9 @@ export function labelledRule(label: string, width: number): string {
 }
 
 function TranscriptMarkdown(props: { content: string; syntax: SyntaxStyle; streaming?: boolean }) {
-  const renderNode = createTranscriptMarkdownRenderer(theme)
-  return <markdown content={addHeadingOneSpacing(props.content)} streaming={props.streaming} syntaxStyle={props.syntax} fg={theme.text} bg='transparent' conceal={true} renderNode={renderNode} tableOptions={{ borderColor: theme.dim, cellPaddingX: 1 }} />
+  const renderNode = createTranscriptMarkdownRenderer(theme, props.syntax)
+  // Solid sets props in order after creating the element, so the style goes before the content.
+  return <markdown syntaxStyle={props.syntax} fg={theme.text} bg='transparent' conceal={true} renderNode={renderNode} tableOptions={{ borderColor: theme.dim, cellPaddingX: 1 }} streaming={props.streaming} content={addHeadingOneSpacing(props.content)} />
 }
 
 function CompactionTranscriptItem(props: { item: CompactionItem; expanded: boolean; syntax: SyntaxStyle; width: number }) {

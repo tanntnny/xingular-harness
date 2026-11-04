@@ -1,4 +1,4 @@
-import { BoxRenderable, CodeRenderable, type MarkdownOptions, type SimpleHighlight, type StyleDefinitionInput } from '@opentui/core'
+import { BoxRenderable, CodeRenderable, type MarkdownOptions, type SimpleHighlight, type StyleDefinitionInput, type SyntaxStyle } from '@opentui/core'
 
 import type { OpenTuiTheme } from './theme'
 
@@ -106,7 +106,7 @@ function alignListItems(token: MarkdownListToken, list: BoxRenderable): void {
   })
 }
 
-export function createTranscriptMarkdownRenderer(theme: OpenTuiTheme): NonNullable<MarkdownOptions['renderNode']> {
+export function createTranscriptMarkdownRenderer(theme: OpenTuiTheme, syntax?: SyntaxStyle): NonNullable<MarkdownOptions['renderNode']> {
   // Markdown may re-tokenize the unfinished fence on every streamed delta. Reuse its panel and
   // replace only the CodeRenderable so the code's scroll/selection surface stays native.
   const panels = new Map<string, BoxRenderable>()
@@ -120,6 +120,11 @@ export function createTranscriptMarkdownRenderer(theme: OpenTuiTheme): NonNullab
     if (token.type !== 'code') return undefined
     const rendered = context.defaultRender()
     if (!(rendered instanceof CodeRenderable)) return rendered
+
+    // A highlight that starts without a style throws inside OpenTUI and prints to the terminal, which
+    // garbles the screen. The Markdown can still be without its style when a block is first built.
+    const style = rendered.syntaxStyle ?? context.syntaxStyle ?? syntax
+    if (style && rendered.syntaxStyle !== style) rendered.syntaxStyle = style
 
     const info = codeFenceLanguageInfo(token.lang)
     if (info.filetype) rendered.filetype = info.filetype

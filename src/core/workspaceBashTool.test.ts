@@ -68,4 +68,15 @@ describe('workspace Bash tool scope', () => {
     expect(requests).toBe(1)
     expect(existsSync(outside)).toBe(false)
   })
+
+  it('tells the model what the budget did when the shell tool times out', async () => {
+    const native = {
+      name: 'bash',
+      description: 'Run a command.',
+      parameters: {},
+      execute: async () => { throw new Error('partial\n\nCommand timed out after 600 seconds') }
+    }
+    const tool = withWorkspaceWriteScope(native) as unknown as { execute(id: string, input: unknown): Promise<unknown> }
+    await expect(tool.execute('call', { command: 'poll', timeout: 600, reason: 'waits for an event' })).rejects.toThrow(/partial[\s\S]*budget stopped it after 600 seconds[\s\S]*longer than that wait/u)
+  })
 })

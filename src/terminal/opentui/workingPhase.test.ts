@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import { SubagentMonitor, type TerminalSubagentRun } from '../subagentMonitor'
 import type { RunEvent } from '../../sessions/contracts'
-import { workingPhase, type WorkingPhaseInput } from './workingPhase'
+import { commandDetail, workingPhase, type WorkingPhaseInput } from './workingPhase'
 
 const now = Date.parse('2026-11-01T16:30:00.000Z')
 const input = (extra: Partial<WorkingPhaseInput> = {}): WorkingPhaseInput => ({ now, tools: new Map(), subagents: [], retry: null, progressAt: now - 1_000, ...extra })
@@ -15,6 +15,19 @@ describe('the working phase', () => {
   it('leaves the verb alone while the reply is plainly working', () => {
     expect(workingPhase(input())).toBeNull()
     expect(workingPhase(input({ tools: new Map([['t', { name: 'read', at: now - 2_000 }]]) }))).toBeNull()
+  })
+
+  it('names the command a lone long tool runs, and offers Esc after five minutes', () => {
+    const detail = 'impeccable live-poll'
+    expect(workingPhase(input({ tools: new Map([['a', { name: 'bash', at: now - 83_000, detail }]]) }))).toBe('Running Bash: impeccable live-poll · 1m 23s')
+    expect(workingPhase(input({ tools: new Map([['a', { name: 'bash', at: now - 600_000, detail }]]) }))).toBe('Running Bash: impeccable live-poll · 10m · Esc to stop')
+    expect(workingPhase(input({ tools: new Map([['a', { name: 'bash', at: now - 83_000, detail }], ['b', { name: 'bash', at: now - 83_000, detail: 'ls' }]]) }))).toBe('Running Bash ×2 · 1m 23s')
+  })
+
+  it('shortens a command to what a person recognises', () => {
+    expect(commandDetail({ command: '"/Users/tanny/.agents/skills/impeccable/scripts/impeccable" live-poll' })).toBe('impeccable live-poll')
+    expect(commandDetail({ command: 'a'.repeat(80) })).toHaveLength(48)
+    expect(commandDetail({})).toBeUndefined()
   })
 
   it('names a wait on subagents and how recently they did anything', () => {

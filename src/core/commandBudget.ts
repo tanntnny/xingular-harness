@@ -35,6 +35,21 @@ export function commandTimeoutText(seconds: number, output: string): string {
   return `The command was stopped after ${seconds} seconds by the command budget. Its output so far:\n${output || '(none)'}\n\nNarrow it: one test file, --grep for the failing case, or a line range, then run the full set at a checkpoint.`
 }
 
+const NATIVE_TIMEOUT = /Command timed out after (\d+) seconds$/u
+
+/**
+ * What the model reads when the shell tool's own timeout ended a command (INV-TOOL-10). The native
+ * text already carries the partial output; this adds what the budget did and how to ask for a
+ * different wait. A command that waits for an outside event (a poll, a watcher) keeps its own
+ * clock: a budget equal to that clock cuts it off just before it answers, so it needs a longer one.
+ */
+export function explainNativeTimeout(message: string): string | null {
+  const match = NATIVE_TIMEOUT.exec(message)
+  if (!match) return null
+  const seconds = Number(match[1])
+  return `${message}\n\nThe command budget stopped it after ${seconds} seconds; the command did not finish. Narrow it (one test file, --grep, a line range) and run the full set at a checkpoint. If it intentionally waits for an outside event and has its own wait of about ${seconds} seconds, run it again with a timeout longer than that wait (at most ${COMMAND_TIMEOUT_MAX_SECONDS}, with a reason above ${COMMAND_TIMEOUT_CEILING_SECONDS}), or give the command a shorter wait of its own.`
+}
+
 /**
  * Runs a command with a wall-clock budget. The abort reaches the live shell, so the promise
  * settles instead of leaving the reply blocked; a timeout is reported as a rejection the caller

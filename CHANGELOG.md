@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **The terminal screen no longer gets garbled by a failed code highlight.** Code fences always take
+  the app's syntax style, and `console` output is held while the terminal window runs and printed
+  after it exits.
+- **A shell command that hit its timeout now tells the model what stopped it** and how to ask for a
+  longer wait. The working row names a lone running shell command and adds `Esc to stop` after five
+  minutes.
 - **One session runtime: the terminal is now a client of the harness (ADR-0083).**
   - A conversation keeps one open Pi session across turns (`sessions.run { live: true }`), so
     steering, queued follow-ups and plugin state carry from one turn to the next. `sessions.live`,

@@ -22,7 +22,7 @@ export interface RetryPhase {
 export interface WorkingPhaseInput {
   now: number
   /** Tools of the reply that started and have not finished. */
-  tools: ReadonlyMap<string, { name: string; at: number }>
+  tools: ReadonlyMap<string, { name: string; at: number; detail?: string }>
   /** The reply's own subagents, as the roster has them. */
   subagents: readonly TerminalSubagentActivity[]
   retry: RetryPhase | null
@@ -36,6 +36,14 @@ export interface WorkingPhaseInput {
 }
 
 const ago = (ms: number): string => formatWorkingDuration(Math.max(0, ms))
+
+/** The part of a bash command worth showing in the row: its last words, without the path to the program. */
+export function commandDetail(args: unknown, max = 48): string | undefined {
+  const command = typeof args === 'object' && args !== null && typeof (args as { command?: unknown }).command === 'string' ? (args as { command: string }).command : ''
+  const line = command.split('\n')[0]?.replace(/"?(?:\/[^\s"/]+)*\/([^\s"/]+)"?/gu, '$1').replace(/\s+/gu, ' ').trim() ?? ''
+  if (!line) return undefined
+  return line.length > max ? `${line.slice(0, max - 1)}…` : line
+}
 
 function waitingOnChildren(input: WorkingPhaseInput): string {
   const active = input.subagents.filter((child) => child.relation === 'subagent' && ACTIVE_SUBAGENT_STATUSES.has(child.status))
@@ -71,7 +79,11 @@ export function workingPhase(input: WorkingPhaseInput): string | null {
     if (now - oldest < TOOL_PHASE_AFTER_MS) return null
     const names = [...new Set(running.map((tool) => toolDisplayName(tool.name) || tool.name))]
     const label = running.length > 1 && names.length === 1 ? `${names[0]} ×${running.length}` : names.join(', ')
-    return `Running ${label} · ${ago(now - oldest)}`
+    // One command running alone is named by what it runs, so a deliberate wait (a poll, a watcher)
+    // is not mistaken for work.
+    const detail = running.length === 1 ? running[0]?.detail : undefined
+    const age = now - oldest
+    return `Running ${label}${detail ? `: ${detail}` : ''} · ${ago(age)}${age >= STOP_HINT_AFTER_MS ? ' · Esc to stop' : ''}`
   }
   if (input.answered) {
     return input.subagents.some((child) => child.relation === 'subagent' && ACTIVE_SUBAGENT_STATUSES.has(child.status)) ? waitingOnChildren(input) : null

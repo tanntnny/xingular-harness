@@ -1,3 +1,5 @@
+import { inspect } from 'node:util'
+
 import { createCliRenderer, RGBA } from '@opentui/core'
 import { render, RendererContext } from '@opentui/solid'
 
@@ -12,6 +14,14 @@ const productName = (process.env.XINGULAR_HARNESS_NAME ?? '')
   .replace(/[\x00-\x1f\x7f-\x9f]/g, ' ')
   .replace(/\s+/g, ' ')
   .trim() || DEFAULT_PRODUCT_NAME
+// The terminal belongs to the renderer. A library that calls `console.warn` or `console.error` while
+// it draws prints over the screen and leaves it garbled, so hold that output and show it after exit.
+const printError = console.error.bind(console)
+const heldConsole: string[] = []
+const holdConsole = (...args: unknown[]) => {
+  if (heldConsole.length < 50) heldConsole.push(args.map(arg => arg instanceof Error ? (arg.stack ?? arg.message) : typeof arg === 'string' ? arg : inspect(arg)).join(' '))
+}
+console.log = console.info = console.debug = console.warn = console.error = holdConsole
 const renderer = await createCliRenderer({
   screenMode: 'alternate-screen',
   exitOnCtrlC: false,
@@ -68,7 +78,8 @@ await app.done
 renderer.destroy()
 await renderer.closed
 
+for (const line of heldConsole) printError(line)
 if (app.failureText) {
-  console.error(`${productName}: ${app.failureText}`)
+  printError(`${productName}: ${app.failureText}`)
   process.exitCode = 1
 }

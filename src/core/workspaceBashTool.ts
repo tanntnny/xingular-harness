@@ -1,7 +1,7 @@
 import type { BashOperations } from '@earendil-works/pi-coding-agent'
 import { Type } from 'typebox'
 
-import { COMMAND_TIMEOUT_CEILING_SECONDS, COMMAND_TIMEOUT_MAX_SECONDS, DEFAULT_COMMAND_TIMEOUT_SECONDS, resolveCommandTimeout } from './commandBudget'
+import { COMMAND_TIMEOUT_CEILING_SECONDS, COMMAND_TIMEOUT_MAX_SECONDS, DEFAULT_COMMAND_TIMEOUT_SECONDS, explainNativeTimeout, resolveCommandTimeout } from './commandBudget'
 import { hostShell, shellLabel, type Shell } from './shell'
 import { runWithWorkspaceWriteScope, type WorkspaceWriteScope } from './workspaceSandbox'
 
@@ -63,7 +63,15 @@ export function withWorkspaceWriteScope<T>(tool: T, note = ''): T {
       // The native tool reads the timeout from its own arguments; give it the effective one.
       const callArgs = [...args]
       callArgs[1] = { ...(input ?? {}), timeout: budget.timeout }
-      return runWithWorkspaceWriteScope(scope, () => execute(...callArgs))
+      const run = async (): Promise<unknown> => {
+        try {
+          return await runWithWorkspaceWriteScope(scope, () => execute(...callArgs))
+        } catch (error) {
+          const explained = error instanceof Error ? explainNativeTimeout(error.message) : null
+          throw explained === null ? error : new Error(explained)
+        }
+      }
+      return run()
     }
   } as T
 }

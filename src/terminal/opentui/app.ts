@@ -32,7 +32,7 @@ import { toolDisplayName } from '../toolName'
 import { createTerminalUi, type TerminalUi } from '../tui/ui'
 import { centeredDialogHost, dialogFits } from '../tui/dialogGeometry'
 import { MouseReportTail } from '../tui/mouseReport'
-import { workingPhase, type RetryPhase } from './workingPhase'
+import { commandDetail, workingPhase, type RetryPhase } from './workingPhase'
 import { chooseCompletionVerb, chooseWorkingVerb, getWorkingSpinnerFrames, SPINNER_INTERVAL_MS, spinnerFrameAt } from '../tui/workingStatus'
 import { stageClipboardFiles } from '../tui/clipboardFiles'
 import { readHarnessLogSnapshot, type HarnessLogChunk, type HarnessLogInfo } from '../logs'
@@ -266,7 +266,7 @@ export class OpenTuiApplication {
   private completedWorkingStatus?: { label: string; elapsedMs: number; tokensPerSecond: number | null }
   private activeVerb?: string
   /** What the reply is inside right now, for the working row to name (see `workingPhase`). */
-  private readonly toolsInFlight = new Map<string, { name: string; at: number }>()
+  private readonly toolsInFlight = new Map<string, { name: string; at: number; detail?: string }>()
   private retryPhase: RetryPhase | null = null
   private progressAt: number | null = null
   /** The last assistant message ended the turn without a tool call; the reply may still be joining children. */
@@ -1085,7 +1085,7 @@ export class OpenTuiApplication {
     if (this.startedAt !== null) this.progressAt = Date.now()
     if (event.type === 'turn_start' || event.type === 'message_start' || event.type === 'tool_execution_start') this.answered = false
     if (event.type === 'message_end' && event.message.role === 'assistant') this.answered = event.message.stopReason === 'stop'
-    if (event.type === 'tool_execution_start') this.toolsInFlight.set(event.toolCallId, { name: event.toolName, at: Date.now() })
+    if (event.type === 'tool_execution_start') this.toolsInFlight.set(event.toolCallId, { name: event.toolName, at: Date.now(), ...(event.toolName === 'bash' ? { detail: commandDetail(event.args) } : {}) })
     if (event.type === 'tool_execution_end') this.toolsInFlight.delete(event.toolCallId)
     if (event.type === 'message_start' || event.type === 'message_update') this.retryPhase = null
     if (event.type === 'message_end' && event.message.role === 'assistant') {
