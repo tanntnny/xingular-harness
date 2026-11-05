@@ -11,7 +11,7 @@ permissions:
 jobs:
   check:
     name: Check on ${{ matrix.os }}
-    if: "${{ !(github.event_name == 'push' && github.ref == 'refs/heads/release/1.0.0' && github.event.head_commit.message == 'release: prepare @xingular/harness 2.3.0-unstable') }}"
+    if: "${{ !(github.event_name == 'push' && github.ref == 'refs/heads/release/1.0.0' && (github.event.head_commit.message == 'release: prepare @xingular/harness 2.3.0-unstable' || github.event.head_commit.message == 'release: prepare @xingular/harness 2.3.1-unstable')) }}"
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -52,7 +52,7 @@ jobs:
   # on a real Windows machine (ADR-0042).
   windows:
     name: Windows shell and file tools
-    if: "${{ !(github.event_name == 'push' && github.ref == 'refs/heads/release/1.0.0' && github.event.head_commit.message == 'release: prepare @xingular/harness 2.3.0-unstable') }}"
+    if: "${{ !(github.event_name == 'push' && github.ref == 'refs/heads/release/1.0.0' && (github.event.head_commit.message == 'release: prepare @xingular/harness 2.3.0-unstable' || github.event.head_commit.message == 'release: prepare @xingular/harness 2.3.1-unstable')) }}"
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4

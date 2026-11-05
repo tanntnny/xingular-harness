@@ -237,7 +237,7 @@ function CommandHelpTranscriptItem(props: { item: CommandHelpItem; width: number
   )
 }
 
-function TranscriptItemView(props: { item: TranscriptItem; expanded: boolean; syntax: SyntaxStyle; width: number; commandNames: readonly string[] }) {
+function TranscriptItemView(props: { item: TranscriptItem; expanded: boolean; syntax: SyntaxStyle; width: number; commandNames: readonly string[]; spinner: string }) {
   const item = props.item
   const t: OpenTuiTheme = theme
   if (item.kind === 'user') {
@@ -267,6 +267,9 @@ function TranscriptItemView(props: { item: TranscriptItem; expanded: boolean; sy
   }
   if (item.kind === 'compaction') {
     return <CompactionTranscriptItem item={item} expanded={props.expanded} syntax={props.syntax} width={props.width} />
+  }
+  if (item.kind === 'compacting') {
+    return <text fg={t.accent} wrapMode='none' truncate={true} selectable={false}>{labelledRule(`${props.spinner} ${item.label}`, Math.max(1, props.width - 2))}</text>
   }
   if (item.kind === 'command-help') {
     return <CommandHelpTranscriptItem item={item} width={props.width} />
@@ -408,7 +411,7 @@ function TranscriptItemView(props: { item: TranscriptItem; expanded: boolean; sy
   )
 }
 
-function TranscriptItems(props: { items: readonly TranscriptItem[]; expanded: boolean; syntax: SyntaxStyle; width: number; commandNames: readonly string[] }) {
+function TranscriptItems(props: { items: readonly TranscriptItem[]; expanded: boolean; syntax: SyntaxStyle; width: number; commandNames: readonly string[]; spinner: string }) {
   return (
     <box flexDirection='column' flexShrink={0} paddingX={1} rowGap={1}>
       <For each={props.items}>
@@ -419,7 +422,7 @@ function TranscriptItems(props: { items: readonly TranscriptItem[]; expanded: bo
           <Show when={item.kind} keyed>
             {() => (
               <ErrorBoundary fallback={<text fg={theme.muted}>· This item could not be drawn.</text>}>
-                <TranscriptItemView item={item} expanded={props.expanded} syntax={props.syntax} width={props.width} commandNames={props.commandNames} />
+                <TranscriptItemView item={item} expanded={props.expanded} syntax={props.syntax} width={props.width} commandNames={props.commandNames} spinner={props.spinner} />
               </ErrorBoundary>
             )}
           </Show>
@@ -1236,7 +1239,7 @@ export function OpenTuiRoot(props: { app: OpenTuiApplication }) {
           fallback={(
             <box flexGrow={1} minHeight={0} flexDirection='column'>
               <Home view={view()} />
-              <TranscriptItems items={view().items} expanded={view().toolsExpanded} syntax={syntax} width={Math.max(1, dimensions().width - 4)} commandNames={view().slashCommandNames} />
+              <TranscriptItems items={view().items} expanded={view().toolsExpanded} syntax={syntax} width={Math.max(1, dimensions().width - 4)} commandNames={view().slashCommandNames} spinner={view().working.frame} />
             </box>
           )}
         >
@@ -1256,7 +1259,7 @@ export function OpenTuiRoot(props: { app: OpenTuiApplication }) {
               onMouseDrag={scheduleTranscriptScrollState}
               onMouseUp={scheduleTranscriptScrollState}
             >
-              <TranscriptItems items={view().items} expanded={view().toolsExpanded} syntax={syntax} width={Math.max(1, dimensions().width - 4)} commandNames={view().slashCommandNames} />
+              <TranscriptItems items={view().items} expanded={view().toolsExpanded} syntax={syntax} width={Math.max(1, dimensions().width - 4)} commandNames={view().slashCommandNames} spinner={view().working.frame} />
             </scrollbox>
             <Show when={showJumpToLatest()}>
               <JumpToLatestBadge activate={activateJumpToLatest} />

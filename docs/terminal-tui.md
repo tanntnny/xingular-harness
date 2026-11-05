@@ -226,8 +226,9 @@ retried. The verb returns as soon as the reply produces output again. A model re
 a transient reason is retried up to eight times over about four minutes (`src/pi/retryPolicy.ts`;
 a person's own `retry` settings win) before the reply ends with the error in the transcript.
 
-While context compaction runs, the working line shows `Compacting context` (or `Retrying
-compaction`) with the same spinner, in place of the working verb. During a run it keeps the run's
+While context compaction runs, the transcript shows a centred divider labelled `Compacting context`
+with the animated working spinner before the text; it changes to `Retrying compaction` during a retry
+and disappears when compaction ends. The working line shows the same status in place of the working verb. During a run it keeps the run's
 clock; a `/compact` while idle shows the spinner with its own clock. Compaction does not start a new
 session or hide earlier chat. After it, the transcript shows, in order: the whole conversation from
 before the compaction (rebuilt from Pi's session history, kept messages included); a rule labelled

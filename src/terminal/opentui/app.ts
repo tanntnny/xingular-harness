@@ -265,7 +265,7 @@ export class OpenTuiApplication {
   private subagentGeneration = 0
   private startedAt: number | null = null
   /** While context compaction runs, it replaces the working verb; set even when no run is active. */
-  private compacting: { since: number; label: string } | null = null
+  private compacting: { since: number; label: string; position: number } | null = null
   private requestStartedAt: number | null = null
   private lastResponseTokensPerSecond: number | null = null
   private completedWorkingStatus?: { label: string; elapsedMs: number; tokensPerSecond: number | null }
@@ -1169,6 +1169,7 @@ export class OpenTuiApplication {
         }
       }
       this.startedAt = null
+      this.compacting = null
       this.requestStartedAt = null
       this.activeVerb = undefined
       this.activeTurnId = undefined
@@ -1182,7 +1183,7 @@ export class OpenTuiApplication {
         this.dispatchManagedQueue()
       })
     }
-    if (event.type === 'compaction_start') this.compacting = { since: Date.now(), label: 'Compacting context' }
+    if (event.type === 'compaction_start') this.compacting = { since: Date.now(), label: 'Compacting context', position: this.transcript.view().items.length }
     if (event.type === 'compaction_end') {
       this.compacting = null
       this.transcript.bind(this.session)
@@ -2397,6 +2398,9 @@ export class OpenTuiApplication {
   view(): OpenTuiView {
     const { snapshot, inputTokens, outputTokens, cache } = this.sessionStatistics()
     const transcript = this.transcript.view()
+    const items: readonly TranscriptItem[] = this.compacting
+      ? [...transcript.items.slice(0, this.compacting.position), { kind: 'compacting', id: 'live-compaction', label: this.compacting.label }, ...transcript.items.slice(this.compacting.position)]
+      : transcript.items
     const width = Math.max(20, this.host.columns - 4)
     const above: AnsiLine[][] = []
     const below: AnsiLine[][] = []
@@ -2409,7 +2413,7 @@ export class OpenTuiApplication {
       remoteControl: this.remoteState,
       goal: goalFooter(this.runtime?.goal?.get() ?? null),
       // Single-line notices can accompany the welcome; multiline output such as /help takes over the transcript.
-      home: !transcript.hasMultilineNotice && transcript.items.every(item => item.kind === 'notice'),
+      home: !transcript.hasMultilineNotice && items.every(item => item.kind === 'notice'),
       sessionName: snapshot?.name,
       cwd: snapshot?.cwd ?? process.cwd(),
       branch: this.branch,
@@ -2420,7 +2424,7 @@ export class OpenTuiApplication {
       outputTokens,
       cache,
       subscription: snapshot?.subscription ?? false,
-      items: transcript.items,
+      items,
       hasUserMessages: transcript.hasUserMessages,
       slashCommandNames: this.currentSlashCommandNames(),
       skillNames: this.currentSkillNames(),

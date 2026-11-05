@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 2.3.1-unstable
+
+- **Live compaction status appears in the terminal transcript.** An animated divider shows while context compacts, updates to the retry label when needed, and disappears when compaction ends. The working-status line remains visible, and the parity register records the terminal and App surfaces.
+
+- Automated tests, CI test jobs and release smoke checks were skipped at the user's request. The package was built and its release integrity and provenance were verified.
+
 ## 2.3.0-unstable
 
 - **Session token totals survive compaction.** The terminal's token counts use recorded session usage, including earlier runs and compacted messages; the cache percentage remains a separate recent-request diagnostic.

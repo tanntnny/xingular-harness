@@ -9,9 +9,9 @@ permissions:
   contents: read
 
 jobs:
-  # 2.3.0-unstable is a one-release test bypass requested by the package owner.
+  # 2.3.0-unstable and 2.3.1-unstable are one-release test bypasses requested by the package owner.
   check:
-    if: ${{ github.ref_name != 'v2.3.0-unstable' }}
+    if: ${{ github.ref_name != 'v2.3.0-unstable' && github.ref_name != 'v2.3.1-unstable' }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -42,7 +42,7 @@ jobs:
 
   candidate:
     needs: check
-    if: ${{ always() && (needs.check.result == 'success' || (github.ref_name == 'v2.3.0-unstable' && needs.check.result == 'skipped')) }}
+    if: ${{ always() && (needs.check.result == 'success' || ((github.ref_name == 'v2.3.0-unstable' || github.ref_name == 'v2.3.1-unstable') && needs.check.result == 'skipped')) }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -63,7 +63,7 @@ jobs:
 
   smoke:
     needs: candidate
-    if: ${{ github.ref_name != 'v2.3.0-unstable' }}
+    if: ${{ github.ref_name != 'v2.3.0-unstable' && github.ref_name != 'v2.3.1-unstable' }}
     strategy:
       fail-fast: false
       matrix:
@@ -89,7 +89,7 @@ jobs:
 
   publish:
     needs: [candidate, smoke]
-    if: ${{ always() && needs.candidate.result == 'success' && (needs.smoke.result == 'success' || (github.ref_name == 'v2.3.0-unstable' && needs.smoke.result == 'skipped')) }}
+    if: ${{ always() && needs.candidate.result == 'success' && (needs.smoke.result == 'success' || ((github.ref_name == 'v2.3.0-unstable' || github.ref_name == 'v2.3.1-unstable') && needs.smoke.result == 'skipped')) }}
     # Configure required reviewers here; this approval gates publication, not pre-tag candidate review.
     environment: npm-publish
     runs-on: ubuntu-latest
@@ -110,7 +110,7 @@ jobs:
       - name: Check candidate integrity
         working-directory: outputs/release
         run: sha256sum --check SHA256SUMS
-      - name: Publish the tested tarball with provenance
+      - name: Publish the release tarball with provenance
         run: |
           version=$(node -p "require('./package.json').version")
           if [[ "$version" == *-unstable || "$version" == *-unstable.* ]]; then npm_tag=unstable; else npm_tag=latest; fi

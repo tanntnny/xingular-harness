@@ -98,6 +98,12 @@ export interface SummaryItem {
   text: string
 }
 
+export interface CompactingItem {
+  kind: 'compacting'
+  id: string
+  label: string
+}
+
 export interface CompactionItem {
   kind: 'compaction'
   id: string
@@ -143,6 +149,7 @@ export type TranscriptItem =
   | CustomItem
   | SummaryItem
   | CompactionItem
+  | CompactingItem
   | PlanItem
   | TodoTranscriptItem
 

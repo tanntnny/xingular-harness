@@ -233,6 +233,7 @@ describe('OpenTuiApplication', () => {
     ;(app as unknown as { transcript: { bind(session: unknown): void } }).transcript.bind(session)
 
     internals.accept({ type: 'compaction_start', reason: 'threshold' } as AgentSessionEvent)
+    expect(app.view().items.at(-1)).toMatchObject({ kind: 'compacting', label: 'Compacting context' })
     session.messages = [{ role: 'compactionSummary', summary: 'Earlier work.', tokensBefore: 50_000 }, ...before.slice(-2)]
     internals.accept({ type: 'compaction_end', reason: 'threshold', result: { summary: 'Earlier work.', tokensBefore: 50_000 } } as AgentSessionEvent)
     session.messages.push({ role: 'assistant', content: 'next step' })
@@ -240,6 +241,7 @@ describe('OpenTuiApplication', () => {
 
     const items = app.view().items
     expect(items.at(-1)).toMatchObject({ kind: 'assistant', text: 'next step' })
+    expect(items.some(item => item.kind === 'compacting')).toBe(false)
     expect(items.some(item => item.kind === 'notice')).toBe(false)
     await app.shutdown()
   })
@@ -260,8 +262,10 @@ describe('OpenTuiApplication', () => {
     expect(working.frame).not.toBe('')
     expect(working.elapsedMs).toEqual(expect.any(Number))
     expect(working.tokensPerSecond).toBeNull()
+    expect(app.view().items.at(-1)).toMatchObject({ kind: 'compacting', label: 'Compacting context' })
     internals.accept({ type: 'compaction_end', reason: 'manual', result: { summary: 'short', tokensBefore: 10 } } as AgentSessionEvent)
     expect(app.view().working).toMatchObject({ active: false, label: '' })
+    expect(app.view().items.some(item => item.kind === 'compacting')).toBe(false)
     await app.shutdown()
   })
 
@@ -274,10 +278,13 @@ describe('OpenTuiApplication', () => {
       dispose: async () => {}
     } as unknown as TerminalRuntime
 
+    internals.accept({ type: 'compaction_start', reason: 'threshold' } as AgentSessionEvent)
+    expect(app.view().items.some(item => item.kind === 'compacting')).toBe(true)
     internals.accept({
       type: 'compaction_end', errorMessage: 'Turn prefix summarization failed: The operation was aborted.'
     } as AgentSessionEvent)
 
+    expect(app.view().items.some(item => item.kind === 'compacting')).toBe(false)
     expect(app.view().items.at(-1)).toMatchObject({
       kind: 'notice', level: 'error', text: 'Turn prefix summarization failed: The operation was aborted.'
     })
@@ -322,6 +329,7 @@ describe('OpenTuiApplication', () => {
       type: 'summarization_retry_attempt_start', source: 'compaction', reason: 'threshold'
     } as AgentSessionEvent)
     expect(app.view().working.label).toBe('Retrying compaction')
+    expect(app.view().items.find(item => item.kind === 'compacting')).toMatchObject({ label: 'Retrying compaction' })
     expect(app.view().items.at(-1)).toMatchObject({ kind: 'notice', text: 'Retry 2/4 in 2.5s: temporary failure' })
     internals.accept({ type: 'summarization_retry_attempt_start', source: 'branchSummary' } as AgentSessionEvent)
     expect(app.view().items.at(-1)).toMatchObject({ kind: 'notice', text: 'Retrying branch summary…' })
