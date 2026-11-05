@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 2.2.0-unstable
+
 - **The long-lived harness is the default for `xagent` (ADR-0085).** A window runs in it unless told
   otherwise (`--no-daemon`, `XINGULAR_DAEMON=0`); on Windows, with `XINGULAR_TERMINAL_RUNTIME=inprocess`, when its
   socket path is too long, or when it cannot start, the window runs its own harness and says why. `--worktree`

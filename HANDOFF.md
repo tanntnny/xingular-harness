@@ -1,4 +1,4 @@
-# Handoff — 2026-11-05 (second session)
+# Handoff — 2026-11-05 (second session; released as 2.2.0-unstable without a test run, by request)
 
 The long-lived harness (the "app-server", `xagent daemon`) is now the **default** for the terminal and for
 the App's sidecar (ADR-0085). It was opt-in at `2.1.0-unstable`. Decisions and evidence:
@@ -9,9 +9,10 @@ the App's sidecar (ADR-0085). It was opt-in at `2.1.0-unstable`. Decisions and e
 ## Commit state
 
 - `agent-harness`: `cfd697a` holds the first session's work (version handshake, idle exit, remote control of
-  live sessions, hosts). **This session's work is uncommitted** (daemon robustness, terminal parity, host
-  layer fixes, the flip, docs). `docs/study/00-index.md` and `docs/study/STUDY-0010-plugin-reach.md` are not
-  ours; leave them out of the commit.
+  live sessions, hosts); `5d41915` the second's (daemon robustness, terminal parity, host layer fixes, the flip,
+  docs); the release commit `release: prepare @xingular/harness 2.2.0-unstable` (tag `v2.2.0-unstable`, local,
+  not pushed, not published) follows. The release commit was made **without rerunning the tests, by request**.
+  `docs/study/00-index.md` and `docs/study/STUDY-0010-plugin-reach.md` are not ours; they stay out of commits.
 - `agent-app`: nothing from either session is committed. The repository has a lot of the owner's own
   uncommitted work, and `src/modes/solo/soloCommands.ts` and its test are **untracked as whole files**, so the
   `/rc` change cannot be split from the owner's file. Touched files are listed below.
