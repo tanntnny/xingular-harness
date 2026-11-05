@@ -38,6 +38,8 @@ export const connectionSchema = z.object({
   excludedProjectIds: z.array(z.string()).default([]),
   /** Tools that run without asking. */
   readTools: z.array(z.string()).default([]),
+  /** Maximum wait for an individual MCP call, in seconds. */
+  callTimeoutSeconds: z.number().int().min(1).max(1800).default(60),
   expectedVaultId: z.string().nullable().default(null),
   checkedAt: z.string().nullable().default(null),
   serverName: z.string().nullable().default(null),

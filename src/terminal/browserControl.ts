@@ -66,6 +66,13 @@ export class BrowserControl {
         owner: plugin.title, origin: plugin.source, status: plugin.required ? 'Required' : plugin.trust === 'untrusted' ? 'Needs trust' : 'Saved configuration',
         pluginId: plugin.id, path: plugin.path ?? undefined, required: plugin.required })
       for (const entry of plugin.contributions) {
+        if (entry.kind === 'connection' && plugin.source === 'builtin' && plugin.attachment) {
+          add({ id: `contribution:${entry.id}`, section: 'connections', name: `${plugin.title} · ${entry.name}`,
+            description: `${entry.description} This connection follows its plugin; availability does not grant tool approvals. Reopen the terminal to apply skill changes.`,
+            owner: plugin.title, origin: 'Built-in', pluginId: plugin.id, contributionId: entry.id,
+            status: entry.state === 'off' ? 'Disabled for this scope' : entry.state === 'untrusted' ? 'Needs trust' : 'Enabled for this scope' })
+          continue
+        }
         if (!['skill', 'tool', 'command', 'instruction'].includes(entry.kind)) continue
         if ((entry.kind === 'command' || entry.kind === 'instruction') && !entry.path) continue
         const section = entry.kind === 'skill' ? 'skills' : entry.kind === 'tool' ? 'tools' : 'library'

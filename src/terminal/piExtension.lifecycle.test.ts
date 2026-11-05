@@ -407,6 +407,7 @@ describe('terminal bridge lifecycle', () => {
     await vi.advanceTimersByTimeAsync(100)
     const polls = transport.telemetry.mock.calls.filter(([event]) => event === 'poll').length
     expect(polls).toBe(1)
+    expect(transport.telemetry.mock.calls.find(([event]) => event === 'poll')?.[1]).toEqual({ waitMs: 20_000 })
     await first.handlers.get('session_shutdown')!({ type: 'session_shutdown', reason: 'resume' }, first.ctx)
     await vi.advanceTimersByTimeAsync(300)
     expect(transport.telemetry.mock.calls.filter(([event]) => event === 'poll')).toHaveLength(polls)

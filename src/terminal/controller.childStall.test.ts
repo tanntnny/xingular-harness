@@ -98,3 +98,20 @@ describe('a terminal reply that waits for subagents', () => {
     expect(interrupt).not.toHaveBeenCalled()
   })
 })
+
+describe('the roster of a reply the harness runs for a client terminal', () => {
+  it('lists the main run and its subagents without a native turn', () => {
+    const { controller } = setup()
+    const main = { id: 'live', parentRunId: null, relation: null, status: 'running', goal: 'go', startedAt: new Date().toISOString(), endedAt: null } as unknown as RunRecord
+    // Nothing begun: a child is not shown, as before.
+    controller.observeSubagent('live', { ...child('c1'), parentRunId: 'live' }, event('usage.updated', 'c1'))
+    expect(controller.subagentSnapshot()).toEqual([])
+    controller.trackLiveRun('live')
+    controller.observeMain(main, event('started', 'live'))
+    controller.observeSubagent('live', { ...child('c1'), parentRunId: 'live' }, event('usage.updated', 'c1'))
+    expect(controller.subagentSnapshot().map(item => [item.id, item.relation])).toEqual([['live', 'main'], ['c1', 'subagent']])
+    // A child of another run is not shown.
+    controller.observeSubagent('other', { ...child('c2'), parentRunId: 'other' }, event('usage.updated', 'c2'))
+    expect(controller.subagentSnapshot()).toHaveLength(2)
+  })
+})

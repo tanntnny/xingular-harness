@@ -164,6 +164,7 @@ describe('a pi terminal session', () => {
     expect(launch.args.slice(4)).toEqual([
       '--model', 'chosen-model', '--no-extensions', '--no-skills', '--no-prompt-templates', '--no-themes',
       '--skill', (await import('../tools/defaultSkills')).defaultSkillPath(),
+      '--skill', (await import('../tools/defaultSkills')).defaultSkillPath('tui-inspection'),
       '--extension', '/opt/harness/terminal-pi.js', '--session-dir', join(sessionFolder, 'pi')
     ])
     expect(launch.env.PI_CODING_AGENT_DIR).toBe(join(harness.accounts.dir, account.id, 'home', 'pi'))
@@ -219,7 +220,7 @@ describe('a pi terminal session', () => {
 
     const loaded = [
       '--extension', '/shared/extensions/mine.ts', '--extension', join(version, 'plugins/guard.ts'),
-      '--skill', join(version, 'skills'), '--skill', (await import('../tools/defaultSkills')).defaultSkillPath(), '--skill', '/shared/skills/alpha/SKILL.md',
+      '--skill', join(version, 'skills'), '--skill', (await import('../tools/defaultSkills')).defaultSkillPath(), '--skill', (await import('../tools/defaultSkills')).defaultSkillPath('tui-inspection'), '--skill', '/shared/skills/alpha/SKILL.md',
       '--prompt-template', '/shared/prompts/p.md',
       '--theme', '/shared/themes/dark.json',
       '--extension', '/opt/harness/terminal-pi.js', '--session-dir', join(root, 'sessions', 'p1', 'term-1', 'pi')
@@ -231,6 +232,10 @@ describe('a pi terminal session', () => {
     const code = (await harness.plugins.loading({ cwd: root, agentDir: join(harness.accounts.dir, account.id, 'home', 'pi') })).projectCode!
     harness.plugins.trust.grant(code, root)
     expect(await prepare()).toEqual([...flags, '--extension', join(root, '.pi/extensions/local.ts'), ...loaded])
+    await (await import('../plugins/api')).attach(harness, { id: 'tui-inspection' }, false)
+    const detached = await prepare()
+    expect(detached).not.toContain((await import('../tools/defaultSkills')).defaultSkillPath('tui-inspection'))
+    expect(detached).toContain((await import('../tools/defaultSkills')).defaultSkillPath())
   })
 
   it('records the explicitly chosen variant version on typed and reserved runs after head changes', async () => {

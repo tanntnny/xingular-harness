@@ -29,7 +29,20 @@ the gate.
 ## Connected apps and Hub
 
 Connected apps use an MCP broker with scoped session access, approval for non-read calls, and
-redaction of stored traces. The Hub installs exact catalog versions of skills, prompts, rules, and
+redaction of stored traces. Each saved connection has a tool-call timeout of 1–1,800 seconds
+(default 60), editable from the terminal Connections form. A timeout can leave an unknown outcome;
+the broker does not retry the operation.
+
+The optional built-in **Reverse engineer anything** plugin ships the REA 6.8.0 skill and, when
+available for the installation's Node runtime, its matching local MCP server. Open `/plugins`,
+select it and enable it for the desired scope; use its setting to change the 450-second default
+call deadline. Its operations need approval, and generic MCP calls remain unavailable in plan mode.
+The pinned optional dependency requires Node 22.23.4+, 24.22.1+, or 26.12.1+; other Harness-supported
+Node versions can install the Harness without it, and REA reports why it cannot start. REA's
+native analysis providers are separate prerequisites. REA runs as a local process with the Harness
+user's operating-system permissions; the native Bash workspace sandbox does not confine this MCP
+server. A server timeout or disconnect does not prove the requested operation stopped; inspect its
+state before retrying. The Hub installs exact catalog versions of skills, prompts, rules, and
 Pi packages. Installation does not automatically enable, trust, or authorize the installed resources.
 
 ## Further reading

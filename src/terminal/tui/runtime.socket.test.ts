@@ -133,6 +133,29 @@ describe('a native SDK runtime on the actual Harness terminal socket', () => {
     expect(existsSync(join(agentDir!, 'auth.json'))).toBe(false)
   })
 
+  it('keeps the session model and effort through a plan request and the turn after it', async () => {
+    const { harness, runtime, account } = await setup()
+    const ai = await import('@earendil-works/pi-ai')
+    const faux = ai.fauxProvider()
+    runtime.services.modelRuntime.registerNativeProvider(faux.provider)
+    const model = faux.getModel()
+    await runtime.session.setModel({ ...model, reasoning: true } as never)
+    runtime.session.setThinkingLevel('high')
+    const seen: string[] = []
+    faux.setResponses([
+      () => {
+        seen.push(`${runtime.session.model?.provider}/${runtime.session.model?.id}/${runtime.session.thinkingLevel}`)
+        return ai.fauxAssistantMessage('<proposed_plan># Plan\nDo it.</proposed_plan>')
+      },
+      ai.fauxAssistantMessage('Done')
+    ])
+    await runtime.submitPlan('plan it')
+    await runtime.session.prompt('Implement the plan: Plan')
+    expect(seen).toEqual([`${model.provider}/${model.id}/high`])
+    expect(runtime.session.thinkingLevel).toBe('high')
+    expect(harness.accounts.selection(account.id)).toMatchObject({ model: `${model.provider}/${model.id}`, effort: 'high' })
+  })
+
   it('hides question tools in normal mode and activates them only during plan requests', async () => {
     const { runtime } = await setup()
     const session = runtime.session
@@ -455,9 +478,9 @@ describe('a native SDK runtime on the actual Harness terminal socket', () => {
   it('keeps the same account and readiness after new/reload without duplicate page commands', async () => {
     const { harness, runtime } = await setup()
     expect(harness.terminals.state('offline-sdk')).toEqual({ ready: true, dirty: false, active: false })
-    expect(runtime.session.extensionRunner.getExtensionPaths()).toEqual(['<inline:harness-terminal-bridge>', '<inline:harness-mode-choices>', '<inline:harness-run-capabilities>'])
+    expect(runtime.session.extensionRunner.getExtensionPaths()).toEqual(['<inline:harness-terminal-bridge>', '<inline:harness-selection>', '<inline:harness-run-capabilities>'])
     expect(runtime.services.agentDir).toContain(harness.accounts.dir)
-    for (const command of ['accounts', 'plugins', 'hub']) expect(runtime.session.extensionRunner.getCommand(command)).toBeUndefined()
+    for (const command of ['accounts', 'plugins', 'marketplace', 'hub']) expect(runtime.session.extensionRunner.getCommand(command)).toBeUndefined()
     await runtime.newSession()
     await runtime.reload()
     expect(harness.terminals.state('offline-sdk')).toEqual({ ready: true, dirty: false, active: false })
@@ -478,8 +501,8 @@ describe('a native SDK runtime on the actual Harness terminal socket', () => {
     runtime.services.modelRuntime.registerNativeProvider(other.provider)
     // Pi's own fallback default, kept apart from the account's choice so the two are distinguishable.
     writeFileSync(join(runtime.services.agentDir, 'settings.json'), JSON.stringify({ defaultProvider: 'faux-b', defaultModel: 'two', defaultThinkingLevel: 'low' }))
-    harness.accounts.choose(account.id, 'normal', { model: 'faux-a/one', effort: 'high' })
-    // A new conversation re-reads the account's choices.
+    harness.accounts.select(account.id, { model: 'faux-a/one', effort: 'high' })
+    // A new conversation re-reads the account's selection.
     await runtime.newSession()
     expect(await runtime.services.modelRuntime.checkAuth('faux-a')).toBeTruthy()
 

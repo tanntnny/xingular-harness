@@ -71,6 +71,7 @@ export function createCommandPage(host: TerminalCommandHost, id: CommandPageId, 
     case 'hub':
       return new HubPage({
         theme, call: host.control, changed: host.changed,
+        navigate: page => options.navigate?.(page),
         ui: { select: host.ui.select.bind(host.ui), confirm: host.ui.confirm.bind(host.ui), notify }
       })
     case 'harness':

@@ -30,6 +30,7 @@ Screen: transcript above the composer, centred dialogs, full-screen resource bro
 ## Contracts
 
 - The published executable is `xagent`; `xharness` is not retained as a compatibility alias. With no command, `xagent` starts the interactive terminal. `terminal` remains an explicit alias, and `serve` remains the host-facing RPC path.
+- The composer token totals cover recorded usage for the session across runs and compactions; the cache hit percentage is a separate recent-request diagnostic. The working clock measures the current or last completed run, continuing across compactions and native continuations.
 - `TerminalAssets` is `{ node, cli, piExtension, openTui }`. The command is Bun with
   `--conditions=browser` and `dist/terminal-opentui.js`; no global `pi` is needed.
 - The `piExtension` path is the final prepared extension argument; the runtime loads it as the
@@ -49,13 +50,13 @@ Screen: transcript above the composer, centred dialogs, full-screen resource bro
   replays the latest one (page 05). The shared compaction checkpoint extension reintroduces the active
   request and its todo list, as of a compaction during the run, right after the summary until the
   run settles (ADR-0067).
-- The terminal runtime, not Pi, decides the model a conversation starts on. A fresh conversation
-  starts on the account's latest normal-mode choice; a resumed one keeps the model in its own
-  history while this account offers it and holds credentials for its provider. When it does not,
-  the runtime starts the conversation on the account's newest saved selection (the mode's, then
-  normal's, then the newest in any mode) with that selection's effort, writes that model change
-  into the conversation, and reports it in one notice; the account's `choices.json` is not touched
-  (ADR-0064). With no usable saved selection, Pi's own fallback message stands.
+- The terminal runtime, not Pi, decides the model and effort a conversation starts on. A fresh
+  conversation starts on the account's saved selection; a resumed one keeps the model and effort in
+  its own history while this account offers the model and holds credentials for its provider. When
+  it does not, the runtime starts the conversation on the account's saved selection with its effort,
+  writes that model change into the conversation, and reports it in one notice; the account's
+  `choices.json` is not touched (ADR-0064, ADR-0087). With no usable saved selection, Pi's own
+  fallback message stands.
 - Normal mode keeps `ask_user` out of the active tool set. An attended plan request enables the
   shared tool alongside its read-only set and restores the normal set on success, failure or
   interruption, and again after any rebuild from the transcript (page 02, `INV-RUN-8`). The question blocks until answered, then planning continues in the same run. There
@@ -165,12 +166,13 @@ their own terminal components (INV-TUI-8).
   stop reach it instead of `TerminalController`. Pending decisions include the active reply's
   subagents.
 - **Client.** It keeps the model catalogue, settings, the skills, prompts and themes it lists, and
-  `ModeChoices`. `$name` skills and goal notes go as `hiddenNotes`; a plugin command is sent as its
+  `ModelSelection`. `$name` skills and goal notes go as `hiddenNotes`; a plugin command is sent as its
   `/<prefix>:<name>` text; `/compact`, `/tree` navigation and HTML export are command runs;
   `/new`, `/resume`, fork and import change the file it resumes and close the live session; `/session`
   takes a history file or the session id its runs record. A `!` command is the run's initial Bash.
-  A plan run sends only the plan's tools (`planTools: 'active'`). A mode with no saved model keeps
-  the current one. Closing the client never interrupts a reply; the parent decides.
+  A plan run sends only the plan's tools (`planTools: 'active'`). Composer modes never change the
+  model or effort; the same selection runs normal and plan requests. Closing the client never
+  interrupts a reply; the parent decides.
 - **What the window draws.** Besides the native events, the journal carries `harness_notice` (a
   plugin's notice, status line, widget or title, and a failed reply's message), `harness_settled`
   (the reply is over, with its goal state and history file, even when Pi's loop never started) and
@@ -333,26 +335,32 @@ on close. No command text is sent to the conversation model. See [Doctor](../doc
 
 `/harness` owns broad navigation for Foundation, Variant, Skills, Plugins, Connections, Tools and
 Library. `/skills`, `/connections` (`/mcp`), `/tools` and `/components` are shortcuts into that
-browser. `/plugins` opens the focused local plugin manager (Plugins, Trust and Packages tabs); `/hub`
-opens the separate Community catalog (Catalog and Installed tabs). The Hub Catalog shows Community
-entries across supported types; Installed retains receipts from every channel with its channel
-visible. Registry/document entries offer bounded payload Preview; Pi packages do not. Current
+browser. `/plugins` opens the focused local plugin manager (Plugins, Trust and Packages tabs);
+`/marketplace` opens Marketplace discovery and Installed receipts, with `/hub` retained as an alias.
+The `hub.*` method names remain compatible. Marketplace Catalog shows Community entries across
+supported types; Installed retains receipts from every channel with its channel visible and offers a
+route to the matching local manager.
+Registry/document entries offer bounded payload Preview; Pi packages do not. Current
 availability in `/harness` comes from the live resource loader and active tool registry,
-independently of saved configuration and the latest variant head.
+independently of saved configuration and the latest variant head. Connections also lists
+release-owned plugin connections, including when disabled, as plugin-owned resources; their scoped
+switch and settings are managed through the owning plugin rather than saved-connection actions.
+Their displayed attachment state does not claim a live connection or change a run's frozen capability set.
 
 Every `terminal.browser.*` call requires the private control key, including bounded resource
 inspection, local imports, connection management and browser settings. Direct plugin package
-install/update/remove and attachment/trust/settings actions use protected `plugins.*`; Hub catalog
-list/install/uninstall use protected `hub.*`. Hub-owned package removal keeps the receipt and
-resource ownership in the Hub service. These routes are adapters to the existing services, not
+install/update/remove and attachment/trust/settings actions use protected `plugins.*`; Marketplace
+catalog list/install/uninstall use protected `hub.*`. Marketplace-owned package removal keeps receipt
+and resource ownership in that service. These routes are adapters to the existing services, not
 another loader, attachment store, gate or secret store. Browsing neither executes plugin code nor
 connects MCP.
 The browser uses the full terminal with persistent section tabs (PROP-0014); wide screens keep
 inventory beside details, actions and content, while compact screens keep inline details under
-the same tabs. The separate `/plugins` and `/hub` pages also use full-screen layouts with persistent
+the same tabs. The separate `/plugins` and `/marketplace` pages (`/hub` alias) also use full-screen
+layouts with persistent
 section tabs, responsive inventory/details panes and their existing protected operations. Other
-command pages remain centered except `/settings`, `/accounts`, `/plugins`, `/hub`, `/context` and `/usage:`, which use
-full-screen page layouts.
+command pages remain centered except `/settings`, `/accounts`, `/plugins`, `/marketplace`, `/context`
+and `/usage:`, which use full-screen page layouts.
 Accounts keeps Accounts/Pools tabs, search and account-service operations.
 Wide terminals show selected-account details beside the list; Enter or a primary click opens grouped
 actions in that inspector. Compact terminals replace the list with a full-page account detail view

@@ -1,9 +1,12 @@
 // The plugin calls a host makes: the list, what reaches one caller, switching something on or
 // off for a scope, and the trust decision.
+import { createHash } from 'node:crypto'
 import { join } from 'node:path'
 
 import { ensureSharedDir, sharedDir } from '../accounts/env'
 import { invalid, notFound } from '../core/errors'
+import { readJson } from '../core/fs'
+import { hubReceiptSchema } from '../hub/schema'
 import { findProject } from '../core/projects'
 import type { Harness } from '../harness'
 import type { CallerContext } from '../core/caller'
@@ -46,7 +49,7 @@ export async function loadingFor(harness: Harness, scope: PluginScope): Promise<
 }
 
 export async function list(harness: Harness, scope: PluginScope = {}): Promise<Plugin[]> {
-  return catalogue({
+  const plugins = catalogue({
     root: harness.env.root,
     descriptors: harness.descriptors,
     application: harness.applicationPlugins,
@@ -60,6 +63,37 @@ export async function list(harness: Harness, scope: PluginScope = {}): Promise<P
     attachments: attachments.load(harness.env.root),
     caller: callerOf(scope)
   })
+  // A receipt remains manageable even when the package resolver finds no contributions.
+  const receipts = readJson<unknown[]>(join(harness.env.root, 'hub', 'installed.json')) ?? []
+  for (const value of receipts) {
+    const parsed = hubReceiptSchema.safeParse(value)
+    if (!parsed.success || parsed.data.entry.delivery.kind !== 'pi-package') continue
+    const receipt = parsed.data
+    const delivery = receipt.entry.delivery
+    if (delivery.kind !== 'pi-package') continue
+    const source = delivery.source
+    if (plugins.some(plugin => plugin.install?.source === source)) continue
+    const preferred = receipt.resourceIds[0]
+    const id = preferred && !plugins.some(plugin => plugin.id === preferred)
+      ? preferred : `package:missing-${createHash('sha256').update(source).digest('hex').slice(0, 16)}`
+    plugins.push({
+      id, title: receipt.entry.title, description: 'Needs attention: the installed package could not be discovered. Remove its marketplace receipt and install it again.',
+      version: receipt.entry.version, source: 'package', path: null, runsCode: false, trust: 'none', code: null,
+      install: { kind: 'settings', source }, extends: [], required: null, manage: 'files', settings: [], connectorTemplates: [], attachment: null, contributions: []
+    })
+  }
+  const settings = readJson<{ packages?: Array<string | { source: string }> }>(join(sharedDir(harness.accounts.dir), 'settings.json'))
+  for (const entry of settings?.packages ?? []) {
+    const source = typeof entry === 'string' ? entry : entry.source
+    if (!source || plugins.some(plugin => plugin.install?.source === source)) continue
+    const id = `package:missing-${createHash('sha256').update(source).digest('hex').slice(0, 16)}`
+    plugins.push({
+      id, title: source, description: 'Needs attention: the configured package could not be discovered. Remove or repair its source before enabling it.',
+      version: null, source: 'package', path: null, runsCode: false, trust: 'none', code: null,
+      install: { kind: 'settings', source }, extends: [], required: null, manage: 'files', settings: [], connectorTemplates: [], attachment: null, contributions: []
+    })
+  }
+  return plugins
 }
 
 export interface InventoryParams extends PluginScope {

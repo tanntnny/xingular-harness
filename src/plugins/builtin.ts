@@ -30,12 +30,13 @@ import { USAGE_SETTINGS } from '../usage/settings'
 import { usageServerMethods } from '../usage/serverMethods'
 import type { PluginDescriptor } from './types'
 import { createBuiltinPluginRegistry } from './builtinRegistry'
+import { defaultSkillPath } from '../tools/defaultSkills'
 
 const tools = (definitions: readonly HarnessToolDefinition[]): PluginDescriptor['tools'] => definitions.map((tool) => ({ name: tool.name, description: tool.label }))
 const toolContribution = (definitions: readonly HarnessToolDefinition[], toolOrder: number) => ({
   toolOrder,
   tools: (context: import('./builtinRegistry').BuiltinToolContext) => context.harnessTools
-    ? harnessTools(context.env, context.caller, { variantDir: context.variantDir, definitions })
+    ? harnessTools(context.env, context.caller, { variantDir: context.variantDir, builtinContributions: context.builtinContributions, definitions })
     : []
 })
 
@@ -97,6 +98,17 @@ const DOCTOR_PLUGIN: PluginDescriptor = { id: 'doctor', title: 'Doctor', descrip
 const WORKTREES_PLUGIN: PluginDescriptor = { id: 'worktrees', title: 'Worktrees', description: 'Create and manage isolated git worktrees, move changes between them, and restore removed worktrees.', required: 'Managed worktrees are available to every local terminal.' }
 const HUB_PLUGIN: PluginDescriptor = { id: 'hub', title: 'Hub', description: 'Browse and install reviewed skills, plugins and documents from configured registries.', required: 'Reviewed Harness resources are available to every host.' }
 const PLUGIN_AUTHORING: PluginDescriptor = { id: 'plugin-authoring', title: 'Plugin authoring', description: 'Propose plugins for a person to review.', required: 'Plugin proposals are reviewed before installation.', tools: tools(PLUGIN_PROPOSAL_TOOLS) }
+const TUI_INSPECTION_PLUGIN: PluginDescriptor = {
+  id: 'tui-inspection', title: 'TUI inspection', description: 'Inspect and audit terminal interfaces with repeatable interactions and visual evidence.',
+  switchable: { on: true }, skills: [{ name: 'tui-inspection', description: 'Inspect, audit, and test terminal interfaces.', path: defaultSkillPath('tui-inspection') }]
+}
+const REA_PLUGIN: PluginDescriptor = {
+  id: 'rea', title: 'Reverse engineer anything', description: 'Investigate shipped artifacts and runtime evidence with REA.',
+  switchable: { on: false },
+  settings: [{ key: 'callTimeoutSeconds', label: 'MCP call timeout (seconds)', description: 'Client deadline for each REA operation; a timeout does not prove the operation stopped.', default: 450, min: 1, max: 1800 }],
+  connections: [{ name: 'builtin-rea', description: 'Version-matched local REA MCP server; follows the REA plugin switch.' }],
+  skills: [{ name: 'reverse-engineer-anything', description: 'Reverse engineer artifacts and investigate runtime behavior with REA.', path: defaultSkillPath('reverse-engineer-anything') }]
+}
 const REFINEMENT_PLUGIN: PluginDescriptor = { id: 'refinement', title: 'Refinement', description: 'Improve variants from recorded evidence through isolated refinement runs and reviewed candidates.', required: 'Variant refinement is available to every host.' }
 const CAPABILITIES_PLUGIN: PluginDescriptor = { id: 'capabilities', title: 'Capability discovery', description: 'Inspect the callable tools of the current run, including their input schemas. Discovery never grants access.', required: 'Every interactive session can inspect its own registered capabilities.', tools: [{ name: GET_CAPABILITIES, description: 'Inspect current capabilities' }] }
 const USAGE_PLUGIN: PluginDescriptor = {
@@ -145,6 +157,8 @@ export const BUILTIN_PLUGIN_REGISTRY = createBuiltinPluginRegistry([
   },
   { descriptor: HUB_PLUGIN, serverMethods: hubServerMethods },
   { descriptor: PLUGIN_AUTHORING, ...toolContribution(PLUGIN_PROPOSAL_TOOLS, 31) },
+  { descriptor: TUI_INSPECTION_PLUGIN },
+  { descriptor: REA_PLUGIN },
   { descriptor: REFINEMENT_PLUGIN, serverMethods: refinementServerMethods },
   { descriptor: SIDE_QUESTIONS_PLUGIN, serverMethods: sideQuestionServerMethods },
   {

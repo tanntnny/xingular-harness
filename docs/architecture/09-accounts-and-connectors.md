@@ -38,13 +38,18 @@ skills, prompts, rules and Pi packages.
 - **Broker tools.** `mcp_list_tools` and `mcp_call_tool`. A connection reaches a session only if
   its scope allows the caller and the policy's `connections` keeps it. Calls that are not reads
   are approved through the gate. Each call's redacted result is traced in `mcp-context.json`.
+- **Bundled REA connector.** The optional, initially disabled `rea` plugin supplies a virtual stdio connector through the broker. Its scoped plugin attachment and the run's frozen connector and contribution IDs must all allow access; every operation requires approval. It launches the pinned `rea-agents` runtime only when needed and uses its matching shipped skill. The plugin's timeout setting defaults to 450 seconds. The terminal Connections browser lists it even when disabled, with management through its owning plugin; this is an inventory projection, not a saved connection or a live-health check. The runtime reports a clear error when the REA package is absent or the Harness's Node version does not meet REA's stricter requirement.
+- **MCP deadlines.** Saved connections have a `callTimeoutSeconds` value from 1 to 1,800; old definitions default to 60 seconds. A client timeout does not prove that the server stopped or that an operation had no effects, and the broker does not automatically replay the call.
 - **`apps.expose(tools)`** offers the application's own tools through the broker, which is how a
   terminal session reaches them.
-- **Hub.** `hub.list`, `get`, `preview`, `install`, `uninstall`, `readDocument`. Pi packages need
-  an exact npm version or a full Git commit. Documents are saved as inert JSON. The `/hub` Catalog
-  view filters Community entries for display; the service and other callers retain the full catalog.
-  Installed shows receipts from every channel. On page entry, cached/bundled content is shown before
-  a remote refresh, and origin, refresh time and failure status remain visible (PROP-0047).
+- **Marketplace (`hub.*` API).** `hub.list`, `get`, `preview`, `install`, `uninstall`,
+  `readDocument`. Pi packages need an exact npm version or a full Git commit. Documents are saved as
+  inert JSON. The `/marketplace` view (also `/hub`) filters Community entries for display; the
+  service and other callers retain the full catalog. Installed shows receipts from every channel and links
+  to the matching local management surface. A configured package with no discoverable receipt-owned
+  plugin is incomplete and remains manageable by its exact source. On page entry, cached/bundled
+  content is shown before a remote refresh, and origin, refresh time and failure status remain visible
+  (PROP-0047).
 
 ## Invariants
 
@@ -80,13 +85,13 @@ skills, prompts, rules and Pi packages.
   receipt's resources and revokes its attachment choices. Every removal route for a Hub-owned Pi
   package, including `plugins.remove`, goes through Hub's receipt-owning uninstall operation. A
   floating plugin-package update must not change a Hub-owned package; replacement uses an explicit
-  exact catalog version (PROP-0047).
+  exact catalog version (PROP-0047). Source matching prevents a same-named unrelated package from being removed or treated as receipt-owned.
 
 ## Data
 
 ```text
 <state dir>/accounts/         registry, per-account Pi agent folders, _shared/pi/, audit log, per-account state (health, plan, limits)
-<state dir>/accounts/<id>/choices.json  the model and effort each mode last used on that account
+<state dir>/accounts/<id>/choices.json  the model and effort last selected on that account
 <state dir>/secrets.json      default SecretStore (owner-only)
 <state dir>/connections.json  connected apps, no secrets
 <state dir>/hub/catalog.json  catalog cache
@@ -95,10 +100,12 @@ skills, prompts, rules and Pi packages.
 ```
 
 `choices.json` is the account's own model memory: it holds no credentials and is removed with the
-account. A conversation that reaches a new account cannot use is started on this account's newest
-selection — the mode's, then normal's, then the newest in any mode — with that selection's effort,
-skipping a model the account cannot authenticate; the terminal records the start in the
-conversation, never in `choices.json`. See [ADR-0064](../decisions/ADR-0064-account-model-fallback-on-resume.md).
+account. A conversation this account cannot continue on the model in its history starts on this
+selection, with its effort, skipping a model the account cannot authenticate; the terminal records
+the start in the conversation, never in `choices.json`. Earlier releases stored one entry per mode;
+the newest valid entry becomes this one selection, and the next save writes the flat shape. See
+[ADR-0064](../decisions/ADR-0064-account-model-fallback-on-resume.md) and
+[ADR-0087](../decisions/ADR-0087-one-model-and-effort-selection.md).
 
 ## Source map
 

@@ -1,6 +1,6 @@
 import { execFile, spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
@@ -57,6 +57,8 @@ import { skillTokenAt } from '../tui/skillInvocation'
 import type { RemoteStatus as RemoteControlStatus } from '../../remote/service'
 
 const exec = promisify(execFile)
+/** A folder that is not a repository is looked at again this rarely. */
+const NON_REPOSITORY_RECHECK_MS = 30_000
 const COPY_TOAST_DURATION_MS = 2500
 /**
  * The shortest gap between two view publications. While a run streams, 30 Hz leaves frames free
@@ -254,6 +256,9 @@ export class OpenTuiApplication {
   private paletteFilter = ''
   private paletteIndex = 0
   private branch: string | null = null
+  /** What the last branch lookup saw of `.git/HEAD`, so a tick that finds it unchanged spawns nothing. */
+  private headStamp: { path: string; mtimeMs: number; size: number } | null = null
+  private lastGitLookup = 0
   private subagents: TerminalSubagentActivity[] = []
   private subagentsPolling = false
   private subagentsRefreshPending = false
@@ -820,6 +825,7 @@ export class OpenTuiApplication {
         watchRemoteControl: () => this.watchRemoteControl()
       })
       this.cleanup.push(this.runtime.subscribe(event => this.accept(event)))
+      this.attachActiveWorkingStatus()
       this.cleanup.push(this.runtime.onBeforeSessionChange(() => this.resetPresentation()))
       this.cleanup.push(this.runtime.onSessionChange(() => {
         this.keybindings?.reload()
@@ -876,9 +882,25 @@ export class OpenTuiApplication {
 
   private async refreshBranch(): Promise<void> {
     if (!this.runtime || this.stopped) return
+    const now = Date.now()
+    if (this.headStamp) {
+      // A branch change rewrites HEAD; looking at the file costs a stat, looking through git a process.
+      try {
+        const current = await stat(this.headStamp.path)
+        if (current.mtimeMs === this.headStamp.mtimeMs && current.size === this.headStamp.size) return
+      } catch { this.headStamp = null }
+    } else if (now - this.lastGitLookup < NON_REPOSITORY_RECHECK_MS && this.lastGitLookup) {
+      return
+    }
+    this.lastGitLookup = now
     let branch: string | null = null
     try {
-      branch = (await exec('git', ['symbolic-ref', '--quiet', '--short', 'HEAD'], { cwd: this.runtime.cwd, timeout: 2000 })).stdout.trim() || null
+      const options = { cwd: this.runtime.cwd, timeout: 2000 }
+      const gitDir = (await exec('git', ['rev-parse', '--absolute-git-dir'], options)).stdout.trim()
+      const path = join(gitDir, 'HEAD')
+      const seen = await stat(path)
+      this.headStamp = { path, mtimeMs: seen.mtimeMs, size: seen.size }
+      branch = (await exec('git', ['symbolic-ref', '--quiet', '--short', 'HEAD'], options)).stdout.trim() || null
     } catch { /* Non-repositories and detached HEAD have no branch segment. */ }
     if (branch !== this.branch) {
       this.branch = branch
@@ -1061,6 +1083,12 @@ export class OpenTuiApplication {
     return this.slashCommandNames = [...names]
   }
 
+  private attachActiveWorkingStatus(): void {
+    if (this.startedAt !== null || !this.runtime?.session.isStreaming) return
+    this.accept({ type: 'agent_start' } as AgentSessionEvent)
+    this.startedAt = this.runtime.attachedRunStartedAt ?? Date.now()
+  }
+
   private resetActiveWorkingStatus(): void {
     this.startedAt = null
     this.compacting = null
@@ -1106,7 +1134,7 @@ export class OpenTuiApplication {
       }
       this.subagentGeneration += 1
       this.subagentsRefreshPending = false
-      this.startedAt = Date.now()
+      this.startedAt ??= Date.now()
       this.subagents = []
       this.requestStartedAt = null
       this.lastResponseTokensPerSecond = null
@@ -1740,16 +1768,14 @@ export class OpenTuiApplication {
     this.change()
   }
 
-  private switchComposerMode(mode: 'normal' | 'plan' | 'bash'): Promise<void> {
-    const wasPlanMode = this.planMode
+  private switchComposerMode(mode: 'normal' | 'plan' | 'bash'): void {
     this.planMode = mode === 'plan'
     this.bashMode = mode === 'bash'
-    if (wasPlanMode === this.planMode) return Promise.resolve()
-    return this.runtime?.setMode(this.planMode ? 'plan' : 'normal') ?? Promise.resolve()
   }
 
   private applyComposerMode(mode: 'normal' | 'plan' | 'bash'): void {
-    void this.switchComposerMode(mode).catch(error => this.notify(error instanceof Error ? error.message : String(error), 'error'))
+    this.switchComposerMode(mode)
+    this.change()
   }
 
   private enterBashMode(body: string): void {
@@ -1909,7 +1935,6 @@ export class OpenTuiApplication {
 
   private togglePlanMode(): void {
     this.applyComposerMode(this.planMode ? 'normal' : 'plan')
-    this.change()
   }
 
   /**
@@ -1932,13 +1957,8 @@ export class OpenTuiApplication {
   /** Leaves plan mode, then runs the plan. The plan is already in the conversation, so the prompt only names it. */
   private implementPlan(title: string): void {
     this.planChoice.clear()
-    this.attempt(async () => {
-      if (this.planMode) {
-        await this.switchComposerMode('normal')
-        this.change()
-      }
-      this.submit(`Implement the plan: ${title}`)
-    })
+    this.applyComposerMode('normal')
+    this.submit(`Implement the plan: ${title}`)
   }
 
   /** Stays in plan mode so the next message revises the plan. */

@@ -23,7 +23,7 @@ export { findBinary, searchPath } from './core/path'
 export { fileSecretStore, memorySecretStore, secretKey, type SecretStore } from './accounts/secrets'
 export type { Account, AccountsOverview, Pool } from './accounts/store'
 export type { AccountLoginSnapshot, ModelOption } from './accounts/accounts'
-export type { ChoicePatch, ModeChoice } from './accounts/choices'
+export type { AccountSelection, SelectionPatch } from './accounts/selection'
 export type { Capability, CapabilityCatalogue, CapabilityKind, CapabilityScope, CapabilitySet } from './capabilities/types'
 export type { RunCapabilitySnapshot } from './capabilities/runSnapshot'
 

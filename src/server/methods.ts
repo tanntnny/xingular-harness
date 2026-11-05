@@ -121,8 +121,8 @@ export function methods(harness: Harness): Record<string, Handler> {
     'accounts.signOut': (params: Params) => accounts.signOut(text(params, 'accountId')),
     'accounts.providers': () => accounts.providers(),
     'accounts.models': (params: Params) => accounts.models(optional(params, 'accountId')),
-    'accounts.choices': (params: Params) => accounts.choices(text(params, 'accountId')),
-    'accounts.choose': (params: Params) => accounts.choose(text(params, 'accountId'), text(params, 'mode'), {
+    'accounts.selection': (params: Params) => accounts.selection(text(params, 'accountId')),
+    'accounts.select': (params: Params) => accounts.select(text(params, 'accountId'), {
       ...(typeof params.model === 'string' ? { model: params.model } : {}),
       ...(typeof params.effort === 'string' ? { effort: params.effort as Effort } : {})
     }),

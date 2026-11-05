@@ -187,10 +187,10 @@ describe('the Plugins page', () => {
     const managed = await ready([packagePlugin], null, hub)
     managed.page.handleInput('\t')
     managed.page.handleInput('\t')
-    managed.ui.select.mockResolvedValueOnce('Uninstall Hub version')
+    managed.ui.select.mockResolvedValueOnce('Uninstall Marketplace version')
     managed.page.handleInput('\r')
     await vi.waitFor(() => expect(managed.calls.some(([method]) => method === 'plugins.remove')).toBe(true))
-    expect(managed.ui.select.mock.calls[0]![1]).toEqual(['Uninstall Hub version', 'Back'])
+    expect(managed.ui.select.mock.calls[0]![1]).toEqual(['Uninstall Marketplace version', 'Back'])
     expect(managed.calls.some(([method]) => method === 'plugins.update')).toBe(false)
   })
 

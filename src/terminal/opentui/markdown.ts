@@ -1,5 +1,6 @@
 import { BoxRenderable, CodeRenderable, type MarkdownOptions, type SimpleHighlight, type StyleDefinitionInput, type SyntaxStyle } from '@opentui/core'
 
+import { installMarkdownListLayout } from './markdownLists'
 import type { OpenTuiTheme } from './theme'
 
 const codeAliases: Record<string, string> = {
@@ -73,38 +74,8 @@ export function fallbackCodeHighlights(content: string, language: FallbackLangua
   return highlights
 }
 
-type MarkdownListToken = {
-  type: 'list'
-  ordered: boolean
-  start: number | ''
-  items: Array<{ tokens: Array<{ type: string }> }>
-}
-
-function alignListItems(token: MarkdownListToken, list: BoxRenderable): void {
-  const start = typeof token.start === 'number' ? token.start : 1
-  const gutter = Math.max(2, ...token.items.map((_, index) => token.ordered ? String(start + index).length + 2 : 2))
-  const rows = list.getChildren()
-
-  token.items.forEach((item, index) => {
-    const row = rows[index]
-    if (!(row instanceof BoxRenderable)) return
-    const body = row.getChildren()[1]
-    if (!(body instanceof BoxRenderable)) return
-
-    // Keep the marker beside the body while making the body itself own the gutter. Its wrapped
-    // lines then inherit the same left edge as the first line, even when list markers widen.
-    body.marginLeft = -gutter
-    body.paddingLeft = gutter
-
-    const bodyChildren = body.getChildren()
-    item.tokens.forEach((childToken, childIndex) => {
-      const child = bodyChildren[childIndex]
-      if (childToken.type === 'list' && child instanceof BoxRenderable) {
-        alignListItems(childToken as MarkdownListToken, child)
-      }
-    })
-  })
-}
+// Every markdown node, the transcript and the summaries alike, draws lists with a hanging indent.
+installMarkdownListLayout()
 
 export function createTranscriptMarkdownRenderer(theme: OpenTuiTheme, syntax?: SyntaxStyle): NonNullable<MarkdownOptions['renderNode']> {
   // Markdown may re-tokenize the unfinished fence on every streamed delta. Reuse its panel and
@@ -112,11 +83,6 @@ export function createTranscriptMarkdownRenderer(theme: OpenTuiTheme, syntax?: S
   const panels = new Map<string, BoxRenderable>()
 
   const renderNode: NonNullable<MarkdownOptions['renderNode']> = (token, context) => {
-    if (token.type === 'list') {
-      const rendered = context.defaultRender()
-      if (rendered instanceof BoxRenderable) alignListItems(token as MarkdownListToken, rendered)
-      return rendered
-    }
     if (token.type !== 'code') return undefined
     const rendered = context.defaultRender()
     if (!(rendered instanceof CodeRenderable)) return rendered
@@ -169,8 +135,8 @@ export function createTranscriptMarkdownRenderer(theme: OpenTuiTheme, syntax?: S
     return panel
   }
   // A code-block-only renderer: OpenTUI keeps its own tokenizing and block spacing for everything
-  // else. A general renderer makes it drop the blank rows between paragraphs and headings. The cost is
-  // that lists no longer reach this function, so `alignListItems` does not run (Known drift D-32).
+  // else. A general renderer makes it drop the blank rows between paragraphs and headings. Lists get
+  // their hanging indent from `installMarkdownListLayout` instead of from this function.
   ;(renderNode as unknown as { codeBlockOnly: boolean }).codeBlockOnly = true
   return renderNode
 }

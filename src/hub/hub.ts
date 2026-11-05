@@ -127,9 +127,25 @@ export class Hub {
   }
 
   async list(refresh = false): Promise<HubOverview> {
-    if (!refresh) return this.snapshot()
-    this.refresh ??= this.refreshCatalog().finally(() => { this.refresh = null })
-    return this.refresh
+    let overview: HubOverview
+    if (refresh) {
+      this.refresh ??= this.refreshCatalog().finally(() => { this.refresh = null })
+      overview = await this.refresh
+    } else overview = this.snapshot()
+    if (overview.installed.some(receipt => receipt.state === 'installed' && receipt.entry.delivery.kind === 'pi-package')) {
+      try {
+        const plugins = await pluginApi.list(this.harness, {})
+        overview.installed = overview.installed.map(receipt => {
+          const delivery = receipt.entry.delivery
+          if (receipt.state !== 'installed' || delivery.kind !== 'pi-package') return receipt
+          const found = plugins.some(plugin => plugin.install?.source === delivery.source && plugin.path !== null && receipt.resourceIds.includes(plugin.id))
+          return found ? receipt : { ...receipt, state: 'incomplete' as const }
+        })
+      } catch {
+        // Listing must retain cached receipts if package discovery is unavailable.
+      }
+    }
+    return overview
   }
 
   private async bytes(url: string): Promise<Buffer> {
@@ -218,8 +234,12 @@ export class Hub {
       releaseData = acquire(join(root, 'hub', 'install.lock'))
       const records = this.receipts()
       const existing = records.find((receipt) => receipt.entry.id === id && receipt.entry.version === version)
-      if (existing && this.present(existing)) return existing
-      if (existing) throw invalid('This Hub receipt is changed or incomplete. Uninstall it before installing this version again.')
+      if (existing && this.present(existing)) {
+        if (existing.entry.delivery.kind !== 'pi-package') return existing
+        const source = existing.entry.delivery.source
+        if ((await pluginApi.list(this.harness, {})).some(plugin => plugin.install?.source === source && plugin.path !== null && existing.resourceIds.includes(plugin.id))) return existing
+      }
+      if (existing) throw invalid('This marketplace receipt is changed or incomplete. Uninstall it before installing this version again.')
       const remaining = records.filter((record) => record !== existing)
       const receipt: HubReceipt = { entry, installedAt: now(), resourceIds: [], document: null }
       const choicesBefore = attachments.load(root)
@@ -228,10 +248,22 @@ export class Hub {
         if (remaining.some((record) => record.entry.id === id && this.present(record))) throw invalid('Another version is already installed. Manage the existing plugin before replacing it.')
         const before = await pluginApi.list(this.harness, {})
         const identity = (value: string): string => value.slice(0, value.lastIndexOf('@'))
-        if (before.some((plugin) => plugin.install && identity(plugin.install.source) === identity(source))) throw invalid('This package is already installed. Manage it in Plugins.')
-        const after = await packages.install(this.harness, { source })
+        const configured = this.harness.accountsDir ? readJsonOr<{ packages?: Array<string | { source: string }> }>(join(this.harness.accountsDir, '_shared', 'pi', 'settings.json'), {}).packages ?? [] : []
+        if (before.some((plugin) => plugin.install && identity(plugin.install.source) === identity(source)) || configured.some(item => identity(typeof item === 'string' ? item : item.source) === identity(source))) throw invalid('This package is already installed. Manage it in Plugins.')
+        let after: Awaited<ReturnType<typeof packages.install>>
+        try { after = await packages.install(this.harness, { source }) } catch (error) {
+          try { await packages.removeConfiguredSource(this.harness, source) } catch {
+            throw invalid('Installation failed and its configured source could not be removed. Review the source in Plugins before retrying.')
+          }
+          throw error
+        }
         receipt.resourceIds = after.filter((plugin) => plugin.install?.source === source && !before.some((old) => old.id === plugin.id)).map((plugin) => plugin.id)
-        if (!receipt.resourceIds.length) throw invalid('The package did not add an installable plugin. No hub installation was recorded.')
+        if (!receipt.resourceIds.length) {
+          try { await packages.removeConfiguredSource(this.harness, source) } catch {
+            throw invalid('The package could not be discovered or removed. Review its configured source in Plugins before retrying.')
+          }
+          throw invalid('The package did not add an installable plugin. Its configured source was removed; no marketplace installation was recorded.')
+        }
       } else {
         const delivery = entry.delivery
         const bytes = await this.verifiedPayload(entry)
@@ -253,7 +285,13 @@ export class Hub {
             scope.on = scope.on.filter((id) => !ids.has(id))
             scope.off = scope.off.filter((id) => !ids.has(id))
           }
-          attachments.save(root, choices)
+          try { attachments.save(root, choices) } catch (error) {
+            for (const id of receipt.resourceIds) {
+              const [kind, name] = id.split('/')
+              rmSync(join(root, 'registry', kind, kind === 'skills' ? name : `${name}.md`), { recursive: true, force: true })
+            }
+            throw error
+          }
         }
       }
       try { writeJson(join(root, 'hub', 'installed.json'), [...remaining, receipt]) } catch (error) {
@@ -329,8 +367,12 @@ export class Hub {
             moves.push({ source, staged: destination })
           }
         }
-        if (receipt.entry.delivery.kind === 'pi-package') for (const pluginId of receipt.resourceIds) {
-          if ((await pluginApi.list(this.harness, {})).some((plugin) => plugin.id === pluginId && plugin.install)) await packages.removeDirect(this.harness, { pluginId })
+        if (receipt.entry.delivery.kind === 'pi-package') {
+          const source = receipt.entry.delivery.source
+          const sameSource = (await pluginApi.list(this.harness, {})).filter(plugin => plugin.install?.source === source)
+          const discovered = sameSource.find(plugin => plugin.path !== null && receipt.resourceIds.includes(plugin.id))
+          if (discovered) await packages.removeDirect(this.harness, { pluginId: discovered.id })
+          else await packages.removeConfiguredSource(this.harness, source)
         }
         writeJson(join(root, 'hub', 'installed.json'), records.filter((item) => item !== receipt))
         committed = true

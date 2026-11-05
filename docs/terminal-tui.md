@@ -52,7 +52,7 @@ a bottom rule, with the working status and spinner above it and a wrapping statu
 fixed-width left gutter shows `❯` on the first input row and leaves continuation rows blank, including
 explicit newlines and soft wraps; Bash mode shows `!` on the first row instead. In plan mode,
 `plan mode` is right-aligned within the top rule, followed by exactly one divider character. The status bar shows the working folder's name and Git branch together as `<repo>:<branch>`, followed by the account, model and effort separated by spaces, and input (`↑`) and output (`↓`) token counts with each glyph adjacent to its count; `|` separates the groups. Token counts
-below 1,000 show as whole numbers and larger counts use K/M/B suffixes. A leading `!`
+are cumulative across the session's recorded usage, including entries before compaction and across runs; input includes cache reads. The cache hit rate is a separate recent-request diagnostic. Counts below 1,000 show as whole numbers and larger counts use K/M/B suffixes. A leading `!`
 enters Bash mode: the chevron becomes `!`, and the marker and both rules use the `bashMode` colour.
 In plan mode, the marker and rules use the plan blue and `plan mode` is right-aligned within the
 top rule with exactly one divider character after it; in the normal prompt, the marker matches the divider. The command body keeps the normal
@@ -347,7 +347,8 @@ of two rule-based shapes, using the 2-cell composer gutter on each side and a di
   there. OpenTUI renders Harness-managed centered dialogs with the inset header treatment below.
 - A **page** is a header row (title left, position or status right), a neutral rule, the body,
   a neutral rule, and the hint row. `/settings`, `/log`, `/permissions`, and the `/accounts`,
-  `/plugins` and `/hub` menus are pages. Section labels inside a page are plain bold headings, never
+  `/plugins` and `/marketplace` pages (`/hub` alias) are full-screen pages. Section labels inside a
+  page are plain bold headings, never
   text set into a rule. `/trajectory` is a full-screen page with searchable Runs and Events
   tabs; its Events view keeps the event list beside the selected event's JSON on wide terminals.
   `/context` is a full-screen page with Request and Growth tabs: one bar that gives each kind of
@@ -369,8 +370,9 @@ list. Rules use the theme's `warning` and `dim` colors, so a custom theme restyl
 The broad Harness resource browser (PROP-0013) unifies Overview, Foundation, Variant, Skills,
 Plugins, Connections, Tools and Library. `/harness` opens Overview; `/skills`, `/connections`
 (`/mcp`), `/tools` and `/components` open sections. `/plugins` is a separate
-full-screen local manager with Plugins, Trust and Packages tabs; `/hub` is a separate
-full-screen Community catalog with Catalog and Installed tabs. Both keep a searchable
+full-screen local manager with Plugins, Trust and Packages tabs; `/marketplace` is a separate
+full-screen Marketplace page with Catalog and Installed tabs (`/hub` remains an alias). Both keep a
+searchable
 inventory beside selected-item details on wide terminals, stacking details below the list
 on compact terminals. The existing Accounts, Permissions, Settings, Trajectory and Log
 pages retain their own tabs.
@@ -385,21 +387,22 @@ agent browsing and annotation capture to reach localhost and private networks.
 
 Within the broad `/harness` browser, resource sections share Installed/Discover and source filters.
 Installed includes locally present resources; current-session availability comes only from the runtime
-loader and active tool registry. Discover uses the unfiltered Hub service with All/Community/Official
-filters and an explicit refresh. No matching Community entries is an empty result, never replaced with
+loader and active tool registry. Discover uses the unfiltered Marketplace catalog with All/Community/Official
+channel filters and an explicit refresh. No matching Community entries is an empty result, never replaced with
 built-in resources. The view preserves search across source switches and restores section selection.
 
-The dedicated `/hub` Catalog shows Community entries across supported types only. Its Installed tab
-shows receipts from every channel with the channel labeled. On each page entry, cached/bundled entries
+The dedicated `/marketplace` page shows Community entries across supported types in Catalog (`/hub`
+is an alias), while Installed shows receipts from every channel with the channel labeled and actions to open the matching
+local management surface. On each page entry, cached/bundled entries
 appear first, then the remote catalog refreshes; the status keeps the origin, last-refresh time and any
 stale/error feedback visible. Manual refresh remains available. Catalog installs are pinned to the
-selected version, and Hub uninstalls remove only receipt-owned resources. Registry/document entries
+selected version, and Marketplace uninstalls remove only receipt-owned resources. Registry/document entries
 offer a bounded payload Preview; Pi packages have no JSON payload Preview.
 
 The `/plugins` manager keeps local switching, code trust and settings separate from public discovery.
-Its Packages tab adds local package installation, update and removal. Hub-owned packages remain pinned
-to exact catalog versions; removal goes through Hub receipt cleanup, and updating requires an explicit
-Hub version replacement.
+Its Packages tab adds local package installation, update and removal. Marketplace-owned packages remain pinned
+to exact catalog versions; removal goes through Marketplace receipt cleanup, and updating requires an explicit
+version replacement.
 
 The browser fills the terminal (PROP-0014), with Overview, Foundation, Variant, Skills, Plugins,
 Connections, Tools and Library as persistent top tabs. The section dropdown and sidebar are removed.
@@ -414,7 +417,7 @@ Left/Right changes the focused tab or control; Enter on the tab strip returns to
 Ctrl+F focuses search. Escape returns from content to actions, returns to the list, clears search,
 then closes. Mouse clicks select tabs directly, activate resource actions and focus filters;
 wheel scrolling targets the list or inspector under the pointer. Other command pages keep their
-centered presentation; `/settings`, `/accounts`, `/plugins` and `/hub` use full-screen page layouts.
+centered presentation; `/settings`, `/accounts`, `/plugins` and `/marketplace` use full-screen page layouts.
 Closing the browser preserves the composer draft and attachments.
 
 Foundation explains fixed runtime ownership; it is read-only. Variant shows c1–c8 with the
@@ -431,7 +434,10 @@ and removal delegate to existing services; installing never trusts or activates 
 
 Connections supports local stdio and remote HTTP forms, masked credentials, explicit scope,
 saved disabled defaults, explicit testing and OAuth sign-in. Browsing never starts an MCP process.
-Saved test results show timestamps rather than claiming a live connection. A Hub connector document
+Saved test results show timestamps rather than claiming a live connection. Release-owned plugin
+connections such as REA appear even when disabled: inspect the row to manage the owning plugin's
+attachment and settings. Their displayed scope state is not a live connection or a grant of tool
+approvals; reopen the terminal to apply skill changes. A Hub connector document
 is inert: a separate setup action validates supported remote-definition fields before opening the
 normal connection form. Other document kinds stay inspectable data. Tools show their owner,
 parameters, active state and saved approval; each call still passes the gate.
@@ -525,20 +531,17 @@ child; generic browser controls are also blocked. Sandboxed read-only Bash is th
 plan-mode shell exception; children cannot run commands. The plan instructions arrive as a
 request-scoped prompt section, which the next ordinary request withdraws.
 
-Each mode keeps its own model and effort for the account. Every selection the person makes (the model
-picker, `/effort`, Shift+Up/Down, Ctrl+P) is saved against the mode it was made in, so Shift+Tab switches to that
-mode's model and effort, and a new conversation starts on the normal mode's latest choice. A mode with no
-choice of its own takes normal's, field by field; when neither has a saved effort, the mode uses Pi's
-default level rather than keeping the level chosen in the other mode. A resumed conversation keeps the model in its history while
-the account can use it, and a saved model the account cannot use is skipped. When the conversation's
-model is not offered by the account or holds no credentials there — a different account, a signed-out
-provider, a retired model — the conversation starts on this account's own newest selection instead:
-the mode's choice, then normal's, then the newest selection in any mode, with its effort, skipping any
-model the account cannot use. That start is the terminal's own change: it is written into the
-conversation, never into the person's saved choice, and the terminal says in one notice which model it
-replaced and which it used. With no usable saved model, Pi's own fallback applies and its message is
-shown. The choices live in the account's `choices.json`,
-and the App reads and writes them through `accounts.choices` and `accounts.choose`.
+Normal and plan share one model and effort. Every selection the person makes (the model picker,
+`/effort`, Shift+Up/Down, Ctrl+P) is saved for the account, so a new conversation starts on it;
+Shift+Tab changes only the tools and the composer, never the model or effort. A resumed conversation
+keeps the model and effort recorded in its own history while the account can use them. When the
+conversation's model is not offered by the account or holds no credentials there — a different
+account, a signed-out provider, a retired model — the conversation starts on the account's saved
+selection, with its effort, skipping a model the account cannot use. That start is the terminal's
+own change: it is written into the conversation, never into the person's saved selection, and the
+terminal says in one notice which model it replaced and which it used. With no usable saved model,
+Pi's own fallback applies and its message is shown. The selection lives in the account's
+`choices.json`; the App keeps its own account, model and effort on each App Thread (App ADR-0023).
 
 A bare `/plan` toggles plan mode, and Shift+Tab cycles between normal and plan mode. Normal, plan
 and Bash are mutually exclusive composer modes. While plan mode is on, each submitted message is sent
@@ -552,7 +555,7 @@ card at the end of the reply, with the text around the block left as ordinary as
 block then appears above the composer with `Plan ready`, a blank row, then `Implement "<title>"` or
 `Edit the plan`, followed by a blank row and the hint. Up and Down choose, Enter confirms, and Escape
 dismisses it; the block yields to the composer as soon as the draft has text.
-Implement leaves plan mode, so the normal tools and the mode's own model and effort come back, and sends
+Implement leaves plan mode, so the normal tools return while the model and effort stay as they were, and sends
 `Implement the plan: <title>`; the plan itself is already in the conversation. Edit the plan stays in plan
 mode and focuses the composer, so the next message revises the plan and offers a new choice. A plan run
 that was interrupted, failed, or had work queued behind it is not offered. A plan request whose reply
@@ -941,8 +944,15 @@ How the frontend keeps typing fast:
   input chunk; the root reads the composer before each key so Enter never sends a stale draft.
 - **Cached derived data.** Finished messages keep their transcript items until their position or tool
   results change; session statistics refresh at most every 250 ms during a run.
-- **Kept connections.** Session-socket requests ask to `keep` their connection, so the two 100 ms
-  polls and per-key draft updates reuse a connection instead of opening one each.
+- **Kept connections.** Session-socket requests ask to `keep` their connection, so per-key draft
+  updates reuse a connection instead of opening one each.
+- **Held polls.** The native process asks the controller for its next command with a `poll` that
+  carries `waitMs` (20 s); the controller holds the request until a command arrives or the wait ends
+  (capped at 25 s), and a newer poll takes over from one still parked. The loop leaves at least
+  100 ms between polls, so a harness that answers at once is polled at the old 10 Hz, never in a
+  spin. A `poll` without `waitMs` answers at once.
+- **No process for the branch.** The status bar's Git branch is looked up through `git` only when
+  `.git/HEAD` changes (a stat every 3 s); a folder that is not a repository is looked at every 30 s.
 - **No swallowed keys.** While a question is active, an unused printable character moves focus to
   “Something else” and is typed there when free text is allowed; it never creates a hidden chat draft.
 

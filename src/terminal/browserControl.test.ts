@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { memorySecretStore } from '../accounts/secrets'
 import { createHarness, type Harness } from '../harness'
 import * as pluginApi from '../plugins/api'
+import * as attachments from '../plugins/attachments'
 import { materialise } from '../variant/materialise'
 import { commit, seed } from '../variant/store'
 import { BrowserControl, isWithinBoundary } from './browserControl'
@@ -87,6 +88,30 @@ describe('terminal browser service boundary', () => {
     const snapshot = await browser.snapshot()
     expect(snapshot.items).toContainEqual(expect.objectContaining({ id: 'library:skills/escape' }))
     await expect(browser.read('library:skills/escape')).rejects.toThrow('outside its owner folder')
+  })
+
+  it('lists plugin-owned connections separately from saved connections and follows the caller scope', async () => {
+    const { root, data, harness, browser, pinned } = setup()
+    const test = vi.spyOn(harness.apps, 'test')
+    const saved = await harness.apps.save({ name: 'Fixture', kind: 'local', command: 'node', enabled: false, global: true })
+    const snapshot = await browser.snapshot()
+    const row = snapshot.items.find(item => item.id === 'contribution:rea/connection/builtin-rea')
+    expect(row).toMatchObject({ section: 'connections', pluginId: 'rea', origin: 'Built-in', status: 'Disabled for this scope' })
+    expect(row?.connectionId).toBeUndefined()
+    expect(snapshot.items.filter(item => item.connectionId === saved.id)).toHaveLength(1)
+    expect(snapshot.connections.map(connection => connection.id)).toEqual([saved.id])
+    expect(test).not.toHaveBeenCalled()
+
+    const choices = attachments.load(data)
+    attachments.set(choices, ['rea'], { projectId: 'project-one' }, true, false)
+    attachments.save(data, choices)
+    const forProject = (projectId: string) => new BrowserControl({ root: data, cwd: root, pinned, writable: true, apps: harness.apps,
+      plugins: () => pluginApi.list(harness, { projectId }) })
+    expect((await forProject('project-one').snapshot()).items.find(item => item.id === row?.id)?.status).toBe('Enabled for this scope')
+    expect((await forProject('project-two').snapshot()).items.find(item => item.id === row?.id)?.status).toBe('Disabled for this scope')
+    expect(harness.apps.connections.list().map(connection => connection.id)).toEqual([saved.id])
+    expect(test).not.toHaveBeenCalled()
+    await expect(browser.connection('test', { id: 'builtin-rea' })).rejects.toThrow('Unknown connection')
   })
 
   it('does not expose stored credentials, connect, or infer live state from a saved check', async () => {

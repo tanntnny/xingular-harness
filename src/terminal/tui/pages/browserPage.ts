@@ -7,6 +7,7 @@ import type { Connection, ConnectionInput } from '../../../mcp/types'
 import type { Plugin } from '../../../plugins/types'
 import { PI_SURFACE } from '../../../variant/surface'
 import { BACK, applyPluginAction, menuRows, rowActions, type MenuCall, type MenuUi } from '../../pluginMenu'
+import { marketplaceInstallGuidance, marketplaceType } from '../../hubMenu'
 import { safeText, selectedRow, selectionText } from '../chrome'
 import { FilterList, type ListRow } from '../list'
 import type { TerminalMouseInput } from '../mouse'
@@ -132,7 +133,7 @@ export class BrowserPage implements TerminalPage {
       return (hub?.entries ?? []).filter(entry => (this.section === 'overview' || catalogSection(entry) === this.section || (this.section === 'tools' && entry.delivery.kind === 'pi-package'))
         && (this.channel === 'all' || entry.channel === this.channel)).map(entry => ({
         id: `hub:${entry.id}@${entry.version}`, label: entry.title, detail: hub?.installed.some(receipt => receipt.entry.id === entry.id && receipt.entry.version === entry.version) ? 'Installed' : entry.channel,
-        group: entry.category, searchText: `${entry.title} ${entry.description} ${entry.publisher} ${entry.tags.join(' ')}`,
+        group: marketplaceType(entry), searchText: `${entry.title} ${entry.description} ${entry.publisher} ${entry.tags.join(' ')}`,
         data: { hub: entry }
       }))
     }
@@ -157,7 +158,7 @@ export class BrowserPage implements TerminalPage {
       if (receipt.entry.delivery.kind !== 'document') continue
       if (this.section !== catalogSection(receipt.entry) && this.section !== 'library') continue
       rows.push({ id: `installed:${receipt.entry.id}@${receipt.entry.version}`, label: receipt.entry.title,
-        detail: receipt.state === 'installed' || !receipt.state ? 'Downloaded definition' : receipt.state, group: 'Hub documents',
+        detail: receipt.state === 'installed' || !receipt.state ? 'Downloaded definition' : receipt.state, group: 'Marketplace documents',
         searchText: `${receipt.entry.title} ${receipt.entry.description} ${receipt.entry.publisher}`, data: { hub: receipt.entry } })
     }
     return rows
@@ -215,7 +216,7 @@ export class BrowserPage implements TerminalPage {
       if (!installed) actions.push({ id: 'install', label: `Install ${entry.version}`, run: async () => {
         if (!await this.options.ui.confirm(`Install ${entry.title}?`, `${entry.description}\nPublisher: ${entry.publisher}\nLicense: ${entry.license}\nSource: ${entry.sourceUrl}\nVersion: ${entry.version}\nInstallation does not grant trust, enablement, credentials or permissions.`)) return
         await this.options.call('hub.install', { id: entry.id, version: entry.version })
-        this.options.ui.notify('Installed. Review it in Installed before enabling or adding it to a variant.', 'info')
+        this.options.ui.notify(marketplaceInstallGuidance(entry), 'info')
         this.source = 'installed'
         this.section = catalogSection(entry)
         this.detail = undefined
@@ -253,7 +254,7 @@ export class BrowserPage implements TerminalPage {
       if (item.section !== 'plugins') actions.push({ id: 'owner', label: 'View owning plugin and its contributions', run: () => {
         this.navigate('plugins'); this.list.select(`plugin:${plugin.id}`)
       } })
-      actions.push({ id: 'manage', label: 'Manage attachment and code trust', run: () => this.managePlugin(plugin, item.contributionId) })
+      actions.push({ id: 'manage', label: 'Manage attachment and code trust', run: () => this.managePlugin(plugin, item.section === 'connections' && !item.connectionId ? undefined : item.contributionId) })
       if (item.section === 'plugins') actions.push({ id: 'contributions', label: 'Inspect plugin contributions', run: () => this.showContent(plugin.contributions.map(entry => `${entry.kind}: ${entry.name} [${entry.state}]\n${entry.description}${entry.path ? '\n' + entry.path : ''}`).join('\n\n')) })
       if (plugin.settings.length) actions.push({ id: 'settings', label: 'Configure plugin settings', run: () => this.configurePlugin(plugin) })
       for (const template of plugin.connectorTemplates) actions.push({ id: `template:${template.id}`, label: `Set up ${template.name} connection`, run: () => this.configureConnection(undefined,
@@ -396,6 +397,11 @@ export class BrowserPage implements TerminalPage {
         input.env = { [key]: value }
       }
     }
+    const timeout = await ui.input('Tool call timeout in seconds (1–1800)', String(existing?.callTimeoutSeconds ?? 60))
+    if (timeout === undefined) return
+    const seconds = Number(timeout)
+    if (!timeout.trim() || !Number.isInteger(seconds) || seconds < 1 || seconds > 1800) throw new Error('Enter a whole number from 1 to 1800 seconds.')
+    input.callTimeoutSeconds = seconds
     const projectId = (await this.options.call<{ projectId: string | null }>('plugins.session')).projectId
     const scope = await ui.select('Availability scope', projectId ? ['Current project', 'Everywhere'] : ['Everywhere'])
     if (!scope) return
@@ -425,7 +431,7 @@ export class BrowserPage implements TerminalPage {
   }
 
   private toolbarLabel(row: Row): string {
-    return row.action === 'import' ? 'Import skill' : row.action === 'package' ? 'Add plugin' : row.action === 'connection' ? 'Add connection' : this.source === 'discover' ? 'Refresh Hub' : 'Refresh'
+    return row.action === 'import' ? 'Import skill' : row.action === 'package' ? 'Add plugin' : row.action === 'connection' ? 'Add connection' : this.source === 'discover' ? 'Refresh Marketplace' : 'Refresh'
   }
 
   handleInput(data: string): boolean {
@@ -614,7 +620,7 @@ export class BrowserPage implements TerminalPage {
     this.list.focused = this.focus === 'list'
     let list = this.list.render(listWidth, bodyRows)
     if (!this.list.total && bodyRows >= 3) {
-      const message = this.source === 'discover' ? `No ${this.channel === 'all' ? '' : this.channel + ' '}entries for ${TITLES[this.section]}. Change the filter or refresh Hub.` : this.section === 'variant' ? 'No variant selected. This terminal uses foundation resources only.' : 'No resources in this view. Change the filter, import locally, or choose Discover.'
+      const message = this.source === 'discover' ? `No ${this.channel === 'all' ? '' : this.channel + ' '}entries for ${TITLES[this.section]}. Change the filter or refresh Marketplace.` : this.section === 'variant' ? 'No variant selected. This terminal uses foundation resources only.' : 'No resources in this view. Change the filter, import locally, or choose Discover.'
       list = wrapTextWithAnsi(message, listWidth).slice(0, bodyRows)
     }
     if (!wide) return clip([...header, ...list])

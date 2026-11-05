@@ -63,6 +63,23 @@ def has_styled_text(raw, color, text):
     return re.search(pattern, raw) is not None
 
 
+def list_text_column(rows, start, cont, label):
+    """The column where a list item's text starts, after checking that its wrapped rows hang under it.
+
+    `start` opens the item's text and `cont` closes it, so every row from after the first through the
+    one holding `cont` is a wrapped row of that item.
+    """
+    first = next((index for index, row in enumerate(rows) if start in row), None)
+    last = next((index for index, row in enumerate(rows) if cont in row), None)
+    assert first is not None and last is not None, f'{label}: {start!r} and {cont!r} are not both on screen'
+    assert last > first, f'{label}: the item did not wrap, so its indent cannot be checked'
+    column = rows[first].index(start)
+    for index in range(first + 1, last + 1):
+        indent = len(rows[index]) - len(rows[index].lstrip(' '))
+        assert indent == column, f'{label}: wrapped row {rows[index]!r} starts at column {indent}, but the item text starts at {column}'
+    return column
+
+
 def has_slim_scrollbar_at_right_edge(output, width):
     glyph = '▕'.encode()
     for marker in re.finditer(re.escape(glyph), output):
@@ -70,6 +87,13 @@ def has_slim_scrollbar_at_right_edge(output, width):
         if cursor_positions and int(cursor_positions[-1].group(2)) >= width - 2:
             return True
     return False
+
+
+def assert_status_effort(terminal, effort):
+    if terminal.screen is None:
+        return
+    rows = [line for line in terminal.screen.display if line.strip()][-4:]
+    assert any(effort in line for line in rows), f'The status bar did not keep {effort} effort: {terminal.screen.display[-8:]!r}'
 
 
 def assert_prompt_gutter(terminal, marker, first_line, second_line, wrapped_word, label):
@@ -774,7 +798,14 @@ def main():
                 ctx.ui.notify('PALETTE_LONG_EXECUTED');
               }});
             }''')
-            rpc_accounts(cli, root)
+            first_account, _ = rpc_accounts(cli, root)
+            account_id = first_account['accounts'][0]['id']
+            account_choices = root / 'state' / 'accounts' / account_id / 'choices.json'
+            account_choices.write_text(json.dumps({
+                'model': 'terminal-local/terminal-verifier',
+                'effort': 'medium',
+                'updatedAt': 'seeded'
+            }))
             compaction_session = None
             if args.compaction_only:
                 cwd = str(root.resolve())
@@ -1190,7 +1221,17 @@ def main():
                     terminal.send('/mcp')
                     terminal.send('\r')
                     terminal.wait('Add connection', start)
+                    terminal.wait('Reverse engineer', start)
                     terminal.snapshot('connections-browser')
+                    terminal.send('\x1b')
+                    subprocess.run(['node', str(cli), 'plugins', 'attach', 'rea', '--data', str(root / 'data'), '--state', str(root / 'state')],
+                                   check=True, capture_output=True, text=True)
+                    start = len(terminal.data)
+                    terminal.send('/connections')
+                    terminal.send('\r')
+                    terminal.wait('Reverse engineer', start)
+                    if width >= 80:
+                        terminal.wait('Enabled for this scope', start)
                     terminal.send('\x1b')
                     assert len(LocalProvider.requests) == requests_before, 'Browser actions sent a model request'
                     profile['checks'].append('full-screen persistent tabs, keyboard and mouse section selection, unified overview/skills/MCP, loaded skill completion and insertion, Discover and Community filter without model requests')
@@ -1493,8 +1534,17 @@ def main():
                     assert re.search(rb'\x1b\[[0-9;]*38;2;138;180;248(?:;[0-9]+)*m', raw), 'Markdown link color was not emitted as Harness blue'
                     terminal.snapshot('markdown-transcript')
                     if terminal.screen is not None:
-                        # Ordered-list continuation alignment is not checked: lists render as in the previous release
-                        # (OpenTUI's own spacing needs a code-block-only renderer, so lists skip alignListItems; D-32).
+                        rows = list(terminal.screen.display)
+                        bullet = list_text_column(rows, 'BULLET_START', 'BULLET_CONT', 'bulleted list')
+                        one = list_text_column(rows, 'ONE_DIGIT_START', 'ONE_DIGIT_CONT', 'numbered list from 1')
+                        two = list_text_column(rows, 'TWO_DIGIT_START', 'TWO_DIGIT_CONT', 'numbered list from 10')
+                        three = list_text_column(rows, 'THREE_DIGIT_START', 'THREE_DIGIT_CONT', 'numbered list from 100')
+                        parent = list_text_column(rows, 'NESTED_BULLET_START', 'NESTED_PARENT_CONT', 'parent of a nested list')
+                        child = list_text_column(rows, 'NESTED_CHILD_START', 'NESTED_CHILD_CONT', 'nested list')
+                        assert bullet == one, f'a bullet list starts its text at column {bullet}, a numbered list at {one}'
+                        assert (two, three) == (one + 1, one + 2), f'a list widens one column per digit: columns {one}, {two}, {three}'
+                        assert parent == one and child > parent, f'a nested list sits under its parent text: columns {parent} and {child}'
+                        profile['checks'].append('list items hang under their text: bullets and numbers share a column, it widens per digit, and nested lists indent')
                         profile['checks'].append('one row of user-bubble top/bottom padding, one row between entries, and Markdown H1 spacing')
                     else:
                         profile['checks'].append('transcript spacing assertions skipped because pyte is unavailable')
@@ -2219,8 +2269,14 @@ def main():
                 native_text = native.read_text()
                 assert 'LOCAL_FILE_CONTENT' in native_text and 'LOCAL_BASH_EXECUTED' in native_text, 'Native history lacks real tool outputs'
                 start = len(terminal.data)
+                terminal.send('/effort high\r')
+                terminal.read(0.4)
+                terminal.snapshot('effort-high')
+                assert_status_effort(terminal, 'high')
+                start = len(terminal.data)
                 terminal.send('\x1b[Z')
                 terminal.read(0.3)
+                assert_status_effort(terminal, 'high')
                 terminal.send('verify-plan Unicode 知識\r')
                 terminal.allow_question(start)
                 terminal.wait('Something else…', start)
@@ -2249,6 +2305,7 @@ def main():
                 terminal.read(0.5)
                 terminal.snapshot('plan-implemented')
                 assert 'Implement the plan: Verified plan' in normalized(terminal.data[start:]), 'Implement did not send the plan prompt'
+                assert_status_effort(terminal, 'high')
                 plan_runs = [record for record in records(root) if 'verify-plan' in str(record.get('goal'))]
                 assert len(plan_runs) >= 2 and all(record.get('status') == 'completed' for record in plan_runs[-2:]), f'Plan runs were not recorded as completed: {[(record.get("goal"), record.get("status")) for record in plan_runs]}'
                 plan_requests = [item for item in LocalProvider.requests if 'verify-plan' in item.get('user', '')]
@@ -2259,7 +2316,7 @@ def main():
                 assert 'ask_user' not in implement_requests[-1]['tools'] and 'bash' in implement_requests[-1]['tools'], 'Implement did not restore normal tools'
                 plan_question_events = [event for record in plan_runs for event in record['_events'] if event['type'] == 'question.answered']
                 assert plan_question_events, 'The plan-only question was not recorded'
-                profile['checks'].append('plan mode: question tool, plan card and choice block, Edit revises, Implement restores normal tools')
+                profile['checks'].append('plan mode: question tool, plan card and choice block, Edit revises, Implement restores normal tools and keeps the selected effort')
                 start = len(terminal.data)
                 terminal.send('/verify-plugin\r')
                 if CLIENT_TERMINAL:

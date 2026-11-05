@@ -6,7 +6,7 @@ Status: source study completed, 2026-10-22. Runtime acceptance is recorded separ
 
 `/components` browses registry resources and compares them with the latest variant head;
 it does not enumerate the session loader. `/plugins` controls attachments and trust while
-`/hub` installs into separate destinations. The OpenTUI palette accepts slash commands only;
+`/marketplace` (alias `/hub`) installs into separate destinations. The OpenTUI palette accepts slash commands only;
 `skillCompletions` exists but has no OpenTUI caller. `$name` expansion works on submission.
 
 ## Local reference evidence
@@ -36,7 +36,7 @@ Inspected checkout revisions (source observations above):
 ## Navigation decision
 
 `/harness` is the main browser. `/skills`, `/plugins`, `/connections` (`/mcp`) and `/tools`
-are direct section shortcuts; `/hub` selects Discover, `/components` selects Library.
+are direct section shortcuts; `/marketplace` (alias `/hub`) selects Marketplace, `/components` selects Library.
 Installed includes locally present resources and labels their effective state. Discover uses
 the existing Hub with All/Community/Official filters. Built-in and foundation are different axes:
 foundation is a runtime ownership boundary; built-in is provenance.

@@ -149,6 +149,6 @@ export async function socketCallOnce<T = unknown>(connection: SocketConnection, 
 }
 
 /** Telemetry and decisions from the native `pi` process. Approvals may wait on a person, so the default wait is long. */
-export function terminalCall<T = Record<string, unknown>>(event: string, data: Record<string, unknown> = {}, timeoutMs = 600_000): Promise<T> {
-  return request<T>(connectionFromEnv(), { event, data }, event, timeoutMs)
+export function terminalCall<T = Record<string, unknown>>(event: string, data: Record<string, unknown> = {}, timeoutMs = 600_000, signal?: AbortSignal): Promise<T> {
+  return request<T>(connectionFromEnv(), { event, data }, event, timeoutMs, signal)
 }

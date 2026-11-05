@@ -74,10 +74,17 @@ export interface TerminalCommandHost {
   }
 }
 
+const TERMINAL_DESCRIPTIONS: Record<string, string> = {
+  skills: 'Inspect and use skills (reusable instructions); discover more',
+  connections: 'Manage MCP server connections (local or remote)',
+  plugins: 'Manage plugin bundles, packages, trust and settings',
+  marketplace: 'Browse Marketplace and manage catalog installs'
+}
+
 const BUILTINS: TerminalCommandCompletion[] = CORE_COMMANDS.map((command) => ({
   name: command.name,
   ...('aliases' in command ? { aliases: [...command.aliases] } : {}),
-  description: command.description,
+  description: TERMINAL_DESCRIPTIONS[command.name] ?? command.description,
   group: command.group
 }))
 
@@ -393,11 +400,10 @@ export function createTerminalCommands(host: TerminalCommandHost) {
         case 'accounts': await openPage('accounts'); break
         case 'harness': await openPage('harness'); break
         case 'skills': await openPage('skills'); break
-        case 'connections':
-        case 'mcp': await openPage('connections'); break
+        case 'connections': await openPage('connections'); break
         case 'tools': await openPage('tools'); break
         case 'plugins': await openPage('plugins'); break
-        case 'hub': await openPage('hub'); break
+        case 'marketplace': await openPage('hub'); break
         case 'components': await openPage('components'); break
         case 'variant': await variantCommands.variant(argument); break
         case 'refine': await variantCommands.refine(argument); break

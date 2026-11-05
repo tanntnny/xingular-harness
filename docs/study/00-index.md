@@ -18,6 +18,10 @@ written and the claim moves to checked behavior. Cite material as
   not an accepted architecture change.
 - [`/btw` side-question comparison](btw-comparison.md) — this terminal, the App-owned
   side question, and checked-out external implementations.
+- [How far one plugin goes](STUDY-0010-plugin-reach.md) — plugin design compared with DeepSeek
+  Harness, Claude Code and Codex in ten areas, with a reach ladder from configuration to
+  self-modification; why this harness stops plugins at capability and keeps self-change in the
+  variant.
 - [Harness feature-gap review](feature-gap-review.md) — task/goal management, long-running work,
   memory, execution isolation, verification, and observability gaps against the studied peers.
 - [Why a long run takes hours](STUDY-0003-long-horizon-runs.md) — measured diagnosis of two 70–97
@@ -33,6 +37,7 @@ written and the claim moves to checked behavior. Cite material as
   leaked v2.1.88 prompt measured against the pack a real session was given: 12.9k characters against
   23.4k, the 9.2k reporting section with no Claude Code counterpart, and the rules Claude Code has
   that the harness does not (parallel calls, read-before-edit, minimal diffs).
+- [DSH's embedded browser compared with Xingular App](STUDY-0011-dsh-browser-embedding.md) — DSH's Electron Chromium guest and iframe fallback against Xingular's Tauri/WebKit child views; browser ownership, profiles, security and what to adopt.
 - [How Codex and Claude Code use the person's browser](STUDY-0008-browser-control.md) — Claude Code drives
 the person's own Chrome as a built-in MCP server with refs, console, network and JavaScript; Codex has
 no browser in the CLI and reaches the person's browser only through Computer Use and its extension,

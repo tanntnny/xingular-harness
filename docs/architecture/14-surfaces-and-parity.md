@@ -29,9 +29,10 @@ terminal command or page, a host screen.
   tool that passes the gate (page 07). Both front ends use the same methods; neither has a private
   path to Harness state. Foundation context behavior, including bounded checkpoint restoration after
   compaction (PROP-0033), is shared by terminal and embedded sessions; a host does not reimplement it.
-  The direct `/plugins` page manages local plugin state and package lifecycle; `/hub` presents the
-  Community catalog and all installed Hub receipts. These are distinct presentations of existing
-  Harness services, not host-only capabilities. The broad `/harness` browser remains available.
+  The direct `/plugins` page manages local plugin state and package lifecycle; `/marketplace` (`/hub`
+  alias) presents the Marketplace catalog and installed Marketplace receipts, with routes to local
+  management. These are distinct presentations of existing Harness services, not host-only
+  capabilities. The broad `/harness` browser remains available.
 - Workspace write scope is Harness-owned on both surfaces. Each run pins a canonical root after
   worktree selection; reads retain OS-permission scope, while native file writes and shell
   filesystem effects default to that root; the filesystem root itself is not a valid workspace.

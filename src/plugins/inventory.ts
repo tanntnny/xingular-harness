@@ -117,7 +117,11 @@ export function inventory(input: InventoryInput): Inventory {
   // The harness's own switched-on extensions.
   for (const plugin of input.plugins) {
     if (plugin.source !== 'builtin') continue
-    for (const own of plugin.contributions) if (own.kind === 'code' && own.state === 'on') item(plugin.id, 'code', own.name, 'code', null, { contributionId: own.id })
+    for (const own of plugin.contributions) {
+      if (own.state !== 'on') continue
+      if (own.kind === 'code') item(plugin.id, 'code', own.name, 'code', null, { contributionId: own.id })
+      if (own.kind === 'skill' && !variant?.files[`skills/${own.name}/SKILL.md`]) item(plugin.id, 'skill', own.name, 'on-demand', size(own.path), { contributionId: own.id })
+    }
   }
   item('pi', 'instruction', 'Base prompt', 'system', null)
 

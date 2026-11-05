@@ -26,8 +26,8 @@ import type { SessionAccount } from '../accountsMenu'
 import type { QuestionAnswer } from '../../sessions/registry'
 import type { TerminalQuestion } from './questions'
 import { sessionUiContext } from './sessionUi'
-import { ModeChoices, type ChoiceModel, type ChoiceStore, type ComposerMode } from './modeChoices'
-import type { ModeChoice } from '../../accounts/choices'
+import { ModelSelection, type ChoiceModel, type SelectionStore } from './modelSelection'
+import type { AccountSelection } from '../../accounts/selection'
 import type { Effort } from '../../core/effort'
 
 export interface TerminalArguments {
@@ -121,12 +121,12 @@ export interface TerminalRuntime {
   /** Images go to the model in the same user message as `text`. */
   submit(text: string, followUp?: boolean, images?: TerminalImage[]): Promise<void>
   submitPlan(text: string, images?: TerminalImage[]): Promise<void>
-  /** The composer's mode. Its saved model and effort apply now, or when a running turn settles. */
-  setMode(mode: ComposerMode): Promise<void>
   readonly session: AgentSession
   readonly services: AgentSessionServices
   readonly cwd: string
   readonly sessionDirectory: string
+  /** Start time of a run already active when this frontend attaches. */
+  readonly attachedRunStartedAt?: number | null
   subscribe(listener: AgentSessionEventListener): () => void
   onSessionChange(listener: SessionChangeListener): () => void
   onBeforeSessionChange(listener: () => void): () => void
@@ -252,42 +252,31 @@ export async function createTerminalRuntime(args: string[], host: TerminalRuntim
   }
   const planRun: TerminalPlanRunState = { active: false, allowedTools: new Set() }
   const goal = new GoalController()
-  let currentMode: ComposerMode = 'normal'
-  let pendingApply = false
-  const choiceStore: ChoiceStore = {
-    read: () => controlCall<Record<string, ModeChoice>>('accounts.choices.get'),
-    write: (mode, patch) => controlCall('accounts.choices.set', { mode, ...patch })
+  const choiceStore: SelectionStore = {
+    read: () => controlCall<AccountSelection | null>('accounts.selection.get'),
+    write: patch => controlCall('accounts.selection.set', { ...patch })
   }
-  const modeChoices = new ModeChoices(choiceStore)
-  // A selection is recorded against the mode it was made in; a one-shot plan run is always plan.
-  const recordingMode = (): ComposerMode => (planRun.active ? 'plan' : currentMode)
+  const selection = new ModelSelection(choiceStore)
   const modelFor = (reference: string): ChoiceModel | undefined => resolveCliModel({ cliModel: reference, modelRuntime }).model
   /** A model this account can use: offered by its catalogue and holding credentials. Never a request. */
   const usableModel = async (reference: string): Promise<ChoiceModel | undefined> => {
     const model = modelFor(reference)
     return model && await modelRuntime.checkAuth(model.provider) ? model : undefined
   }
-  // The level Pi resolves when no mode has saved an effort: the model's own default, then the account's.
+  // The level Pi resolves when the account has no saved effort: the model's own default, then the account's.
   const defaultEffort = (session: AgentSession): AgentSession['thinkingLevel'] => {
     const model = session.model
     return ((model ? session.settingsManager.getModelThinkingLevel(model.provider, model.id) : undefined)
       ?? session.settingsManager.getDefaultThinkingLevel() ?? 'medium') as AgentSession['thinkingLevel']
   }
-  const applyMode = (): Promise<void> => modeChoices.apply(native.session, currentMode, modelFor, defaultEffort(native.session))
   // Pi rebuilds the active tools from the transcript, where the last recorded set may be a plan's.
   const restoreNormalTools = (session: AgentSession): void => {
     const recorded = normalToolsForBranch(session.sessionManager.getBranch() as never)
     session.setActiveToolsByName(normalModeTools(recorded ?? session.getActiveToolNames()))
   }
-  const restoreChoice = async (session: AgentSession, previous: { model: AgentSession['model']; effort: AgentSession['thinkingLevel'] }): Promise<void> => {
-    if (previous.model && (session.model?.provider !== previous.model.provider || session.model?.id !== previous.model.id)) {
-      await session.setModel(previous.model, { persist: false }).catch(() => undefined)
-    }
-    session.setThinkingLevel(previous.effort, { persist: false })
-  }
   // A conversation written on another account can name a model this one cannot use. The account's own
-  // newest choice decides then, and the conversation records it so the next resume is settled. A
-  // fallback never fails the start: whatever is wrong with the choice, Pi's own fallback remains.
+  // selection decides then, and the conversation records it so the next resume is settled. A fallback
+  // never fails the start: whatever is wrong with the choice, Pi's own fallback remains.
   const recoverModel = async (session: AgentSession): Promise<{ recorded: string; reference: string; effort?: Effort } | null> => {
     // An explicit launch model is the host's decision for this session, and a reading that fails is no reason to change one.
     if (prepared.model) return null
@@ -295,7 +284,7 @@ export async function createTerminalRuntime(args: string[], host: TerminalRuntim
     if (!recorded) return null
     const reference = `${recorded.provider}/${recorded.modelId}`
     if (await usableModel(reference).catch(() => undefined)) return null
-    const applied = await modeChoices.useFallback(session, currentMode, usableModel, defaultEffort(session)).catch(() => null)
+    const applied = await selection.useFallback(session, usableModel, defaultEffort(session)).catch(() => null)
     return applied ? { recorded: reference, ...applied } : null
   }
 
@@ -315,7 +304,7 @@ export async function createTerminalRuntime(args: string[], host: TerminalRuntim
       extensionFactories: [
         { name: 'harness-terminal-bridge', factory: pi => terminalExtension(pi, planRun, () => native.session, goal), hidden: true },
         // A model picked in the terminal reaches Pi as this event. A restore is not a pick.
-        { name: 'harness-mode-choices', factory: pi => { pi.on('model_select', event => { if (event.source !== 'restore') void modeChoices.record(recordingMode(), { model: `${event.model.provider}/${event.model.id}` }) }) }, hidden: true },
+        { name: 'harness-selection', factory: pi => { pi.on('model_select', event => { if (event.source !== 'restore') void selection.record({ model: `${event.model.provider}/${event.model.id}` }) }) }, hidden: true },
         // The bridge registers parent capabilities when delegation is available. Runs without
         // delegation still need the same frozen snapshot, after the bridge has begun the run.
         { name: 'harness-run-capabilities', factory: pi => {
@@ -352,10 +341,10 @@ export async function createTerminalRuntime(args: string[], host: TerminalRuntim
       selected = resolveCliModel({ cliModel: prepared.model, modelRuntime })
       if (selected.error || !selected.model) throw new Error(selected.error ?? `Model ${prepared.model} is unavailable.`)
     }
-    // A fresh conversation starts on this account's latest normal-mode choice. A resumed one keeps its history,
+    // A fresh conversation starts on this account's selection. A resumed one keeps its history,
     // and an explicit --model wins. A saved model the account cannot use is skipped.
     const fresh = !prepared.model && (sessionStartEvent?.reason === 'new' || (sessionStartEvent?.reason === 'startup' && !resume))
-    const saved: { model?: string; effort?: Effort } = fresh ? modeChoices.resolve('normal') : {}
+    const saved: { model?: string; effort?: Effort } = fresh ? selection.get() : {}
     if (fresh && saved.model) {
       const chosen = resolveCliModel({ cliModel: saved.model, modelRuntime })
       if (chosen.model && !chosen.error && await modelRuntime.checkAuth(chosen.model.provider)) selected = chosen
@@ -372,7 +361,7 @@ export async function createTerminalRuntime(args: string[], host: TerminalRuntim
     host.resources?.(services)
     return { ...created, services, diagnostics: services.diagnostics }
   }
-  await modeChoices.load()
+  await selection.load()
   native = await createAgentSessionRuntime(factory, {
     cwd, agentDir,
     sessionManager: resume ? SessionManager.open(resume, sessionDirectory) : SessionManager.create(cwd, sessionDirectory),
@@ -396,8 +385,8 @@ export async function createTerminalRuntime(args: string[], host: TerminalRuntim
     changing = true
     try {
       await controlCall('terminal.resources', {}, 30_000)
-      // A model or effort a switch restores belongs to the session's history, not to a choice the person made.
-      return await modeChoices.quietly(action)
+      // A model or effort a switch restores belongs to the session's history, not to a selection the person made.
+      return await selection.quietly(action)
     } finally {
       changing = false
     }
@@ -455,14 +444,11 @@ export async function createTerminalRuntime(args: string[], host: TerminalRuntim
       const originalTools = session.getActiveToolNames()
       const registeredQuestions = session.getAllTools().map(tool => tool.name).filter(name => QUESTION_TOOL_NAMES.has(name))
       const allowedTools = planModeTools(originalTools, [], registeredQuestions)
-      // The session's own model and effort come back once the plan is done.
-      const previous = { model: session.model, effort: session.thinkingLevel }
       planRun.allowedTools = new Set(allowedTools)
       planRun.active = true
       try {
         session.sessionManager.appendCustomEntry(PLAN_TOOLS_ENTRY, { phase: 'begin', normal: originalTools })
         session.setActiveToolsByName(allowedTools)
-        await modeChoices.apply(session, 'plan', modelFor, defaultEffort(session))
         await session.prompt(text, { expandPromptTemplates: false, ...(images?.length ? { images } : {}) })
       } finally {
         planRun.active = false
@@ -470,20 +456,8 @@ export async function createTerminalRuntime(args: string[], host: TerminalRuntim
         if (!disposed && native.session === session) {
           session.setActiveToolsByName(originalTools)
           session.sessionManager.appendCustomEntry(PLAN_TOOLS_ENTRY, { phase: 'end' })
-          await modeChoices.quietly(() => restoreChoice(session, previous))
-          if (pendingApply) {
-            pendingApply = false
-            await applyMode()
-          }
         }
       }
-    },
-    async setMode(mode) {
-      if (disposed) throw new Error('The terminal runtime has closed.')
-      currentMode = mode
-      // A switch during a running turn waits for it to settle, so the turn keeps the model it started with.
-      if (native.session.isIdle && !planRun.active) await applyMode()
-      else pendingApply = true
     },
     get session() { return native.session },
     get services() { return native.services },
@@ -492,8 +466,8 @@ export async function createTerminalRuntime(args: string[], host: TerminalRuntim
     onSessionChange(listener) { changes.add(listener); return () => { changes.delete(listener) } },
     onBeforeSessionChange(listener) { beforeChanges.add(listener); return () => { beforeChanges.delete(listener) } },
     newSession: (options) => exclusive(async () => {
-      // Re-read the choices so a new conversation starts on what was chosen most recently.
-      await modeChoices.load()
+      // Re-read the selection so a new conversation starts on what was chosen most recently.
+      await selection.load()
       return native.newSession(options)
     }),
     switchSession: (path, options) => exclusive(async () => {
@@ -554,11 +528,7 @@ export async function createTerminalRuntime(args: string[], host: TerminalRuntim
   const observeSession = () => {
     unsubscribe?.()
     unsubscribe = native.session.subscribe(event => {
-      if (event.type === 'thinking_level_changed') void modeChoices.record(recordingMode(), { effort: event.level as Effort })
-      if (event.type === 'agent_settled' && pendingApply && !planRun.active) {
-        pendingApply = false
-        void applyMode().catch(() => undefined)
-      }
+      if (event.type === 'thinking_level_changed') void selection.record({ effort: event.level as Effort })
       for (const listener of listeners) listener(event)
       host.changed()
     })
@@ -583,7 +553,7 @@ export async function createTerminalRuntime(args: string[], host: TerminalRuntim
     await announce()
     if (recovered) {
       const effort = recovered.effort ? ` at ${recovered.effort} effort` : ''
-      host.notify(`This account cannot use ${recovered.recorded}. Started on ${recovered.reference}${effort}, your latest choice on this account.`)
+      host.notify(`This account cannot use ${recovered.recorded}. Started on ${recovered.reference}${effort}, your saved selection on this account.`)
     } else if (native.modelFallbackMessage) host.notify(native.modelFallbackMessage)
   }
   native.setBeforeSessionInvalidate(before)

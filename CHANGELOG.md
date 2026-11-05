@@ -2,6 +2,38 @@
 
 ## Unreleased
 
+## 2.3.0-unstable
+
+- **Session token totals survive compaction.** The terminal's token counts use recorded session usage, including earlier runs and compacted messages; the cache percentage remains a separate recent-request diagnostic.
+
+- **Wrapped list items hang under their text in the terminal.** A bullet or numbered item that wraps
+  now continues under its own text instead of under its marker, bullet and numbered lists start their
+  text in the same column, the column widens for `10.` and `100.`, and nested lists indent under their
+  parent. The hanging indent was added in 2.0.1-unstable but never ran, because the transcript's
+  code-block-only renderer kept lists out of it (D-32); OpenTUI is now patched at run time to render a
+  list as its own block, and `scripts/verify-terminal.py --markdown-only` checks the columns again.
+
+- **Optional REA plugin and MCP deadlines.** The disabled-by-default `rea` plugin ships the matching REA skill and an optional pinned MCP runtime dependency. Its plugin-owned connection appears in `/connections` and `/mcp` even while disabled, with links to the plugin switch and settings; it can also be enabled in `/plugins`. Its tools use the connector broker and approval gate. REA requires a supported Node version and optional analysis providers. Its call deadline defaults to 450 seconds and can be changed in plugin settings. Other MCP connections gain a configurable 1–1,800 second call deadline, with the existing 60-second default. A timeout reports an unknown outcome and is never automatically retried.
+
+- **Composer modes no longer change the model or effort (ADR-0087).** Normal and plan share one
+  selection per account. Shift+Tab changes tools and the composer, and **Implement** keeps the model
+  and effort the plan ran on. Every `/model`, `/effort`, Shift+Up/Down, Ctrl+P or Ctrl+S pick is
+  saved for the account, so a new conversation starts on it; a resumed conversation keeps the model
+  and effort in its own history. The client terminal's Ctrl+P now actually cycles the catalogue,
+  and a previous per-mode `choices.json` is migrated to its newest entry on first read.
+
+- **Marketplace terminology and installed plugin management.** Discovery is called Marketplace; plugins,
+  skills and MCP servers are distinguished. `/marketplace` is the canonical terminal command and `/hub`
+  remains a compatible alias; IDs stay unchanged. Installed receipts link to the right local manager, and
+  packages that cannot be rediscovered stay visible for recovery by exact source. The built-in
+  `tui-inspection` skill is switchable and on demand; the optional `tui-test` tool is never installed
+  automatically.
+
+- **Change reports can name each edit in a few words.** The final-answer guidance suggests a `#` title
+  from a short palette (`# What changed`, `# Causes`, `# Fixes`, `# Diagnosis`, `# Rollback` and others)
+  and one bullet per parallel edit opening with a bold three- or four-word label. Both are suggestions:
+  content-named headings, outcome titles and prose stay valid.
+
 ## 2.2.0-unstable
 
 - **The long-lived harness is the default for `xagent` (ADR-0085).** A window runs in it unless told

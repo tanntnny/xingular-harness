@@ -74,6 +74,7 @@ export class LiveTerminal {
   /** The decisions waiting for this terminal's reply and its subagents; a pairing on this session shares them. */
   readonly decisions: LiveDecisions
   private activeRunId: string | null = null
+  private activeRunStartedAt: number | null = null
   private lastRunId: string | null = null
   private readonly stops: Array<() => void> = []
   private disposed = false
@@ -257,6 +258,7 @@ export class LiveTerminal {
     return {
       seq: this.seq,
       activeRunId: this.activeRunId,
+      activeRunStartedAt: this.activeRunId ? this.activeRunStartedAt : null,
       lastRunId: this.lastRunId,
       live,
       session: view,
@@ -281,6 +283,7 @@ export class LiveTerminal {
   }
 
   private started(runId: string): void {
+    if (this.activeRunId !== runId) this.activeRunStartedAt = Date.now()
     this.activeRunId = runId
     this.lastRunId = runId
     this.decisions.bump()

@@ -15,6 +15,7 @@ const entry = (id: string, title: string, category: string, kind: 'registry' | '
 })
 const catalog = (entries = [entry('x/review', 'Code review', 'skills'), entry('x/notes', 'Meeting notes', 'documents', 'document')]) =>
   ({ entries, installed: [], origin: 'bundled', refreshedAt: null, error: null, dataRoot: null, stateDir: '/tmp' }) as unknown as HubOverview
+const receipt = (entry: HubEntry) => ({ entry, installedAt: '2026-10-20T08:00:00.000Z', resourceIds: [], document: null, state: 'installed' as const })
 
 function setup(overview = catalog(), remoteRefresh?: () => Promise<HubOverview>) {
   const calls: Array<[string, unknown]> = []
@@ -35,9 +36,10 @@ function setup(overview = catalog(), remoteRefresh?: () => Promise<HubOverview>)
     return undefined
   }) as unknown as ConstructorParameters<typeof HubPage>[0]['call']
   const ui = { select: vi.fn(async () => undefined as string | undefined), confirm: vi.fn(async () => true), notify: vi.fn() }
-  const page = new HubPage({ theme: () => theme, call, ui, changed: vi.fn() })
+  const navigate = vi.fn((_page: 'plugins' | 'components' | 'connections') => undefined)
+  const page = new HubPage({ theme: () => theme, call, ui, changed: vi.fn(), navigate })
   page.focused = true
-  return { page, calls, ui }
+  return { page, calls, ui, navigate }
 }
 const plain = (page: HubPage, rows = 24, width = 80) => page.render(width, rows).map(stripTerminalSequences)
 async function ready(...args: Parameters<typeof setup>) {
@@ -47,7 +49,7 @@ async function ready(...args: Parameters<typeof setup>) {
   return made
 }
 
-describe('the Hub page', () => {
+describe('the Marketplace page', () => {
   it('lists Community entries by category with the selected entry below and a refresh status', async () => {
     const data = catalog()
     data.entries.push(entry('official/tools', 'Official tool', 'skills', 'registry', 'official'))
@@ -55,9 +57,9 @@ describe('the Hub page', () => {
     const rows = plain(page)
     expect(rows.some(row => row.includes('3 entries'))).toBe(true)
     expect(rows.some(row => row.includes('cached catalog · refresh failed: offline'))).toBe(true)
-    expect(rows).toContain('skills')
-    expect(rows).toContain('documents')
-    expect(rows.indexOf('documents')).toBeLessThan(rows.indexOf('skills'))
+    expect(rows).toContain('Skills')
+    expect(rows).toContain('Documents')
+    expect(rows.indexOf('Documents')).toBeLessThan(rows.indexOf('Skills'))
     expect(rows.some(row => row.startsWith('❯ Meeting notes') && row.endsWith('1.0.0'))).toBe(true)
     expect(rows.some(row => row.startsWith('  Code review') && row.endsWith('1.0.0'))).toBe(true)
     expect(rows.join('\n')).toContain('Meeting notes helps with documents.')
@@ -80,7 +82,7 @@ describe('the Hub page', () => {
     const render = () => overlay.render(terminal.columns).map(stripTerminalSequences)
     const wide = render()
     expect(wide).toHaveLength(40)
-    expect(wide[0]).toContain('Catalog')
+    expect(wide[0]).toContain('Marketplace')
     expect(wide.at(-1)).toContain('Esc close')
     expect(wide.join('\n')).toContain('cached catalog · refresh failed: offline')
     const description = wide.find(line => line.includes('Meeting notes helps with documents.'))
@@ -95,7 +97,7 @@ describe('the Hub page', () => {
     terminal.rows = 20
     const compact = render()
     expect(compact).toHaveLength(20)
-    expect(compact[0]).toContain('Catalog')
+    expect(compact[0]).toContain('Marketplace')
     expect(compact.join('\n')).toContain('Meeting notes helps with documents.')
     expect(compact.at(-1)).toContain('Esc close')
     expect(compact.every(line => visibleWidth(line) <= 40)).toBe(true)
@@ -127,7 +129,7 @@ describe('the Hub page', () => {
       ]
     } as unknown as HubOverview
     const { page, ui, calls } = await ready(overview)
-    expect(page.tabs().map(tab => tab.title)).toEqual(['Catalog', 'Installed'])
+    expect(page.tabs().map(tab => tab.title)).toEqual(['Marketplace', 'Installed'])
     page.handleInput('\t')
     const rows = plain(page)
     expect(rows.some(row => row.startsWith('❯ Code review') && row.endsWith('community · installed · 1.0.0'))).toBe(true)
@@ -137,6 +139,33 @@ describe('the Hub page', () => {
     page.handleInput('\r')
     await vi.waitFor(() => expect(ui.confirm).toHaveBeenCalledWith('Uninstall Code review?', expect.stringContaining('x/review@1.0.0')))
     await vi.waitFor(() => expect(calls.some(([method, params]) => method === 'hub.uninstall' && JSON.stringify(params) === JSON.stringify({ id: 'x/review', version: '1.0.0' }))).toBe(true))
+  })
+
+  it('routes installed packages, registry items, and connector recipes to local management', async () => {
+    const packageEntry = { ...entry('x/review-kit', 'Review Kit', 'plugin'), delivery: { kind: 'pi-package' as const, source: 'npm:review-kit@1.0.0' } }
+    const skillEntry = entry('x/skill', 'Reusable skill', 'skill')
+    const connectorEntry = entry('x/connector', 'Calendar server', 'connector', 'document')
+    const cases = [
+      [packageEntry, 'Manage plugin', 'plugins'],
+      [skillEntry, 'Open component library', 'components'],
+      [connectorEntry, 'Open MCP servers', 'connections']
+    ] as const
+
+    for (const [installedEntry, action, target] of cases) {
+      const overview = { ...catalog([]), installed: [receipt(installedEntry)] } as unknown as HubOverview
+      const { page, ui, calls, navigate } = await ready(overview)
+      page.handleInput('\t')
+      page.handleInput('\x1b[A')
+      expect(page.activeTab()).toBe('installed')
+      expect(plain(page).some(row => row.startsWith(`❯ ${installedEntry.title}`))).toBe(true)
+      ui.select.mockResolvedValueOnce(action)
+      page.handleInput('\r')
+      await vi.waitFor(() => expect(ui.select).toHaveBeenCalled())
+      expect(ui.select).toHaveBeenCalledWith(expect.stringContaining(installedEntry.title), [action, 'Uninstall this version', 'Back'])
+      await vi.waitFor(() => expect(navigate).toHaveBeenCalledWith(target))
+      expect(calls.some(([method]) => method === 'hub.uninstall')).toBe(false)
+      page.dispose()
+    }
   })
 
   it('previews reviewed payload content, scrolls it, and returns to the catalog', async () => {
@@ -171,7 +200,7 @@ describe('the Hub page', () => {
     ui.select.mockResolvedValueOnce('Install exact version 1.0.0')
     page.handleInput('\x1b[B')
     page.handleInput('\r')
-    await vi.waitFor(() => expect(ui.confirm).toHaveBeenCalledWith('Install Code review 1.0.0?', expect.stringContaining('Installed switched off.')))
+    await vi.waitFor(() => expect(ui.confirm).toHaveBeenCalledWith('Install Code review 1.0.0?', expect.stringContaining('Saved to the library.')))
     await vi.waitFor(() => expect(calls.some(([method]) => method === 'hub.install')).toBe(true))
     expect(calls.find(([method]) => method === 'hub.install')![1]).toEqual({ id: 'x/review', version: '1.0.0' })
   })

@@ -3,6 +3,7 @@
 // of what each call returned.
 import { createHash, randomUUID } from 'node:crypto'
 import { join } from 'node:path'
+import { SdkError, SdkErrorCode } from '@modelcontextprotocol/client'
 
 import type { SecretStore } from '../accounts/secrets'
 import type { Bus } from '../core/bus'
@@ -19,6 +20,7 @@ import type { SessionBroker } from '../sessions/sessions'
 import type { ToolSession, ToolSpec } from '../tools/types'
 import { allowed, Connections, webUrl } from './connections'
 import { isSignInRequired, McpManager, signInRequired } from './manager'
+import { builtinConnections, REA_CONNECTION_ID, REA_SKILL_CONTRIBUTION, reaLauncher, reaRuntimeSupported } from './builtinConnections'
 import { signIn, type OAuthHost } from './oauth'
 import type { AppOAuthClients, Connection, HttpConfig, LaunchConfig, McpSource, McpTrace } from './types'
 
@@ -57,6 +59,17 @@ interface ListedTool extends BrokerTool {
   connectionId: string
   tool: string
   origin?: 'app'
+}
+
+async function mcpCall<T>(connection: Connection, call: (timeout: number) => Promise<T>): Promise<T> {
+  try {
+    return await call(connection.callTimeoutSeconds * 1000)
+  } catch (error) {
+    if (error instanceof SdkError && error.code === SdkErrorCode.RequestTimeout) {
+      throw new HarnessError('mcp_timeout', `MCP call timed out after ${connection.callTimeoutSeconds} seconds. Its outcome is unknown: the server may still have completed it. Do not retry automatically; verify the remote state first.`)
+    }
+    throw error
+  }
 }
 
 const TOOL_SUMMARY_CHARS = 160
@@ -148,6 +161,19 @@ export class ConnectedApps implements SessionBroker {
       }
     }
     this.manager = new McpManager(this.oauth)
+    options.bus.on((notice) => {
+      if (notice.type !== 'plugins.changed') return
+      const sessions = new Map<string, boolean>()
+      for (const grant of this.grants.values()) {
+        let allowed = false
+        try {
+          allowed = builtinConnections(options.env.root, grant.caller).length > 0
+            && (!grant.capabilities || grant.capabilities.connectors.includes(REA_CONNECTION_ID) && grant.capabilities.contributions.includes(REA_SKILL_CONTRIBUTION))
+        } catch { /* no open data root */ }
+        sessions.set(grant.sessionId, (sessions.get(grant.sessionId) ?? false) || allowed)
+      }
+      for (const [sessionId, allowed] of sessions) if (!allowed) void this.manager.close(REA_CONNECTION_ID, sessionId)
+    })
   }
 
   /** Loads what is needed to redact results. Call once before sessions start. */
@@ -200,13 +226,22 @@ export class ConnectedApps implements SessionBroker {
   // ---- What a session may reach ---------------------------------------------------------------
 
   private async reachable(session: BrokerSession): Promise<Connection[]> {
-    const scoped = this.connections.forScope({ agentId: session.caller.agentId, projectId: session.caller.projectId })
-    const frozen = session.capabilities ? scoped.filter((connection) => session.capabilities!.connectors.includes(connection.id)) : scoped
+    const scope = { agentId: session.caller.agentId, projectId: session.caller.projectId }
+    const scoped = [...this.connections.forScope(scope).filter(connection => connection.id !== REA_CONNECTION_ID), ...builtinConnections(this.options.env.root, scope)]
+    const frozen = session.capabilities ? scoped.filter((connection) => session.capabilities!.connectors.includes(connection.id) && (connection.id !== REA_CONNECTION_ID || session.capabilities!.contributions.includes(REA_SKILL_CONTRIBUTION))) : scoped
     const policy = this.options.policy.connections
     // Nothing to narrow: the application is not asked.
     if (!policy || !frozen.length) return frozen
     const ids = await policy({ sessionId: session.sessionId, runId: session.runId, caller: session.caller, connectionIds: frozen.map((connection) => connection.id) })
     return frozen.filter((connection) => ids.includes(connection.id))
+  }
+
+  private async launch(connection: Connection): Promise<LaunchConfig> {
+    if (connection.id === REA_CONNECTION_ID) {
+      if (!reaRuntimeSupported()) throw new HarnessError('mcp_unavailable', 'REA requires Node 22.23.4+, 24.22.1+, or 26.12.1+. Start the Harness with a supported Node runtime.')
+      if (!reaLauncher()) throw new HarnessError('mcp_unavailable', 'The bundled REA runtime is missing or has the wrong version. Reinstall the Harness package.')
+    }
+    return this.connections.launch(connection)
   }
 
   /** A diagnostic lists only the selected server; it never calls a connector tool. */
@@ -218,7 +253,7 @@ export class ConnectedApps implements SessionBroker {
     const cancel = () => { void this.manager.close(connectionId, session.sessionId) }
     signal.addEventListener('abort', cancel, { once: true })
     try {
-      const config = await this.connections.launch(connection)
+      const config = await this.launch(connection)
       const client = await this.manager.client(session.sessionId, config)
       signal.throwIfAborted()
       return (await client.listTools({}, { signal, timeout: 15_000 })).tools.length
@@ -236,7 +271,7 @@ export class ConnectedApps implements SessionBroker {
         const tools: ListedTool[] = []
         let config: LaunchConfig | null = null
         try {
-          config = await this.connections.launch(connection)
+          config = await this.launch(connection)
           const client = await this.manager.client(session.sessionId, config)
           for (const tool of (await client.listTools({}, { timeout: 15000 })).tools) {
             const alias = `mcp_${createHash('sha256').update(`${connection.id}:${tool.name}`).digest('hex').slice(0, 12)}_${tool.name.replace(/[^a-zA-Z0-9_]/g, '_').slice(0, 40)}`
@@ -256,7 +291,7 @@ export class ConnectedApps implements SessionBroker {
           return { tools, errors: [] }
         } catch (error) {
           const unauthorized = isSignInRequired(error)
-          const message = unauthorized ? signInRequired(connection).message : `${connection.name} could not load its tools. Check its scope in Capability → Connectors.`
+          const message = unauthorized ? signInRequired(connection).message : connection.id === REA_CONNECTION_ID && error instanceof HarnessError ? error.message : `${connection.name} could not load its tools. Check its scope in Capability → Connectors.`
           if (unauthorized) await this.manager.close(connection.id, session.sessionId)
           this.connectionFailed(connection.id, unauthorized)
           return { tools: [], errors: [{ connection: connection.name, message }] }
@@ -303,15 +338,27 @@ export class ConnectedApps implements SessionBroker {
     if (!tool) throw new HarnessError('mcp_tool_unavailable', 'This MCP tool is unavailable or its connection was disabled.')
     const toolCallId = randomUUID()
     const config = await this.authorize(session, tool.connectionId, tool.tool, args, toolCallId)
+    let dispatched = false
     try {
       const client = await this.manager.client(session.sessionId, config)
-      const result = tool.tool === 'resources/list' ? await client.listResources() : tool.tool === 'resources/read' ? await client.readResource({ uri: String(args.uri) }) : await client.callTool({ name: tool.tool, arguments: args }, { timeout: 60000 })
+      // Access can be revoked while a server starts. Recheck after the final await before dispatch.
+      if (!(await this.reachable(session)).some(connection => connection.id === tool.connectionId)) throw new HarnessError('mcp_access_denied', 'Connection access was revoked before the call started.')
+      if (tool.connectionId === REA_CONNECTION_ID && !builtinConnections(this.options.env.root, session.caller).length) throw new HarnessError('mcp_access_denied', 'Connection access was revoked before the call started.')
+      this.valid(session)
+      this.activeRun(session)
+      const connection = this.calls.get(toolCallId)!.connection
+      dispatched = true
+      const result = await mcpCall<unknown>(connection, (timeout) => tool.tool === 'resources/list' ? client.listResources({}, { timeout }) : tool.tool === 'resources/read' ? client.readResource({ uri: String(args.uri) }, { timeout }) : client.callTool({ name: tool.tool, arguments: args }, { timeout }))
       this.completed(toolCallId, tool.tool, { result })
       return result
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'MCP call failed'
-      this.completed(toolCallId, tool.tool, { error: tool.tool === 'x_workspace_mutation_apply' ? 'Workspace apply did not return a confirmed result. Do not retry automatically; read the affected record to verify its state.' : message })
-      throw error
+      const message = String(this.connections.scrub(error instanceof Error ? error.message : 'MCP call failed', tool.connectionId))
+      const reported = dispatched && !(error instanceof HarnessError && error.code === 'mcp_timeout')
+        ? new HarnessError('mcp_call_unconfirmed', `The MCP call did not return a confirmed result. Its outcome is unknown; verify state before retrying. ${message}`)
+        : error
+      const detail = reported instanceof Error ? reported.message : message
+      this.completed(toolCallId, tool.tool, { error: detail })
+      throw reported
     }
   }
 
@@ -355,7 +402,7 @@ export class ConnectedApps implements SessionBroker {
     this.valid(session)
     this.activeRun(session)
     this.calls.set(toolCallId, { session, connection: current, runId: run.runId })
-    return this.connections.launch(current)
+    return this.launch(current)
   }
 
   /** Records what an authorized call returned: a redacted trace with its sources, and the tool's outcome. */
@@ -399,7 +446,7 @@ export class ConnectedApps implements SessionBroker {
 
   /** Changes whenever what a session can discover may have changed. */
   async revision(session: BrokerSession): Promise<unknown> {
-    return { connections: this.connections.revision(), tools: (await this.brokered?.revision?.(session)) ?? null }
+    return { connections: [...this.connections.revision(), ...builtinConnections(this.options.env.root, session.caller).map(connection => ({ id: connection.id, callTimeoutSeconds: connection.callTimeoutSeconds }))], tools: (await this.brokered?.revision?.(session)) ?? null }
   }
 
   // ---- The two tools a session gets -------------------------------------------------------------
@@ -531,7 +578,13 @@ export class ConnectedApps implements SessionBroker {
           : kind.startsWith('resource')
             ? ['x_workspace_resource_get', { id: source.id }]
             : ['x_workspace_context', { query: source.title || source.id }]
-    return this.connections.scrub(await this.manager.readSource(await this.connections.launch(connection), tool, args), connection.id)
+    const scope = `source-${randomUUID()}`
+    try {
+      const client = await this.manager.client(scope, await this.connections.launch(connection))
+      return this.connections.scrub(await mcpCall(connection, (timeout) => client.callTool({ name: tool, arguments: args }, { timeout })), connection.id)
+    } finally {
+      await this.manager.close(connection.id, scope)
+    }
   }
 
   /** Gives one agent exactly these connections, if its creator may reach each of them. */
@@ -557,7 +610,7 @@ export class ConnectedApps implements SessionBroker {
       throw new HarnessError('mcp_denied', `${connection.name} asks before running "${tool}". Mark it to run without asking in the connection's settings to let a plugin use it.`)
     }
     const client = await this.manager.client(UNATTENDED_SCOPE, await this.connections.launch(connection))
-    return client.callTool({ name: tool, arguments: args }, { timeout: 60000 })
+    return mcpCall(connection, (timeout) => client.callTool({ name: tool, arguments: args }, { timeout }))
   }
 
   /** Switches one saved connection on or off for everyone, one agent, or one project. */

@@ -1,5 +1,67 @@
 # Handoff — 2026-11-05 (second session; released as 2.2.0-unstable without a test run, by request)
 
+> **Current continuation (2026-11-05):** the original handoff below records the Harness 2.2 daemon
+> release. The browser-migration status and remaining work in this addendum are current; follow
+> [ADR-0035](../agent-app/docs/decisions/ADR-0035-dsh-desktop-browser-and-electron.md) and
+> [FEAT-0004](../agent-app/docs/features/FEAT-0004-browser-workspace.md) for the accepted target.
+
+## DSH sidebar browser migration — current handoff
+
+**Target.** Replace the App's person-facing Tauri/WebKit sidebar browser with an Electron/Chromium
+host matching DSH Desktop's guest, controller, and lease boundaries. Use DSH checkout
+`external/deepseek-harness` pinned at `8bd073392eef6f54e921a093b95076248eb08cbb` as the reference.
+Keep the browser in the existing sidebar. Its workspace partition is process-lifetime; only a
+person-requested tab title and URL may be restored. Agent browsing stays separate: the App uses the
+Harness-selected isolated Chromium or explicitly paired Brave backend, never sidebar tabs.
+
+**Completed safe slice.** App sidecar initialization enables Harness's Browser plugin in both direct
+and daemon modes ([`app.ts`](../agent-app/sidecar/src/app.ts),
+[`daemonMode.ts`](../agent-app/sidecar/src/daemonMode.ts)). App tools and the connected-apps broker
+no longer expose browser aliases; `browser_upload` is retired from active settings while its ID
+remains readable for older saved settings ([`shared/appTools.ts`](../agent-app/shared/appTools.ts),
+[`sidecar/src/appTools.ts`](../agent-app/sidecar/src/appTools.ts),
+[`sidecar/src/appPlugins.ts`](../agent-app/sidecar/src/appPlugins.ts),
+[`shared/contracts.ts`](../agent-app/shared/contracts.ts),
+[`src-tauri/src/agents.rs`](../agent-app/src-tauri/src/agents.rs)). Source tests cover ownership
+and fail-closed backend separation ([`app.test.ts`](../agent-app/sidecar/src/app.test.ts),
+[`appPlugins.test.ts`](../agent-app/sidecar/src/appPlugins.test.ts),
+[`daemonMode.test.ts`](../agent-app/sidecar/src/daemonMode.test.ts)). The decision, current status,
+parity entry, and packaged-App acceptance checks are recorded in
+[ADR-0035](../agent-app/docs/decisions/ADR-0035-dsh-desktop-browser-and-electron.md),
+[FEAT-0004](../agent-app/docs/features/FEAT-0004-browser-workspace.md), the
+[App implementation-stage log](../agent-app/docs/architecture/implementation-stage.md), and
+[the Harness parity register](docs/parity.md).
+
+**Still not implemented.** [`BrowserWorkspace.tsx`](../agent-app/src/modes/shared/BrowserWorkspace.tsx)
+and [`useBrowserWorkspace.ts`](../agent-app/src/modes/shared/useBrowserWorkspace.ts) still call the
+Tauri host; [`browser_workspace.rs`](../agent-app/src-tauri/src/browser_workspace.rs) still creates
+WebKit child views. There is no Electron main/preload host, Chromium guest lease, Electron packaging
+path, or packaged-App acceptance. The existing WebKit profile, browser records, Keychain credentials,
+sharing, and upload paths remain in the worktree. Do not delete or silently migrate that data, and do
+not run both hosts against the same live browser data. The current visible browser remains
+Tauri/WebKit until the host migration is actually integrated.
+
+**Next work, in order.**
+
+1. Re-read [App `AGENTS.md`](../agent-app/AGENTS.md), [ADR-0035](../agent-app/docs/decisions/ADR-0035-dsh-desktop-browser-and-electron.md), [FEAT-0004](../agent-app/docs/features/FEAT-0004-browser-workspace.md), and [STUDY-0011](docs/study/STUDY-0011-dsh-browser-embedding.md). Review DSH's pinned [guest broker](external/deepseek-harness/apps/desktop/src/browser-guests.ts) and [browser package](external/deepseek-harness/packages/client/ui-sidebar-browser/README.md).
+   Audit the App [command bridge](../agent-app/src/bridge/commands.ts), Rust OS integrations, sidecar protocol, and packaging before changing startup. The App and Harness worktrees contain extensive uncommitted work; inspect focused diffs and do not reset or overwrite it.
+2. Define the Electron host/preload boundary for the existing App API and keep the Harness sidecar and run protocol working. A remote website must never receive Node, preload, or App-command access.
+3. Port the sidebar browser controller and page carrier to Chromium guests. Put guest creation, attachment, navigation, workspace-partition assignment, and lease revocation under main-process control; validate the workspace owner and navigation on every operation.
+   Follow current Electron security guidance rather than treating DSH's `<webview>` as a drop-in Tauri component; see [STUDY-0011](docs/study/STUDY-0011-dsh-browser-embedding.md).
+4. Preserve the old WebKit profiles, browser records, and Keychain entries for recovery. Do not copy them into the ephemeral Chromium partition. Retire WebKit-specific sharing, credential, and upload behavior only as part of the integrated migration, with an isolated rollback/probe profile and no concurrent use of the same browser data.
+5. Run the acceptance list in [FEAT-0004](../agent-app/docs/features/FEAT-0004-browser-workspace.md) against a packaged Electron App: lease and guest isolation, navigation, partition lifetime, denied popup/permission/download paths, manual URL restoration, agent-browser separation, and the App's non-browser OS integrations.
+   Update the [implementation-stage record](../agent-app/docs/architecture/implementation-stage.md) only for behavior actually built and verified.
+
+**Verification at this continuation.** App sidecar tests passed (95); App Rust tests passed (197,
+1 ignored); `check:ui` passed against its 38-finding baseline; and scoped `git diff --check` passed.
+No Electron host or packaged-App walkthrough was run. Current-worktree failures to recheck while
+working include the App renderer's [`/goal` handler test](../agent-app/src/modes/solo/soloCommands.test.ts)
+(615 other tests passed), App typecheck UI prop errors, nine `computer_*` findings in
+`check:layers`, and Harness/sidecar type errors around `SelectionPatch` in
+[`harnessRuntime.ts`](src/terminal/tui/harnessRuntime.ts) and [`runtime.ts`](src/terminal/tui/runtime.ts).
+These are not evidence about the Electron migration; rerun the checks after integration and keep
+unrelated failures separate.
+
 The long-lived harness (the "app-server", `xagent daemon`) is now the **default** for the terminal and for
 the App's sidecar (ADR-0085). It was opt-in at `2.1.0-unstable`. Decisions and evidence:
 [`ADR-0083`](docs/decisions/ADR-0083-one-live-session-runtime.md) (one live-session runtime),
@@ -88,6 +150,9 @@ Kill switches: `--no-daemon`, `XINGULAR_DAEMON=0` (terminal); `XAGENT_HARNESS_MO
 6. Carried over: D-32 (list wrapping), plugin presentation in the client terminal (INV-TUI-8), the provider
    request timeout, the App's `/goal` test and UI typecheck errors, and the nine `computer_*` names in
    `check:layers`.
+7. Complete the DSH sidebar browser migration described in the current continuation above. Agent-browser
+   separation is done; the visible sidebar is still Tauri/WebKit, and the Electron host, Chromium guests,
+   data-preservation path, and packaged-App acceptance remain open.
 
 ## Things that are easy to get wrong
 

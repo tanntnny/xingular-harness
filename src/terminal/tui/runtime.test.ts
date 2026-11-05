@@ -86,7 +86,7 @@ describe('the persistent terminal SDK adapter', () => {
   })
 
   it('starts a conversation without a saved model the account cannot use', async () => {
-    transport.call.mockImplementation(async (call: string) => (call === 'accounts.choices.get' ? { normal: { model: 'no-such-provider/unknown', effort: 'low', updatedAt: 'then' } } : {}))
+    transport.call.mockImplementation(async (call: string) => (call === 'accounts.selection.get' ? { model: 'no-such-provider/unknown', effort: 'low', updatedAt: 'then' } : {}))
     const { runtime } = await openFixture()
     expect(runtime.session.model?.provider).not.toBe('no-such-provider')
   })
@@ -97,7 +97,7 @@ describe('the persistent terminal SDK adapter', () => {
     const firstFile = first.sessionFile!
     expect(first.systemPrompt).toContain('Fixed Harness context.')
     // Only the explicit plugin and the Harness's own inline extensions load.
-    expect(first.extensionRunner.getExtensionPaths()).toEqual([args[5], '<inline:harness-terminal-bridge>', '<inline:harness-mode-choices>', '<inline:harness-run-capabilities>'])
+    expect(first.extensionRunner.getExtensionPaths()).toEqual([args[5], '<inline:harness-terminal-bridge>', '<inline:harness-selection>', '<inline:harness-run-capabilities>'])
     expect(first.sessionManager.getEntries().filter((entry) => entry.type === 'custom').map((entry) => entry.data)).toEqual([{ mode: 'tui' }, { mode: 'tui' }])
     const events: string[] = []
     runtime.subscribe((event) => events.push(event.type))
@@ -126,7 +126,7 @@ describe('the persistent terminal SDK adapter', () => {
     expect(transport.claim).toHaveBeenCalledTimes(1)
     expect(transport.call.mock.calls.length).toBeGreaterThanOrEqual(6)
     // The account's saved model and effort, and its credentials, are read when a conversation starts; nothing is written here.
-    expect(transport.call.mock.calls.every(([call]) => ['terminal.resources', 'terminal.interrupt', 'accounts.session', 'accounts.choices.get', 'accounts.credentials.read', 'accounts.credentials.list'].includes(call))).toBe(true)
+    expect(transport.call.mock.calls.every(([call]) => ['terminal.resources', 'terminal.interrupt', 'accounts.session', 'accounts.selection.get', 'accounts.credentials.read', 'accounts.credentials.list'].includes(call))).toBe(true)
     expect(readFileSync(firstFile, 'utf8')).toContain(cwd)
     expect(readdirSync(root)).not.toContain('.pi')
   })

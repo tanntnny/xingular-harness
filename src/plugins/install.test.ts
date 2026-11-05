@@ -83,7 +83,7 @@ describe('installing a package', () => {
     expect(await loaded()).toEqual({ extensions: [], skills: [] })
   })
 
-  it('routes Hub-owned removal through the receipt owner and refuses floating Hub updates', async () => {
+  it('does not remove a different package when a marketplace receipt has the same plugin id', async () => {
     const { root, base, call, harness } = setup()
     kit(join(base, 'kit'))
     const installed = await call<Plugin[]>('plugins.install', { source: join(base, 'kit') })
@@ -95,11 +95,57 @@ describe('installing a package', () => {
     }
     mkdirSync(join(root, 'hub'), { recursive: true })
     writeFileSync(join(root, 'hub/installed.json'), JSON.stringify([{ entry, installedAt: '2026-10-20T08:00:00.000Z', resourceIds: [plugin.id], document: null }]))
-    await expect(call('plugins.update', { pluginId: plugin.id })).rejects.toThrow('managed by Hub')
-
-    const after = await call<Plugin[]>('plugins.remove', { pluginId: plugin.id })
-    expect(after.some(candidate => candidate.id === plugin.id)).toBe(false)
+    const listed = await call<Plugin[]>('plugins.list')
+    const missing = listed.find(candidate => candidate.install?.source === 'npm:review-kit@1.0.0')!
+    expect(missing.id).not.toBe(plugin.id)
+    expect(missing.description).toContain('Needs attention')
+    await expect(call('plugins.update', { pluginId: missing.id })).rejects.toThrow('managed by Hub')
+    await call('plugins.remove', { pluginId: missing.id })
+    expect((await call<Plugin[]>('plugins.list')).some(candidate => candidate.id === plugin.id)).toBe(true)
+    expect(existsSync(join(base, 'kit/package.json'))).toBe(true)
     expect((await harness.hub.list()).installed).toEqual([])
+  })
+
+  it('keeps an undiscoverable marketplace package visible and removes its configured source', async () => {
+    const { root, call, harness } = setup()
+    const source = 'npm:missing-review@1.0.0'
+    const settingsPath = join(sharedDir(harness.accounts.dir), 'settings.json')
+    writeFileSync(settingsPath, JSON.stringify({ packages: [{ source, skills: ['skills/*'] }] }))
+    const entry = {
+      id: 'community/missing-review', title: 'Missing review', description: 'Review helpers.', publisher: 'Community', license: 'MIT', version: '1.0.0',
+      category: 'plugin', channel: 'community', tags: [], requires: {}, sourceUrl: 'https://example.com/review', delivery: { kind: 'pi-package', source }
+    }
+    mkdirSync(join(root, 'hub'), { recursive: true })
+    writeFileSync(join(root, 'hub/installed.json'), JSON.stringify([{ entry, installedAt: '2026-10-20', resourceIds: ['package:missing-review'], document: null }]))
+    const missing = (await call<Plugin[]>('plugins.list')).find(plugin => plugin.install?.source === source)!
+    expect(missing).toMatchObject({ id: 'package:missing-review', path: null, attachment: null })
+    expect((await harness.hub.list()).installed[0].state).toBe('incomplete')
+    await call('plugins.remove', { pluginId: missing.id })
+    expect((JSON.parse(readFileSync(settingsPath, 'utf8')).packages ?? [])).toEqual([])
+    expect((await harness.hub.list()).installed).toEqual([])
+  })
+
+  it('attributes the built-in TUI skill and removes it from resolved capabilities when detached', async () => {
+    const { call } = setup()
+    const before = await call<Plugin[]>('plugins.list')
+    expect(before.find(plugin => plugin.id === 'tui-inspection')?.contributions).toEqual([expect.objectContaining({ id: 'tui-inspection/skill/tui-inspection', state: 'on' })])
+    const active = await call<{ contributions: string[] }>('capabilities.resolve')
+    expect(active.contributions).toContain('tui-inspection/skill/tui-inspection')
+    await call('plugins.detach', { id: 'tui-inspection' })
+    const inactive = await call<{ contributions: string[] }>('capabilities.resolve')
+    expect(inactive.contributions).not.toContain('tui-inspection/skill/tui-inspection')
+  })
+
+  it('keeps the built-in REA skill off until attached and removes it again when detached', async () => {
+    const { call } = setup()
+    const id = 'rea/skill/reverse-engineer-anything'
+    const before = await call<Plugin[]>('plugins.list')
+    expect(before.find(plugin => plugin.id === 'rea')?.contributions).toEqual(expect.arrayContaining([expect.objectContaining({ id, state: 'off' }), expect.objectContaining({ id: 'rea/connection/builtin-rea', state: 'off' })]))
+    expect((await call<{ contributions: string[] }>('capabilities.resolve')).contributions).not.toContain(id)
+    await call('plugins.attach', { id: 'rea' })
+    expect((await call<{ contributions: string[] }>('capabilities.resolve')).contributions).toContain(id)
+    await call('plugins.detach', { id: 'rea' })
+    expect((await call<{ contributions: string[] }>('capabilities.resolve')).contributions).not.toContain(id)
   })
 
   it('refuses a folder that is not there, and a plugin that was not installed', async () => {

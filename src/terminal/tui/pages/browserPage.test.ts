@@ -23,7 +23,24 @@ function setup(overrides: Partial<BrowserPageOptions> = {}) {
   page.activate()
   return { page, snapshot, runtime, call, ui, useSkill }
 }
+function addRea(snapshot: BrowserSnapshot, enabled: boolean) {
+  const attachment = { global: enabled, on: { agentIds: [], projectIds: [] }, off: { agentIds: [], projectIds: [] } }
+  snapshot.plugins.push({ id: 'rea', title: 'REA', description: 'Reverse engineering', source: 'builtin', version: '6.8.0', path: null, runsCode: false,
+    trust: 'none', code: null, install: null, extends: [], required: null, manage: 'connections', connectorTemplates: [], attachment,
+    settings: [{ key: 'callTimeoutSeconds', label: 'Tool call timeout', description: 'Deadline in seconds', default: 450, min: 1, max: 1800, value: 450 }],
+    contributions: [{ id: 'rea/connection/REA', kind: 'connection', name: 'REA', description: 'Reverse engineering tools', path: null,
+      state: enabled ? 'on' : 'off', scope: null, attachment: null, registered: null, problem: null, background: false }] })
+  snapshot.items.push({ id: 'virtual:rea', section: 'connections', name: 'REA', description: 'Reverse engineering tools', owner: 'REA', origin: 'builtin',
+    status: enabled ? 'Enabled' : 'Disabled', pluginId: 'rea', contributionId: 'rea/connection/REA' })
+}
 const plain = (page: BrowserPage, width = 80, rows = 24) => page.render(width, rows).map(stripTerminalSequences).join('\n')
+function clickAction(page: BrowserPage, label: string) {
+  const lines = page.render(116, 36).map(stripTerminalSequences)
+  const y = lines.findIndex(line => line.includes(label))
+  expect(y).toBeGreaterThanOrEqual(0)
+  const x = lines[y]!.indexOf(label)
+  page.handleMouse({ type: 'click', button: 'left', x, y, screenX: x, screenY: y, width: 116, height: 36, shift: false, alt: false, ctrl: false })
+}
 async function ready(overrides: Partial<BrowserPageOptions> = {}) {
   const result = setup(overrides)
   await vi.waitFor(() => expect(plain(result.page)).toContain('Review'))
@@ -104,6 +121,75 @@ describe('unified Harness browser', () => {
     expect(plain(page)).toContain('Local server')
     expect(plain(page)).not.toContain('Connected ✓')
     expect(call.mock.calls.every(([method]) => method === 'terminal.browser.snapshot')).toBe(true)
+  })
+
+  it.each([false, true])('shows the %s REA virtual connection without saved connection actions or calls', async enabled => {
+    const { page, snapshot, call } = setup({ section: 'connections' })
+    addRea(snapshot, enabled)
+    await vi.waitFor(() => expect(plain(page, 116, 36)).toContain('REA'))
+    const screen = plain(page, 116, 36)
+    expect(screen).toContain(enabled ? 'Enabled' : 'Disabled')
+    expect(screen).toContain('Manage attachment and code trust')
+    expect(screen).toContain('Configure plugin settings')
+    expect(screen).not.toContain('Edit connection configuration')
+    expect(screen).not.toContain('Test connection and list its tools')
+    expect(screen).not.toContain('Remove connection')
+    expect(screen).not.toContain('Enable connection')
+    expect(screen).not.toContain('Disable connection')
+    page.handleInput('\r')
+    for (const [width, rows] of [[36, 16], [116, 36]]) {
+      const rendered = page.render(width!, rows!)
+      expect(rendered.length).toBeLessThanOrEqual(rows!)
+      expect(rendered.every(line => visibleWidth(line) <= width!)).toBe(true)
+    }
+    expect(call.mock.calls.every(([method]) => method === 'terminal.browser.snapshot')).toBe(true)
+  })
+
+  it('includes virtual connections in Built-in filtering and excludes local connections', async () => {
+    const { page, snapshot } = setup({ section: 'connections' })
+    addRea(snapshot, false)
+    snapshot.items.push({ id: 'local', section: 'connections', name: 'Local server', description: '', owner: 'Connected apps', origin: 'Local', status: 'Disabled' })
+    await vi.waitFor(() => expect(plain(page, 116, 36)).toContain('Local server'))
+    page.handleInput('\x06')
+    page.handleInput('\x1b[Z')
+    page.handleInput('\x1b[Z')
+    page.handleInput('\x1b[D')
+    const screen = plain(page, 116, 36)
+    expect(screen).toContain('Filter: built-in')
+    expect(screen).toContain('REA')
+    expect(screen).not.toContain('Local server')
+  })
+
+  it.each([false, true])('manages the whole REA plugin from its connection when enabled is %s', async enabled => {
+    let snapshot: BrowserSnapshot
+    const call = vi.fn(async (method: string) => {
+      if (method === 'terminal.browser.snapshot') { await Promise.resolve(); return snapshot }
+      if (method === 'plugins.session') return { projectId: null }
+      return {}
+    })
+    const result = setup({ section: 'connections', call: call as BrowserPageOptions['call'] })
+    snapshot = result.snapshot
+    const { page, ui } = result
+    addRea(snapshot, enabled)
+    await vi.waitFor(() => expect(plain(page, 116, 36)).toContain('REA'))
+    ui.select.mockResolvedValueOnce(enabled ? 'Switch off everywhere' : 'Switch on everywhere')
+    clickAction(page, 'Manage attachment and code trust')
+    await vi.waitFor(() => expect(call).toHaveBeenCalledWith(enabled ? 'plugins.detach' : 'plugins.attach', { id: 'rea', everywhere: true }))
+    expect(ui.select).toHaveBeenCalledWith('REA', [enabled ? 'Switch off everywhere' : 'Switch on everywhere', 'Back'])
+    expect(ui.select).not.toHaveBeenCalledWith('Choose contribution', expect.anything())
+    expect(call.mock.calls.some(([method]) => method.startsWith('terminal.browser.connections.'))).toBe(false)
+  })
+
+  it('configures the virtual connection timeout through its owning plugin', async () => {
+    const { page, snapshot, call, ui } = setup({ section: 'connections' })
+    addRea(snapshot, false)
+    await vi.waitFor(() => expect(plain(page, 116, 36)).toContain('REA'))
+    ui.select.mockResolvedValueOnce('Tool call timeout: 450')
+    ui.input.mockResolvedValueOnce('900')
+    clickAction(page, 'Configure plugin settings')
+    await vi.waitFor(() => expect(call).toHaveBeenCalledWith('plugins.configure', { pluginId: 'rea', settings: { callTimeoutSeconds: 900 } }))
+    expect(ui.input).toHaveBeenCalledWith('Tool call timeout (1–1800)', '450')
+    expect(call.mock.calls.some(([method]) => method.startsWith('terminal.browser.connections.'))).toBe(false)
   })
 
   it('groups inspector actions by task and keeps removal actions separate', async () => {
@@ -219,12 +305,12 @@ describe('unified Harness browser', () => {
     await vi.waitFor(() => expect(plain(page)).toContain('Add connection'))
     ui.select.mockResolvedValueOnce('Add connection').mockResolvedValueOnce('Local command (stdio)').mockResolvedValueOnce('Everywhere')
     ui.input.mockResolvedValueOnce('Local fixture').mockResolvedValueOnce('node').mockResolvedValueOnce('["server.mjs"]')
-      .mockResolvedValueOnce('').mockResolvedValueOnce('ACCESS_KEY')
+      .mockResolvedValueOnce('').mockResolvedValueOnce('ACCESS_KEY').mockResolvedValueOnce('60')
     ui.secretInput.mockResolvedValueOnce('private-value')
     page.handleInput('\x1b[Z')
     page.handleInput('\r')
     await vi.waitFor(() => expect(call).toHaveBeenCalledWith('terminal.browser.connections.save', {
-      input: expect.objectContaining({ name: 'Local fixture', kind: 'local', enabled: false, command: 'node', args: ['server.mjs'], global: true, env: { ACCESS_KEY: 'private-value' } })
+      input: expect.objectContaining({ name: 'Local fixture', kind: 'local', enabled: false, command: 'node', args: ['server.mjs'], global: true, env: { ACCESS_KEY: 'private-value' }, callTimeoutSeconds: 60 })
     }))
     expect(ui.secretInput).toHaveBeenCalledWith('Value for ACCESS_KEY')
     expect(call.mock.calls.some(([method]) => method === 'terminal.browser.connections.test')).toBe(false)

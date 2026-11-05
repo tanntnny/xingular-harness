@@ -531,7 +531,10 @@ export class Connections {
 
   async save(input: ConnectionInput): Promise<Connection> {
     const parsed = connectionInputSchema.safeParse(input)
-    if (!parsed.success) throw invalid('A name, executable, and supported connection kind are required.')
+    if (!parsed.success) {
+      if (parsed.error.issues.some((issue) => issue.path[0] === 'callTimeoutSeconds')) throw invalid('Call timeout must be a whole number from 1 to 1800 seconds.')
+      throw invalid('A name, executable, and supported connection kind are required.')
+    }
     const { env, removeEnv, headers, removeHeaders, oauthCredentials, ...connection } = parsed.data
     if (!connection.id) connection.id = newId()
     safeId(connection.id)
@@ -553,6 +556,7 @@ export class Connections {
 
     const all = this.list()
     const existing = all.find((item) => item.id === connection.id)
+    if (existing && input.callTimeoutSeconds === undefined) connection.callTimeoutSeconds = existing.callTimeoutSeconds
     const root = this.attachmentRoot()
     if (root && !connectionScopeMigrationComplete(root) && (existing ? !sameScope(existing, connection) : hasScope(connection))) {
       throw scopeMigrationError()

@@ -1,12 +1,12 @@
 /**
- * The Hub page: the Community catalog and all installed Hub receipts. Installing asks first,
+ * The Marketplace page: Community discovery and installed receipts. Installing asks first,
  * installs exactly the listed version, and leaves code switched off and untrusted.
  */
 import type { Theme } from '@earendil-works/pi-coding-agent'
 import { matchesKey, truncateToWidth, wrapTextWithAnsi } from '@earendil-works/pi-tui'
 
 import type { HubOverview, HubPreviewPage } from '../../../hub/schema'
-import { installHubEntry } from '../../hubMenu'
+import { installHubEntry, marketplaceType } from '../../hubMenu'
 import type { MenuCall, MenuUi } from '../../pluginMenu'
 import { inspectorListWidth, safeText, splitColumns, type TabInfo } from '../chrome'
 import type { TerminalPage } from '../page'
@@ -18,10 +18,11 @@ export interface HubPageOptions {
   call: MenuCall
   ui: MenuUi
   changed(): void
+  navigate?(page: 'plugins' | 'components' | 'connections'): void
 }
 
 const SECTIONS = [
-  { id: 'catalog', title: 'Catalog' },
+  { id: 'catalog', title: 'Marketplace' },
   { id: 'installed', title: 'Installed' }
 ] as const
 
@@ -111,7 +112,7 @@ export class HubPage implements TerminalPage {
         ...receipts.map(receipt => ({
           id: installedId(receipt.entry.id, receipt.entry.version),
           label: safeText(receipt.entry.title),
-          group: safeText(receipt.entry.category),
+          group: marketplaceType(receipt.entry),
           detail: `${receipt.entry.channel} · ${receipt.state ?? 'installed'} · ${receipt.entry.version}`,
           tone: receipt.state === 'installed' ? 'success' as const : 'warning' as const,
           searchText: `${receipt.entry.title} ${receipt.entry.category} ${receipt.entry.id} ${receipt.entry.publisher} ${receipt.entry.channel} ${receipt.state ?? ''}`
@@ -119,10 +120,10 @@ export class HubPage implements TerminalPage {
         { id: REFRESH, label: '⟳ Refresh catalog', group: 'Actions', tone: 'accent' as const }
       ]
     }
-    const entries = (this.catalog?.entries ?? []).filter(entry => entry.channel === 'community').sort((left, right) => left.category.localeCompare(right.category))
+    const entries = (this.catalog?.entries ?? []).filter(entry => entry.channel === 'community').sort((left, right) => marketplaceType(left).localeCompare(marketplaceType(right)))
     return [
       ...entries.map(entry => ({
-        id: entry.id + '@' + entry.version, label: safeText(entry.title), group: safeText(entry.category),
+        id: entry.id + '@' + entry.version, label: safeText(entry.title), group: marketplaceType(entry),
         detail: entry.version, tone: 'muted' as const, searchText: `${entry.title} ${entry.category} ${entry.id} ${entry.publisher} ${entry.tags.join(' ')}`
       })),
       { id: REFRESH, label: '⟳ Refresh catalog', group: 'Actions', tone: 'accent' as const }
@@ -170,7 +171,11 @@ export class HubPage implements TerminalPage {
   }
 
   private async manageReceipt(receipt: HubOverview['installed'][number]): Promise<void> {
-    const action = await this.options.ui.select(`${receipt.entry.title} · ${receipt.entry.channel} · ${receipt.entry.version}`, ['Uninstall this version', 'Back'])
+    const delivery = receipt.entry.delivery
+    const target = delivery.kind === 'pi-package' ? 'plugins' : delivery.kind === 'registry' ? 'components' : receipt.entry.category === 'connector' ? 'connections' : null
+    const manage = target === 'plugins' ? 'Manage plugin' : target === 'components' ? 'Open component library' : target === 'connections' ? 'Open MCP servers' : null
+    const action = await this.options.ui.select(`${receipt.entry.title} · ${receipt.entry.channel} · ${receipt.entry.version}`, [...(manage ? [manage] : []), 'Uninstall this version', 'Back'])
+    if (action === manage && target) { this.options.navigate?.(target); return }
     if (action !== 'Uninstall this version') return
     const confirmed = await this.options.ui.confirm(`Uninstall ${receipt.entry.title}?`, `This removes only resources recorded by the ${receipt.entry.channel} receipt ${receipt.entry.id}@${receipt.entry.version} and revokes their attachment choices.`)
     if (!confirmed) return
@@ -233,7 +238,7 @@ export class HubPage implements TerminalPage {
     if (width < 1 || rows < 1) return []
     if (!entry) return [theme.fg('muted', 'Select an entry to review its publisher, license, and version.')].slice(0, rows)
     const lines = [theme.bold(safeText(entry.title)), '', ...wrapTextWithAnsi(safeText(entry.description), width), '']
-    lines.push(`Category: ${safeText(entry.category)}`, `Publisher: ${safeText(entry.publisher)}`, `License: ${safeText(entry.license)}`, `Version: ${safeText(entry.version)}`, `Channel: ${safeText(entry.channel)}`, `ID: ${safeText(entry.id)}`)
+    lines.push(`Type: ${marketplaceType(entry)}`, `Category: ${safeText(entry.category)}`, `Publisher: ${safeText(entry.publisher)}`, `License: ${safeText(entry.license)}`, `Version: ${safeText(entry.version)}`, `Channel: ${safeText(entry.channel)}`, `ID: ${safeText(entry.id)}`)
     lines.push('', ...wrapTextWithAnsi(theme.fg('dim', `Source: ${safeText(entry.sourceUrl)}`), width))
     if (installed) lines.push('', `Installed: ${safeText(installed.installedAt)}`, `Receipt: ${safeText(installed.state ?? 'installed')} · ${safeText(installed.entry.channel)}`)
     if (entry.delivery.kind === 'pi-package') lines.push('', theme.fg('warning', 'Package code stays switched off and untrusted until reviewed.'))
@@ -247,7 +252,7 @@ export class HubPage implements TerminalPage {
       const content = this.previewText.split('\n').flatMap(line => wrapTextWithAnsi(safeText(line), width))
       this.previewRows = Math.max(1, rows - 1)
       this.previewOffset = Math.min(this.previewOffset, Math.max(0, content.length - this.previewRows))
-      const header = theme.bold(`Preview · ${this.previewTitle ?? 'Hub entry'} · ${this.previewOffset + 1}/${Math.max(1, content.length)}`)
+      const header = theme.bold(`Preview · ${this.previewTitle ?? 'Marketplace entry'} · ${this.previewOffset + 1}/${Math.max(1, content.length)}`)
       return [header, ...content.slice(this.previewOffset, this.previewOffset + this.previewRows)]
         .slice(0, rows).map(line => truncateToWidth(line, width, ''))
     }

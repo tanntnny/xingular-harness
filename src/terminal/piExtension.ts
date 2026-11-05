@@ -69,16 +69,29 @@ async function withParentCancellation<T>(signal: AbortSignal | undefined, work: 
   try { return await work() } finally { signal?.removeEventListener('abort', stop) }
 }
 
+/** The harness holds a `poll` this long for a command; the gap keeps a harness that answers at once from being hammered. */
+const POLL_WAIT_MS = 20_000
+const POLL_MIN_GAP_MS = 100
+
+function pause(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise(resolve => {
+    if (signal.aborted) { resolve(); return }
+    const done = () => { clearTimeout(timer); signal.removeEventListener('abort', done); resolve() }
+    const timer = setTimeout(done, ms)
+    signal.addEventListener('abort', done, { once: true })
+  })
+}
+
 export default async function (pi: ExtensionAPI, planRun?: TerminalPlanRunState, getSession?: () => AgentSession, goal?: GoalController) {
   await terminalCall('startup', { phase: 'Pi extension loaded' })
   let context: ExtensionContext | null = null
   let nativeSubagents = false
   let subagentParent = false
   let stoppedChildren: { text: string; receipt: SubagentReceipt } | null = null
-  let timer: ReturnType<typeof setInterval> | null = null
+  /** Stops the loop that asks the harness for commands. */
+  let poller: AbortController | null = null
   let heartbeat: ReturnType<typeof setInterval> | null = null
   let turnStartedAt = 0
-  let polling = false
   let failure: string | undefined
   let failureCode: 'provider_error' | undefined
   let messageAborted = false
@@ -262,29 +275,36 @@ export default async function (pi: ExtensionAPI, planRun?: TerminalPlanRunState,
     stateDelivered = false
     autoNameTried = false
     lastTodo = []
-    if (timer) clearInterval(timer)
+    poller?.abort()
     // The branch's parent runs let the controller show the latest one's rows again on reopen.
     await terminalCall('ready', { nativeSessionId: ctx.sessionManager.getSessionFile(), owners: subagentHistory(ctx.sessionManager.getBranch?.() ?? []).owners })
-    timer = setInterval(() => {
-      if (polling || !context) return
-      polling = true
-      void terminalCall<{ command: { type: string; text?: string } | null }>('poll', {}, 5_000)
-        .then(({ command }) => {
+    const mine = new AbortController()
+    poller = mine
+    void (async () => {
+      let last = Date.now()
+      while (!mine.signal.aborted) {
+        // A reply that comes back at once (a command, or a harness that does not hold the request)
+        // still leaves a gap, so the loop never spins.
+        const gap = POLL_MIN_GAP_MS - (Date.now() - last)
+        if (gap > 0) await pause(gap, mine.signal)
+        if (mine.signal.aborted || !context) break
+        try {
+          const { command } = await terminalCall<{ command: { type: string; text?: string } | null }>('poll', { waitMs: POLL_WAIT_MS }, POLL_WAIT_MS + 10_000, mine.signal)
+          last = Date.now()
+          if (mine.signal.aborted) break
           if (command?.type === 'interrupt') context?.abort()
           else if (command?.type === 'send') {
             if (context?.ui.getEditorText().trim()) throw new Error('The terminal contains a user draft.')
             // Pi 1.2 needs deliverAs while a run is busy; a message sent then waits for that run to finish.
             pi.sendUserMessage(command.text!, context?.isIdle() === false ? { deliverAs: 'followUp' } : undefined)
           }
-        })
-        .catch(() => {
+        } catch {
+          if (mine.signal.aborted) break
           context?.abort()
-          if (timer) clearInterval(timer)
-        })
-        .finally(() => {
-          polling = false
-        })
-    }, 100)
+          mine.abort()
+        }
+      }
+    })()
   })
   pi.on('before_agent_start', async (event, ctx) => {
     context = ctx
@@ -737,8 +757,8 @@ export default async function (pi: ExtensionAPI, planRun?: TerminalPlanRunState,
     throw new Error('Use the ! command composer so this action can be checked.')
   })
   pi.on('session_shutdown', async () => {
-    if (timer) clearInterval(timer)
-    timer = null
+    poller?.abort()
+    poller = null
     if (heartbeat) clearInterval(heartbeat)
     heartbeat = null
     context = null

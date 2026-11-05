@@ -393,7 +393,8 @@ one release; help and completion show only canonical forms.
 before changing or reloading a session. Full OMP visual parity is not established by the current
 verification. `/harness` opens one browser for Foundation, Variant, Skills, Plugins,
 Connections (MCP), Tools and Library. `/skills`, `/plugins`, `/connections` (`/mcp`) and `/tools`
-open its sections directly; `/hub` opens Discover and `/components` opens Library. Resource
+open its sections directly; `/marketplace` opens Marketplace discovery (`/hub` remains an alias), and
+`/components` opens Library. Resource
 sections share Installed / Discover, source filters, search and a detail inspector. Tab focuses
 controls, arrows change the focused choice, Ctrl+F returns to search and Escape goes back.
 Skills show actual session availability even with invocation shortcuts off. With shortcuts on,
@@ -491,12 +492,12 @@ Bash, executes it once in Pi's native session, records its bounded result, and a
 inspect that result before replying. Automatic, plan, resumed, relation, probe, and improver runs
 cannot carry it. See the [terminal guide](docs/terminal-tui.md#bash-command-mode).
 
-## Curated Hub
+## Marketplace
 
 `xagent hub list [--refresh]`, `xagent hub show publisher/name@version`, and
-`hub install publisher/name@version` browse and install exact catalog versions. `/hub` offers the
-same review in the interactive terminal, using its private control key for installation. Both the
-terminal and embedding applications use `hub.list`, `hub.get`, `hub.preview`, `hub.install`,
+`hub install publisher/name@version` browse and install exact catalog versions. `/marketplace` offers the
+same review in the interactive terminal, using its private control key for installation; `/hub` remains
+an alias. Both the terminal and embedding applications use `hub.list`, `hub.get`, `hub.preview`, `hub.install`,
 `hub.uninstall`, and `hub.readDocument`. `hub.get { id, version, preview: true }` verifies data
 payload bytes without installing them. `hub.preview { id, version, offset }` returns bounded,
 UTF-8-safe pages of up to 16 KiB from a verified payload.

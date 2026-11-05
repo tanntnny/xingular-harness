@@ -745,6 +745,7 @@ export class Sessions {
       const own = [plan, resumed, profiles].filter((section): section is NonNullable<typeof section> => section !== null)
       const effectiveLaunch = {
         ...launch,
+        builtinContributions: capabilities.contributions,
         model: input.model ?? launch.model ?? null,
         ...(sessionState ? { sessionState } : {}),
         sections: own.length ? [...(launch.sections ?? []).filter((section) => !own.some((entry) => entry.id === section.id)), ...own] : launch.sections,
@@ -815,6 +816,7 @@ export class Sessions {
           env: this.options.env,
           caller,
           variantDir: variant?.dir ?? null,
+          builtinContributions: capabilities.contributions,
           run,
           runId,
           allowedTools: allow,
@@ -875,7 +877,7 @@ export class Sessions {
         preamble: input.preamble ?? null,
         automatic: input.automatic,
         account: context,
-        resources: { ids: [], skillPaths: [...(variant?.skillPaths ?? []), ...defaultSkillPaths(variant?.dir)], promptPaths: [] },
+        resources: { ids: [], skillPaths: [...(variant?.skillPaths ?? []), ...defaultSkillPaths(variant?.dir, capabilities.contributions)], promptPaths: [] },
         variantExtensions: variant?.extensionPaths ?? [],
         inline: [
           ...firstPartyFor(root, capabilities.contributions),

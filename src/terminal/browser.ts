@@ -6,7 +6,7 @@ export const BROWSER_SECTIONS = ['overview', 'foundation', 'variant', 'skills', 
 export type BrowserSection = typeof BROWSER_SECTIONS[number]
 export type BrowserSource = 'installed' | 'discover'
 export type BrowserChannel = 'all' | 'community' | 'official'
-export const BROWSER_COMMANDS = new Set(['harness', 'skills', 'plugins', 'connections', 'mcp', 'tools', 'hub', 'components'])
+export const BROWSER_COMMANDS = new Set(['harness', 'skills', 'plugins', 'connections', 'mcp', 'tools', 'marketplace', 'hub', 'components'])
 
 export interface BrowserItem {
   id: string

@@ -520,6 +520,13 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
+## rea-agents 6.8.0
+
+Declared license: MIT. The generated `reverse-engineer-anything` skill is copied without
+modification from the [published rea-agents 6.8.0 package](https://registry.npmjs.org/rea-agents/-/rea-agents-6.8.0.tgz).
+Its copyright and license are retained in `builtin/skills/reverse-engineer-anything/LICENSE`.
+The runtime dependency also contains its own third-party notices.
+
 ## linkedom 0.18.14
 
 Declared license: ISC

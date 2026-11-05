@@ -1,11 +1,11 @@
 import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { McpServer, WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/server'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { memorySecretStore } from '../accounts/secrets'
 import { createHarness, type Harness, type HarnessOptions } from '../harness'
@@ -16,6 +16,9 @@ import { allowed, redactJsonField, scrubSensitive, scrubWith, setAgentScope, val
 import type { BrokerSession } from './service'
 import { compactTools, pageTools } from './service'
 import { connectionSchema, type Connection } from './types'
+import type { McpManager } from './manager'
+import * as builtin from './builtinConnections'
+import { load as loadAttachments, save as saveAttachments, set as setAttachment } from '../plugins/attachments'
 
 const fixture = join(dirname(fileURLToPath(import.meta.url)), '../../tests/mcp-fixture.mjs')
 const connection = (fields: Partial<Connection>): Connection => connectionSchema.parse(fields)
@@ -65,7 +68,7 @@ describe('who may reach a connection', () => {
 
   it('connections saved before remote servers still load', () => {
     const saved = connection(JSON.parse('{"id":"old","name":"Old","kind":"local","command":"server","args":[],"envKeys":["KEY"],"enabled":true}'))
-    expect([saved.url, saved.authState, saved.catalogId, saved.headerKeys.length, saved.auth, saved.envKeys]).toEqual([null, null, null, 0, '', ['KEY']])
+    expect([saved.url, saved.authState, saved.catalogId, saved.headerKeys.length, saved.auth, saved.envKeys, saved.callTimeoutSeconds]).toEqual([null, null, null, 0, '', ['KEY'], 60])
   })
 })
 
@@ -124,6 +127,128 @@ async function live(policy: ToolPolicy = {}, extra: Partial<HarnessOptions> = {}
 const local = { name: 'Fixture', kind: 'local', command: process.execPath, args: [fixture], enabled: true, global: true, env: { MCP_FIXTURE_VALUE: 'personal task outside repo' } }
 
 describe('connected apps for a session', () => {
+  it.skipIf(!builtin.reaRuntimeSupported() || !builtin.reaLauncher())('analyzes a JavaScript application through the bundled REA broker after approval', async () => {
+    const target = mkdtempSync(join(tmpdir(), 'harness-rea-app-'))
+    try {
+      writeFileSync(join(target, 'package.json'), JSON.stringify({ name: 'broker-rea-fixture', version: '1.0.0', main: 'main.js' }))
+      writeFileSync(join(target, 'main.js'), "const message = require('./message')\nconsole.log(message)\n")
+      writeFileSync(join(target, 'message.js'), "module.exports = 'offline fixture'\n")
+      const { harness, granted, events } = await live()
+      const choices = loadAttachments(harness.env.root)
+      setAttachment(choices, ['rea'], { agentId: 'agent-1' }, true, false)
+      saveAttachments(harness.env.root, choices)
+      const other = harness.apps.grant({ sessionId: 'session-1', runId: 'run-1', caller: { agentId: 'other' }, readOnly: false, depth: 0 })
+      expect((await harness.apps.list(other)).tools).toEqual([])
+      const listed = await harness.apps.list(granted)
+      expect(listed.errors).toEqual([])
+      const tool = listed.tools.find(item => item.tool === 'analyze_javascript_application')
+      expect(tool).toBeDefined()
+      const args = { input_path: target }
+      const call = harness.apps.invoke(granted, tool!.name, args)
+      await vi.waitFor(() => expect(events.some(event => event.type === 'approval.requested')).toBe(true))
+      const approval = events.find(event => event.type === 'approval.requested')!.payload as { approvalId: string; target: string; action: string }
+      expect(approval.target).toBe('REA')
+      expect(approval.action).toContain('analyze_javascript_application')
+      expect(approval.action).toContain(target)
+      expect(harness.apps.runContext('run-1')).toEqual([])
+      harness.runs.resolveApproval('run-1', approval.approvalId, 'approved')
+      const result = await call as { isError?: boolean; structuredContent?: unknown; content?: unknown }
+      expect(result.isError, JSON.stringify(result)).not.toBe(true)
+      expect(result.structuredContent).toMatchObject({
+        evidence_id: expect.stringMatching(/^ev_[0-9a-f]{64}$/),
+        operation: 'analyze_javascript_application',
+        subject: { format: 'directory', digest: { sha256: expect.stringMatching(/^[0-9a-f]{64}$/) } },
+        normalized_result: {
+          graph: {
+            nodes: expect.arrayContaining([
+              expect.objectContaining({ kind: 'javascript-module', observations: expect.arrayContaining([expect.objectContaining({ label: 'main.js' })]) }),
+              expect.objectContaining({ kind: 'javascript-module', observations: expect.arrayContaining([expect.objectContaining({ label: 'message.js' })]) })
+            ]),
+            edges: expect.arrayContaining([expect.objectContaining({
+              relation: 'imports',
+              properties: expect.objectContaining({ kind: 'require', specifier: './message', resolved_path: 'message.js', resolution_status: 'resolved' }),
+              evidence: expect.objectContaining({ state: 'inferred', authority: 'static-relationship-inference' })
+            })])
+          }
+        },
+        limitations: expect.arrayContaining([expect.stringContaining('never executed')])
+      })
+      expect(harness.apps.runContext('run-1')).toEqual([expect.objectContaining({ connectionId: 'builtin-rea', tool: 'analyze_javascript_application', ok: true })])
+    } finally {
+      rmSync(target, { recursive: true, force: true })
+    }
+  }, 60_000)
+
+  it.skipIf(!builtin.reaLauncher())('refuses an approved call when REA is disabled while its client starts', async () => {
+    const runtime = vi.spyOn(builtin, 'reaRuntimeSupported').mockReturnValue(true)
+    try {
+      const { harness, granted, events } = await live()
+      const choices = loadAttachments(harness.env.root)
+      setAttachment(choices, ['rea'], { agentId: 'agent-1' }, true, false)
+      saveAttachments(harness.env.root, choices)
+      const tool = (await harness.apps.list(granted)).tools.find(item => item.tool === 'binary_session')!
+      const manager = (harness.apps as unknown as { manager: McpManager }).manager
+      const original = manager.client.bind(manager)
+      let proceed!: () => void
+      let waiting!: () => void
+      const blocked = new Promise<void>(resolve => { proceed = resolve })
+      const started = new Promise<void>(resolve => { waiting = resolve })
+      let calls = 0
+      const client = vi.spyOn(manager, 'client').mockImplementation(async (...args) => {
+        if (++calls === 2) { waiting(); await blocked }
+        return original(...args)
+      })
+      const operation = harness.apps.invoke(granted, tool.name, {})
+      const rejected = expect(operation).rejects.toMatchObject({ code: 'mcp_access_denied' })
+      await vi.waitFor(() => expect(events.some(event => event.type === 'approval.requested')).toBe(true))
+      const approval = events.find(event => event.type === 'approval.requested')!.payload as { approvalId: string }
+      harness.runs.resolveApproval('run-1', approval.approvalId, 'approved')
+      await started
+      setAttachment(choices, ['rea'], { agentId: 'agent-1' }, false, false)
+      saveAttachments(harness.env.root, choices)
+      harness.bus.emit({ type: 'plugins.changed' })
+      proceed()
+      await rejected
+      client.mockRestore()
+      expect(harness.apps.runContext('run-1').at(-1)).toMatchObject({ tool: 'binary_session', ok: false })
+    } finally {
+      runtime.mockRestore()
+    }
+  }, 60_000)
+
+  it.skipIf(!builtin.reaLauncher())('keeps the bundled connector scoped and frozen, and revokes it when disabled', async () => {
+    const runtime = vi.spyOn(builtin, 'reaRuntimeSupported').mockReturnValue(true)
+    try {
+      const { harness, granted, events } = await live()
+      const frozen = harness.apps.grant({ sessionId: 'session-1', runId: 'run-1', caller: { agentId: 'agent-1' }, readOnly: false, depth: 0, capabilities: { version: 1, tools: [], connectors: [], contributions: [] } })
+      const choices = loadAttachments(harness.env.root)
+      setAttachment(choices, ['rea'], { agentId: 'agent-1' }, true, false)
+      saveAttachments(harness.env.root, choices)
+      expect((await harness.apps.list(frozen)).tools).toEqual([])
+      const tools = (await harness.apps.list(granted)).tools
+      const manager = (harness.apps as unknown as { manager: McpManager }).manager
+      const close = vi.spyOn(manager, 'close')
+      harness.bus.emit({ type: 'plugins.changed' })
+      expect(close).not.toHaveBeenCalled()
+      const binarySession = tools.find(tool => tool.tool === 'binary_session')!
+      expect(binarySession).toBeDefined()
+      const call = harness.apps.invoke(granted, binarySession.name, {})
+      await vi.waitFor(() => expect(events.some(event => event.type === 'approval.requested')).toBe(true))
+      const approval = events.find(event => event.type === 'approval.requested')!.payload as { approvalId: string }
+      harness.runs.resolveApproval('run-1', approval.approvalId, 'denied')
+      await expect(call).rejects.toMatchObject({ code: 'mcp_denied' })
+      const other = harness.apps.grant({ sessionId: 'session-1', runId: 'run-1', caller: { agentId: 'other' }, readOnly: false, depth: 0 })
+      expect((await harness.apps.list(other)).tools).toEqual([])
+      setAttachment(choices, ['rea'], { agentId: 'agent-1' }, false, false)
+      saveAttachments(harness.env.root, choices)
+      harness.bus.emit({ type: 'plugins.changed' })
+      expect(close).toHaveBeenCalledWith('builtin-rea', 'session-1')
+      await expect(harness.apps.invoke(granted, tools[0].name, {})).rejects.toMatchObject({ code: 'mcp_tool_unavailable' })
+      expect(harness.apps.connections.list()).toEqual([])
+    } finally {
+      runtime.mockRestore()
+    }
+  })
   it('discovers and calls a real stdio server, asking before a change and recording a redacted trace', async () => {
     const { harness, events, granted, secrets } = await live()
     const saved = await harness.apps.save({ ...local, readTools: ['read_record'] })
@@ -211,15 +336,20 @@ describe('connected apps for a session', () => {
 })
 
 /** A stateless Streamable HTTP server; `status` makes it refuse every request instead. */
-async function remoteFixture(status?: number) {
+async function remoteFixture(status?: number, delayMs = 0) {
   const requests: Array<Record<string, unknown>> = []
+  let calls = 0
   const server = createServer(async (request, response) => {
     requests.push(request.headers)
     if (status || request.method !== 'POST') return void response.writeHead(status ?? 405).end()
     const chunks: Buffer[] = []
     for await (const chunk of request) chunks.push(chunk as Buffer)
     const mcp = new McpServer({ name: 'remote-fixture', version: '1' })
-    mcp.registerTool('read_record', { description: 'Read remote record' }, async () => ({ content: [{ type: 'text', text: 'remote record' }] }))
+    mcp.registerTool('read_record', { description: 'Read remote record' }, async () => {
+      calls += 1
+      if (delayMs) await tick(delayMs)
+      return { content: [{ type: 'text', text: 'remote record' }] }
+    })
     const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true })
     await mcp.connect(transport)
     const reply = await transport.handleRequest(new Request(`http://127.0.0.1${request.url}`, { method: 'POST', headers: request.headers as Record<string, string>, body: Buffer.concat(chunks) }))
@@ -230,7 +360,7 @@ async function remoteFixture(status?: number) {
     server.close()
     server.closeAllConnections()
   })
-  return { url: `http://127.0.0.1:${(server.address() as AddressInfo).port}/mcp`, requests }
+  return { url: `http://127.0.0.1:${(server.address() as AddressInfo).port}/mcp`, requests, calls: () => calls }
 }
 
 describe('remote connected apps', () => {
@@ -245,6 +375,33 @@ describe('remote connected apps', () => {
     expect(await harness.apps.invoke(granted, read.name, {})).toMatchObject({ content: [{ type: 'text', text: 'remote record' }] })
     expect(server.requests.every((headers) => headers['x-api-key'] === 'fixture-key')).toBe(true)
     expect(JSON.stringify(harness.apps.connections.list())).not.toContain('fixture-key')
+  })
+
+  it('enforces and preserves per-connection timeout settings', async () => {
+    const server = await remoteFixture(undefined, 1300)
+    const { harness, granted } = await live()
+    const saved = await harness.apps.save({ ...remote, url: server.url, auth: 'none', callTimeoutSeconds: 1 })
+    expect(harness.apps.connections.find(saved.id).callTimeoutSeconds).toBe(1)
+    const { callTimeoutSeconds: _timeout, ...withoutTimeout } = saved
+    expect((await harness.apps.save(withoutTimeout)).callTimeoutSeconds).toBe(1)
+    const read = (await harness.apps.list(granted)).tools.find((tool) => tool.tool === 'read_record')!
+    await expect(harness.apps.invoke(granted, read.name, {})).rejects.toMatchObject({ code: 'mcp_timeout', message: expect.stringMatching(/outcome is unknown.*Do not retry automatically/) })
+    expect(server.calls()).toBe(1)
+    expect(harness.apps.runContext('run-1')).toMatchObject([{ ok: false, result: expect.stringContaining('outcome is unknown') }])
+    await expect(harness.apps.callUnattended(saved.id, 'read_record')).rejects.toMatchObject({ code: 'mcp_timeout' })
+    expect(server.calls()).toBe(2)
+    await harness.apps.save({ ...saved, callTimeoutSeconds: 2 })
+    expect(await harness.apps.invoke(granted, read.name, {})).toMatchObject({ content: [{ text: 'remote record' }] })
+    expect(server.calls()).toBe(3)
+  }, 10000)
+
+  it('validates timeout bounds before saving', async () => {
+    const { harness } = await live()
+    for (const value of [0, 1801, 1.5, null, '60']) {
+      await expect(harness.apps.save({ ...local, callTimeoutSeconds: value } as never)).rejects.toThrow('whole number from 1 to 1800')
+    }
+    expect((await harness.apps.save({ ...local, callTimeoutSeconds: 1 })).callTimeoutSeconds).toBe(1)
+    expect((await harness.apps.save({ ...local, callTimeoutSeconds: 1800 })).callTimeoutSeconds).toBe(1800)
   })
 
   it('does not carry stored header secrets to a changed endpoint', async () => {

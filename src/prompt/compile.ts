@@ -145,6 +145,8 @@ export interface Launch {
   references?: Reference[]
   /** Skills the message named as required for this request. Delivered as a request-scoped update. */
   requiredSkills?: RequiredSkill[]
+  /** Frozen built-in contribution IDs for this run. */
+  builtinContributions?: readonly string[]
   sections?: HostSection[]
   toolGroups?: HostToolGroup[]
   /** Appended to the tools section when it is cut. */
@@ -380,7 +382,7 @@ function requiredSkillsSection(launch: Launch, variant: Materialised | null): Se
   const wanted = launch.requiredSkills ?? []
   if (!wanted.length) return null
   const skills: RequiredSkillText[] = wanted.map((entry) => {
-    const skill = readSkillFile(variant?.dir ?? null, entry.name)
+    const skill = readSkillFile(variant?.dir ?? null, entry.name, launch.builtinContributions)
     return skill ? { ...skill, label: entry.label ?? skill.name } : { name: entry.name, label: entry.label, body: '' }
   })
   const text = requiredSkillsText(skills)

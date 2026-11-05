@@ -118,6 +118,10 @@ export interface PluginDescriptor {
   settings?: PluginSetting[]
   /** Remote connector setup templates; users must add, configure and enable each connection. */
   connectorTemplates?: ConnectorTemplate[]
+  /** Release-owned connectors follow the plugin's switch; they are not saved connection templates. */
+  connections?: { name: string; description: string }[]
+  /** Release-owned, on-demand skill contributions. */
+  skills?: { name: string; description: string; path: string }[]
   /** Code of its own that runs in a session. */
   code?: { name: string; description: string }[]
   /** Where it works best, when that is not everywhere alike (PROP-0039). Never a category. */

@@ -119,7 +119,8 @@ export class PluginsPage implements TerminalPage {
       this.hubManagedIds = new Set()
       try {
         const overview = await call<HubOverview>('hub.list')
-        this.hubManagedIds = new Set(overview.installed.filter(receipt => receipt.entry.delivery.kind === 'pi-package').flatMap(receipt => receipt.resourceIds))
+        const sources = new Set(overview.installed.flatMap(receipt => receipt.entry.delivery.kind === 'pi-package' ? [receipt.entry.delivery.source] : []))
+        this.hubManagedIds = new Set(this.plugins.filter(plugin => plugin.install && sources.has(plugin.install.source)).map(plugin => plugin.id))
       } catch { /* Package actions still go through the receipt-aware Harness service. */ }
     } catch (error) {
       this.error = error instanceof Error ? error.message : String(error)
@@ -151,7 +152,7 @@ export class PluginsPage implements TerminalPage {
       ...(this.plugins ?? []).filter(plugin => plugin.install).map(plugin => {
         const source = plugin.install!.kind === 'folder' ? 'local folder' : 'package'
         const hub = this.hubManagedIds.has(plugin.id)
-        return { id: `${PACKAGE_ROW}${plugin.id}`, group: safeText(plugin.title), label: 'Manage package', detail: `${source} · ${hub ? 'Hub' : 'local'} · ${plugin.version ?? plugin.install!.source}`, tone: 'muted' as const, searchText: `${plugin.title} ${plugin.install!.source} ${plugin.version ?? ''} package ${hub ? 'Hub' : 'local'}` }
+        return { id: `${PACKAGE_ROW}${plugin.id}`, group: safeText(plugin.title), label: 'Manage package', detail: `${source} · ${hub ? 'Marketplace' : 'local'} · ${plugin.version ?? plugin.install!.source}`, tone: 'muted' as const, searchText: `${plugin.title} ${plugin.install!.source} ${plugin.version ?? ''} package ${hub ? 'Marketplace Hub' : 'local'}` }
       }),
       { id: INSTALL_PACKAGE, group: 'Packages', label: 'Install package…', detail: 'Folder, npm or Git', tone: 'accent' as const, searchText: 'install add package plugin npm Git folder' }
     ]
@@ -168,7 +169,15 @@ export class PluginsPage implements TerminalPage {
       const last = menu[index + 1]?.plugin.id !== row.plugin.id
       if (this.section === 'plugins' && last && settingsOf(row.plugin).length) out.push(settingsRow(row.plugin))
     })
-    if (this.section === 'plugins') for (const plugin of this.plugins ?? []) if (settingsOf(plugin).length && !placed.has(plugin.id)) out.push(settingsRow(plugin))
+    if (this.section === 'plugins') {
+      for (const plugin of this.plugins ?? []) {
+        if (settingsOf(plugin).length && !placed.has(plugin.id)) out.push(settingsRow(plugin))
+        if (plugin.source === 'package' && plugin.install && plugin.path === null) out.push({
+          id: `${PACKAGE_ROW}${plugin.id}`, group: safeText(plugin.title), label: 'Needs attention',
+          detail: 'Package could not be discovered · Enter to manage', tone: 'warning', searchText: `${plugin.title} ${plugin.install.source} missing incomplete`
+        })
+      }
+    }
     return out
   }
 
@@ -271,7 +280,7 @@ export class PluginsPage implements TerminalPage {
     const hubManaged = this.hubManagedIds.has(plugin.id)
     const actions = [
       ...(hubManaged || plugin.install.kind === 'folder' ? [] : ['Update package']),
-      hubManaged ? 'Uninstall Hub version' : 'Remove package',
+      hubManaged ? 'Uninstall Marketplace version' : 'Remove package',
       BACK
     ]
     this.busy = true
@@ -284,13 +293,13 @@ export class PluginsPage implements TerminalPage {
         await this.options.call('plugins.update', { pluginId: plugin.id })
         this.options.ui.notify('Updated. Changes apply when this session restarts.', 'info')
       } else {
-        const title = hubManaged ? `Uninstall ${plugin.title} from Hub?` : `Remove ${plugin.title}?`
+        const title = hubManaged ? `Uninstall ${plugin.title} from Marketplace?` : `Remove ${plugin.title}?`
         const message = hubManaged
-          ? 'This removes the exact Hub receipt and only its recorded package resources.'
+          ? 'This removes the exact Marketplace receipt and only its recorded package resources.'
           : 'This removes the installed package. A local folder is moved to the Harness trash.'
         if (!await this.options.ui.confirm(title, message)) return
         await this.options.call('plugins.remove', { pluginId: plugin.id })
-        this.options.ui.notify(hubManaged ? 'Hub package uninstalled.' : 'Package removed.', 'info')
+        this.options.ui.notify(hubManaged ? 'Marketplace package uninstalled.' : 'Package removed.', 'info')
       }
       this.restart = true
       await this.reload()
@@ -407,7 +416,7 @@ export class PluginsPage implements TerminalPage {
       lines.push(theme.fg('muted', `Fingerprint: ${plugin.code.hash.slice(0, 12)}`))
     }
     if (plugin.install) {
-      lines.push('', theme.fg('muted', `Package: ${this.hubManagedIds.has(plugin.id) ? 'Hub receipt' : 'local'}`))
+      lines.push('', theme.fg('muted', `Package: ${this.hubManagedIds.has(plugin.id) ? 'Marketplace receipt' : 'local'}`))
       lines.push(...wrapTextWithAnsi(theme.fg('dim', safeText(plugin.install.source)), width))
     }
     if (settingsOf(plugin).length) lines.push('', theme.fg('muted', `${settingsOf(plugin).length} settings`))

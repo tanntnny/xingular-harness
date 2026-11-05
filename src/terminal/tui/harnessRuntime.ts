@@ -21,8 +21,8 @@ import { skillInvocations } from './skillInvocation'
 import { pluginCommandPrefix } from '../../plugins/commandPrefix'
 import type { ExtensionNotice } from '../../sessions/extensionUi'
 import { clampLevel, supportedLevels } from './thinkingLevels'
-import { ModeChoices, type ChoiceModel, type ChoiceStore, type ComposerMode } from './modeChoices'
-import type { ModeChoice } from '../../accounts/choices'
+import { ModelSelection, type ChoiceModel, type SelectionStore } from './modelSelection'
+import type { AccountSelection } from '../../accounts/selection'
 import type { Effort } from '../../core/effort'
 import type { SessionAccount } from '../accountsMenu'
 import {
@@ -38,11 +38,37 @@ export const HARNESS_RUNTIME_ENV = 'XINGULAR_TERMINAL_RUNTIME'
 export const harnessRuntimeSelected = (env: NodeJS.ProcessEnv = process.env): boolean => env[HARNESS_RUNTIME_ENV]?.trim().toLowerCase() !== 'inprocess'
 
 type Message = { role?: string; content?: unknown; stopReason?: string; usage?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; totalTokens?: number; cost?: { total?: number } } }
+type UsageEntry = { type?: string; message?: Message; usage?: Message['usage'] }
+
+/** Match Pi's session statistics: every recorded entry, including compacted and other-branch work. */
+export function sessionUsage(entries: readonly UsageEntry[], pending: readonly Message[] = []) {
+  const tokens = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 }
+  let cost = 0
+  const add = (usage: Message['usage']) => {
+    if (!usage) return
+    for (const key of ['input', 'output', 'cacheRead', 'cacheWrite'] as const) {
+      const value = usage[key]
+      if (typeof value === 'number' && Number.isFinite(value)) tokens[key] += value
+    }
+    if (typeof usage.cost?.total === 'number' && Number.isFinite(usage.cost.total)) cost += usage.cost.total
+  }
+  const addMessage = (message: Message | undefined) => {
+    if (message?.role === 'assistant' || message?.role === 'toolResult') add(message.usage)
+  }
+  for (const entry of entries) {
+    if (entry.type === 'usage' || entry.type === 'compaction' || entry.type === 'branch_summary') add(entry.usage)
+    if (entry.type === 'message') addMessage(entry.message)
+  }
+  for (const message of pending) addMessage(message)
+  tokens.total = tokens.input + tokens.output + tokens.cacheRead + tokens.cacheWrite
+  return { tokens, cost }
+}
 interface LiveCommand { name: string; invocationName: string; description: string; sourceInfo: unknown }
 interface LiveState {
   seq: number
   commands?: LiveCommand[]
   activeRunId: string | null
+  activeRunStartedAt?: number | null
   live: { sessionFile: string | null; nativeSessionId: string; followUps: string[] } | null
   session: {
     sessionId: string; sessionFile: string | null; sessionName: string | null; systemPrompt?: string
@@ -111,15 +137,12 @@ export async function createHarnessTerminalRuntime(args: string[], host: Termina
   await resourceLoader.reload()
   const services: AgentSessionServices = { cwd, agentDir, modelRuntime, settingsManager, resourceLoader, diagnostics: [] } as never
 
-  const choiceStore: ChoiceStore = {
-    read: () => controlCall<Record<string, ModeChoice>>('accounts.choices.get'),
-    write: (mode, patch) => controlCall('accounts.choices.set', { mode, ...patch })
+  const choiceStore: SelectionStore = {
+    read: () => controlCall<AccountSelection | null>('accounts.selection.get'),
+    write: patch => controlCall('accounts.selection.set', { ...patch })
   }
-  const modeChoices = new ModeChoices(choiceStore)
-  await modeChoices.load()
-  let currentMode: ComposerMode = 'normal'
-  let planActive = false
-  const recordingMode = (): ComposerMode => planActive ? 'plan' : currentMode
+  const selection = new ModelSelection(choiceStore)
+  await selection.load()
   const modelFor = (reference: string): ChoiceModel | undefined => resolveCliModel({ cliModel: reference, modelRuntime }).model
   /** A model this account can use: offered by its catalogue and holding credentials. Never a request. */
   const usableModel = async (reference: string): Promise<ChoiceModel | undefined> => {
@@ -136,10 +159,9 @@ export async function createHarnessTerminalRuntime(args: string[], host: Termina
   let live: LiveState = { seq: 0, activeRunId: null, live: null, session: null }
   let manager: SessionManager | null = null
   let messages: Message[] = []
+  let pendingUsageMessages: Message[] = []
   const state: { messages: Message[]; streamingMessage?: Message; pendingToolCalls: Set<string> } = { messages, pendingToolCalls: new Set() }
   let streaming = false
-  /** A mode switch made during a reply: the next reply starts on the new mode's choice. */
-  let pendingApply = false
   let fresh = !sessionFile
   const steering: string[] = []
   const followUps: string[] = []
@@ -152,35 +174,62 @@ export async function createHarnessTerminalRuntime(args: string[], host: Termina
   /** Reads the history file again: after a reply, a compaction, or a switch. */
   const reloadHistory = (): void => {
     manager = sessionFile ? SessionManager.open(sessionFile, sessionDirectory) : null
+    if (manager) pendingUsageMessages = []
     messages = manager ? manager.buildSessionContext().messages as Message[] : []
     state.messages = messages
     sessionName = manager?.getSessionName() ?? sessionName
   }
   reloadHistory()
 
-  // The model: an explicit launch model, then this conversation's own, then the account's latest choice.
-  const startChoice = modeChoices.resolve('normal')
-  const recorded = (): string | undefined => {
-    const context = (manager as SessionManager | null)?.buildSessionContext() as unknown as { model?: { provider: string; modelId: string } } | undefined
-    return context?.model ? `${context.model.provider}/${context.model.modelId}` : undefined
+  /** The model and effort the open conversation recorded, when it recorded any. */
+  const historySelection = (): { model?: string; effort?: Effort } => {
+    const context = (manager as SessionManager | null)?.buildSessionContext() as unknown as {
+      model?: { provider: string; modelId: string }
+      thinkingLevel?: string
+    } | undefined
+    return {
+      model: context?.model ? `${context.model.provider}/${context.model.modelId}` : undefined,
+      effort: context?.thinkingLevel ? context.thinkingLevel as Effort : undefined
+    }
   }
-  // The level Pi resolves when no mode has saved an effort: the model's own default, then the account's.
+  // The level Pi resolves when the account has no saved effort: the model's own default, then the account's.
   const defaultEffort = (): AgentSession['thinkingLevel'] =>
     ((model ? settingsManager.getModelThinkingLevel(model.provider, model.id) : undefined) ?? settingsManager.getDefaultThinkingLevel() ?? 'medium') as AgentSession['thinkingLevel']
-  const initial = prepared.model ?? recorded() ?? startChoice.model
-  if (initial) model = modelFor(initial)
-  thinkingLevel = (startChoice.effort ?? defaultEffort()) as never
-  // A conversation written on another account (a switch resumes it) can name a model this account
-  // cannot use. The account's own newest choice decides then; an explicit launch model is the host's.
-  const stale = prepared.model ? undefined : recorded()
-  let recovered: { recorded: string; reference: string; effort?: Effort } | null = null
-  if (stale && !(await usableModel(stale).then(Boolean, () => true))) {
-    const asSession = { get model() { return model }, setModel: async (next: ChoiceModel) => { model = next }, setThinkingLevel: (level: AgentSession['thinkingLevel']) => { thinkingLevel = level } }
-    const applied = await modeChoices.useFallback(asSession, 'normal', usableModel, defaultEffort()).catch(() => null)
-    if (applied) recovered = { recorded: stale, ...applied }
-    // Nothing on this account is usable: name no model, so the harness picks one rather than the old account's.
-    else model = undefined
+  /** The model Pi's account settings name, when this account can use it. */
+  const configuredDefaultModel = async (): Promise<ChoiceModel | undefined> => {
+    const provider = settingsManager.getDefaultProvider()
+    const id = settingsManager.getDefaultModel()
+    return provider && id ? await usableModel(`${provider}/${id}`).catch(() => undefined) : undefined
   }
+  /**
+   * Sets the open conversation's model and effort: its own history first, then the account's
+   * selection, then Pi's default. An explicit launch model wins at startup. A history model this
+   * account cannot use falls back to the selection and is reported once.
+   */
+  const applyConversationSelection = async (explicitModel?: string): Promise<{ recorded: string; reference: string; effort?: Effort } | null> => {
+    const history = historySelection()
+    const saved = selection.get()
+    const wanted = explicitModel ?? history.model
+    let chosen: ChoiceModel | undefined
+    if (wanted) chosen = explicitModel ? modelFor(wanted) : await usableModel(wanted).catch(() => undefined)
+    else if (saved.model) {
+      chosen = await usableModel(saved.model).catch(() => undefined)
+      if (!chosen) chosen = await configuredDefaultModel()
+    } else chosen = await configuredDefaultModel()
+    model = chosen
+    const effort = history.effort ?? saved.effort ?? defaultEffort()
+    thinkingLevel = (model ? clampLevel(model, effort) : effort) as never
+    if (explicitModel || !history.model || chosen) return null
+    const asSession = { get model() { return model }, setModel: async (next: ChoiceModel) => { model = next }, setThinkingLevel: (level: AgentSession['thinkingLevel']) => { thinkingLevel = level } }
+    const applied = await selection.useFallback(asSession, usableModel, defaultEffort()).catch(() => null)
+    if (applied) return { recorded: history.model, ...applied }
+    // Nothing in the selection is usable: show the account's configured default, or name no model
+    // so the harness picks one rather than the old account's.
+    model = await configuredDefaultModel()
+    thinkingLevel = (model ? clampLevel(model, effort) : effort) as never
+    return null
+  }
+  let recovered = await applyConversationSelection(prepared.model)
 
   const reference = (): string | null => model ? `${model.provider}/${model.id}` : null
   const lastAssistant = (): Message | undefined => [...messages].reverse().find((message) => message.role === 'assistant')
@@ -231,6 +280,7 @@ export async function createHarnessTerminalRuntime(args: string[], host: Termina
         if (loose.message) {
           if (state.streamingMessage && loose.message.role === 'assistant') state.streamingMessage = undefined
           messages.push(loose.message)
+          pendingUsageMessages.push(loose.message)
           if (loose.message.role === 'user' && steering.length) steering.shift()
         }
         break
@@ -272,10 +322,6 @@ export async function createHarnessTerminalRuntime(args: string[], host: Termina
       }
       case 'agent_settled': {
         streaming = false
-        if (pendingApply) {
-          pendingApply = false
-          void modeChoices.apply(session as never, currentMode, modelFor, defaultEffort()).then(() => host.changed())
-        }
         state.streamingMessage = undefined
         state.pendingToolCalls.clear()
         steering.length = 0
@@ -363,12 +409,9 @@ export async function createHarnessTerminalRuntime(args: string[], host: Termina
     return content ? [{ customType: 'xingular-required-skills', content }] : []
   }
 
-  const startRun = async (text: string, options: { images?: TerminalImage[]; plan?: boolean; command?: unknown; goal?: unknown; mode?: ComposerMode } = {}): Promise<void> => {
+  const startRun = async (text: string, options: { images?: TerminalImage[]; plan?: boolean; command?: unknown; goal?: unknown } = {}): Promise<void> => {
     if (disposed) throw new Error('The terminal runtime has closed.')
-    const mode = options.mode ?? (options.plan ? 'plan' : currentMode)
-    // A mode with no saved model or effort keeps the conversation's current one, as the in-process runtime does.
-    const saved = mode === currentMode ? {} : modeChoices.resolve(mode)
-    const choice = { model: (saved.model && modelFor(saved.model) ? saved.model : undefined) ?? reference() ?? undefined, effort: saved.effort ?? thinkingLevel }
+    const choice = { model: reference() ?? undefined, effort: thinkingLevel }
     const notes = [...pendingNotes.splice(0), ...requiredSkills(text)]
     const bash = /^!\s*([\s\S]+)$/u.exec(text.trimStart())?.[1]
     trace(`run asked ${JSON.stringify(text.slice(0, 40))}`)
@@ -394,16 +437,16 @@ export async function createHarnessTerminalRuntime(args: string[], host: Termina
     }
   }
 
-  const setModel = async (next: ChoiceModel, options: { persist?: boolean } = {}): Promise<void> => {
+  const setModel = async (next: ChoiceModel, _options: { persist?: boolean } = {}): Promise<void> => {
     model = next
     // As Pi does: the new model runs at the nearest level it supports.
     thinkingLevel = clampLevel(next, thinkingLevel) as never
-    if (options.persist !== false) await modeChoices.record(recordingMode(), { model: `${next.provider}/${next.id}` })
+    await selection.record({ model: `${next.provider}/${next.id}`, effort: thinkingLevel as Effort })
     host.changed()
   }
-  const setThinkingLevel = (level: AgentSession['thinkingLevel'], options: { persist?: boolean } = {}): void => {
+  const setThinkingLevel = (level: AgentSession['thinkingLevel'], _options: { persist?: boolean } = {}): void => {
     thinkingLevel = clampLevel(model, level) as never
-    if (options.persist !== false) void modeChoices.record(recordingMode(), { effort: thinkingLevel as Effort })
+    void selection.record({ effort: thinkingLevel as Effort })
     host.changed()
   }
   const availableLevels = (): AgentSession['thinkingLevel'][] => supportedLevels(model) as never
@@ -465,7 +508,16 @@ export async function createHarnessTerminalRuntime(args: string[], host: Termina
       setThinkingLevel(next)
       return next
     },
-    cycleModel: async () => undefined,
+    cycleModel: async (direction: 'forward' | 'backward' = 'forward') => {
+      const models = modelRuntime.getAvailableSnapshot()
+      if (models.length <= 1) return undefined
+      const index = models.findIndex(item => item.provider === model?.provider && item.id === model?.id)
+      const step = direction === 'backward' ? -1 : 1
+      const next = models[(index === -1 ? 0 : index + step + models.length) % models.length]
+      if (!next || next.provider === model?.provider && next.id === model?.id) return undefined
+      await setModel(next)
+      return { model: next, thinkingLevel, isScoped: false }
+    },
     setModel,
     setThinkingLevel,
     getActiveToolNames: () => live.session?.activeTools.length ? [...live.session.activeTools] : DEFAULT_TOOLS,
@@ -490,13 +542,13 @@ export async function createHarnessTerminalRuntime(args: string[], host: Termina
     },
     getSessionStats: () => {
       const assistant = messages.filter((message) => message.role === 'assistant')
-      const sum = (key: 'input' | 'output' | 'cacheRead' | 'cacheWrite') => assistant.reduce((total, message) => total + (message.usage?.[key] ?? 0), 0)
+      const usage = sessionUsage(manager?.getEntries() ?? [], pendingUsageMessages)
       return {
         sessionFile: sessionFile ?? undefined, sessionId: session.sessionId,
         userMessages: messages.filter((message) => message.role === 'user').length, assistantMessages: assistant.length,
         toolCalls: 0, toolResults: messages.filter((message) => message.role === 'toolResult').length, totalMessages: messages.length,
-        tokens: { input: sum('input'), output: sum('output'), cacheRead: sum('cacheRead'), cacheWrite: sum('cacheWrite'), total: sum('input') + sum('output') + sum('cacheRead') + sum('cacheWrite') },
-        cost: assistant.reduce((total, message) => total + (message.usage?.cost?.total ?? 0), 0)
+        tokens: usage.tokens,
+        cost: usage.cost
       }
     },
     getLastAssistantText: () => textOf(lastAssistant()) || undefined,
@@ -579,10 +631,16 @@ export async function createHarnessTerminalRuntime(args: string[], host: Termina
     await controlCall('terminal.live.close', { forget: true }).catch(() => undefined)
     live = { ...live, live: null, session: null }
     sessionFile = file
+    pendingUsageMessages = []
     fresh = !file
     sessionName = undefined
     reloadHistory()
+    const fallback = await applyConversationSelection()
     await announce()
+    if (fallback) {
+      const effort = fallback.effort ? ` at ${fallback.effort} effort` : ''
+      host.notify(`This account cannot use ${fallback.recorded}. Started on ${fallback.reference}${effort}, your saved selection on this account.`)
+    }
   }
 
   const runtime: TerminalRuntime = {
@@ -632,42 +690,18 @@ export async function createHarnessTerminalRuntime(args: string[], host: Termina
     async submitPlan(text, images) {
       if (!text.trim()) throw new Error('Use /plan <plan brief>.')
       if (await replying()) throw new Error('A plan request must wait until the current response settles.')
-      // A one-shot plan from the normal composer: the window shows and runs the plan's choice, then returns.
-      const previous = { model, effort: thinkingLevel }
-      const oneShot = currentMode !== 'plan'
-      if (oneShot) await modeChoices.apply(session as never, 'plan', modelFor, defaultEffort())
-      planActive = true
-      try {
-        await startRun(text, { images, plan: true, mode: 'plan' })
-        await session.waitForIdle()
-      } finally {
-        planActive = false
-        if (oneShot && !disposed) {
-          model = previous.model
-          thinkingLevel = previous.effort
-          if (pendingApply) {
-            pendingApply = false
-            await modeChoices.apply(session as never, currentMode, modelFor, defaultEffort())
-          }
-          host.changed()
-        }
-      }
-    },
-    async setMode(mode) {
-      currentMode = mode
-      // A switch during a reply waits for it to settle, so the reply keeps the model it started with.
-      if (streaming) { pendingApply = true; return }
-      await modeChoices.apply(session as never, mode, modelFor, defaultEffort())
-      host.changed()
+      await startRun(text, { images, plan: true })
+      await session.waitForIdle()
     },
     get session() { return session as unknown as AgentSession },
     get services() { return services },
     cwd, sessionDirectory,
+    get attachedRunStartedAt() { return live.activeRunId ? live.activeRunStartedAt ?? null : null },
     subscribe(listener) { listeners.add(listener); return () => { listeners.delete(listener) } },
     onSessionChange(listener) { changes.add(listener); return () => { changes.delete(listener) } },
     onBeforeSessionChange(listener) { beforeChanges.add(listener); return () => { beforeChanges.delete(listener) } },
     newSession: (async () => {
-      await modeChoices.load()
+      await selection.load()
       await replace(null)
       return { cancelled: false }
     }) as never,
@@ -734,7 +768,7 @@ export async function createHarnessTerminalRuntime(args: string[], host: Termina
   await announce()
   if (recovered) {
     const effort = recovered.effort ? ` at ${recovered.effort} effort` : ''
-    host.notify(`This account cannot use ${recovered.recorded}. Started on ${recovered.reference}${effort}, your latest choice on this account.`)
+    host.notify(`This account cannot use ${recovered.recorded}. Started on ${recovered.reference}${effort}, your saved selection on this account.`)
   }
   return runtime
 }

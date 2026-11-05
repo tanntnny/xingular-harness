@@ -67,7 +67,9 @@ export async function install(harness: Harness, params: PluginScope & { source: 
   if (isAbsolute(source) && !(existsSync(source) && statSync(source).isDirectory())) throw invalid('That folder does not exist.')
   // What was already there is taken over as trusted before anything new arrives, never after.
   await ensureAdopted(harness)
-  const before = new Set((await list(harness, params)).map((plugin) => plugin.id))
+  const previous = await list(harness, params)
+  const before = new Set(previous.map((plugin) => plugin.id))
+  if (previous.some(plugin => plugin.install?.source === source)) throw invalid('This package source is already configured. Manage it in Plugins.')
   const { settings, packages } = await manager(harness)
   if (isAbsolute(source)) {
     // Pi would save a folder as a path relative to the settings file, and each account reads
@@ -79,7 +81,13 @@ export async function install(harness: Harness, params: PluginScope & { source: 
     await withoutInstallScripts(() => packages.installAndPersist(source))
   }
   const after = await list(harness, params)
-  const added = after.filter((plugin) => plugin.install && !before.has(plugin.id))
+  const added = after.filter((plugin) => plugin.install?.source === source && plugin.path !== null && !before.has(plugin.id))
+  if (!added.length) {
+    try { await removeConfiguredSource(harness, source) } catch {
+      throw invalid('The package could not be discovered or removed. Review its configured source in Plugins.')
+    }
+    throw invalid('The package added no discoverable plugin. Its configured source was removed.')
+  }
   if (added.length) {
     const choices = attachments.load(harness.env.root)
     for (const plugin of added) attachments.set(choices, [plugin.id], {}, false, true)
@@ -96,6 +104,16 @@ function installed(plugins: readonly Plugin[], pluginId: string): Plugin & { ins
   return plugin as Plugin & { install: NonNullable<Plugin['install']> }
 }
 
+/** Remove only the exact configured source. A missing package may no longer have a discovered id. */
+export async function removeConfiguredSource(harness: Harness, source: string): Promise<void> {
+  const { settings, packages } = await manager(harness)
+  const entries = settings.getGlobalSettings().packages ?? []
+  const matches = entries.filter(entry => (typeof entry === 'string' ? entry : entry.source) === source)
+  if (matches.length > 1) throw invalid('The package source occurs more than once in settings. Resolve the duplicate before removing it.')
+  if (!matches.length) return
+  await packages.removeAndPersist(source)
+}
+
 /** Removes an installed package without consulting Hub. Hub calls this while it owns the receipt transaction. */
 export async function removeDirect(harness: Harness, params: PluginScope & { pluginId: string }): Promise<Plugin[]> {
   const plugin = installed(await list(harness, params), params.pluginId)
@@ -104,7 +122,7 @@ export async function removeDirect(harness: Harness, params: PluginScope & { plu
     mkdirSync(trash, { recursive: true })
     renameSync(plugin.install.source, join(trash, `${basename(plugin.install.source)}-${now().replace(/[:.]/g, '-')}`))
   } else {
-    await (await manager(harness)).packages.removeAndPersist(plugin.install.source)
+    await removeConfiguredSource(harness, plugin.install.source)
   }
   const choices = attachments.load(harness.env.root)
   for (const scope of [choices.global, ...Object.values(choices.agents), ...Object.values(choices.projects)]) {
@@ -118,15 +136,16 @@ export async function removeDirect(harness: Harness, params: PluginScope & { plu
   return list(harness, params)
 }
 
-async function hubReceiptForPackage(harness: Harness, pluginId: string) {
-  const receipts = (await harness.hub.list()).installed.filter((receipt) => receipt.entry.delivery.kind === 'pi-package' && receipt.resourceIds.includes(pluginId))
+async function hubReceiptForPackage(harness: Harness, source: string) {
+  const receipts = (await harness.hub.list()).installed.filter((receipt) => receipt.entry.delivery.kind === 'pi-package' && receipt.entry.delivery.source === source)
   if (receipts.length > 1) throw invalid('More than one Hub receipt owns this package. Review the Hub receipts before changing it.')
   return receipts[0]
 }
 
 /** Removes an installed package, delegating Hub-owned packages to their receipt owner. */
 export async function remove(harness: Harness, params: PluginScope & { pluginId: string }): Promise<Plugin[]> {
-  const receipt = await hubReceiptForPackage(harness, params.pluginId)
+  const plugin = installed(await list(harness, params), params.pluginId)
+  const receipt = await hubReceiptForPackage(harness, plugin.install.source)
   if (receipt) {
     await harness.hub.uninstall(receipt.entry.id, receipt.entry.version)
     return list(harness, params)
@@ -140,11 +159,11 @@ export async function update(harness: Harness, params: PluginScope & { pluginId?
   const plugin = params.pluginId ? installed(plugins, params.pluginId) : null
   if (plugin?.install.kind === 'folder') throw invalid(`${plugin.title} is a folder on this machine. Change its files to update it.`)
   const receipts = (await harness.hub.list()).installed.filter((receipt) => receipt.entry.delivery.kind === 'pi-package')
-  const hubOwned = new Set(receipts.flatMap((receipt) => receipt.resourceIds))
-  if (plugin && hubOwned.has(plugin.id)) throw invalid(`${plugin.title} is managed by Hub. Uninstall its receipt before installing another exact catalog version.`)
+  const hubOwned = new Set(receipts.flatMap(receipt => receipt.entry.delivery.kind === 'pi-package' ? [receipt.entry.delivery.source] : []))
+  if (plugin && hubOwned.has(plugin.install.source)) throw invalid(`${plugin.title} is managed by Hub. Uninstall its receipt before installing another exact catalog version.`)
   const sources = plugin
     ? [plugin.install.source]
-    : [...new Set(plugins.filter((candidate) => candidate.install && candidate.install.kind !== 'folder' && !hubOwned.has(candidate.id)).map((candidate) => candidate.install!.source))]
+    : [...new Set(plugins.filter((candidate) => candidate.install && candidate.install.kind !== 'folder' && !hubOwned.has(candidate.install.source)).map((candidate) => candidate.install!.source))]
   const { packages } = await manager(harness)
   for (const source of sources) await withoutInstallScripts(() => packages.update(source))
   changed(harness)

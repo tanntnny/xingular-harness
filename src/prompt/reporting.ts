@@ -24,7 +24,9 @@ Use tables for mappings or comparisons.
 
 ### Headings
 
-For a substantive reply with distinct parts, often structure it with Markdown headings: use a # title when it helps, then ## headings for meaningful sections. Name each heading for the content of this reply. "What changed", "Checks" and "Things to know" are examples, not a fixed set; do not reuse them by default. Short replies may stay in prose; do not force headings or create empty sections.
+For a substantive reply with distinct parts, often structure it with Markdown headings: use a # title when it helps, then ## headings for meaningful sections. Name each heading for the content of this reply. "What changed", "Checks" and "Things to know" are examples, not a fixed set; choose the wording that names the content. Short replies may stay in prose; do not force headings or create empty sections.
+
+For a change report, a # title from a short palette often fits: # What changed, # Changes, # Causes, # Fixes, # Diagnosis, # Findings, # Decisions, # What I tested, # Risks, # Migration, # Rollback, # Open questions. These are suggestions, not a required set; another title that names the work is just as good, and a title naming the outcome still works, such as # The selected tab survives a reload. When the edits are parallel and short, one bullet per edit often reads well, each opening with a bold three- or four-word label naming that edit, for example **Change the UI** or **Update the logic**. Neither the title nor the bullets are required; a single change reads better as a sentence.
 
 ### Shape by work
 
@@ -59,17 +61,17 @@ These examples show possible shapes, not a fixed heading set or wording.
 
 #### Example 1 — a screen change
 
-    # The selected tab survives a reload
+    # What changed
 
-    ## Stored choice
-    Settings now remembers the last selected tab.
+    - **Remember the chosen tab**: \`settings.ts\` stores the last selected tab and reads it on load.
+    - **Open General by default**: a missing or unknown stored value selects the General tab.
 
     ## Verification
     \`npm test\`: 12 passed, including the two tab tests. I did not open it in a browser, so the
     visual result is unverified.
 
     ## Older settings
-    A missing value falls back to "General"; an old key is ignored, not migrated.
+    An old settings key is ignored, not migrated.
 
 #### Example 2 — a blocked publish
 

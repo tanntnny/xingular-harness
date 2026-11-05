@@ -1,6 +1,7 @@
 import type { AgentSession, ExtensionUIContext, KeybindingsManager, Theme } from '@earendil-works/pi-coding-agent'
 import { stripTerminalSequences, type TUI } from '@earendil-works/pi-tui'
 import { describe, expect, it, vi } from 'vitest'
+import { matchPalette } from '../opentui/palette'
 import { createTerminalCommands, type TerminalCommandHost } from './commands'
 import { PageOverlay } from './pageOverlay'
 import { createHarnessTheme } from './theme'
@@ -298,15 +299,27 @@ describe('owned terminal commands', () => {
   it('populates completion from builtins and loaded resources', () => {
     const { commands } = setup()
     const names = commands.completions().map(item => item.name)
-    expect(names).toEqual(expect.arrayContaining(['model', 'session', 'history', 'accounts', 'review', 'effort', 'thinking', 'doctor', 'worktree', 'trajectory', 'subagents', 'agents', 'mcp', 'log', 'permissions', 'components', 'annotate:', 'annotate:notes', 'annotate:submit', 'annotate:clear']))
+    expect(names).toEqual(expect.arrayContaining(['model', 'session', 'history', 'accounts', 'review', 'effort', 'thinking', 'doctor', 'worktree', 'trajectory', 'subagents', 'agents', 'connections', 'log', 'permissions', 'marketplace', 'components', 'annotate:', 'annotate:notes', 'annotate:submit', 'annotate:clear']))
     expect(names).not.toContain('resume')
     expect(names).not.toContain('tree')
     expect(names).not.toContain('side')
     expect(commands.completions().find(item => item.name === 'btw')?.aliases).toEqual(['side'])
+    expect(commands.completions().find(item => item.name === 'marketplace')?.aliases).toEqual(['hub'])
+    expect(commands.completions().find(item => item.name === 'connections')?.aliases).toEqual(['mcp'])
+    expect(names).not.toContain('mcp')
+    expect(names).not.toContain('hub')
     expect(names).not.toContain('skill:diagnose')
     expect(new Set(names).size).toBe(names.length)
     for (const name of ['plugin:doctor', 'plugin:trajectory', 'plugin:subagents', 'plugin:worktree']) expect(names).not.toContain(name)
     expect(names).toEqual(expect.arrayContaining(['annotate:', 'annotate:notes', 'annotate:submit', 'annotate:clear', 'deploy:deploy']))
+  })
+
+  it('finds the single Connections palette entry by either command name', () => {
+    const { commands } = setup()
+    for (const query of ['connections', 'mcp']) {
+      const entries = matchPalette(commands.completions(), query).filter(item => item.name === 'connections' || item.name === 'mcp')
+      expect(entries).toMatchObject([{ name: 'connections', aliases: ['mcp'] }])
+    }
   })
 
   it('shows help as ordered groups, including loaded extension and prompt commands', async () => {
@@ -325,7 +338,10 @@ describe('owned terminal commands', () => {
     expect(runCommands).toContainEqual({ name: 'btw', aliases: ['side'], description: 'Ask a side question without interrupting: /btw <question>' })
     expect(runCommands.map(command => command.name)).not.toContain('side')
     expect(groups.find(group => group.name === 'Inspect')?.commands.map(command => command.name)).toEqual(['copy', 'export', 'todo', 'trajectory', 'log', 'context'])
-    expect(groups.find(group => group.name === 'Harness')?.commands.map(command => command.name)).toEqual(expect.arrayContaining(['accounts', 'plugins', 'settings', 'doctor', 'worktree', 'subagents', 'agents', 'mcp']))
+    expect(groups.find(group => group.name === 'Harness')?.commands.map(command => command.name)).toEqual(expect.arrayContaining(['accounts', 'plugins', 'marketplace', 'settings', 'doctor', 'worktree', 'subagents', 'agents', 'connections']))
+    expect(groups.find(group => group.name === 'Harness')?.commands).toContainEqual({ name: 'marketplace', aliases: ['hub'], description: 'Browse Marketplace and manage catalog installs' })
+    expect(groups.find(group => group.name === 'Harness')?.commands).toContainEqual({ name: 'connections', aliases: ['mcp'], description: 'Manage MCP server connections (local or remote)' })
+    expect(groups.find(group => group.name === 'Harness')?.commands.map(command => command.name)).not.toContain('mcp')
     expect(groups.find(group => group.name === 'Plugins')?.commands.map(command => command.name)).toEqual(expect.arrayContaining(['annotate:', 'annotate:notes', 'annotate:submit', 'annotate:clear', 'deploy:deploy']))
     expect(groups.find(group => group.name === 'Prompts')?.commands).toEqual([{ name: 'review', description: 'Review code' }])
     expect(ui.notify).not.toHaveBeenCalled()
@@ -544,7 +560,7 @@ describe('owned terminal commands', () => {
 
   it.each([
     ['/accounts', ['Accounts', 'Pools']], ['/permissions', ['Overview', 'Tools']],
-    ['/plugins', ['Plugins', 'Trust', 'Packages', 'Proposals']], ['/hub', ['Catalog', 'Installed']],
+    ['/plugins', ['Plugins', 'Trust', 'Packages', 'Proposals']], ['/marketplace', ['Marketplace', 'Installed']], ['/hub', ['Marketplace', 'Installed']],
     ['/components', ['Overview', 'Foundation', 'Variant', 'Skills', 'Plugins', 'Connections', 'Tools', 'Library']], ['/harness', ['Overview', 'Foundation', 'Variant', 'Skills', 'Plugins', 'Connections', 'Tools', 'Library']], ['/skills', ['Overview', 'Foundation', 'Variant', 'Skills', 'Plugins', 'Connections', 'Tools', 'Library']], ['/mcp', ['Overview', 'Foundation', 'Variant', 'Skills', 'Plugins', 'Connections', 'Tools', 'Library']], ['/connections', ['Overview', 'Foundation', 'Variant', 'Skills', 'Plugins', 'Connections', 'Tools', 'Library']], ['/tools', ['Overview', 'Foundation', 'Variant', 'Skills', 'Plugins', 'Connections', 'Tools', 'Library']], ['/settings', expect.any(Array)],
     ['/trajectory', ['Runs', 'Events']], ['/subagents', ['Subagents']], ['/agents', ['Agents']], ['/worktree', ['Worktrees']], ['/doctor', ['Doctor']], ['/log', ['Diagnostics', 'Run Events']]
   ])('opens %s as its own page with local tabs', async (command, tabs) => {
@@ -558,6 +574,7 @@ describe('owned terminal commands', () => {
     const rows = shown.render(100).map(stripTerminalSequences)
     expect(rows[0]).toContain(titles.length === 8 ? shown.page.tabs().find(tab => tab.id === shown.page.activeTab())!.title : titles[0]!)
     if (titles.length === 8) {
+      if (command === '/mcp' || command === '/connections') expect(shown.page.activeTab()).toBe('connections')
       expect(shown.page.presentation).toBe('fullscreen')
       expect(ui.custom).toHaveBeenCalledWith(expect.any(Function), { overlay: true, overlayOptions: { anchor: 'top-left', width: '100%', maxHeight: '100%' } })
     }

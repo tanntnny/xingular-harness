@@ -1,11 +1,15 @@
 ---
 id: ADR-0064
 title: A conversation this account cannot use starts on the account's newest selection
-status: Accepted
+status: Accepted; per-mode premise retired by ADR-0087
 created: 2026-10-30
 ---
 
 # ADR-0064: A conversation this account cannot use starts on the account's newest selection
+
+> **Superseded in part by ADR-0087.** The account now keeps one model and effort selection rather
+> than one per mode. The fallback rule below remains; read "the mode's choice" as "the account's
+> selection".
 
 ## Context
 
@@ -65,15 +69,16 @@ The terminal runtime owns the start model of every conversation, and the rule is
   every time, and the transcript records the resulting model change.
 - The conversation gains one `model_change` entry per account it cannot be continued on, which is
   the audit trail for the run's model and effort.
-- The account's saved choices are unchanged by a fallback, so the person's last deliberate selection
-  for the account and the mode still applies to the next conversation.
+- The account's saved selection is unchanged by a fallback, so the person's last deliberate choice
+  for the account still applies to the next conversation.
 - A host that reads a run's model sees the model the run actually used, not the one recorded in the
   older part of the conversation.
 
 ## References
 
-- `src/accounts/choices.ts` (`latestChoice`, `startChoice`, `startModels`, `resolveChoice`)
-- `src/terminal/tui/modeChoices.ts` (`ModeChoices.start`, `ModeChoices.useFallback`)
+- `src/accounts/selection.ts` (`readSelection`, `saveSelection`)
+- `src/terminal/tui/modelSelection.ts` (`ModelSelection.useFallback`)
 - `src/terminal/tui/runtime.ts` (`recoverModel`, `recordedModel`, `usableModel`, `bind`)
+- `src/terminal/tui/harnessRuntime.ts` (`applyConversationSelection`)
 - [11 Terminal](../architecture/11-terminal.md), [09 Accounts](../architecture/09-accounts-and-connectors.md),
-  [terminal and TUI](../terminal-tui.md)
+  [terminal and TUI](../terminal-tui.md), [ADR-0087](ADR-0087-one-model-and-effort-selection.md)

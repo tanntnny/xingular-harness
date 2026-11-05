@@ -1,7 +1,7 @@
 // One entry point for every History, Wiki and skill call a session makes, whichever way it
 // reaches the harness (a Pi tool, the bundled server, a terminal session).
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 
 import type { Bus } from '../core/bus'
 import { projectOf, type CallerContext } from '../core/caller'
@@ -22,6 +22,7 @@ export type Params = Record<string, unknown>
 export interface DispatchOptions {
   /** The run's variant on disk, for `skill_load`. */
   variantDir?: string | null
+  builtinContributions?: readonly string[]
 }
 
 function str(params: Params, key: string): string {
@@ -74,22 +75,25 @@ export function dispatch(env: DispatchEnv, context: CallerContext, call: Harness
         updateRun(env.root, context.runId, (record) => {
           if (record.loadedSkills && !record.loadedSkills.includes(name)) record.loadedSkills.push(name)
         })
-      })
+      }, options.builtinContributions)
     default:
       throw new HarnessError('unknown_method', `Unknown harness call ${call}.`)
   }
 }
 
 /** A skill's text from the run's variant, or the list of its skills. */
-export function loadSkill(variantDir: string | null, name: string, onLoad?: (name: string) => void): string {
+export function loadSkill(variantDir: string | null, name: string, onLoad?: (name: string) => void, contributions: readonly string[] = []): string {
   const skills = variantDir && existsSync(join(variantDir, 'skills')) ? readdirSync(join(variantDir, 'skills'), { withFileTypes: true }).filter((entry) => entry.isDirectory() && existsSync(join(variantDir, 'skills', entry.name, 'SKILL.md'))).map((entry) => entry.name).sort() : []
-  if (!skills.includes('plugin-authoring') && defaultSkillPaths(variantDir).length) skills.push('plugin-authoring')
+  for (const path of defaultSkillPaths(variantDir, contributions)) {
+    const skill = basename(dirname(path))
+    if (!skills.includes(skill)) skills.push(skill)
+  }
   skills.sort()
   const wanted = name.trim().replace(/^skills\//, '').replace(/`/g, '')
   if (!wanted) return skills.length ? `Your skills: ${skills.join(', ')}. Load one with skill_load and its name.` : 'You have no skills.'
   if (!SKILL_NAME.test(wanted)) throw invalid('A skill name is lowercase letters, digits, _ or -.')
   if (!skills.includes(wanted)) return `There is no skill named ${wanted}.${skills.length ? ` Your skills: ${skills.join(', ')}.` : ''}`
-  const skill = readSkillFile(variantDir, wanted)
+  const skill = readSkillFile(variantDir, wanted, contributions)
   if (!skill) return `There is no skill named ${wanted}.${skills.length ? ` Your skills: ${skills.join(', ')}.` : ''}`
   const helperNote = skill.helpers.length ? `\n\n(This skill's helpers are in ${join(skill.baseDir, 'scripts')}: ${skill.helpers.join(', ')}.)` : ''
   const text = readFileSync(skill.path, 'utf8')

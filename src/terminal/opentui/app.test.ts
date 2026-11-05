@@ -349,6 +349,52 @@ describe('OpenTuiApplication', () => {
     await app.shutdown()
   })
 
+  it('keeps one clock through compaction and Pi continuations, then resets for the next run', async () => {
+    vi.useFakeTimers()
+    const app = new OpenTuiApplication([])
+    const internals = app as unknown as { runtime?: TerminalRuntime; accept(event: AgentSessionEvent): void; working(): { elapsedMs: number | null; active: boolean } }
+    internals.runtime = { session: { messages: [], state: {} }, dispose: async () => {} } as unknown as TerminalRuntime
+    try {
+      vi.setSystemTime(10_000)
+      internals.accept({ type: 'agent_start' } as AgentSessionEvent)
+      vi.advanceTimersByTime(3000)
+      internals.accept({ type: 'compaction_start' } as AgentSessionEvent)
+      vi.advanceTimersByTime(2000)
+      internals.accept({ type: 'compaction_end' } as AgentSessionEvent)
+      internals.accept({ type: 'agent_start' } as AgentSessionEvent)
+      vi.advanceTimersByTime(4000)
+      expect(internals.working()).toMatchObject({ active: true, elapsedMs: 9000 })
+      internals.accept({ type: 'agent_settled', aborted: false } as AgentSessionEvent)
+      expect(internals.working()).toMatchObject({ active: false, elapsedMs: 9000 })
+      vi.advanceTimersByTime(2000)
+      internals.accept({ type: 'agent_start' } as AgentSessionEvent)
+      expect(internals.working()).toMatchObject({ active: true, elapsedMs: 0 })
+    } finally {
+      await app.shutdown()
+      vi.useRealTimers()
+    }
+  })
+
+  it('restores the active run clock on reattachment', async () => {
+    vi.useFakeTimers()
+    const app = new OpenTuiApplication([])
+    const internals = app as unknown as { runtime?: TerminalRuntime; attachActiveWorkingStatus(): void; accept(event: AgentSessionEvent): void; working(): { elapsedMs: number | null } }
+    try {
+      vi.setSystemTime(20_000)
+      internals.runtime = { session: { isStreaming: true, messages: [] }, attachedRunStartedAt: 12_000, dispose: async () => {} } as unknown as TerminalRuntime
+      internals.attachActiveWorkingStatus()
+      expect(internals.working().elapsedMs).toBe(8000)
+      vi.advanceTimersByTime(2000)
+      internals.accept({ type: 'agent_start' } as AgentSessionEvent)
+      expect(internals.working().elapsedMs).toBe(10_000)
+      internals.accept({ type: 'agent_settled', aborted: false } as AgentSessionEvent)
+      expect(internals.working().elapsedMs).toBe(10_000)
+    } finally {
+      await app.shutdown()
+      vi.useRealTimers()
+    }
+  })
+
   it('keeps completed run metrics in the working row until a new run starts', async () => {
     vi.useFakeTimers()
     const app = new OpenTuiApplication([])
@@ -881,7 +927,6 @@ describe('OpenTuiApplication', () => {
 
   it('switches from plan mode to Bash when a leading exclamation is typed', async () => {
     const app = new OpenTuiApplication([])
-    const setMode = vi.fn(async (_mode: 'normal' | 'plan') => {})
     const internals = app as unknown as {
       runtime?: TerminalRuntime
       syncDraft(text: string): void
@@ -890,7 +935,6 @@ describe('OpenTuiApplication', () => {
     internals.runtime = {
       session: { getSessionStats: () => ({ tokens: {} }) },
       snapshot: () => undefined,
-      setMode,
       dispose: async () => {}
     } as unknown as TerminalRuntime
     internals.syncDraft = () => {}
@@ -903,8 +947,6 @@ describe('OpenTuiApplication', () => {
       expect(app.view()).toMatchObject({ planMode: false, bashMode: true, draft: '' })
       app.setDraft('pwd')
       expect(app.view()).toMatchObject({ planMode: false, bashMode: true, draft: 'pwd' })
-      expect(setMode).toHaveBeenNthCalledWith(1, 'plan')
-      expect(setMode).toHaveBeenNthCalledWith(2, 'normal')
     } finally {
       await app.shutdown()
     }
@@ -912,7 +954,6 @@ describe('OpenTuiApplication', () => {
 
   it('switches Bash drafts to plan and back without losing text or overlapping modes', async () => {
     const app = new OpenTuiApplication([])
-    const setMode = vi.fn(async (_mode: 'normal' | 'plan') => {})
     const internals = app as unknown as {
       runtime?: TerminalRuntime
       syncDraft(text: string): void
@@ -921,7 +962,6 @@ describe('OpenTuiApplication', () => {
     internals.runtime = {
       session: { getSessionStats: () => ({ tokens: {} }) },
       snapshot: () => undefined,
-      setMode,
       dispose: async () => {}
     } as unknown as TerminalRuntime
     internals.syncDraft = () => {}
@@ -942,10 +982,6 @@ describe('OpenTuiApplication', () => {
       app.setDraft('/plan')
       app.submitPrompt()
       expect(app.view()).toMatchObject({ planMode: false, bashMode: false, draft: '' })
-      expect(setMode).toHaveBeenNthCalledWith(1, 'plan')
-      expect(setMode).toHaveBeenNthCalledWith(2, 'normal')
-      expect(setMode).toHaveBeenNthCalledWith(3, 'plan')
-      expect(setMode).toHaveBeenNthCalledWith(4, 'normal')
     } finally {
       await app.shutdown()
     }
@@ -1465,6 +1501,30 @@ describe('OpenTuiApplication', () => {
     await app.shutdown()
   })
 
+  it('preserves the draft when opening Marketplace from the command palette', async () => {
+    const app = new OpenTuiApplication([])
+    const internals = app as unknown as {
+      commands: { completions(): { name: string }[]; execute(text: string): Promise<boolean> }
+      openPalette(): void
+      syncDraft(text: string): void
+      submit(text: string): void
+    }
+    internals.syncDraft = () => {}
+    const draft = 'Keep this review note'
+    app.setDraft(draft)
+    const execute = vi.fn(async () => true)
+    internals.commands = { completions: () => [{ name: 'marketplace' }], execute }
+    const submit = vi.fn()
+    internals.submit = submit
+    internals.openPalette()
+    app.setDraft('marketplace')
+    expect(app.activatePaletteItem(0)).toBe(true)
+    await vi.waitFor(() => expect(execute).toHaveBeenCalledWith('/marketplace'))
+    expect(app.view().draft).toBe(draft)
+    expect(submit).not.toHaveBeenCalled()
+    await app.shutdown()
+  })
+
   it('offers loaded skills at $ and inserts without submitting a model request', async () => {
     const app = new OpenTuiApplication([])
     const internals = app as unknown as {
@@ -1615,6 +1675,39 @@ describe('OpenTuiApplication', () => {
     expect(app.activatePlanChoice(1)).toBe(true)
     expect(editPlan).toHaveBeenCalledOnce()
 
+    await app.shutdown()
+  })
+
+  it('leaves plan mode for Implement without changing model or effort', async () => {
+    const app = new OpenTuiApplication([])
+    const submit = vi.fn(async () => undefined)
+    const setModel = vi.fn()
+    const setThinkingLevel = vi.fn()
+    const internals = app as unknown as {
+      runtime?: TerminalRuntime
+      syncDraft(text: string): void
+      initialized: boolean
+      planChoice: { show(title: string): void }
+      implementPlan(title: string): void
+      planMode: boolean
+    }
+    internals.runtime = {
+      session: { isIdle: true, messages: [], getSessionStats: () => ({ tokens: {} }), setModel, setThinkingLevel },
+      snapshot: () => undefined,
+      submit,
+      dispose: async () => {}
+    } as unknown as TerminalRuntime
+    internals.syncDraft = () => {}
+    internals.initialized = true
+
+    expect(app.handleKey(key('tab', '\x1b[Z', true))).toBe(true)
+    internals.planChoice.show('Verified plan')
+    internals.implementPlan('Verified plan')
+
+    await vi.waitFor(() => expect(submit).toHaveBeenCalledWith('Implement the plan: Verified plan', false, undefined))
+    expect(internals.planMode).toBe(false)
+    expect(setModel).not.toHaveBeenCalled()
+    expect(setThinkingLevel).not.toHaveBeenCalled()
     await app.shutdown()
   })
 

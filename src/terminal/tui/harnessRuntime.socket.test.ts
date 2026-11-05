@@ -48,7 +48,7 @@ async function connect(harness: Harness, input: Parameters<Harness['terminals'][
   return { runtime, events }
 }
 
-async function setup(): Promise<{ harness: Harness; runtime: TerminalRuntime; faux: Faux; events: AgentSessionEvent[] }> {
+async function setup(): Promise<{ harness: Harness; runtime: TerminalRuntime; faux: Faux; events: AgentSessionEvent[]; account: { id: string } }> {
   const root = mkdtempSync(join(tmpdir(), 'harness-client-socket-'))
   const cwd = join(root, 'project')
   mkdirSync(cwd)
@@ -69,7 +69,7 @@ async function setup(): Promise<{ harness: Harness; runtime: TerminalRuntime; fa
   await runtime.session.setModel({ provider, id, name: id, reasoning: false, contextWindow: 100_000, input: ['text'] } as never)
   const events: AgentSessionEvent[] = []
   runtime.subscribe((event) => void events.push(event))
-  return { harness, runtime, faux, events }
+  return { harness, runtime, faux, events, account }
 }
 
 describe('the terminal frontend as a client of the harness', () => {
@@ -108,6 +108,27 @@ describe('the terminal frontend as a client of the harness', () => {
     const tools = (JSON.parse(readFileSync(join(harness.env.root, 'runs', runId, 'capabilities.json'), 'utf8')) as { tools: string[] }).tools
     expect(tools).toEqual(expect.arrayContaining(['read', 'bash', 'edit', 'write', 'todo_write', 'web_fetch', 'web_search']))
     expect(tools).not.toEqual(expect.arrayContaining(['grep']))
+  })
+
+  it('runs a plan request and Implement at the same model and effort, and saves them', async () => {
+    const { harness, runtime, faux, account } = await setup()
+    const [provider, id] = faux.model.split('/')
+    await runtime.session.setModel({ provider, id, name: id, reasoning: true, contextWindow: 100_000, input: ['text'] } as never)
+    runtime.session.setThinkingLevel('high')
+    const seen: Array<{ model: string | undefined; effort: string }> = []
+    const capture = (text: string) => () => {
+      seen.push({ model: runtime.session.model ? `${runtime.session.model.provider}/${runtime.session.model.id}` : undefined, effort: runtime.session.thinkingLevel })
+      return faux.says(text)
+    }
+    faux.script([capture('planned'), capture('implemented')])
+    await runtime.submitPlan('plan it')
+    await runtime.submit('Implement the plan: Plan')
+    await until(() => runtime.session.isIdle, 'the implement reply')
+    expect(seen).toEqual([
+      { model: faux.model, effort: 'high' },
+      { model: faux.model, effort: 'high' }
+    ])
+    expect(harness.accounts.selection(account.id)).toMatchObject({ model: faux.model, effort: 'high' })
   })
 
   it('answers a plan question through the terminal decision routes', async () => {
@@ -309,8 +330,8 @@ describe('the terminal frontend as a client of the harness', () => {
   })
 })
 
-/** Opens the client terminal on an account whose catalogue offers `acme/alpha` and `acme/beta`, with its saved choices. */
-async function openOnCatalogue(options: { choices?: Record<string, { model?: string; effort?: string }>; recorded?: string } = {}): Promise<{ runtime: TerminalRuntime; notify: ReturnType<typeof vi.fn> }> {
+/** Opens the client terminal on an account whose catalogue offers `acme/alpha` and `acme/beta`, with its saved selection. */
+async function openOnCatalogue(options: { selection?: { model?: string; effort?: string }; recorded?: string; recordedEffort?: string } = {}): Promise<{ harness: Harness; runtime: TerminalRuntime; account: { id: string }; notify: ReturnType<typeof vi.fn> }> {
   const root = mkdtempSync(join(tmpdir(), 'harness-client-modes-'))
   const cwd = join(root, 'project')
   mkdirSync(cwd)
@@ -319,7 +340,7 @@ async function openOnCatalogue(options: { choices?: Record<string, { model?: str
   opened.push(entry)
   await harness.ready
   const account = harness.accounts.create('Modes', 'apiKey').accounts[0]
-  for (const [mode, choice] of Object.entries(options.choices ?? {})) harness.accounts.choose(account.id, mode, choice as never)
+  if (options.selection) harness.accounts.select(account.id, options.selection as never)
   const launch = await harness.terminals.prepare({ sessionId: 'client-modes', cwd, accountId: account.id, sessionFolder: join(root, 'history'), subagents: null })
   for (const [name, value] of Object.entries(launch.env)) vi.stubEnv(name, value === null ? undefined : value)
   vi.spyOn(process, 'cwd').mockReturnValue(cwd)
@@ -336,6 +357,7 @@ async function openOnCatalogue(options: { choices?: Record<string, { model?: str
     const manager = SessionManager.create(cwd, history)
     const [provider, modelId] = options.recorded.split('/')
     manager.appendModelChange(provider, modelId)
+    if (options.recordedEffort) manager.appendThinkingLevelChange(options.recordedEffort)
     manager.appendMessage({ role: 'user', content: 'earlier', timestamp: Date.now() } as never)
     manager.appendMessage({ role: 'assistant', content: [{ type: 'text', text: 'earlier answer' }], provider, model: modelId, api: 'openai-completions', usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: 'stop', timestamp: Date.now() } as never)
     const file = manager.getSessionFile()!
@@ -346,14 +368,14 @@ async function openOnCatalogue(options: { choices?: Record<string, { model?: str
   const ui = { select: vi.fn(async () => undefined), confirm: vi.fn(async () => false), notify: vi.fn(), getEditorText: () => '' } as unknown as ExtensionUIContext
   const runtime = await createHarnessTerminalRuntime(args, { ui, notify, changed: vi.fn(), shutdown: vi.fn() })
   entry.runtime = runtime
-  return { runtime, notify }
+  return { harness, runtime, account, notify }
 }
 
 const modelOf = (runtime: TerminalRuntime): string | undefined => runtime.session.model ? `${runtime.session.model.provider}/${runtime.session.model.id}` : undefined
 
 describe('the client terminal after an account switch', () => {
-  it("starts on the new account's own choice when the conversation names a model it cannot use", async () => {
-    const { runtime, notify } = await openOnCatalogue({ recorded: 'gone/old-model', choices: { normal: { model: 'acme/alpha', effort: 'low' } } })
+  it("starts on the account's own selection when the conversation names a model it cannot use", async () => {
+    const { runtime, notify } = await openOnCatalogue({ recorded: 'gone/old-model', selection: { model: 'acme/alpha', effort: 'low' } })
     expect(modelOf(runtime)).toBe('acme/alpha')
     expect(runtime.session.thinkingLevel).toBe('low')
     expect(notify).toHaveBeenCalledWith(expect.stringContaining('cannot use gone/old-model. Started on acme/alpha at low effort'))
@@ -364,55 +386,39 @@ describe('the client terminal after an account switch', () => {
     expect(modelOf(runtime)).toBeUndefined()
   })
 
-  it('keeps the conversation\'s own model when the account can use it', async () => {
-    const { runtime, notify } = await openOnCatalogue({ recorded: 'acme/beta', choices: { normal: { model: 'acme/alpha' } } })
+  it('keeps the conversation\'s own model and effort when the account can use them', async () => {
+    const { runtime, notify } = await openOnCatalogue({ recorded: 'acme/beta', recordedEffort: 'high', selection: { model: 'acme/alpha', effort: 'low' } })
     expect(modelOf(runtime)).toBe('acme/beta')
+    expect(runtime.session.thinkingLevel).toBe('high')
     expect(notify).not.toHaveBeenCalled()
   })
 })
 
-describe('the client terminal keeps a model and an effort for each mode', () => {
-  it('applies the plan mode\'s own model and effort, and gives the normal mode its own back', async () => {
-    const { runtime } = await openOnCatalogue({ choices: { normal: { model: 'acme/alpha', effort: 'low' }, plan: { model: 'acme/beta', effort: 'high' } } })
+describe('the client terminal keeps one model and effort across modes', () => {
+  it('keeps the selected model and effort across a new conversation', async () => {
+    const { harness, runtime, account } = await openOnCatalogue({ selection: { model: 'acme/alpha', effort: 'low' } })
     expect(modelOf(runtime)).toBe('acme/alpha')
     expect(runtime.session.thinkingLevel).toBe('low')
-    await runtime.setMode('plan')
+    harness.accounts.select(account.id, { model: 'acme/beta', effort: 'high' })
+    await runtime.newSession()
     expect(modelOf(runtime)).toBe('acme/beta')
     expect(runtime.session.thinkingLevel).toBe('high')
-    await runtime.setMode('normal')
-    expect(modelOf(runtime)).toBe('acme/alpha')
-    expect(runtime.session.thinkingLevel).toBe('low')
   })
 
-  it('does not carry an effort chosen for one mode into a mode that never chose one', async () => {
-    const { runtime } = await openOnCatalogue({ choices: { normal: { model: 'acme/alpha' }, plan: { effort: 'high' } } })
-    const normalEffort = runtime.session.thinkingLevel
-    expect(normalEffort).not.toBe('high')
-    await runtime.setMode('plan')
-    expect(runtime.session.thinkingLevel).toBe('high')
-    await runtime.setMode('normal')
-    expect(runtime.session.thinkingLevel).toBe(normalEffort)
-  })
-
-  it('records a selection made in plan mode against plan, not against normal', async () => {
-    const { runtime } = await openOnCatalogue({ choices: { normal: { model: 'acme/alpha', effort: 'low' } } })
-    await runtime.setMode('plan')
-    await runtime.session.setModel({ provider: 'acme', id: 'beta', name: 'beta', reasoning: true, thinkingLevelMap: { xhigh: 'xhigh', max: 'max' }, contextWindow: 32768, input: ['text'] } as never)
-    runtime.session.setThinkingLevel('max' as never)
-    await runtime.setMode('normal')
-    expect(modelOf(runtime)).toBe('acme/alpha')
-    expect(runtime.session.thinkingLevel).toBe('low')
-    await runtime.setMode('plan')
-    expect(modelOf(runtime)).toBe('acme/beta')
-    expect(runtime.session.thinkingLevel).toBe('max')
+  it('changes and saves the model through cycleModel', async () => {
+    const { harness, runtime, account } = await openOnCatalogue({ selection: { model: 'acme/alpha', effort: 'low' } })
+    const next = await runtime.session.cycleModel('forward')
+    expect(next?.model?.provider).toBe('acme')
+    expect(modelOf(runtime)).not.toBe('acme/alpha')
+    expect(harness.accounts.selection(account.id)?.model).toBe(modelOf(runtime))
   })
 
   it('offers the levels the model supports, up to max where it maps them, and clamps what it does not', async () => {
-    const { runtime } = await openOnCatalogue({ choices: { normal: { model: 'acme/alpha', effort: 'low' }, plan: { model: 'acme/beta' } } })
+    const { runtime } = await openOnCatalogue({ selection: { model: 'acme/alpha', effort: 'low' } })
     expect(runtime.session.getAvailableThinkingLevels()).toEqual(['off', 'minimal', 'low', 'medium', 'high'])
     runtime.session.setThinkingLevel('max' as never)
     expect(runtime.session.thinkingLevel).toBe('high')
-    await runtime.setMode('plan')
+    await runtime.session.setModel({ provider: 'acme', id: 'beta', name: 'beta', reasoning: true, thinkingLevelMap: { xhigh: 'xhigh', max: 'max' }, contextWindow: 32768, input: ['text'] } as never)
     expect(runtime.session.getAvailableThinkingLevels()).toEqual(['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
     runtime.session.setThinkingLevel('max' as never)
     expect(runtime.session.thinkingLevel).toBe('max')

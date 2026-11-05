@@ -20,7 +20,7 @@ executions (base, candidates, finals):
 - With no host (a plain `xharness serve`, which Evaluation drives), `DEFAULT_REFINE_HOST`
   returns none of them. The executions then run on whatever Pi resolves as the default account's
   default model.
-- Runs do not consult saved per-mode choices either (`accounts.choices` is terminal-only).
+- Runs do not consult the terminal's saved account selection either (`accounts.selection` is terminal-only).
 
 So a server client cannot say "execute with `openai-codex/gpt-6-luna` on account X". Evaluation
 cannot meet its own rule ("Live runs require an explicitly selected credential, model, and bounded

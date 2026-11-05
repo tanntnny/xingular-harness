@@ -65,6 +65,17 @@ describe('person-controlled components in a terminal', () => {
     await expect(call('terminal.components.add', { id: 'skills/review' })).rejects.toMatchObject({ code: 'invalid_request' })
   })
 
+  it('shows the plugin-owned REA connector through the protected browser and follows its switch', async () => {
+    const { call } = await setup()
+    const row = async () => (await call<{ items: Array<{ id: string; status: string; connectionId?: string }> }>('terminal.browser.snapshot')).items.find(item => item.id === 'contribution:rea/connection/builtin-rea')
+    expect(await row()).toMatchObject({ status: 'Disabled for this scope' })
+    await call('plugins.attach', { id: 'rea', everywhere: true })
+    expect(await row()).toMatchObject({ status: 'Enabled for this scope' })
+    expect((await row())?.connectionId).toBeUndefined()
+    await call('plugins.detach', { id: 'rea', everywhere: true })
+    expect(await row()).toMatchObject({ status: 'Disabled for this scope' })
+  })
+
   it('requires the private control key for browser reads, imports and connection mutations', async () => {
     const { connection, call } = await setup()
     for (const method of ['terminal.browser.snapshot', 'terminal.browser.read', 'terminal.browser.importSkill', 'terminal.browser.connections.save']) {

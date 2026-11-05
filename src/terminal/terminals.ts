@@ -265,6 +265,7 @@ export class Terminals {
   private readonly diagnosticOwners = new Map<string, string>()
   /** The variant each live session runs, for loading its skills. */
   private readonly variantDirs = new Map<string, string>()
+  private readonly builtinContributions = new Map<string, string[]>()
   /** The subagent profile files each live session's packages bring, chosen when it started. */
   private readonly packageProfiles = new Map<string, string[]>()
   /** The world tools each session was given, so a call can only reach one of them. */
@@ -343,6 +344,8 @@ export class Terminals {
       session?.controller.observe(event)
       const record = findRun(options.env.root, event.runId)
       if (record && !record.relation && session) {
+        // A reply the harness runs for a client terminal starts the roster; a native terminal's turn does it itself.
+        if (this.clients.get(event.sessionId)?.activeRun === event.runId) session.controller.trackLiveRun(event.runId)
         session.controller.observeMain(record, event, this.monitorRuntime(session, record))
         return
       }
@@ -354,7 +357,7 @@ export class Terminals {
         const parent = findRun(options.env.root, parentId)
         if (!parent) break
         const owner = this.sessions.get(parent.sessionId)
-        if (owner?.controller.activeRun?.runId === parent.id) {
+        if (owner?.controller.tracksRun(parent.id)) {
           owner.controller.observe(event, true)
           const settings = options.subagents?.runtimeSettings(record.id)
           owner.controller.observeSubagent(parent.id, record, event, this.subagentProfile(record), {
@@ -368,7 +371,7 @@ export class Terminals {
       }
     })
     this.socket = new SessionSocket(socketPath(options.stateDir), {
-      memory: (caller, call, params) => dispatch(options.env, caller, call, params, { variantDir: (caller.sessionId && this.variantDirs.get(caller.sessionId)) || null }),
+      memory: (caller, call, params) => dispatch(options.env, caller, call, params, { variantDir: (caller.sessionId && this.variantDirs.get(caller.sessionId)) || null, builtinContributions: caller.sessionId ? this.builtinContributions.get(caller.sessionId) : [] }),
       apps: (session, call, params) => this.appsCall(session, call, params),
       plugins: (grant, call, params, control) => this.pluginsCall(grant.sessionId, call, params, control),
       accounts: (grant, call, params, control) => this.accountsCall(grant.sessionId, call, params, control)
@@ -430,7 +433,7 @@ export class Terminals {
   private async ownTools(live: Live, listing: boolean): Promise<ToolSpec[]> {
     const sessionId = live.caller.sessionId!
     const caller = { ...live.caller, runId: live.controller.activeRun?.runId ?? null }
-    const all = harnessTools(this.options.env, caller, { variantDir: this.variantDirs.get(sessionId) ?? null })
+    const all = harnessTools(this.options.env, caller, { variantDir: this.variantDirs.get(sessionId) ?? null, builtinContributions: this.builtinContributions.get(sessionId) ?? [] })
       .filter((tool) => DEFAULT_TOOL_NAMES.includes(tool.name))
     if (!listing) return all.filter((tool) => this.ownNames.get(sessionId)?.has(tool.name) ?? false)
     const on = await this.worldOn(live)
@@ -523,7 +526,7 @@ export class Terminals {
     const scope = { cwd: live.input.cwd, accountId: live.account.id, projectId }
     if (call === 'hub.list' && this.options.hub) return this.options.hub.list(params.refresh === true)
     if (call === 'hub.install' && this.options.hub) {
-      if (!control) throw new HarnessError('unauthorized', 'Only a person at this terminal can install items. Type /hub.')
+      if (!control) throw new HarnessError('unauthorized', 'Only a person at this terminal can install items. Type /marketplace.')
       if (typeof params.id !== 'string' || typeof params.version !== 'string') throw invalid('An item id and version are required.')
       return this.options.hub.install(params.id, params.version)
     }
@@ -622,11 +625,11 @@ export class Terminals {
         return accounts.refresh(optional('accountId'))
       case 'accounts.providers':
         return accounts.providers()
-      // A terminal reads and writes only its own account's choices, never the id a caller names.
-      case 'accounts.choices.get':
-        return accounts.choices(live.account.id)
-      case 'accounts.choices.set':
-        return accounts.choose(live.account.id, text('mode'), {
+      // A terminal reads and writes only its own account's selection, never the id a caller names.
+      case 'accounts.selection.get':
+        return accounts.selection(live.account.id)
+      case 'accounts.selection.set':
+        return accounts.select(live.account.id, {
           ...(typeof params.model === 'string' ? { model: params.model } : {}),
           ...(typeof params.effort === 'string' ? { effort: params.effort as Effort } : {})
         })
@@ -1312,13 +1315,16 @@ export class Terminals {
       this.packageProfiles.set(sessionId, loading?.profilePaths ?? [])
       const worldTools = await this.worldToolNames(input, preparedAccount)
       const ownTools = await this.ownToolNames(input, preparedAccount)
+      const listed = await this.options.pluginControl?.list({ cwd: input.cwd, accountId: preparedAccount.id, projectId: input.projectId ?? null }) ?? []
+      const builtinContributions = listed.flatMap(plugin => plugin.contributions.filter(item => item.state === 'on').map(item => item.id))
+      this.builtinContributions.set(sessionId, builtinContributions)
       const launchTools = [...new Set([...(input.launch?.tools ?? []), TODO_WRITE, SESSION_NAME, ...ownTools, ...(broker ? apps.toolNames : []), ...worldTools])]
       // The profiles replace the variant's own subagent list, which they include.
       const profiles = this.options.subagents && input.subagents !== null ? profileSection(root, input.cwd, variant?.dir ?? null, false, undefined, loading?.profilePaths ?? []) : null
       const launchSections = profiles ? [...(input.launch?.sections ?? []).filter((section) => section.id !== profiles.id), profiles] : input.launch?.sections
       // A terminal is a person's own session: the same standard sections a host's session has.
       const standard = input.launch?.standard === null ? null : input.launch?.standard ?? { cwd: input.cwd }
-      const pack = compile(env, caller, { ...input.launch, model: input.model ?? input.launch?.model ?? null, standard, sections: launchSections, tools: launchTools }, variant && profiles ? { ...variant, sections: variant.sections.filter((section) => section.id !== profiles.id) } : variant)
+      const pack = compile(env, caller, { ...input.launch, builtinContributions, model: input.model ?? input.launch?.model ?? null, standard, sections: launchSections, tools: launchTools }, variant && profiles ? { ...variant, sections: variant.sections.filter((section) => section.id !== profiles.id) } : variant)
       record(root, pack)
       mkdirSync(this.historyDir(input), { recursive: true })
       saveForSession(input.sessionFolder, pack)
@@ -1483,7 +1489,9 @@ export class Terminals {
           if (call !== 'terminal.resources') return this.controlFor(live)(call, params)
           const current = await this.options.plugins?.loading({ cwd: input.cwd, agentDir: configDir(accounts.dir, preparedAccount), install: false, caller: { projectId: input.projectId ?? null } }) ?? null
           const currentVariant = variant ? materialise(root, { dir: variant.dir, scope: variant.scope }, { trust: this.options.trust ?? null }) : null
-          if (resourceIdentity(current) !== resourceIdentity(loading) || (variant && (currentVariant?.fingerprint !== variant.fingerprint || JSON.stringify(currentVariant.extensionPaths) !== JSON.stringify(variant.extensionPaths)))) {
+          const currentPlugins = await this.options.pluginControl?.list({ cwd: input.cwd, accountId: preparedAccount.id, projectId: input.projectId ?? null }) ?? []
+          const currentBuiltins = currentPlugins.flatMap(plugin => plugin.contributions.filter(item => item.state === 'on').map(item => item.id))
+          if (JSON.stringify(defaultSkillPaths(variant?.dir, currentBuiltins)) !== JSON.stringify(defaultSkillPaths(variant?.dir, builtinContributions)) || resourceIdentity(current) !== resourceIdentity(loading) || (variant && (currentVariant?.fingerprint !== variant.fingerprint || JSON.stringify(currentVariant.extensionPaths) !== JSON.stringify(variant.extensionPaths)))) {
             throw new HarnessError('terminal_resources_changed', 'Trusted resources changed since this terminal was prepared. Review /plugins and reopen the terminal to load the new selection.')
           }
           const resourceOwners = (current?.found ?? []).filter(item => item.packageRoot && (item.kind === 'prompt' && current?.promptPaths.includes(item.path) || item.kind === 'extension' && current?.extensionPaths.includes(item.path)))
@@ -1500,7 +1508,7 @@ export class Terminals {
         args.push('--no-extensions', '--no-skills', '--no-prompt-templates', '--no-themes')
         // The pi command's own extensions are not loaded: a host's session cannot have them (PROP-0039).
         for (const path of [...(loading?.extensionPaths ?? []), ...(variant?.extensionPaths ?? [])]) args.push('--extension', path)
-        for (const path of [...(variant?.skillPaths ?? []), ...defaultSkillPaths(variant?.dir), ...(loading?.skillPaths ?? [])]) args.push('--skill', path)
+        for (const path of [...(variant?.skillPaths ?? []), ...defaultSkillPaths(variant?.dir, builtinContributions), ...(loading?.skillPaths ?? [])]) args.push('--skill', path)
         for (const path of loading?.promptPaths ?? []) args.push('--prompt-template', path)
         for (const path of loading?.themePaths ?? []) args.push('--theme', path)
       }
@@ -1525,6 +1533,7 @@ export class Terminals {
       if (token) this.socket.revoke(token)
       this.sessions.delete(sessionId)
       this.variantDirs.delete(sessionId)
+      this.builtinContributions.delete(sessionId)
       this.packageProfiles.delete(sessionId)
       this.worldNames.delete(sessionId)
       if (this.worktreeLeases.get(sessionId) === acquiredWorktreeId) this.worktreeLeases.delete(sessionId)

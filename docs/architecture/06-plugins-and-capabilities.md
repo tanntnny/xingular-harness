@@ -63,9 +63,9 @@ callable result for one run.
   or `.agents/skills` (walking up to the repository root), the OS user's `~/.agents/skills`, the
   state's `accounts/_shared/pi/skills`, a package's `skills` or a foreign manifest's declared paths,
   or the pinned variant's `skills`. A model may write the first two; `~/.agents` is outside the
-  workspace, so a write there needs the person's approval. Variant, library, Hub and package
-  installs change committed state and are person acts (`/skills`, `/components`, `/hub`,
-  `/plugins`). A variant holds `SKILL.md` and flat `scripts/` files only. `plugins.install` takes a
+  workspace, so a write there needs the person's approval. Variant, library, Marketplace and package
+  installs change committed state and are person acts (`/skills`, `/components`, `/marketplace`
+  (alias `/hub`), `/plugins`). A variant holds `SKILL.md` and flat `scripts/` files only. `plugins.install` takes a
   package address: a GitHub or GitLab `tree`/`blob` page address is refused with the repository
   address and these routes. The install guidance lives in the release-owned `plugin-authoring`
   skill, not the always-on prompt ([STUDY-0005](../study/STUDY-0005-skill-installation-guidance.md)).
@@ -84,6 +84,9 @@ callable result for one run.
   namespace with its extension commands; prompts discovered by a loose extension use that
   extension's namespace. Neither is exposed as a bare plugin alias. Standalone prompt templates
   retain their existing form. See page 11 for routing and collision rules.
+- **Release-owned REA plugin.** `rea` ships switched off and owns a version-matched upstream skill and local MCP server. The plugin attachment controls both for each caller; the server is a virtual connector, never a saved `connections.json` entry. Its calls use the connected-apps broker and approvals. Its `callTimeoutSeconds` plugin setting defaults to 450 seconds. Enabling the plugin grants no tool permissions.
+- **Release-owned inspection skill.** The `tui-inspection` built-in plugin owns the on-demand `tui-inspection` skill. Its switch uses the existing attachment store and its selected contribution enters the frozen capability set. Structured runs and terminal preparation load it only when selected; a same-named pinned variant skill wins independently. Its optional external inspection tool is never downloaded automatically.
+- **Installed package recovery.** Plugin listing keeps configured or Marketplace-receipted package sources visible when no contribution can be discovered. The recovery row cannot be enabled and names its source; receipt-owned removal and update checks use that source, not a potentially colliding manifest name.
 - **Plugin authoring.** `plugin_propose` creates a pending proposal, not an installation. The
   release-owned `plugin-authoring` skill is available on demand in structured and terminal sessions;
   a pinned variant's skill of the same name wins. It adds no trust or permission
@@ -202,7 +205,7 @@ The broad `/harness` browser joins saved plugin/contribution metadata with actua
 tool registration. A saved on/off state does not prove a resource loaded; origins and owners
 distinguish same-name resources. `/plugins` is a focused local manager with Plugins, Trust and
 Packages tabs. It uses the existing plugin services for switching, trust, settings, package install,
-update and removal. `/hub` is a distinct Community catalog surface; it does not load code or add a
-second loader. Hub-owned package removal through `plugins.remove` delegates to Hub so the exact
-receipt and its resources stay consistent. No second discovery or enablement mechanism is
-introduced (PROP-0013, PROP-0047).
+update and removal. `/marketplace` (alias `/hub`) is a distinct catalog surface; it does not load
+code or add a second loader. Marketplace-owned package removal through `plugins.remove` delegates to
+Hub so the exact receipt and its resources stay consistent. No second discovery or enablement
+mechanism is introduced (PROP-0013, PROP-0047).

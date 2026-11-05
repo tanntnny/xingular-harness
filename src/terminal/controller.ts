@@ -90,6 +90,8 @@ type Command = { type: 'interrupt' } | { type: 'send'; text: string }
 
 const READY_TIMEOUT_MS = 90_000
 const ACK_TIMEOUT_MS = 25_000
+/** The longest a `poll` that asks to wait is held for a command; the extension asks again. */
+const POLL_WAIT_MAX_MS = 25_000
 
 export class TerminalController {
   private run: ActiveRun | null = null
@@ -99,6 +101,8 @@ export class TerminalController {
   private readonly pendingWaiters = new Set<() => void>()
   private readonly subagents = new SubagentMonitor()
   private subagentParentRunId: string | null = null
+  /** The reply the harness runs for this terminal (the client terminal), which has no native turn. */
+  private liveParentRunId: string | null = null
   private ready = false
   private disposed = false
   private dirty = false
@@ -109,6 +113,7 @@ export class TerminalController {
   private nativeId: string | null
   private readonly seen = new Map<string, Promise<unknown>>()
   private readonly commands: Command[] = []
+  private readonly commandWaiters = new Set<() => void>()
   /** When the reply last produced something other than a heartbeat; silence is what a stall is. */
   private progressAt = 0
   private readonly runningTools = new Map<string, { name: string; at: number }>()
@@ -119,6 +124,29 @@ export class TerminalController {
 
   constructor(private readonly hooks: ControllerHooks) {
     this.nativeId = hooks.nativeSessionId
+  }
+
+  private enqueue(command: Command): void {
+    this.commands.push(command)
+    for (const wake of [...this.commandWaiters]) wake()
+  }
+
+  /**
+   * The native process's next command. With `waitMs` the reply is held until a command arrives (or
+   * the wait ends), so an idle terminal costs one parked request instead of ten a second. A newer
+   * poll takes over from an older one still parked.
+   */
+  private async nextCommand(waitMs: unknown): Promise<{ command: Command | null }> {
+    const wait = typeof waitMs === 'number' && Number.isFinite(waitMs) ? Math.min(Math.max(0, waitMs), POLL_WAIT_MAX_MS) : 0
+    if (wait > 0 && !this.commands.length && !this.disposed) {
+      for (const wake of [...this.commandWaiters]) wake()
+      await new Promise<void>(resolve => {
+        const wake = () => { clearTimeout(timer); this.commandWaiters.delete(wake); resolve() }
+        const timer = setTimeout(wake, wait)
+        this.commandWaiters.add(wake)
+      })
+    }
+    return { command: this.commands.shift() ?? null }
   }
 
   private pendingChanged(): void {
@@ -180,7 +208,7 @@ export class TerminalController {
     this.subagentParentRunId = run.runId
     this.watchProgress()
     this.subagents.begin(run.runId)
-    run.onInterrupt(() => void this.commands.push({ type: 'interrupt' }))
+    run.onInterrupt(() => this.enqueue({ type: 'interrupt' }))
     if (text) run.emit('message.completed', { messageId: nativeTurnId, role: 'user', text })
     delivery?.resolve()
     this.delivery = null
@@ -237,7 +265,7 @@ export class TerminalController {
     if (!replyStalled({ now, progressAt: this.progressAt, runningTools: tools.map((tool) => tool.at) })) return
     this.stallRequested = run.runId
     this.hooks.telemetry('stall')
-    this.commands.push({ type: 'interrupt' })
+    this.enqueue({ type: 'interrupt' })
   }
 
   /** Hands the native process an instruction and waits until it acknowledges the prompt. */
@@ -258,14 +286,14 @@ export class TerminalController {
     // Delivery can fail while the native process is still starting the turn. Observe it immediately.
     void ack.catch(() => {})
     try {
-      this.commands.push({ type: 'send', text })
+      this.enqueue({ type: 'send', text })
       await ack
     } catch (error) {
       this.ready = false
       this.startupError = error instanceof Error ? error.message : String(error)
       this.delivery = null
       this.commands.length = 0
-      this.commands.push({ type: 'interrupt' })
+      this.enqueue({ type: 'interrupt' })
       this.finish('failed', this.startupError)
       throw error
     } finally {
@@ -284,7 +312,7 @@ export class TerminalController {
   disconnected(): void {
     if (this.disposed) return
     this.ready = false
-    this.commands.push({ type: 'interrupt' })
+    this.enqueue({ type: 'interrupt' })
     this.finish('failed', 'The native decision callback disconnected. Inspect the terminal before continuing.')
   }
 
@@ -314,9 +342,26 @@ export class TerminalController {
     profile: TerminalSubagentProfile | null = null,
     runtime: Pick<TerminalSubagentRun, 'accountLabel' | 'model' | 'effort'> = {}
   ): void {
-    if (this.disposed || this.activeRun?.runId !== parentRunId || run.relation !== 'subagent') return
+    if (this.disposed || !this.tracksRun(parentRunId) || run.relation !== 'subagent') return
     this.subagents.observe(parentRunId, monitorRun(run, 'subagent', profile, runtime), event)
-    this.trackChild(run, event)
+    // The stall clock below judges a native reply; the harness watches its own runs.
+    if (this.activeRun?.runId === parentRunId) this.trackChild(run, event)
+  }
+
+  /** Whether this run is the one whose subagents the terminal shows: the native turn or the harness's reply. */
+  tracksRun(runId: string): boolean {
+    return this.activeRun?.runId === runId || this.liveParentRunId === runId
+  }
+
+  /**
+   * Starts the roster for a reply the harness runs on this terminal's behalf (ADR-0083). The client terminal has
+   * no native turn to begin one, so without this the status line and `/subagents` stay empty.
+   */
+  trackLiveRun(runId: string): void {
+    if (this.disposed || this.subagentParentRunId === runId) return
+    this.liveParentRunId = runId
+    this.subagentParentRunId = runId
+    this.subagents.begin(runId)
   }
 
   /** Folds a child's event into its own stall clock; a heartbeat only proves the process lives. */
@@ -477,7 +522,7 @@ export class TerminalController {
       this.finish('failed', this.startupError)
       return {}
     }
-    if (event === 'poll') return { command: this.commands.shift() ?? null }
+    if (event === 'poll') return this.nextCommand(data.waitMs)
     // A heartbeat proves the turn is alive, not that it is working; only real events restart the clock.
     if (event !== 'heartbeat') this.progressAt = Date.now()
     if (event === 'ready') {
@@ -585,11 +630,13 @@ export class TerminalController {
     if (this.disposed) return
     this.disposed = true
     this.pendingChanged()
+    for (const wake of [...this.commandWaiters]) wake()
     this.ready = false
     this.delivery?.reject(new Error('The terminal stopped before prompt acknowledgement.'))
     this.delivery = null
     this.finish('interrupted', undefined, undefined, 'terminal_closed')
     this.subagents.clear()
     this.subagentParentRunId = null
+    this.liveParentRunId = null
   }
 }

@@ -1,6 +1,7 @@
 // A generic view of what is available to a caller. The existing plugin, registry, and connector
 // stores remain the source of truth; this module gives hosts one capability-shaped contract.
 import { invalid } from '../core/errors'
+import { builtinConnections } from '../mcp/builtinConnections'
 import type { Harness } from '../harness'
 import type { CallerContext } from '../core/caller'
 import type { Launch } from '../prompt/compile'
@@ -41,7 +42,7 @@ export async function list(harness: Harness, params: ListParams = {}): Promise<C
 export async function resolve(harness: Harness, params: ListParams & { tools?: readonly string[] }): Promise<CapabilitySet> {
   const caller = { agentId: params.agentId ?? null, projectId: params.projectId ?? null }
   const catalogue = await list(harness, params)
-  const connectors = harness.apps.connections.forScope(caller).map((connection) => connection.id)
+  const connectors = [...harness.apps.connections.forScope(caller), ...builtinConnections(harness.env.root, caller)].map((connection) => connection.id)
   return {
     version: 1,
     tools: unique(params.tools ?? []),

@@ -1,6 +1,6 @@
 {
   "name": "@xingular/harness",
-  "version": "2.2.0-unstable",
+  "version": "2.3.0-unstable",
   "type": "module",
   "description": "Xingular Harness — a Pi agent harness built on recursive harnessing (Harness²): versioned eight-component variants, refinement from evidence, multi-account sessions, a compiled prompt, project notes, tools, and MCP",
   "repository": {
@@ -86,5 +86,8 @@
   ],
   "license": "Apache-2.0",
   "main": "./dist/sdk/index.js",
-  "types": "./dist/sdk/index.d.ts"
+  "types": "./dist/sdk/index.d.ts",
+  "optionalDependencies": {
+    "rea-agents": "6.8.0"
+  }
 }

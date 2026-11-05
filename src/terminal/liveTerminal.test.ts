@@ -101,8 +101,15 @@ it('refuses a second run while one is replying, and steers it instead', async ()
   let release: () => void = () => undefined
   const gate = new Promise<void>((resolve) => { release = resolve })
   faux.script([async () => { await gate; return faux.says('done') }])
+  const before = Date.now()
   const run = await client.call('terminal.live.run', { text: 'long', model: faux.model, newHistory: true }) as { runId: string }
+  const state = await client.call('terminal.live.state', {}) as { activeRunId: string | null; activeRunStartedAt: number | null }
+  expect(state.activeRunId).toBe(run.runId)
+  expect(state.activeRunStartedAt).toBeGreaterThanOrEqual(before)
+  expect(state.activeRunStartedAt).toBeLessThanOrEqual(Date.now())
   await expect(client.call('terminal.live.run', { text: 'again', model: faux.model })).rejects.toMatchObject({ code: 'session_busy' })
+  expect((await client.call('terminal.live.state', {}) as typeof state).activeRunStartedAt).toBe(state.activeRunStartedAt)
   release()
   expect(await settled(run.runId)).toBe('completed')
+  expect((await client.call('terminal.live.state', {}) as typeof state).activeRunStartedAt).toBeNull()
 })

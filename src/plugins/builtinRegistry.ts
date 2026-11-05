@@ -29,6 +29,7 @@ export interface BuiltinToolContext {
   env: DispatchEnv
   caller: CallerContext
   variantDir: string | null
+  builtinContributions?: readonly string[]
   run: ActiveRun
   runId: string
   allowedTools: readonly string[]

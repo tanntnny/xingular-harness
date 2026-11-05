@@ -117,16 +117,16 @@ describe('the accounts menu, over the session socket', () => {
     expect(await socketCall(connection, 'accounts.deviceId', {}, 5_000, key)).toBe(await harness.accounts.installationDeviceId())
   })
 
-  it('keeps each mode choice on the session account, and refuses it without the control key', async () => {
+  it('keeps the selection on the session account, and refuses it without the control key', async () => {
     const { connection, key, call, main, spare, harness } = await session()
-    await expect(socketCall(connection, 'accounts.choices.get')).rejects.toMatchObject({ code: 'unauthorized' })
-    await expect(socketCall(connection, 'accounts.choices.set', { mode: 'plan', effort: 'low' })).rejects.toMatchObject({ code: 'unauthorized' })
-    await call('accounts.choices.set', { mode: 'normal', model: 'anthropic/fast', effort: 'high' })
+    await expect(socketCall(connection, 'accounts.selection.get')).rejects.toMatchObject({ code: 'unauthorized' })
+    await expect(socketCall(connection, 'accounts.selection.set', { effort: 'low' })).rejects.toMatchObject({ code: 'unauthorized' })
+    await call('accounts.selection.set', { model: 'anthropic/fast', effort: 'high' })
     // A caller names no account: the call always lands on this terminal's own account.
-    await call('accounts.choices.set', { mode: 'plan', effort: 'low', accountId: spare.id })
-    expect(await socketCall(connection, 'accounts.choices.get', {}, 5_000, key)).toMatchObject({ normal: { model: 'anthropic/fast', effort: 'high' }, plan: { effort: 'low' } })
-    expect(harness.accounts.choices(spare.id)).toEqual({})
-    expect(harness.accounts.choices(main.id)).toMatchObject({ plan: { effort: 'low' } })
+    await call('accounts.selection.set', { effort: 'low', accountId: spare.id })
+    expect(await socketCall(connection, 'accounts.selection.get', {}, 5_000, key)).toMatchObject({ model: 'anthropic/fast', effort: 'low' })
+    expect(harness.accounts.selection(spare.id)).toBeNull()
+    expect(harness.accounts.selection(main.id)).toMatchObject({ model: 'anthropic/fast', effort: 'low' })
   })
 
   it('will not remove an account a running terminal is using, this session included', async () => {
